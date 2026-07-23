@@ -1,0 +1,214 @@
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use flate2::read::GzDecoder;
+use serde::{Deserialize, Serialize};
+use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, store_entry_rel};
+
+use crate::pack::sha256_file;
+
+/// The global content-addressed store under `$HOME/.zed-pkg`. One extracted
+/// copy per artifact per machine; projects symlink (or copy) out of it.
+pub struct Store {
+    home: PathBuf,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Refs {
+    /// project absolute path -> sha256s it references
+    #[serde(default)]
+    projects: BTreeMap<String, Vec<String>>,
+}
+
+impl Store {
+    pub fn new(home: &Path) -> Self {
+        Self {
+            home: home.to_path_buf(),
+        }
+    }
+
+    pub fn root(&self) -> PathBuf {
+        self.home.join("store")
+    }
+
+    pub fn cache_dir(&self) -> PathBuf {
+        self.home.join("cache")
+    }
+
+    pub fn cached_artifact(&self, sha256: &str) -> PathBuf {
+        self.cache_dir().join(format!("{sha256}.tar.gz"))
+    }
+
+    pub fn entry_dir(&self, sha256: &str) -> PathBuf {
+        self.home.join(store_entry_rel(sha256))
+    }
+
+    /// Directory holding the package files for an artifact.
+    pub fn pkg_dir(&self, sha256: &str) -> PathBuf {
+        self.entry_dir(sha256).join(STORE_PKG_DIR)
+    }
+
+    pub fn has(&self, sha256: &str) -> bool {
+        self.pkg_dir(sha256).is_dir()
+    }
+
+    /// Verify the archive hash and extract it into the store (idempotent;
+    /// extraction goes to a temp dir first, then an atomic rename).
+    pub fn add_artifact(&self, archive: &Path, expected_sha256: &str) -> Result<PathBuf> {
+        let (actual, _) = sha256_file(archive)?;
+        if actual != expected_sha256 {
+            bail!(
+                "artifact hash mismatch: expected {expected_sha256}, got {actual} ({})",
+                archive.display()
+            );
+        }
+        let entry = self.entry_dir(expected_sha256);
+        if self.has(expected_sha256) {
+            return Ok(entry.join(STORE_PKG_DIR));
+        }
+        let parent = entry
+            .parent()
+            .context("store entry has a parent")?
+            .to_path_buf();
+        fs::create_dir_all(&parent)?;
+        let tmp = tempfile::tempdir_in(&parent)?;
+
+        let file = fs::File::open(archive)?;
+        let mut tar = tar::Archive::new(GzDecoder::new(file));
+        tar.unpack(tmp.path())?;
+        // Archives root files under `pkg/`, which matches STORE_PKG_DIR.
+        if !tmp.path().join(ARCHIVE_ROOT).is_dir() {
+            bail!(
+                "invalid artifact: missing `{ARCHIVE_ROOT}/` root in {}",
+                archive.display()
+            );
+        }
+        let tmp_path = tmp.keep();
+        match fs::rename(&tmp_path, &entry) {
+            Ok(()) => {}
+            Err(_) if entry.exists() => {
+                // Lost a race with a concurrent install; theirs is fine.
+                let _ = fs::remove_dir_all(&tmp_path);
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&tmp_path);
+                return Err(e.into());
+            }
+        }
+        Ok(entry.join(STORE_PKG_DIR))
+    }
+
+    fn refs_path(&self) -> PathBuf {
+        self.home.join("refs.json")
+    }
+
+    fn load_refs(&self) -> Refs {
+        fs::read_to_string(self.refs_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_refs(&self, refs: &Refs) -> Result<()> {
+        fs::create_dir_all(&self.home)?;
+        fs::write(self.refs_path(), serde_json::to_string_pretty(refs)?)?;
+        Ok(())
+    }
+
+    /// Record which artifacts a project references (called on install).
+    pub fn record_project(&self, project: &Path, sha256s: Vec<String>) -> Result<()> {
+        let mut refs = self.load_refs();
+        refs.projects
+            .insert(project.to_string_lossy().to_string(), sha256s);
+        self.save_refs(&refs)
+    }
+
+    /// Drop refs to deleted projects, then delete unreferenced store
+    /// entries and cached artifacts. Returns (entries_removed, bytes_freed).
+    pub fn prune(&self) -> Result<(usize, u64)> {
+        let mut refs = self.load_refs();
+        refs.projects
+            .retain(|project, _| Path::new(project).is_dir());
+        let referenced: BTreeSet<String> = refs.projects.values().flatten().cloned().collect();
+        self.save_refs(&refs)?;
+
+        let mut removed = 0usize;
+        let mut freed = 0u64;
+        let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
+        if version_root.is_dir() {
+            for shard in fs::read_dir(&version_root)? {
+                let shard = shard?.path();
+                if !shard.is_dir() {
+                    continue;
+                }
+                for entry in fs::read_dir(&shard)? {
+                    let entry = entry?.path();
+                    let sha = entry
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if !referenced.contains(&sha) {
+                        freed += dir_size(&entry);
+                        fs::remove_dir_all(&entry)?;
+                        removed += 1;
+                        let cached = self.cached_artifact(&sha);
+                        if cached.exists() {
+                            freed += cached.metadata().map(|m| m.len()).unwrap_or(0);
+                            let _ = fs::remove_file(cached);
+                        }
+                    }
+                }
+            }
+        }
+        Ok((removed, freed))
+    }
+
+    pub fn status(&self) -> (usize, u64, u64) {
+        let mut count = 0usize;
+        let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
+        if let Ok(shards) = fs::read_dir(&version_root) {
+            for shard in shards.flatten() {
+                if let Ok(entries) = fs::read_dir(shard.path()) {
+                    count += entries.count();
+                }
+            }
+        }
+        (count, dir_size(&self.root()), dir_size(&self.cache_dir()))
+    }
+
+    pub fn clean_cache(&self) -> Result<u64> {
+        let dir = self.cache_dir();
+        let freed = dir_size(&dir);
+        if dir.exists() {
+            fs::remove_dir_all(&dir)?;
+        }
+        Ok(freed)
+    }
+}
+
+pub fn dir_size(path: &Path) -> u64 {
+    walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+pub fn human_size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
