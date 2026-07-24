@@ -275,6 +275,26 @@ pub fn install(
     frozen: bool,
     mode: InstallMode,
     adapter: Adapter,
+    allow_build: bool,
+) -> Result<InstallOutcome> {
+    let store = Store::new(&cfg.home);
+    // Serialize against concurrent `zed install` processes (other terminals,
+    // parallel CI runners) writing the store, refs.json, and lockfile.
+    let _install_lock = store.install_lock()?;
+    install_locked(project, cfg, &store, frozen, mode, adapter, allow_build)
+}
+
+/// Install body, called with the store lock already held. Split out so the
+/// build-hook path can install `[build-dependencies]` into a staging dir
+/// under the same lock without deadlocking on a re-acquire.
+fn install_locked(
+    project: &Path,
+    cfg: &Config,
+    store: &Store,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
 ) -> Result<InstallOutcome> {
     let adapter = match adapter {
         Adapter::Auto => detect_adapter(project),
@@ -282,12 +302,10 @@ pub fn install(
     };
     let manifest = read_manifest(project)?;
     let reg = registry_for(&cfg.registry)?;
-    let store = Store::new(&cfg.home);
-    // Serialize against concurrent `zed install` processes (other terminals,
-    // parallel CI runners) writing the store, refs.json, and lockfile.
-    let _install_lock = store.install_lock()?;
     let lock_path = project.join(LOCKFILE_FILE);
 
+    let workspace = find_workspace(project);
+    let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
 
     if frozen {
@@ -296,6 +314,12 @@ pub fn install(
         let lock = Lockfile::parse(&text)?;
         for (key, req_str) in &manifest.dependencies {
             let (org, name) = split_key(key)?;
+            if workspace
+                .as_ref()
+                .is_some_and(|ws| ws.members.contains_key(key))
+            {
+                continue;
+            }
             let entry = lock
                 .find(&org, &name)
                 .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
@@ -308,6 +332,14 @@ pub fn install(
             }
         }
         for locked in &lock.packages {
+            if !is_slug(&locked.org) || !is_slug(&locked.name) {
+                bail!(
+                    "lockfile entry `{}/{}` has an invalid identity; refusing",
+                    locked.org,
+                    locked.name
+                );
+            }
+            require_sha256(&locked.sha256)?;
             let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
             if vm.sha256 != locked.sha256 {
                 bail!(
@@ -318,6 +350,7 @@ pub fn install(
                     vm.sha256
                 );
             }
+            validate_version_metadata(&vm)?;
             resolved.insert(locked.full_name(), vm);
         }
     } else {
@@ -328,6 +361,22 @@ pub fn install(
         }
         while let Some((org, name, req_str)) = queue.pop_front() {
             let key = format!("{org}/{name}");
+            // Workspace members short-circuit the registry entirely: link
+            // the member's source tree, then keep resolving its deps.
+            if let Some(ws) = &workspace {
+                if let Some(member_dir) = ws.members.get(&key) {
+                    if member_dir != project && !workspace_links.contains_key(&key) {
+                        workspace_links.insert(key.clone(), member_dir.clone());
+                        if let Ok(member_manifest) = read_manifest(member_dir) {
+                            for (sub_key, sub_req) in member_manifest.dependencies {
+                                let (sub_org, sub_name) = split_key(&sub_key)?;
+                                queue.push_back((sub_org, sub_name, sub_req));
+                            }
+                        }
+                    }
+                    continue;
+                }
+            }
             let req = Requirement::parse(&req_str);
             if let Some(existing) = resolved.get(&key) {
                 if req.matches(&existing.version) {
@@ -340,14 +389,30 @@ pub fn install(
                 );
             }
             let pkg = reg.get_package(&org, &name)?;
-            let version = version::resolve(&req, &pkg.versions).with_context(|| {
-                format!(
-                    "no version of {key} satisfies `{req_str}` (available: {})",
-                    pkg.versions.join(", ")
-                )
-            })?;
-            let vm = reg.get_version(&org, &name, version)?;
-            let pkg_dir = ensure_artifact(reg.as_ref(), &store, &vm)?;
+            // Yanked versions are skipped for range requirements (next-best
+            // wins); exact pins still install with a warning, so existing
+            // lockfiles keep working, cargo-style.
+            let mut candidates = pkg.versions.clone();
+            let vm = loop {
+                let version = version::resolve(&req, &candidates)
+                    .with_context(|| {
+                        format!(
+                            "no version of {key} satisfies `{req_str}` (available: {})",
+                            pkg.versions.join(", ")
+                        )
+                    })?
+                    .to_string();
+                let vm = reg.get_version(&org, &name, &version)?;
+                if vm.yanked {
+                    if matches!(req, Requirement::Range(_)) {
+                        candidates.retain(|v| *v != version);
+                        continue;
+                    }
+                    eprintln!("warning: {key}@{version} is yanked; installing pinned version");
+                }
+                break vm;
+            };
+            let pkg_dir = ensure_artifact(reg.as_ref(), store, &vm)?;
             resolved.insert(key, vm);
             if let Ok(sub_manifest) = read_manifest(&pkg_dir) {
                 for (sub_key, sub_req) in sub_manifest.dependencies {
@@ -362,17 +427,39 @@ pub fn install(
     let mut installed = Vec::new();
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
+    let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();
     for vm in resolved.values() {
-        let pkg_dir = ensure_artifact(reg.as_ref(), &store, vm)?;
+        let pkg_dir = ensure_artifact(reg.as_ref(), store, vm)?;
+        let pkg_manifest = read_manifest(&pkg_dir).ok();
+        // A [build] step (the package's own, or the consumer's override)
+        // swaps the link source from the pristine store entry to the
+        // per-platform build-cache entry.
+        let link_src = match effective_build(&manifest, pkg_manifest.as_ref(), vm) {
+            Some(build) => build_artifact(
+                cfg,
+                store,
+                vm,
+                &pkg_dir,
+                pkg_manifest.as_ref(),
+                &build,
+                allow_build,
+            )?,
+            None => pkg_dir.clone(),
+        };
         let dest = modules.join(&vm.org).join(&vm.name);
-        link_or_copy(&pkg_dir, &dest, mode)?;
+        link_or_copy(&link_src, &dest, mode)?;
+        if let Some(pm) = &pkg_manifest {
+            for (bin_name, rel_target) in &pm.bin {
+                bins.insert(bin_name.clone(), dest.join(rel_target));
+            }
+        }
         match adapter {
             Adapter::Node => {
                 let node_dest = project
                     .join("node_modules")
                     .join(format!("@{}", vm.org))
                     .join(&vm.name);
-                link_or_copy(&pkg_dir, &node_dest, mode)?;
+                link_or_copy(&link_src, &node_dest, mode)?;
             }
             Adapter::Java => {
                 // Classpath entries point at the project-local link so the
@@ -392,6 +479,18 @@ pub fn install(
         installed.push((format!("{}/{}", vm.org, vm.name), vm.version.clone()));
         shas.push(vm.sha256.clone());
     }
+    for (key, member_dir) in &workspace_links {
+        let (org, name) = split_key(key)?;
+        let dest = modules.join(&org).join(&name);
+        link_or_copy(member_dir, &dest, InstallMode::Symlink)?;
+        if let Ok(member_manifest) = read_manifest(member_dir) {
+            for (bin_name, rel_target) in &member_manifest.bin {
+                bins.insert(bin_name.clone(), dest.join(rel_target));
+            }
+        }
+        installed.push((key.clone(), "workspace".to_string()));
+    }
+    hoist_bins(&modules, &bins)?;
     if adapter == Adapter::Java {
         jars.sort();
         let classpath_file = project.join(".zed").join("classpath");
