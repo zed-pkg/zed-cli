@@ -1243,7 +1243,6 @@ pub fn cache_clean(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1256,7 +1255,10 @@ mod tests {
         assert_eq!(parse_age("12h").unwrap(), Duration::from_secs(12 * 3_600));
         // A bare number means days, and surrounding whitespace is tolerated.
         assert_eq!(parse_age("30").unwrap(), Duration::from_secs(30 * 86_400));
-        assert_eq!(parse_age("  7d  ").unwrap(), Duration::from_secs(7 * 86_400));
+        assert_eq!(
+            parse_age("  7d  ").unwrap(),
+            Duration::from_secs(7 * 86_400)
+        );
         assert_eq!(parse_age("0d").unwrap(), Duration::ZERO);
     }
 

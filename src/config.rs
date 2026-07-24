@@ -134,8 +134,14 @@ mod tests {
         creds.save(home.path()).unwrap();
 
         let loaded = Credentials::load(home.path()).unwrap();
-        assert_eq!(loaded.token_for("https://reg.example.com").as_deref(), Some("tok-a"));
-        assert_eq!(loaded.token_for("https://reg.example.com/").as_deref(), Some("tok-a"));
+        assert_eq!(
+            loaded.token_for("https://reg.example.com").as_deref(),
+            Some("tok-a")
+        );
+        assert_eq!(
+            loaded.token_for("https://reg.example.com/").as_deref(),
+            Some("tok-a")
+        );
         assert_eq!(loaded.token_for("https://other.example.com"), None);
     }
 
