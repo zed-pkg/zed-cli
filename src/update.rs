@@ -183,7 +183,12 @@ fn replace_exe(exe: &Path, new_bytes: &[u8]) -> Result<()> {
 /// Run the self-update. `check` only reports; `force` reinstalls even when
 /// already current; `skip_checksum` bypasses SHA256SUMS verification (unsafe,
 /// local testing only).
-pub fn self_update(current_version: &str, check: bool, force: bool, skip_checksum: bool) -> Result<()> {
+pub fn self_update(
+    current_version: &str,
+    check: bool,
+    force: bool,
+    skip_checksum: bool,
+) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
         .build()?;
@@ -295,7 +300,10 @@ mod tests {
     #[test]
     fn sha256sums_handles_binary_mode_and_uppercase() {
         // `sha256sum -b` writes `<hex> *<name>`; digests may be uppercase.
-        let sums = format!("{}  *zed-x86_64-pc-windows-msvc.zip\n", DIGEST.to_uppercase());
+        let sums = format!(
+            "{}  *zed-x86_64-pc-windows-msvc.zip\n",
+            DIGEST.to_uppercase()
+        );
         assert_eq!(
             expected_sha256_for(&sums, "zed-x86_64-pc-windows-msvc.zip").as_deref(),
             Some(DIGEST),
@@ -307,12 +315,21 @@ mod tests {
     fn sha256sums_rejects_missing_or_malformed() {
         let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
         // No entry for the requested asset -> None, so the caller aborts.
-        assert_eq!(expected_sha256_for(&sums, "zed-x86_64-apple-darwin.tar.gz"), None);
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-x86_64-apple-darwin.tar.gz"),
+            None
+        );
         // A non-hex "digest" for the asset is not accepted.
         let bad = "nothexnothexnothex  zed-aarch64-apple-darwin.tar.gz\n";
-        assert_eq!(expected_sha256_for(bad, "zed-aarch64-apple-darwin.tar.gz"), None);
+        assert_eq!(
+            expected_sha256_for(bad, "zed-aarch64-apple-darwin.tar.gz"),
+            None
+        );
         // Empty file yields nothing.
-        assert_eq!(expected_sha256_for("", "zed-aarch64-apple-darwin.tar.gz"), None);
+        assert_eq!(
+            expected_sha256_for("", "zed-aarch64-apple-darwin.tar.gz"),
+            None
+        );
     }
 
     #[test]

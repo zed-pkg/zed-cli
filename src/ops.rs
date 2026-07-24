@@ -1242,4 +1242,3 @@ pub fn cache_clean(cfg: &Config) -> Result<()> {
     println!("cleaned cache, freed {}", human_size(freed));
     Ok(())
 }
-
