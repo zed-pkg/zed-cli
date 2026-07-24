@@ -294,6 +294,29 @@ impl HttpRegistry {
             Err(anyhow!("registry error ({status}): {body}"))
         }
     }
+
+    /// The registry hands us a `download_url` (possibly a presigned S3/R2
+    /// URL on another host). Trusting it verbatim would let a malicious
+    /// registry response redirect fetches to plaintext or internal hosts,
+    /// so the scheme is checked: https is always fine; http only for
+    /// loopback or when the registry itself was configured over http (the
+    /// operator already accepted plaintext for that registry).
+    fn allowed_download_url(&self, raw: &str) -> Result<reqwest::Url> {
+        let url = reqwest::Url::parse(raw).with_context(|| format!("bad download url {raw}"))?;
+        let loopback = matches!(url.host_str(), Some("localhost"))
+            || url
+                .host_str()
+                .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|ip| ip.is_loopback());
+        match url.scheme() {
+            "https" => Ok(url),
+            "http" if loopback || self.base.starts_with("http://") => Ok(url),
+            other => bail!(
+                "refusing artifact download over `{other}` from {raw} \
+                 (https required for non-local registries)"
+            ),
+        }
+    }
 }
 
 impl Registry for HttpRegistry {
