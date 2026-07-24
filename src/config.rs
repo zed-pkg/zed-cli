@@ -70,12 +70,26 @@ impl Credentials {
     pub fn save(&self, home: &Path) -> Result<()> {
         fs::create_dir_all(home)?;
         let path = Self::path(home);
-        fs::write(&path, toml::to_string_pretty(self)?)?;
+        let text = toml::to_string_pretty(self)?;
+        // Create with 0600 from the first byte — a write-then-chmod leaves a
+        // window where the token file is readable at the default umask.
         #[cfg(unix)]
         {
+            use std::io::Write as _;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            // An existing file keeps its old mode; enforce 0600 either way.
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            file.write_all(text.as_bytes())?;
         }
+        #[cfg(not(unix))]
+        fs::write(&path, text)?;
         Ok(())
     }
 
