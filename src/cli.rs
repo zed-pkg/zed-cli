@@ -153,6 +153,9 @@ pub enum Cmd {
         /// Check and report, but do not replace the binary
         #[arg(long)]
         check: bool,
+        /// Skip the SHA256SUMS integrity check (unsafe; local testing only)
+        #[arg(long)]
+        skip_checksum: bool,
     },
     /// Save a registry token to ~/.zed-pkg/credentials.toml
     Login,
