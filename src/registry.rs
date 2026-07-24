@@ -193,6 +193,28 @@ impl Registry for FileRegistry {
         })
     }
 
+    fn yank(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+        _token: Option<&str>,
+    ) -> Result<YankResponse> {
+        let vpath = self.version_json(org, name, version);
+        let text = fs::read_to_string(&vpath)
+            .with_context(|| format!("version {org}/{name}@{version} not found"))?;
+        let mut vm: VersionMetadata = serde_json::from_str(&text)?;
+        vm.yanked = yanked;
+        fs::write(&vpath, serde_json::to_string_pretty(&vm)?)?;
+        Ok(YankResponse {
+            org: org.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            yanked,
+        })
+    }
+
     fn search(&self, query: &str) -> Result<SearchResponse> {
         let mut items = Vec::new();
         let packages_root = self.root.join("packages");
