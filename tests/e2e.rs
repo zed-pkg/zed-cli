@@ -1376,7 +1376,9 @@ fn regex_replace_sha(text: &str, replacement: &str) -> String {
 fn traversal_artifacts_are_refused() {
     let tmp = tempfile::tempdir().unwrap();
 
-    // Hand-craft a tar.gz with an entry that climbs out of the root.
+    // Hand-craft a tar.gz with an entry that climbs out of the root. The
+    // writer's set_path() rejects `..`, so a real attacker writes the raw
+    // header name field directly — which is exactly what we simulate here.
     let evil = tmp.path().join("evil.tar.gz");
     {
         let file = fs::File::create(&evil).unwrap();
@@ -1386,10 +1388,12 @@ fn traversal_artifacts_are_refused() {
         let mut header = tar::Header::new_gnu();
         header.set_size(data.len() as u64);
         header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        let name = b"pkg/../../escape.txt";
+        let gnu = header.as_gnu_mut().unwrap();
+        gnu.name[..name.len()].copy_from_slice(name);
         header.set_cksum();
-        builder
-            .append_data(&mut header, "pkg/../../escape.txt", &data[..])
-            .unwrap();
+        builder.append(&header, &data[..]).unwrap();
         builder.into_inner().unwrap().finish().unwrap();
     }
     let (sha, _) = pack::sha256_file(&evil).unwrap();
