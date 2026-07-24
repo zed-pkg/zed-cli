@@ -5,8 +5,20 @@ use anyhow::{Context, Result, anyhow, bail};
 use semver::{Version, VersionReq};
 use zed_interfaces::registry::{
     self, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
-    SearchResponse, VersionMetadata,
+    SearchResponse, VersionMetadata, YankRequest, YankResponse,
 };
+
+/// Hard ceiling on artifact download size (bytes); the registry-reported
+/// size is advisory and attacker-influencable, so a static cap backs it up.
+/// Override with `ZED_PKG_MAX_ARTIFACT_BYTES`.
+const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+
+fn max_artifact_bytes() -> u64 {
+    std::env::var("ZED_PKG_MAX_ARTIFACT_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_ARTIFACT_BYTES)
+}
 
 /// Client-side registry abstraction. `file://` URLs get a directory-backed
 /// registry (hermetic tests, `zed test-local`, air-gapped mirrors); anything
@@ -23,6 +35,14 @@ pub trait Registry {
     ) -> Result<PublishResponse>;
     fn claim_org(&self, slug: &str, token: Option<&str>) -> Result<ClaimOrgResponse>;
     fn search(&self, query: &str) -> Result<SearchResponse>;
+    fn yank(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+        token: Option<&str>,
+    ) -> Result<YankResponse>;
 }
 
 pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
