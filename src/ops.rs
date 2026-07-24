@@ -987,7 +987,7 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         .insert(format!("{org}/{name}"), req.clone());
     write_manifest(project, &manifest)?;
     println!("added {org}/{name} = \"{req}\"");
-    install(project, cfg, false, InstallMode::Symlink, Adapter::None)?;
+    install(project, cfg, false, InstallMode::Symlink, Adapter::None, false)?;
     Ok(())
 }
 
@@ -1005,7 +1005,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let dest = project.join(MODULES_DIR).join(&org).join(&name);
     replace_dest(&dest)?;
     println!("removed {org}/{name}");
-    install(project, cfg, false, InstallMode::Symlink, Adapter::None)?;
+    install(project, cfg, false, InstallMode::Symlink, Adapter::None, false)?;
     Ok(())
 }
 
@@ -1126,8 +1126,13 @@ pub fn test_local(project: &Path, _cfg: &Config) -> Result<()> {
             keywords: Vec::new(),
         },
         dependencies,
+        build_dependencies: BTreeMap::new(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
+        bin: BTreeMap::new(),
+        build: None,
+        workspace: None,
+        overrides: Default::default(),
     };
     write_manifest(&consumer_dir, &consumer_manifest)?;
 
@@ -1142,6 +1147,7 @@ pub fn test_local(project: &Path, _cfg: &Config) -> Result<()> {
         false,
         InstallMode::Symlink,
         Adapter::None,
+        false,
     )?;
 
     let target = consumer_dir
