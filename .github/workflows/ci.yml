@@ -1,5 +1,5 @@
-# Fast Rust CI (zed-docs issue #8): rust-cache + sccache for cross-run compile
-# caching, mold as the linker on Linux, and cargo-nextest for parallel tests.
+# Fast Rust CI (zed-docs issue #8): rust-cache for cross-run compile caching,
+# mold as the linker on Linux, and cargo-nextest for parallel tests.
 # The toolchain is pinned via rust-toolchain.toml so the cache key stays stable.
 name: ci
 on:
@@ -9,10 +9,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  SCCACHE_GHA_ENABLED: "true"
-  # A GitHub cache-service outage must degrade to uncached compiles, not fail
-  # the build (sccache is an optimization, never a dependency).
-  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
 
 jobs:
   test:
@@ -36,18 +32,9 @@ jobs:
         uses: rui314/setup-mold@v1
         with:
           make-default: true
-      - name: Set up sccache
-        uses: mozilla-actions/sccache-action@v0.0.6
-      # The GHA cache service has real outages; sccache is an optimization,
-      # never a dependency. Only wire it in when its backend responds.
-      - name: Enable sccache when the cache backend is healthy
-        shell: bash
-        run: |
-          if sccache --show-stats >/dev/null 2>&1; then
-            echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          else
-            echo "cache service unavailable; building without sccache"
-          fi
+      # sccache was removed after repeated GitHub cache-service outages took
+      # CI down mid-build (even health-probed); rust-cache below degrades
+      # gracefully during outages and covers the cross-run caching need.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zed-cli
