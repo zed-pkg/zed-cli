@@ -957,7 +957,9 @@ fn parse_age(s: &str) -> Result<std::time::Duration> {
         .trim()
         .parse()
         .with_context(|| format!("invalid duration `{s}` (use e.g. 90d, 2w, 12h)"))?;
-    Ok(std::time::Duration::from_secs(n * secs))
+    // Saturate rather than overflow-panic on hostile input like `u64::MAX`d;
+    // an absurdly large age simply means "prune nothing".
+    Ok(std::time::Duration::from_secs(n.saturating_mul(secs)))
 }
 
 /// `zed gc`: least-recently-used garbage collection of the store, build
