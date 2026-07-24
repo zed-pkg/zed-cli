@@ -390,28 +390,32 @@ fn install_locked(
             }
             let pkg = reg.get_package(&org, &name)?;
             // Fresh resolution never selects a yanked version, cargo-style:
-            // ranges fall through to the next-best match, exact requirements
-            // fail loudly. Installs pinned by an existing lockfile keep
-            // working because the --frozen path skips resolution entirely.
+            // it falls through to the next-best match, and if the only
+            // versions that would satisfy the requirement are yanked it
+            // fails with a message that says so. Installs pinned by an
+            // existing lockfile keep working because --frozen skips
+            // resolution entirely.
             let mut candidates = pkg.versions.clone();
+            let mut skipped_yanked: Vec<String> = Vec::new();
             let vm = loop {
-                let version = version::resolve(&req, &candidates)
-                    .with_context(|| {
-                        format!(
-                            "no version of {key} satisfies `{req_str}` (available: {})",
-                            pkg.versions.join(", ")
-                        )
-                    })?
-                    .to_string();
-                let vm = reg.get_version(&org, &name, &version)?;
-                if vm.yanked {
-                    if matches!(req, Requirement::Exact(_)) {
+                let resolved = version::resolve(&req, &candidates).map(str::to_string);
+                let Some(version) = resolved else {
+                    if !skipped_yanked.is_empty() {
                         bail!(
-                            "{key}@{version} is yanked and cannot be newly installed \
-                             (existing lockfiles keep working via `zed install --frozen`)"
+                            "the only version(s) of {key} satisfying `{req_str}` are yanked \
+                             ({}); existing lockfiles keep working via `zed install --frozen`",
+                            skipped_yanked.join(", ")
                         );
                     }
+                    bail!(
+                        "no version of {key} satisfies `{req_str}` (available: {})",
+                        pkg.versions.join(", ")
+                    );
+                };
+                let vm = reg.get_version(&org, &name, &version)?;
+                if vm.yanked {
                     candidates.retain(|v| *v != version);
+                    skipped_yanked.push(version);
                     continue;
                 }
                 break vm;
