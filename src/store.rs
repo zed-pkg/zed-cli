@@ -397,27 +397,19 @@ impl Store {
             self.save_refs(&refs)?;
         }
 
-<<<<<<< HEAD
+        // `max_age` originates from unvalidated CLI/env input (parse_age uses
+        // a saturating multiply), and checked_sub falls back to the epoch so
+        // hostile ages can never panic — they just prune nothing extra.
         let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
-        let too_old = |entry: &Path| self.last_used(entry).is_none_or(|t| t <= cutoff);
-=======
-        // `max_age_days` arrives unvalidated from the CLI/env, so do the age
-        // math without any operation that can panic on hostile input (e.g.
-        // `u64::MAX`). Clamp to a sane ceiling, convert to seconds with a
-        // saturating multiply, then subtract from "now" with a checked_sub,
-        // falling back to the epoch (prune nothing older than epoch) if the
-        // subtraction would underflow.
-        let cutoff_secs = max_age_days.min(MAX_GC_AGE_DAYS).saturating_mul(86_400);
-        let cutoff = SystemTime::now()
-            .checked_sub(Duration::from_secs(cutoff_secs))
-            .unwrap_or(UNIX_EPOCH);
+        // Prefer the recorded last-use stamp; fall back to filesystem mtime so
+        // entries predating use-tracking age out instead of being treated as
+        // immediately collectable.
         let too_old = |entry: &Path| -> bool {
             let last = self
                 .last_used(entry)
                 .or_else(|| entry.metadata().and_then(|m| m.modified()).ok());
             last.is_none_or(|t| t <= cutoff)
         };
->>>>>>> harden
 
         let mut entries_removed = 0usize;
         let mut freed = 0u64;
