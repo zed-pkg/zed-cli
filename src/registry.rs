@@ -313,16 +313,58 @@ impl Registry for HttpRegistry {
         Ok(Self::check(response)?.json()?)
     }
 
+    /// The registry hands us a `download_url` (possibly a presigned S3/R2
+    /// URL on another host). Trusting it verbatim would let a malicious
+    /// registry response redirect fetches to plaintext or internal hosts,
+    /// so the scheme is checked: https is always fine; http only for
+    /// loopback or when the registry itself was configured over http (the
+    /// operator already accepted plaintext for that registry).
+    fn allowed_download_url(&self, raw: &str) -> Result<reqwest::Url> {
+        let url = reqwest::Url::parse(raw).with_context(|| format!("bad download url {raw}"))?;
+        let loopback = matches!(url.host_str(), Some("localhost"))
+            || url
+                .host_str()
+                .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|ip| ip.is_loopback());
+        match url.scheme() {
+            "https" => Ok(url),
+            "http" if loopback || self.base.starts_with("http://") => Ok(url),
+            other => bail!(
+                "refusing artifact download over `{other}` from {raw} \
+                 (https required for non-local registries)"
+            ),
+        }
+    }
+
     fn download(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let url = if version.download_url.starts_with("http") {
-            version.download_url.clone()
+            self.allowed_download_url(&version.download_url)?
         } else {
-            self.url(&registry::artifact_path(&version.sha256))
+            reqwest::Url::parse(&self.url(&registry::artifact_path(&version.sha256)))
+                .context("registry url is valid")?
         };
-        let mut response = Self::check(self.client.get(url).send()?)?;
+        let response = Self::check(self.client.get(url).send()?)?;
         fs::create_dir_all(dest.parent().context("dest has parent")?)?;
+        // Bound what we write to disk: the declared size (when sane) plus
+        // slack, backed by the global cap. Hash verification happens later
+        // in Store::add_artifact; this guard is about disk exhaustion.
+        let cap = max_artifact_bytes();
+        let limit = if version.size > 0 {
+            version.size.saturating_add(1024 * 1024).min(cap)
+        } else {
+            cap
+        };
         let mut file = fs::File::create(dest)?;
-        response.copy_to(&mut file)?;
+        use std::io::Read as _;
+        let mut limited = response.take(limit.saturating_add(1));
+        let copied = std::io::copy(&mut limited, &mut file)?;
+        if copied > limit {
+            let _ = fs::remove_file(dest);
+            bail!(
+                "artifact exceeded its declared size ({} > {limit} bytes); refusing",
+                copied
+            );
+        }
         Ok(())
     }
 
