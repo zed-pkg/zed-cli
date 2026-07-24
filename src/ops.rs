@@ -636,11 +636,6 @@ fn build_artifact(
             Adapter::None,
             false,
         )?;
-        // Expose their hoisted bins to the build command's PATH.
-        let bin_dir = deps_dir.join(MODULES_DIR).join(BIN_DIR);
-        let path_var = std::env::var("PATH").unwrap_or_default();
-        unsafe { std::env::set_var("ZED_BUILD_DEPS_PATH", format!("{}", bin_dir.display())) };
-        let _ = path_var;
     }
 
     let mut command = Command::new("sh");
