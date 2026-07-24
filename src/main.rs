@@ -23,7 +23,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             frozen,
             install_mode,
             adapter,
-        } => ops::install(&cwd, &cfg, frozen, install_mode, adapter).map(|_| ()),
+            allow_build,
+        } => ops::install(&cwd, &cfg, frozen, install_mode, adapter, allow_build).map(|_| ()),
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
         Cmd::Publish {
