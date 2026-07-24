@@ -61,9 +61,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 clean,
             },
         ),
-        Cmd::SelfUpdate { check, force } => {
-            update::self_update(env!("CARGO_PKG_VERSION"), check, force)
-        }
+        Cmd::SelfUpdate {
+            check,
+            force,
+            skip_checksum,
+        } => update::self_update(env!("CARGO_PKG_VERSION"), check, force, skip_checksum),
         Cmd::Login => ops::login(&cfg),
         Cmd::Org { cmd } => match cmd {
             OrgCmd::Claim { slug } => ops::org_claim(&cfg, &slug),

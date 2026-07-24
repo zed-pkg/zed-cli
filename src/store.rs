@@ -18,6 +18,10 @@ use crate::pack::sha256_file;
 const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Ceiling on archive entry count (inode-exhaustion guard).
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+/// Ceiling on `zed gc --max-age-days`, defending the age computation against
+/// hostile input. ~10,000 years is far past any real cache lifetime while
+/// leaving the seconds conversion well clear of `u64` overflow.
+const MAX_GC_AGE_DAYS: u64 = 3_650_000;
 
 fn max_unpacked_bytes() -> u64 {
     std::env::var("ZED_PKG_MAX_UNPACKED_BYTES")
@@ -393,8 +397,19 @@ impl Store {
             self.save_refs(&refs)?;
         }
 
+        // `max_age` originates from unvalidated CLI/env input (parse_age uses
+        // a saturating multiply), and checked_sub falls back to the epoch so
+        // hostile ages can never panic — they just prune nothing extra.
         let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
-        let too_old = |entry: &Path| self.last_used(entry).is_none_or(|t| t <= cutoff);
+        // Prefer the recorded last-use stamp; fall back to filesystem mtime so
+        // entries predating use-tracking age out instead of being treated as
+        // immediately collectable.
+        let too_old = |entry: &Path| -> bool {
+            let last = self
+                .last_used(entry)
+                .or_else(|| entry.metadata().and_then(|m| m.modified()).ok());
+            last.is_none_or(|t| t <= cutoff)
+        };
 
         let mut entries_removed = 0usize;
         let mut freed = 0u64;
@@ -662,5 +677,37 @@ pub fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gc_survives_hostile_max_age() {
+        // A hostile age (`u64::MAX` seconds) would overflow naive epoch math
+        // and panic the `SystemTime - Duration` subtraction; the hardened
+        // path (saturating parse_age + checked_sub falling back to the epoch)
+        // must simply prune nothing.
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path());
+        let report = store
+            .gc(Duration::from_secs(u64::MAX), false)
+            .expect("gc must not fail on an empty store");
+        assert_eq!(
+            (
+                report.entries_removed,
+                report.cache_files_removed,
+                report.freed
+            ),
+            (0, 0, 0)
+        );
+
+        // A handful of other extreme ages must be equally panic-free.
+        for days in [0u64, 1, MAX_GC_AGE_DAYS, u64::MAX / 2, u64::MAX - 1] {
+            let age = Duration::from_secs(days.saturating_mul(86_400));
+            store.gc(age, false).expect("gc must not panic for any age");
+        }
     }
 }
