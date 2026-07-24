@@ -19,10 +19,19 @@ jobs:
           repository: zed-pkg/zed-interfaces
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
+      # mold: a much faster linker (Linux only). make-default (the action's
+      # default) wires it in as the system linker, so cargo/rustc use it with
+      # no extra RUSTFLAGS.
+      - uses: rui314/setup-mold@v1
+        if: runner.os == 'Linux'
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zed-cli
+      - uses: taiki-e/install-action@nextest
       - run: cargo fmt --check
         working-directory: zed-cli
-      - run: cargo test
+      - run: cargo nextest run
+        working-directory: zed-cli
+      # nextest does not run doctests; keep them covered (cargo test used to).
+      - run: cargo test --doc
         working-directory: zed-cli
