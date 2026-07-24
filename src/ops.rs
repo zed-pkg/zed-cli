@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -7,9 +7,11 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
-    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
+    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection, is_slug,
 };
-use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR};
+use zed_interfaces::paths::{
+    BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, build_entry_rel, current_platform,
+};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
 use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::{self, Requirement};
@@ -18,7 +20,7 @@ use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
-use crate::store::{Store, human_size};
+use crate::store::{Store, human_size, require_sha256};
 use crate::vcs::verify_publish_provenance;
 
 pub fn split_key(key: &str) -> Result<(String, String)> {
@@ -29,6 +31,23 @@ pub fn split_key(key: &str) -> Result<(String, String)> {
         }
         _ => bail!("invalid package spec `{key}` (expected org/name)"),
     }
+}
+
+/// Registry responses feed org/name/sha into filesystem paths (store
+/// entries, zed_modules links, node_modules links). A malicious or
+/// compromised registry must not be able to point those outside their
+/// intended directories, so every `VersionMetadata` is validated at the
+/// trust boundary before any disk operation uses it.
+fn validate_version_metadata(vm: &VersionMetadata) -> Result<()> {
+    if !is_slug(&vm.org) || !is_slug(&vm.name) {
+        bail!(
+            "registry returned invalid package identity `{}/{}`; refusing",
+            vm.org,
+            vm.name
+        );
+    }
+    require_sha256(&vm.sha256)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
