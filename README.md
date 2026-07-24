@@ -101,10 +101,53 @@ registry hosts both on S3/Cloudflare R2.
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed test-local` (`zed r2g`) | Install your own artifact into a throwaway consumer and run `publish.smoke_test` |
+| `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
+| `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
 | `zed login` | Save a registry token to `~/.zed-pkg/credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
-| `zed store status\|path\|prune` | Inspect or garbage-collect the global store |
+| `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
+| `zed gc [--max-age-days N]` | Age-aware collection: drop entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |
+| `zed self-update [--check]` | Replace the binary with the latest GitHub release for your platform |
+
+### Monorepo workspaces
+
+A root manifest with a `[workspace]` table links member packages from source
+instead of the registry, so edits are live in consumers with no publish step:
+
+```toml
+# .zpkg.toml at the monorepo root
+[workspace]
+members = ["packages/*", "apps/*"]
+```
+
+When a dependency resolves to a workspace member, `zed install` symlinks the
+member's source directory straight into `zed_modules/` and keeps resolving its
+transitive deps. Members are not pinned in `.zpkg.lock` (there is no artifact).
+
+### Build hooks (compiled dependencies)
+
+A package with native code or a codegen step declares a `[build]`:
+
+```toml
+[build]
+command = "cargo build --release"
+outputs = ["target/release/libfoo.so"]   # empty = keep the whole tree
+
+[build-dependencies]                       # tools needed only during the build
+"acme/cmake" = "^3.20"
+```
+
+Builds run in an isolated staging copy — never inside the immutable source
+store — and results cache per `(sha256, platform)` under `~/.zed-pkg/builds/`.
+Because a build runs arbitrary author code, it is opt-in: pass `--allow-build`
+(or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or replace a
+dependency's build without waiting on upstream:
+
+```toml
+[overrides.build."acme/crypto"]
+command = "make install CC=clang"
+```
 
 ## Flags-2-env
 
