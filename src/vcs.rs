@@ -57,7 +57,7 @@ pub fn tag_commit(vcs: Vcs, dir: &Path, tag: &str) -> Result<Option<String>> {
         Vcs::Fossil | Vcs::Pijul => {
             bail!("tag verification for {vcs} is not supported yet; use --skip-vcs-checks")
         }
-        _ => unreachable!(),
+        other => bail!("tag verification for {other} is not supported yet; use --skip-vcs-checks"),
     }
 }
 
