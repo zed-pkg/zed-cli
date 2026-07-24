@@ -408,6 +408,12 @@ impl Store {
     }
 }
 
+/// Self-update extracts a release archive it just downloaded over TLS from
+/// GitHub; reuse the same hardened extractor as store artifacts.
+pub fn extract_archive_for_update(archive: &Path, dest: &Path) -> Result<()> {
+    extract_archive(archive, dest)
+}
+
 /// True when an archive-declared path is safe to create under `dest`:
 /// relative, no `..`, no absolute/prefix components.
 fn safe_entry_path(path: &Path) -> bool {
