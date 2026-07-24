@@ -181,8 +181,9 @@ fn replace_exe(exe: &Path, new_bytes: &[u8]) -> Result<()> {
 }
 
 /// Run the self-update. `check` only reports; `force` reinstalls even when
-/// already current.
-pub fn self_update(current_version: &str, check: bool, force: bool) -> Result<()> {
+/// already current; `skip_checksum` bypasses SHA256SUMS verification (unsafe,
+/// local testing only).
+pub fn self_update(current_version: &str, check: bool, force: bool, skip_checksum: bool) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
         .build()?;
