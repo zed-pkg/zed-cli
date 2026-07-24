@@ -320,6 +320,71 @@ impl Store {
         Ok((removed, freed))
     }
 
+    /// Age-aware garbage collection (issue: enterprise-scale cache bloat).
+    /// Removes store entries that are BOTH unreferenced by any live project
+    /// AND unused for `max_age_days` (LRU via the `.last-used` marker,
+    /// falling back to directory mtime), plus cached artifact downloads
+    /// older than the cutoff (those are always safely re-downloadable).
+    /// `max_age_days = 0` collects every unreferenced entry immediately.
+    /// Returns (entries_removed, cache_files_removed, bytes_freed).
+    pub fn gc(&self, max_age_days: u64) -> Result<(usize, usize, u64)> {
+        let mut refs = self.load_refs();
+        refs.projects
+            .retain(|project, _| Path::new(project).is_dir());
+        let referenced: BTreeSet<String> = refs.projects.values().flatten().cloned().collect();
+        self.save_refs(&refs)?;
+
+        let cutoff = SystemTime::now() - Duration::from_secs(max_age_days * 24 * 60 * 60);
+        let too_old = |entry: &Path| -> bool {
+            let last = self
+                .last_used(entry)
+                .or_else(|| entry.metadata().and_then(|m| m.modified()).ok());
+            last.is_none_or(|t| t <= cutoff)
+        };
+
+        let mut entries_removed = 0usize;
+        let mut freed = 0u64;
+        let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
+        if version_root.is_dir() {
+            for shard in fs::read_dir(&version_root)? {
+                let shard = shard?.path();
+                if !shard.is_dir() {
+                    continue;
+                }
+                for entry in fs::read_dir(&shard)? {
+                    let entry = entry?.path();
+                    let sha = entry
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if !referenced.contains(&sha) && too_old(&entry) {
+                        freed += dir_size(&entry);
+                        fs::remove_dir_all(&entry)?;
+                        entries_removed += 1;
+                    }
+                }
+            }
+        }
+
+        let mut cache_removed = 0usize;
+        if self.cache_dir().is_dir() {
+            for file in fs::read_dir(self.cache_dir())? {
+                let file = file?.path();
+                let old = file
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(|t| t <= cutoff)
+                    .unwrap_or(true);
+                if old {
+                    freed += file.metadata().map(|m| m.len()).unwrap_or(0);
+                    let _ = fs::remove_file(&file);
+                    cache_removed += 1;
+                }
+            }
+        }
+        Ok((entries_removed, cache_removed, freed))
+    }
+
     pub fn status(&self) -> (usize, u64, u64) {
         let mut count = 0usize;
         let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
