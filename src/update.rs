@@ -7,6 +7,8 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
+use zed_interfaces::manifest::is_sha256_hex;
 
 /// The CLI's own source repository, where releases are published.
 const REPO: &str = "zed-pkg/zed-cli";
