@@ -166,6 +166,7 @@ if [ -f "$profile" ] && grep -Fq "$path_marker" "$profile"; then
 else
   {
     printf '\n# Added by the zed-cli installer\n'
+    # shellcheck disable=SC2016  # write $PATH literally; it expands at shell init
     printf 'export PATH="%s:$PATH"\n' "$path_marker"
   } >>"$profile"
   success "added ${INSTALL_DIR} to PATH in ${profile}"
