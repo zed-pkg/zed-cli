@@ -1363,3 +1363,60 @@ pub fn cache_clean(cfg: &Config) -> Result<()> {
     println!("cleaned cache, freed {}", human_size(freed));
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn sha256sums_matches_asset_line() {
+        let sums = format!(
+            "# release checksums\n\
+             {DIGEST}  zed-aarch64-apple-darwin.tar.gz\n\
+             1111111111111111111111111111111111111111111111111111111111111111  zed-x86_64-unknown-linux-musl.tar.gz\n"
+        );
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").as_deref(),
+            Some(DIGEST)
+        );
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-x86_64-unknown-linux-musl.tar.gz").as_deref(),
+            Some("1111111111111111111111111111111111111111111111111111111111111111")
+        );
+    }
+
+    #[test]
+    fn sha256sums_handles_binary_mode_and_uppercase() {
+        // `sha256sum -b` writes `<hex> *<name>`; digests may be uppercase.
+        let sums = format!("{}  *zed-x86_64-pc-windows-msvc.zip\n", DIGEST.to_uppercase());
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-x86_64-pc-windows-msvc.zip").as_deref(),
+            Some(DIGEST),
+            "expected lowercased digest with the `*` binary-mode marker stripped"
+        );
+    }
+
+    #[test]
+    fn sha256sums_rejects_missing_or_malformed() {
+        let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
+        // No entry for the requested asset -> None, so the caller aborts.
+        assert_eq!(expected_sha256_for(&sums, "zed-x86_64-apple-darwin.tar.gz"), None);
+        // A non-hex "digest" for the asset is not accepted.
+        let bad = "nothexnothexnothex  zed-aarch64-apple-darwin.tar.gz\n";
+        assert_eq!(expected_sha256_for(bad, "zed-aarch64-apple-darwin.tar.gz"), None);
+        // Empty file yields nothing.
+        assert_eq!(expected_sha256_for("", "zed-aarch64-apple-darwin.tar.gz"), None);
+    }
+
+    #[test]
+    fn sha256sums_mismatch_is_detectable() {
+        // Mirrors the self_update comparison: a differing digest must not
+        // equal the archive's actual hash, so the update is refused.
+        let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
+        let expected = expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").unwrap();
+        let actual = "1111111111111111111111111111111111111111111111111111111111111111";
+        assert_ne!(expected, actual);
+    }
+}
