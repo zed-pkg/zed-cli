@@ -234,7 +234,25 @@ impl Store {
                 return Err(e.into());
             }
         }
+        self.touch_last_used(expected_sha256);
         Ok(entry.join(STORE_PKG_DIR))
+    }
+
+    /// Record that an artifact was used, for `zed gc`'s age policy. Lives
+    /// next to (not inside) the immutable `pkg/` tree. Best-effort:
+    /// filesystems with frozen clocks just fall back to dir mtimes.
+    fn touch_last_used(&self, sha256: &str) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = fs::write(self.entry_dir(sha256).join(".last-used"), stamp.to_string());
+    }
+
+    fn last_used(&self, entry: &Path) -> Option<SystemTime> {
+        let text = fs::read_to_string(entry.join(".last-used")).ok()?;
+        let secs: u64 = text.trim().parse().ok()?;
+        Some(UNIX_EPOCH + Duration::from_secs(secs))
     }
 
     fn refs_path(&self) -> PathBuf {
