@@ -362,19 +362,19 @@ fn install_locked(
             let key = format!("{org}/{name}");
             // Workspace members short-circuit the registry entirely: link
             // the member's source tree, then keep resolving its deps.
-            if let Some(ws) = &workspace {
-                if let Some(member_dir) = ws.members.get(&key) {
-                    if member_dir != project && !workspace_links.contains_key(&key) {
-                        workspace_links.insert(key.clone(), member_dir.clone());
-                        if let Ok(member_manifest) = read_manifest(member_dir) {
-                            for (sub_key, sub_req) in member_manifest.dependencies {
-                                let (sub_org, sub_name) = split_key(&sub_key)?;
-                                queue.push_back((sub_org, sub_name, sub_req));
-                            }
+            if let Some(ws) = &workspace
+                && let Some(member_dir) = ws.members.get(&key)
+            {
+                if member_dir != project && !workspace_links.contains_key(&key) {
+                    workspace_links.insert(key.clone(), member_dir.clone());
+                    if let Ok(member_manifest) = read_manifest(member_dir) {
+                        for (sub_key, sub_req) in member_manifest.dependencies {
+                            let (sub_org, sub_name) = split_key(&sub_key)?;
+                            queue.push_back((sub_org, sub_name, sub_req));
                         }
                     }
-                    continue;
                 }
+                continue;
             }
             let req = Requirement::parse(&req_str);
             if let Some(existing) = resolved.get(&key) {
