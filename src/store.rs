@@ -1,14 +1,40 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use zed_interfaces::manifest::is_sha256_hex;
 use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, store_entry_rel};
 
 use crate::pack::sha256_file;
+
+/// Ceiling on the bytes an artifact may expand to, guarding against
+/// decompression bombs. Override with `ZED_PKG_MAX_UNPACKED_BYTES`.
+const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Ceiling on archive entry count (inode-exhaustion guard).
+const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+
+fn max_unpacked_bytes() -> u64 {
+    std::env::var("ZED_PKG_MAX_UNPACKED_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_UNPACKED_BYTES)
+}
+
+/// Registry responses, lockfiles, and cache lookups all feed digests into
+/// filesystem paths — reject anything that is not a plain hex digest before
+/// it can traverse anywhere.
+pub fn require_sha256(sha256: &str) -> Result<()> {
+    if !is_sha256_hex(sha256) {
+        bail!("invalid sha256 digest `{sha256}` (expected 64 lowercase hex chars)");
+    }
+    Ok(())
+}
 
 /// An advisory (flock-based) process lock held for the life of the guard.
 /// CLI commands are highly concurrent — two `zed install` runs in different
@@ -21,7 +47,12 @@ pub struct ProcessLock {
 }
 
 impl ProcessLock {
-    fn acquire(path: &Path) -> Result<Self> {
+    /// Three-phase acquisition tuned for CLI latency:
+    /// spin-wait at 50ms while young (catches sub-second releases with no
+    /// perceptible lag), then exponential backoff with full jitter so
+    /// parallel CI runners don't wake in lockstep, and after 3s tell the
+    /// user what they are waiting on instead of freezing silently.
+    fn acquire(path: &Path, waiting_on: &str) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -32,9 +63,53 @@ impl ProcessLock {
             .truncate(false)
             .open(path)
             .with_context(|| format!("opening lock file {}", path.display()))?;
-        file.lock_exclusive()
-            .with_context(|| format!("locking {}", path.display()))?;
-        Ok(Self { _file: file })
+
+        let timeout = Duration::from_secs(
+            std::env::var("ZED_PKG_LOCK_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600),
+        );
+        let start = Instant::now();
+        let mut backoff_attempt: u32 = 0;
+        let mut notified = false;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(_) if start.elapsed() >= timeout => {
+                    bail!(
+                        "timed out after {}s waiting for {waiting_on} (lock {}); \
+                         another zed process may be stuck — raise ZED_PKG_LOCK_TIMEOUT \
+                         or investigate",
+                        timeout.as_secs(),
+                        path.display()
+                    );
+                }
+                Err(_) => {}
+            }
+            let elapsed = start.elapsed();
+            if elapsed >= Duration::from_secs(3) && !notified {
+                eprintln!("waiting for {waiting_on} (held by another zed process)...");
+                notified = true;
+            }
+            let sleep = if elapsed < Duration::from_millis(500) {
+                Duration::from_millis(50)
+            } else {
+                backoff_attempt = backoff_attempt.saturating_add(1);
+                let cap_ms: u64 = 2000;
+                let exp_ms = 100u64
+                    .saturating_mul(1u64 << backoff_attempt.min(20))
+                    .min(cap_ms);
+                // Full jitter: uniform in [0, exp_ms] without pulling in an
+                // RNG dependency — subsec_nanos is plenty for de-syncing.
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() as u64)
+                    .unwrap_or(0);
+                Duration::from_millis(nanos % (exp_ms + 1))
+            };
+            std::thread::sleep(sleep);
+        }
     }
 }
 
