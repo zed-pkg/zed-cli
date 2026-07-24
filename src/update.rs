@@ -325,6 +325,87 @@ mod tests {
         assert_ne!(expected, actual);
     }
 
+    /// Build an in-memory `.tar.gz` mirroring a release layout: a versioned
+    /// top-level directory holding the binary plus decoy files.
+    fn release_tar_gz(bin_name: &str, payload: &[u8]) -> Vec<u8> {
+        use std::io::Write as _;
+        let mut out = Vec::new();
+        {
+            let enc = flate2::write::GzEncoder::new(&mut out, flate2::Compression::default());
+            let mut builder = tar::Builder::new(enc);
+            let mut add = |path: String, bytes: &[u8]| {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(bytes.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder.append_data(&mut header, path, bytes).unwrap();
+            };
+            add("zed-test-target/README.md".to_string(), b"decoy docs");
+            add(format!("zed-test-target/{bin_name}"), payload);
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn extract_binary_finds_zed_inside_a_tar_gz() {
+        let payload = b"#!fake-zed-binary".as_slice();
+        let archive = release_tar_gz("zed", payload);
+        let extracted = extract_binary(&archive, "zed", false).unwrap();
+        assert_eq!(extracted, payload);
+    }
+
+    #[test]
+    fn extract_binary_finds_zed_exe_inside_a_zip() {
+        use std::io::Write as _;
+        let payload = b"MZ-fake-windows-binary".as_slice();
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let opts = zip::write::SimpleFileOptions::default();
+            writer.start_file("zed-test-target/README.md", opts).unwrap();
+            writer.write_all(b"decoy docs").unwrap();
+            writer.start_file("zed-test-target/zed.exe", opts).unwrap();
+            writer.write_all(payload).unwrap();
+            writer.finish().unwrap();
+        }
+        let extracted = extract_binary(&cursor.into_inner(), "zed.exe", true).unwrap();
+        assert_eq!(extracted, payload);
+    }
+
+    #[test]
+    fn extract_binary_rejects_an_archive_without_the_binary() {
+        let archive = release_tar_gz("not-zed", b"wrong tool");
+        let err = extract_binary(&archive, "zed", false).unwrap_err();
+        assert!(
+            err.to_string().contains("did not contain"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn replace_exe_swaps_contents_atomically_and_keeps_exec_bit() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("zed");
+        std::fs::write(&exe, b"old-binary").unwrap();
+
+        replace_exe(&exe, b"new-binary").unwrap();
+
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new-binary");
+        // No staging temp file left behind next to the exe.
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "only the replaced exe remains"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
+            assert_ne!(mode & 0o111, 0, "replaced binary must stay executable");
+        }
+    }
+
     #[test]
     fn asset_target_is_platform_shaped() {
         let t = asset_target().unwrap();

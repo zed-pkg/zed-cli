@@ -119,3 +119,99 @@ pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
     fs::write(project.join(MANIFEST_FILE), text)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credentials_roundtrip_normalizes_registry_slashes() {
+        let home = tempfile::tempdir().unwrap();
+        let mut creds = Credentials::default();
+        // Stored with a trailing slash, looked up without — and vice versa —
+        // must hit the same entry.
+        creds.set_token("https://reg.example.com/", "tok-a".to_string());
+        creds.save(home.path()).unwrap();
+
+        let loaded = Credentials::load(home.path()).unwrap();
+        assert_eq!(loaded.token_for("https://reg.example.com").as_deref(), Some("tok-a"));
+        assert_eq!(loaded.token_for("https://reg.example.com/").as_deref(), Some("tok-a"));
+        assert_eq!(loaded.token_for("https://other.example.com"), None);
+    }
+
+    #[test]
+    fn credentials_load_without_file_is_empty_not_an_error() {
+        let home = tempfile::tempdir().unwrap();
+        let creds = Credentials::load(home.path()).unwrap();
+        assert!(creds.registries.is_empty());
+    }
+
+    #[test]
+    fn credentials_load_rejects_malformed_toml() {
+        let home = tempfile::tempdir().unwrap();
+        fs::write(home.path().join("credentials.toml"), "not = [valid").unwrap();
+        assert!(Credentials::load(home.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credentials_file_is_0600_even_over_a_lax_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("credentials.toml");
+
+        let mut creds = Credentials::default();
+        creds.set_token("https://reg.example.com", "s3cret".to_string());
+        creds.save(home.path()).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "fresh credentials file must be 0600");
+
+        // An existing file keeps its inode (and would keep its old mode);
+        // save() must clamp it back down rather than trust it.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        creds.save(home.path()).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "re-saving must re-enforce 0600");
+    }
+
+    #[test]
+    fn resolve_token_prefers_explicit_over_saved_credentials() {
+        let home = tempfile::tempdir().unwrap();
+        let mut creds = Credentials::default();
+        creds.set_token("https://reg.example.com", "from-file".to_string());
+        creds.save(home.path()).unwrap();
+
+        let explicit = Config {
+            registry: "https://reg.example.com".to_string(),
+            home: home.path().to_path_buf(),
+            token: Some("from-flag".to_string()),
+        };
+        assert_eq!(explicit.resolve_token().as_deref(), Some("from-flag"));
+
+        let fallback = Config {
+            token: None,
+            ..explicit.clone()
+        };
+        assert_eq!(fallback.resolve_token().as_deref(), Some("from-file"));
+
+        let unknown_registry = Config {
+            registry: "https://elsewhere.example.com".to_string(),
+            home: home.path().to_path_buf(),
+            token: None,
+        };
+        assert_eq!(unknown_registry.resolve_token(), None);
+    }
+
+    #[test]
+    fn resolve_token_survives_a_corrupt_credentials_file() {
+        let home = tempfile::tempdir().unwrap();
+        fs::write(home.path().join("credentials.toml"), "not = [valid").unwrap();
+        let cfg = Config {
+            registry: "https://reg.example.com".to_string(),
+            home: home.path().to_path_buf(),
+            token: None,
+        };
+        // A corrupt file must degrade to "no saved token", not a panic/err.
+        assert_eq!(cfg.resolve_token(), None);
+    }
+}

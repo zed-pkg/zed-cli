@@ -1243,3 +1243,55 @@ pub fn cache_clean(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn parse_age_units_and_default() {
+        assert_eq!(parse_age("90d").unwrap(), Duration::from_secs(90 * 86_400));
+        assert_eq!(parse_age("2w").unwrap(), Duration::from_secs(2 * 604_800));
+        assert_eq!(parse_age("12h").unwrap(), Duration::from_secs(12 * 3_600));
+        // A bare number means days, and surrounding whitespace is tolerated.
+        assert_eq!(parse_age("30").unwrap(), Duration::from_secs(30 * 86_400));
+        assert_eq!(parse_age("  7d  ").unwrap(), Duration::from_secs(7 * 86_400));
+        assert_eq!(parse_age("0d").unwrap(), Duration::ZERO);
+    }
+
+    #[test]
+    fn parse_age_rejects_garbage() {
+        for bad in ["abc", "", "d", "w", "-3d", "1.5d", "3 d d"] {
+            assert!(parse_age(bad).is_err(), "`{bad}` must not parse");
+        }
+    }
+
+    #[test]
+    fn parse_age_saturates_instead_of_overflowing() {
+        // u64::MAX weeks would overflow a naive multiply; the saturating path
+        // must yield a (uselessly huge, but valid) duration, never a panic.
+        let age = parse_age(&format!("{}w", u64::MAX)).unwrap();
+        assert_eq!(age, Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn split_key_accepts_org_name_and_keeps_nested_slashes_in_name() {
+        assert_eq!(
+            split_key("acme/http-kit").unwrap(),
+            ("acme".to_string(), "http-kit".to_string())
+        );
+        // splitn(2): only the FIRST slash separates org from name.
+        assert_eq!(
+            split_key("acme/scoped/name").unwrap(),
+            ("acme".to_string(), "scoped/name".to_string())
+        );
+    }
+
+    #[test]
+    fn split_key_rejects_missing_or_empty_halves() {
+        for bad in ["noslash", "/name", "org/", "/"] {
+            assert!(split_key(bad).is_err(), "`{bad}` must not split");
+        }
+    }
+}
