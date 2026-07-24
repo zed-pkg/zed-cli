@@ -238,11 +238,32 @@ Linux (arm64 + x64, gnu and musl), and Windows via
 
 ```
 ~/.zed-pkg/
-  store/v1/<aa>/<sha256>/pkg/   extracted artifacts (content-addressed)
-  cache/<sha256>.tar.gz         downloaded archives
-  refs.json                     project -> artifact references (for prune)
-  credentials.toml              registry tokens (0600)
+  store/v1/<aa>/<sha256>/pkg/          extracted source artifacts (content-addressed, immutable)
+  builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
+  cache/<sha256>.tar.gz                downloaded archives
+  locks/                               advisory flocks (per-artifact, per-install, per-build)
+  refs.json                            project -> artifact references (for prune/gc)
+  credentials.toml                     registry tokens (0600)
 ```
+
+## Hardening
+
+Artifacts arrive over the network, so the client treats them as untrusted:
+
+- **Digest-addressed everything.** Registry-returned `org`, `name`, and
+  `sha256` are validated (slug / 64-char hex) before they touch a filesystem
+  path — a hostile registry can't traverse out of the store or `zed_modules/`.
+- **Extraction is a security boundary.** Tar/zip entries are screened for
+  path traversal (`..`, absolute, prefix components), symlink/hardlink and
+  non-regular entries are refused, per-entry size is bounded by the declared
+  header (a lying header can't over-read), and total unpacked size and entry
+  count are capped (`ZED_PKG_MAX_UNPACKED_BYTES`) against decompression bombs.
+- **Bounded downloads.** Artifact fetches are size-capped
+  (`ZED_PKG_MAX_ARTIFACT_BYTES`) and a registry-supplied `download_url` must
+  be https (or loopback/http only when the registry itself is http).
+- **No install-time code execution.** Installing a dependency never runs its
+  scripts; `[build]` steps run only with explicit `--allow-build`.
+- **Tokens at 0600 from creation**, with no write-then-chmod window.
 
 ## Development
 
