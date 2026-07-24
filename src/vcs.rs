@@ -68,7 +68,7 @@ pub fn head_commit(vcs: Vcs, dir: &Path) -> Result<String> {
         Vcs::Fossil | Vcs::Pijul => {
             bail!("head lookup for {vcs} is not supported yet; use --skip-vcs-checks")
         }
-        _ => unreachable!(),
+        other => bail!("head lookup for {other} is not supported yet; use --skip-vcs-checks"),
     }
 }
 
