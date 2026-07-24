@@ -24,6 +24,13 @@ Why it exists:
 ## Install
 
 ```sh
+curl -fsSL https://zpkg.tech/install.sh | bash
+```
+
+The installer detects your OS/arch, drops the `zed` binary in `~/.zed/bin`,
+and adds it to your `PATH` idempotently. Or via Homebrew:
+
+```sh
 brew tap zed-pkg/tap
 brew install zed-pkg
 ```
@@ -33,6 +40,9 @@ Or from source:
 ```sh
 cargo install --path .
 ```
+
+Keep zed current with `zed self-update` (checks the latest GitHub release for
+your platform and replaces the binary in place; `--check` reports only).
 
 Note: the Zed editor also installs a `zed` binary. The Homebrew formula
 declares the conflict; if you use both, install with
