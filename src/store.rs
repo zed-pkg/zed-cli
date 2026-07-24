@@ -1,15 +1,53 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, store_entry_rel};
+use zed_interfaces::manifest::is_sha256_hex;
+use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, build_entry_rel, store_entry_rel};
 
 use crate::pack::sha256_file;
+
+/// Ceiling on the bytes an artifact may expand to, guarding against
+/// decompression bombs. Override with `ZED_PKG_MAX_UNPACKED_BYTES`.
+const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Ceiling on archive entry count (inode-exhaustion guard).
+const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+
+fn max_unpacked_bytes() -> u64 {
+    std::env::var("ZED_PKG_MAX_UNPACKED_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_UNPACKED_BYTES)
+}
+
+/// Registry responses, lockfiles, and cache lookups all feed digests into
+/// filesystem paths — reject anything that is not a plain hex digest before
+/// it can traverse anywhere.
+pub fn require_sha256(sha256: &str) -> Result<()> {
+    if !is_sha256_hex(sha256) {
+        bail!("invalid sha256 digest `{sha256}` (expected 64 lowercase hex chars)");
+    }
+    Ok(())
+}
+
+/// Build-cache keys are `<sha256>` or `<sha256>-<command-hash>`; anything
+/// outside lowercase hex plus `-` could traverse, so reject it.
+fn require_build_key(key: &str) -> Result<()> {
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c) || c == '-')
+    {
+        bail!("invalid build cache key `{key}`");
+    }
+    Ok(())
+}
 
 /// An advisory (flock-based) process lock held for the life of the guard.
 /// CLI commands are highly concurrent — two `zed install` runs in different
@@ -22,7 +60,12 @@ pub struct ProcessLock {
 }
 
 impl ProcessLock {
-    fn acquire(path: &Path) -> Result<Self> {
+    /// Three-phase acquisition tuned for CLI latency:
+    /// spin-wait at 50ms while young (catches sub-second releases with no
+    /// perceptible lag), then exponential backoff with full jitter so
+    /// parallel CI runners don't wake in lockstep, and after 3s tell the
+    /// user what they are waiting on instead of freezing silently.
+    fn acquire(path: &Path, waiting_on: &str) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -33,10 +76,63 @@ impl ProcessLock {
             .truncate(false)
             .open(path)
             .with_context(|| format!("opening lock file {}", path.display()))?;
-        file.lock_exclusive()
-            .with_context(|| format!("locking {}", path.display()))?;
-        Ok(Self { _file: file })
+
+        let timeout = Duration::from_secs(
+            std::env::var("ZED_PKG_LOCK_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600),
+        );
+        let start = Instant::now();
+        let mut backoff_attempt: u32 = 0;
+        let mut notified = false;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(Self { _file: file }),
+                Err(_) if start.elapsed() >= timeout => {
+                    bail!(
+                        "timed out after {}s waiting for {waiting_on} (lock {}); \
+                         another zed process may be stuck — raise ZED_PKG_LOCK_TIMEOUT \
+                         or investigate",
+                        timeout.as_secs(),
+                        path.display()
+                    );
+                }
+                Err(_) => {}
+            }
+            let elapsed = start.elapsed();
+            if elapsed >= Duration::from_secs(3) && !notified {
+                eprintln!("waiting for {waiting_on} (held by another zed process)...");
+                notified = true;
+            }
+            let sleep = if elapsed < Duration::from_millis(500) {
+                Duration::from_millis(50)
+            } else {
+                backoff_attempt = backoff_attempt.saturating_add(1);
+                let cap_ms: u64 = 2000;
+                let exp_ms = 100u64
+                    .saturating_mul(1u64 << backoff_attempt.min(20))
+                    .min(cap_ms);
+                // Full jitter: uniform in [0, exp_ms] without pulling in an
+                // RNG dependency — subsec_nanos is plenty for de-syncing.
+                let nanos = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() as u64)
+                    .unwrap_or(0);
+                Duration::from_millis(nanos % (exp_ms + 1))
+            };
+            std::thread::sleep(sleep);
+        }
     }
+}
+
+/// What `Store::gc` did (or, with `dry_run`, would do).
+#[derive(Debug)]
+pub struct GcReport {
+    pub entries_removed: usize,
+    pub cache_files_removed: usize,
+    pub freed: u64,
+    pub dry_run: bool,
 }
 
 /// The global content-addressed store under `$HOME/.zed-pkg`. One extracted
@@ -88,40 +184,50 @@ impl Store {
         self.home.join("locks")
     }
 
-    /// Root of the per-target build cache (zed-docs issue #5). Kept separate
-    /// from the source store so the source store stays platform-independent
-    /// and shareable, while compiled output is keyed by target.
-    pub fn build_root(&self) -> PathBuf {
-        self.home.join("build")
+    // --- build cache (zed-docs issue #5) ----------------------------------
+
+    /// Root of the per-platform build cache. Kept separate from the source
+    /// store so the source store stays platform-independent and shareable,
+    /// while compiled output is keyed by platform and build command.
+    pub fn builds_root(&self) -> PathBuf {
+        self.home.join("builds")
     }
 
-    /// Build-cache entry for a `(target triple, key)` pair, where `key`
-    /// folds in the source sha256 and the build command.
-    pub fn build_entry(&self, triple: &str, key: &str) -> PathBuf {
-        self.build_root().join(triple).join(key)
+    /// Build-cache entry for a `(platform, key)` pair, where `key` is the
+    /// source sha256, optionally suffixed with a hash of the build command
+    /// and outputs so a consumer override never collides with the package's
+    /// own build.
+    pub fn build_entry(&self, platform: &str, key: &str) -> PathBuf {
+        self.home.join(build_entry_rel(platform, key))
     }
 
-    pub fn build_pkg_dir(&self, triple: &str, key: &str) -> PathBuf {
-        self.build_entry(triple, key).join(STORE_PKG_DIR)
+    pub fn build_pkg_dir(&self, platform: &str, key: &str) -> PathBuf {
+        self.build_entry(platform, key).join(STORE_PKG_DIR)
     }
 
-    pub fn has_build(&self, triple: &str, key: &str) -> bool {
-        self.build_pkg_dir(triple, key).is_dir()
-    }
-
-    /// Serialize concurrent builds of the same key (only one process builds).
-    pub fn build_lock(&self, key: &str) -> Result<ProcessLock> {
-        ProcessLock::acquire(&self.locks_dir().join(format!("build-{key}.lock")))
+    pub fn has_build(&self, platform: &str, key: &str) -> bool {
+        self.build_pkg_dir(platform, key).is_dir()
     }
 
     pub fn build_size(&self) -> u64 {
-        dir_size(&self.build_root())
+        dir_size(&self.builds_root())
+    }
+
+    /// Serializes one artifact's build (per platform + key) across processes.
+    pub fn build_lock(&self, platform: &str, key: &str) -> Result<ProcessLock> {
+        require_build_key(key)?;
+        ProcessLock::acquire(
+            &self
+                .locks_dir()
+                .join(format!("build-{platform}-{key}.lock")),
+            &format!("the build of {key}"),
+        )
     }
 
     /// Serializes the whole install (refs.json + lockfile writes) against
     /// other zed processes. Held by the caller for the duration of install.
     pub fn install_lock(&self) -> Result<ProcessLock> {
-        ProcessLock::acquire(&self.locks_dir().join("install.lock"))
+        ProcessLock::acquire(&self.locks_dir().join("install.lock"), "the install lock")
     }
 
     /// Verify the archive hash and extract it into the store. Idempotent and
@@ -129,6 +235,7 @@ impl Store {
     /// extracts a given artifact, and extraction still goes via a temp dir
     /// and atomic rename as a second line of defense.
     pub fn add_artifact(&self, archive: &Path, expected_sha256: &str) -> Result<PathBuf> {
+        require_sha256(expected_sha256)?;
         let (actual, _) = sha256_file(archive)?;
         if actual != expected_sha256 {
             bail!(
@@ -138,13 +245,17 @@ impl Store {
         }
         let entry = self.entry_dir(expected_sha256);
         if self.has(expected_sha256) {
+            self.touch_last_used(expected_sha256);
             return Ok(entry.join(STORE_PKG_DIR));
         }
         // Only one process extracts this sha at a time; the rest wait here
         // and then see has()==true.
-        let _lock =
-            ProcessLock::acquire(&self.locks_dir().join(format!("{expected_sha256}.lock")))?;
+        let _lock = ProcessLock::acquire(
+            &self.locks_dir().join(format!("{expected_sha256}.lock")),
+            &format!("extraction of {expected_sha256}"),
+        )?;
         if self.has(expected_sha256) {
+            self.touch_last_used(expected_sha256);
             return Ok(entry.join(STORE_PKG_DIR));
         }
         let parent = entry
@@ -176,7 +287,28 @@ impl Store {
                 return Err(e.into());
             }
         }
+        self.touch_last_used(expected_sha256);
         Ok(entry.join(STORE_PKG_DIR))
+    }
+
+    /// Record that an artifact was used, for `zed gc`'s age policy. Lives
+    /// next to (not inside) the immutable `pkg/` tree. Best-effort:
+    /// filesystems with frozen clocks just fall back to dir mtimes.
+    fn touch_last_used(&self, sha256: &str) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = fs::write(self.entry_dir(sha256).join(".last-used"), stamp.to_string());
+    }
+
+    fn last_used(&self, entry: &Path) -> Option<SystemTime> {
+        if let Ok(text) = fs::read_to_string(entry.join(".last-used"))
+            && let Ok(secs) = text.trim().parse::<u64>()
+        {
+            return Some(UNIX_EPOCH + Duration::from_secs(secs));
+        }
+        entry.metadata().and_then(|m| m.modified()).ok()
     }
 
     fn refs_path(&self) -> PathBuf {
@@ -244,6 +376,108 @@ impl Store {
         Ok((removed, freed))
     }
 
+    /// Age-aware, LRU-style garbage collection (zed-docs issue #7 /
+    /// enterprise-scale cache bloat). Removes store entries that are BOTH
+    /// unreferenced by any live project AND unused past `max_age` (via the
+    /// `.last-used` marker, falling back to directory mtime), sweeps the
+    /// per-platform build cache by the same age policy (build output is
+    /// always re-buildable), and drops cached downloads older than the
+    /// cutoff (always safely re-downloadable). With `dry_run`, reports what
+    /// would be removed without mutating anything (refs included).
+    pub fn gc(&self, max_age: Duration, dry_run: bool) -> Result<GcReport> {
+        let mut refs = self.load_refs();
+        refs.projects
+            .retain(|project, _| Path::new(project).is_dir());
+        let referenced: BTreeSet<String> = refs.projects.values().flatten().cloned().collect();
+        if !dry_run {
+            self.save_refs(&refs)?;
+        }
+
+        let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
+        let too_old = |entry: &Path| self.last_used(entry).is_none_or(|t| t <= cutoff);
+
+        let mut entries_removed = 0usize;
+        let mut freed = 0u64;
+        // Source store: store/v1/<shard>/<sha> — guarded by live references.
+        let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
+        if version_root.is_dir() {
+            for shard in fs::read_dir(&version_root)? {
+                let shard = shard?.path();
+                if !shard.is_dir() {
+                    continue;
+                }
+                for entry in fs::read_dir(&shard)? {
+                    let entry = entry?.path();
+                    let sha = entry
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    if !referenced.contains(&sha) && too_old(&entry) {
+                        freed += dir_size(&entry);
+                        if !dry_run {
+                            fs::remove_dir_all(&entry)?;
+                        }
+                        entries_removed += 1;
+                    }
+                }
+            }
+        }
+        // Build cache: builds/v1/<platform>/<shard>/<key> — age-only (a
+        // future install just rebuilds).
+        let builds_root = self
+            .builds_root()
+            .join(zed_interfaces::paths::STORE_VERSION);
+        if builds_root.is_dir() {
+            for platform in fs::read_dir(&builds_root)? {
+                let platform = platform?.path();
+                if !platform.is_dir() {
+                    continue;
+                }
+                for shard in fs::read_dir(&platform)? {
+                    let shard = shard?.path();
+                    if !shard.is_dir() {
+                        continue;
+                    }
+                    for entry in fs::read_dir(&shard)? {
+                        let entry = entry?.path();
+                        if entry.is_dir() && too_old(&entry) {
+                            freed += dir_size(&entry);
+                            if !dry_run {
+                                fs::remove_dir_all(&entry)?;
+                            }
+                            entries_removed += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut cache_files_removed = 0usize;
+        if self.cache_dir().is_dir() {
+            for file in fs::read_dir(self.cache_dir())? {
+                let file = file?.path();
+                let old = file
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .map(|t| t <= cutoff)
+                    .unwrap_or(true);
+                if old {
+                    freed += file.metadata().map(|m| m.len()).unwrap_or(0);
+                    if !dry_run {
+                        let _ = fs::remove_file(&file);
+                    }
+                    cache_files_removed += 1;
+                }
+            }
+        }
+        Ok(GcReport {
+            entries_removed,
+            cache_files_removed,
+            freed,
+            dry_run,
+        })
+    }
+
     pub fn status(&self) -> (usize, u64, u64) {
         let mut count = 0usize;
         let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
@@ -265,109 +499,138 @@ impl Store {
         }
         Ok(freed)
     }
-
-    /// Least-recently-used garbage collection (zed-docs issue #7): drop source
-    /// store entries, per-target build-cache entries, and cached downloads not
-    /// accessed within `max_age`. Complements ref-based [`Store::prune`] —
-    /// everything removed is content-addressed and re-fetchable on next
-    /// install. `dry_run` reports what would go without deleting.
-    pub fn gc(&self, max_age: Duration, dry_run: bool) -> Result<GcReport> {
-        let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
-        let mut removed = 0usize;
-        let mut freed = 0u64;
-
-        let mut sweep_dir_of_entries = |dir: &Path| -> Result<()> {
-            for shard in read_children(dir) {
-                for entry in read_children(&shard) {
-                    if entry.is_dir() && last_access(&entry) < cutoff {
-                        freed += dir_size(&entry);
-                        if !dry_run {
-                            fs::remove_dir_all(&entry)?;
-                        }
-                        removed += 1;
-                    }
-                }
-            }
-            Ok(())
-        };
-        // Source store: store/v1/<shard>/<sha>.
-        sweep_dir_of_entries(&self.root().join(zed_interfaces::paths::STORE_VERSION))?;
-        // Build cache: build/<triple>/<key>.
-        sweep_dir_of_entries(&self.build_root())?;
-
-        // Download cache: cache/<sha>.tar.gz (flat files).
-        for file in read_children(&self.cache_dir()) {
-            if file.is_file() && last_access(&file) < cutoff {
-                freed += file.metadata().map(|m| m.len()).unwrap_or(0);
-                if !dry_run {
-                    let _ = fs::remove_file(&file);
-                }
-                removed += 1;
-            }
-        }
-        Ok(GcReport {
-            removed,
-            freed,
-            dry_run,
-        })
-    }
 }
 
-/// Result of a [`Store::gc`] sweep.
-#[derive(Debug, Clone, Copy)]
-pub struct GcReport {
-    pub removed: usize,
-    pub freed: u64,
-    pub dry_run: bool,
+/// Self-update extracts a release archive it just downloaded over TLS from
+/// GitHub; reuse the same hardened extractor as store artifacts.
+pub fn extract_archive_for_update(archive: &Path, dest: &Path) -> Result<()> {
+    extract_archive(archive, dest)
 }
 
-fn read_children(dir: &Path) -> Vec<PathBuf> {
-    match fs::read_dir(dir) {
-        Ok(rd) => rd.flatten().map(|e| e.path()).collect(),
-        Err(_) => Vec::new(),
-    }
+/// True when an archive-declared path is safe to create under `dest`:
+/// relative, no `..`, no absolute/prefix components.
+fn safe_entry_path(path: &Path) -> bool {
+    path.components().all(|c| matches!(c, Component::Normal(_))) && !path.as_os_str().is_empty()
 }
 
-/// The most recent access time within `path` (file or directory tree),
-/// falling back to modification time on filesystems that don't track atime
-/// (e.g. `noatime`/`relatime`), so a stale entry is still reaped by age.
-fn last_access(path: &Path) -> SystemTime {
-    let mut newest = UNIX_EPOCH;
-    for entry in walkdir::WalkDir::new(path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if let Ok(md) = entry.metadata() {
-            let t = md
-                .accessed()
-                .or_else(|_| md.modified())
-                .unwrap_or(UNIX_EPOCH);
-            if t > newest {
-                newest = t;
-            }
-        }
-    }
-    newest
-}
-
-/// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic bytes.
+/// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic
+/// bytes. Every entry is screened before touching the disk: traversal
+/// paths, symlinks/hardlinks, and non-file specials are rejected, and the
+/// total decompressed size is capped — archives come from the network, so
+/// the extractor is a security boundary, not a convenience.
 fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     let mut magic = [0u8; 4];
     let read = {
-        use std::io::Read as _;
         let mut file = fs::File::open(archive)?;
         file.read(&mut magic).unwrap_or(0)
     };
+    let budget = max_unpacked_bytes();
+    let mut written: u64 = 0;
+    let mut entries: usize = 0;
+
+    let mut charge = |bytes: u64, entries: &mut usize| -> Result<()> {
+        *entries += 1;
+        if *entries > MAX_ARCHIVE_ENTRIES {
+            bail!("artifact has more than {MAX_ARCHIVE_ENTRIES} entries; refusing");
+        }
+        written = written.saturating_add(bytes);
+        if written > budget {
+            bail!(
+                "artifact expands past the {budget}-byte cap \
+                 (set ZED_PKG_MAX_UNPACKED_BYTES to raise it); refusing"
+            );
+        }
+        Ok(())
+    };
+
     if read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
         let file = fs::File::open(archive)?;
         let mut tar = tar::Archive::new(GzDecoder::new(file));
-        tar.unpack(dest)?;
+        for entry in tar.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_path_buf();
+            if !safe_entry_path(&path) {
+                bail!(
+                    "artifact entry `{}` escapes the extraction root",
+                    path.display()
+                );
+            }
+            let kind = entry.header().entry_type();
+            match kind {
+                tar::EntryType::Regular | tar::EntryType::Directory => {}
+                other => bail!(
+                    "artifact entry `{}` has unsupported type {other:?} \
+                     (only files and directories are allowed)",
+                    path.display()
+                ),
+            }
+            charge(entry.header().size().unwrap_or(0), &mut entries)?;
+            let target = dest.join(&path);
+            if kind == tar::EntryType::Directory {
+                fs::create_dir_all(&target)?;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // take(size+1): a lying header cannot stream more than declared.
+            let declared = entry.header().size().unwrap_or(0);
+            let mut limited = (&mut entry).take(declared.saturating_add(1));
+            let mut out = fs::File::create(&target)?;
+            let copied = std::io::copy(&mut limited, &mut out)?;
+            if copied > declared {
+                bail!(
+                    "artifact entry `{}` exceeds its declared size",
+                    path.display()
+                );
+            }
+            #[cfg(unix)]
+            if let Ok(mode) = entry.header().mode() {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
+                let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
+            }
+        }
         Ok(())
     } else if read >= 4 && &magic == b"PK\x03\x04" {
         let file = fs::File::open(archive)?;
         let mut zip = zip::ZipArchive::new(file)
             .with_context(|| format!("reading zip {}", archive.display()))?;
-        zip.extract(dest)?;
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index)?;
+            // enclosed_name() is the zip crate's traversal-safe accessor.
+            let Some(path) = entry.enclosed_name() else {
+                bail!("zip entry `{}` escapes the extraction root", entry.name());
+            };
+            if !safe_entry_path(&path) {
+                bail!("zip entry `{}` escapes the extraction root", entry.name());
+            }
+            if entry.is_symlink() {
+                bail!("zip entry `{}` is a symlink; refusing", entry.name());
+            }
+            charge(entry.size(), &mut entries)?;
+            let target = dest.join(&path);
+            if entry.is_dir() {
+                fs::create_dir_all(&target)?;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let declared = entry.size();
+            let mut limited = (&mut entry).take(declared.saturating_add(1));
+            let mut out = fs::File::create(&target)?;
+            let copied = std::io::copy(&mut limited, &mut out)?;
+            if copied > declared {
+                bail!("zip entry `{}` exceeds its declared size", target.display());
+            }
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
+                let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
+            }
+        }
         Ok(())
     } else {
         bail!(

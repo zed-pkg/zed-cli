@@ -24,6 +24,13 @@ Why it exists:
 ## Install
 
 ```sh
+curl -fsSL https://zpkg.tech/install.sh | bash
+```
+
+The installer detects your OS/arch, drops the `zed` binary in `~/.zed/bin`,
+and adds it to your `PATH` idempotently. Or via Homebrew:
+
+```sh
 brew tap zed-pkg/tap
 brew install zed-pkg
 ```
@@ -33,6 +40,9 @@ Or from source:
 ```sh
 cargo install --path .
 ```
+
+Keep zed current with `zed self-update` (checks the latest GitHub release for
+your platform and replaces the binary in place; `--check` reports only).
 
 Note: the Zed editor also installs a `zed` binary. The Homebrew formula
 declares the conflict; if you use both, install with
@@ -91,10 +101,56 @@ registry hosts both on S3/Cloudflare R2.
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
+| `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
+| `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
+| `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
 | `zed login` | Save a registry token to `~/.zed-pkg/credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
-| `zed store status\|path\|prune` | Inspect or garbage-collect the global store |
+| `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
+| `zed gc [--older-than 90d] [--dry-run]` | LRU collection: drop store/build entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |
+| `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
+
+### Monorepo workspaces
+
+A root manifest with a `[workspace]` table links member packages from source
+instead of the registry, so edits are live in consumers with no publish step:
+
+```toml
+# .zpkg.toml at the monorepo root
+[workspace]
+members = ["packages/*", "apps/*"]
+```
+
+When a dependency resolves to a workspace member, `zed install` symlinks the
+member's source directory straight into `zed_modules/` and keeps resolving its
+transitive deps. Members are not pinned in `.zpkg.lock` (there is no artifact).
+
+### Build hooks (compiled dependencies)
+
+A package with native code or a codegen step declares a `[build]`:
+
+```toml
+[build]
+command = "cargo build --release"
+outputs = ["target/release/libfoo.so"]   # empty = keep the whole tree
+
+[build-dependencies]                       # tools needed only during the build
+"acme/cmake" = "^3.20"
+```
+
+Builds run in an isolated staging copy — never inside the immutable source
+store — and results cache per `(sha256, platform, command)` under
+`~/.zed-pkg/builds/`, so a consumer override never collides with the
+package's own build.
+Because a build runs arbitrary author code, it is opt-in: pass `--allow-build`
+(or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or replace a
+dependency's build without waiting on upstream:
+
+```toml
+[overrides.build."acme/crypto"]
+command = "make install CC=clang"
+```
 
 ## Flags-2-env
 
@@ -112,14 +168,19 @@ actual CLI never drift, so it is always authoritative:
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
-| `--target` (build) | `ZED_PKG_TARGET` | host triple |
+| `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
+| `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
+| `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
 | `--dry-run` (publish) | `ZED_PKG_DRY_RUN` | off |
 | `--allow-dirty` | `ZED_PKG_ALLOW_DIRTY` | off |
 | `--skip-vcs-checks` | `ZED_PKG_SKIP_VCS_CHECKS` | off |
+| `--undo` (yank) | `ZED_PKG_YANK_UNDO` | off |
 | `--out` (pack) | `ZED_PKG_PACK_OUT` | `.zed/pack` |
 | `--org` (init) | `ZED_PKG_ORG` | - |
 | `--name` (init) | `ZED_PKG_NAME` | directory name |
+| `--check` (self-update) | `ZED_PKG_UPDATE_CHECK` | off |
+| `--force` (self-update) | `ZED_PKG_UPDATE_FORCE` | off |
 | `--docker` (r2g) | `ZED_PKG_R2G_DOCKER` | off |
 | `--image` (r2g) | `ZED_PKG_R2G_IMAGE` | `debian:stable-slim` |
 | `--runtime` (r2g) | `ZED_PKG_R2G_RUNTIME` | auto (docker, then podman) |
@@ -223,11 +284,32 @@ Linux (arm64 + x64, gnu and musl), and Windows via
 
 ```
 ~/.zed-pkg/
-  store/v1/<aa>/<sha256>/pkg/   extracted artifacts (content-addressed)
-  cache/<sha256>.tar.gz         downloaded archives
-  refs.json                     project -> artifact references (for prune)
-  credentials.toml              registry tokens (0600)
+  store/v1/<aa>/<sha256>/pkg/          extracted source artifacts (content-addressed, immutable)
+  builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
+  cache/<sha256>.tar.gz                downloaded archives
+  locks/                               advisory flocks (per-artifact, per-install, per-build)
+  refs.json                            project -> artifact references (for prune/gc)
+  credentials.toml                     registry tokens (0600)
 ```
+
+## Hardening
+
+Artifacts arrive over the network, so the client treats them as untrusted:
+
+- **Digest-addressed everything.** Registry-returned `org`, `name`, and
+  `sha256` are validated (slug / 64-char hex) before they touch a filesystem
+  path — a hostile registry can't traverse out of the store or `zed_modules/`.
+- **Extraction is a security boundary.** Tar/zip entries are screened for
+  path traversal (`..`, absolute, prefix components), symlink/hardlink and
+  non-regular entries are refused, per-entry size is bounded by the declared
+  header (a lying header can't over-read), and total unpacked size and entry
+  count are capped (`ZED_PKG_MAX_UNPACKED_BYTES`) against decompression bombs.
+- **Bounded downloads.** Artifact fetches are size-capped
+  (`ZED_PKG_MAX_ARTIFACT_BYTES`) and a registry-supplied `download_url` must
+  be https (or loopback/http only when the registry itself is http).
+- **No install-time code execution.** Installing a dependency never runs its
+  scripts; `[build]` steps run only with explicit `--allow-build`.
+- **Tokens at 0600 from creation**, with no write-then-chmod window.
 
 ## Development
 

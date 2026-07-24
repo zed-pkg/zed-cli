@@ -27,11 +27,14 @@ jobs:
           repository: zed-pkg/zed-interfaces
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
+      # mold: a much faster linker (Linux only). make-default wires it in as
+      # the system linker, so cargo/rustc use it with no extra RUSTFLAGS.
       - name: Install mold (fast linker)
         if: runner.os == 'Linux'
         uses: rui314/setup-mold@v1
         with:
           make-default: true
+      # RUSTC_WRAPPER=sccache is set in `env`, so sccache must be installed.
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.6
       - uses: Swatinem/rust-cache@v2
@@ -45,6 +48,7 @@ jobs:
       - name: Test (nextest)
         run: cargo nextest run
         working-directory: zed-cli
+      # nextest does not run doctests; keep them covered (cargo test used to).
       - name: Doctests
         run: cargo test --doc
         working-directory: zed-cli

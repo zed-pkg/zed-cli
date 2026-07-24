@@ -119,7 +119,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         dependencies,
         build_dependencies: BTreeMap::new(),
         build: None,
-        build_overrides: BTreeMap::new(),
+        overrides: Default::default(),
         bin: BTreeMap::new(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
@@ -141,7 +141,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         home: home_dir,
         token: None,
     };
-    install(&consumer_dir, &test_cfg, false, mode, Adapter::None)?;
+    // The author is roundtripping their own package, so running its [build]
+    // step is consented — that's part of "as close to a real install as
+    // possible".
+    install(&consumer_dir, &test_cfg, false, mode, Adapter::None, true)?;
 
     let target = consumer_dir
         .join(MODULES_DIR)

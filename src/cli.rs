@@ -112,20 +112,24 @@ pub enum Cmd {
         /// site-packages and deeper maven integration are planned)
         #[arg(long, value_enum, env = "ZED_PKG_ADAPTER", default_value = "auto")]
         adapter: Adapter,
+        /// Run dependencies' [build] commands (arbitrary code from the
+        /// package author — off by default; builds are cached per
+        /// (artifact, platform, command) under ~/.zed-pkg/builds)
+        #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
+        allow_build: bool,
     },
-    /// Build (or warm the build cache for) dependencies that declare a
-    /// `[build]` step, keyed per target triple (zed-docs issue #5)
+    /// Run (or warm the build cache for) the [build] steps the locked
+    /// dependency graph declares (zed-docs issue #5). Running `zed build` is
+    /// itself consent to execute package-author build code, like
+    /// `install --allow-build`.
     Build {
-        /// Target triple to build for (defaults to the host, e.g. for warming
-        /// a cross-target cache); keys the build cache
-        #[arg(long, env = "ZED_PKG_TARGET")]
-        target: Option<String>,
         /// Rebuild even when the build cache already has an entry
         #[arg(long, env = "ZED_PKG_FORCE")]
         force: bool,
     },
-    /// Run a hoisted dependency binary (from zed_modules/.bin) or any command,
-    /// with zed_modules/.bin prepended to PATH (zed-docs issue #7)
+    /// Run an executable a dependency exposes via [bin] (hoisted into
+    /// zed_modules/.bin) or any command, with zed_modules/.bin prepended to
+    /// PATH — npx-style, no global pollution (zed-docs issue #7)
     Run {
         /// Binary/command name to execute
         command: String,
@@ -133,10 +137,11 @@ pub enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Garbage-collect the global store, build cache, and downloads by access
-    /// time, LRU-style (zed-docs issue #7)
+    /// Garbage-collect the store, build cache, and downloads by last use,
+    /// LRU-style (zed-docs issue #7); store entries still referenced by a
+    /// live project are always kept
     Gc {
-        /// Remove entries not accessed within this window (e.g. 90d, 2w, 12h)
+        /// Remove entries not used within this window (e.g. 90d, 2w, 12h)
         #[arg(long, env = "ZED_PKG_GC_OLDER_THAN", default_value = "90d")]
         older_than: String,
         /// Report what would be removed without deleting anything
@@ -161,6 +166,14 @@ pub enum Cmd {
         /// zed cannot verify yet)
         #[arg(long, env = "ZED_PKG_SKIP_VCS_CHECKS")]
         skip_vcs_checks: bool,
+    },
+    /// Mark a published version as yanked: hidden from fresh resolution,
+    /// still downloadable for existing lockfiles. --undo restores it.
+    Yank {
+        /// org/name@version
+        spec: String,
+        #[arg(long, env = "ZED_PKG_YANK_UNDO")]
+        undo: bool,
     },
     /// Roundtrip-test this package the way a consumer would install it:
     /// pack it, publish it to a throwaway file:// registry, install it into a
@@ -192,10 +205,16 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_R2G_CLEAN")]
         clean: bool,
     },
-    /// Update the zed CLI itself
-    Update {
-        #[command(subcommand)]
-        cmd: UpdateCmd,
+    /// Replace this `zed` binary with the latest GitHub release for your
+    /// platform (zed-docs issue #9)
+    #[command(name = "self-update", alias = "update")]
+    SelfUpdate {
+        /// Only report whether an update is available; don't install
+        #[arg(long, env = "ZED_PKG_UPDATE_CHECK")]
+        check: bool,
+        /// Reinstall even if already on the latest version
+        #[arg(long, env = "ZED_PKG_UPDATE_FORCE")]
+        force: bool,
     },
     /// Save a registry token to ~/.zed-pkg/credentials.toml
     Login,
@@ -213,20 +232,6 @@ pub enum Cmd {
     Cache {
         #[command(subcommand)]
         cmd: CacheCmd,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-pub enum UpdateCmd {
-    /// Replace this `zed` binary with the latest GitHub release
-    #[command(name = "self")]
-    SelfUpdate {
-        /// Only report whether an update is available; don't install
-        #[arg(long, env = "ZED_PKG_UPDATE_CHECK")]
-        check: bool,
-        /// Reinstall even if already on the latest version
-        #[arg(long, env = "ZED_PKG_UPDATE_FORCE")]
-        force: bool,
     },
 }
 

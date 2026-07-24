@@ -70,13 +70,14 @@ env = "ZED_PKG_ADAPTER"
 default = "auto"
 about = "Ecosystem linking: auto | none | node | java"
 
-# --- build ----------------------------------------------------------------
-
 [[flag]]
-command = "build"
-long = "target"
-env = "ZED_PKG_TARGET"
-about = "Target triple to build for; keys the build cache (defaults to host)"
+command = "install"
+long = "allow-build"
+env = "ZED_PKG_ALLOW_BUILD"
+default = "false"
+about = "Run dependencies' [build] commands (package-author code; off by default)"
+
+# --- build ----------------------------------------------------------------
 
 [[flag]]
 command = "build"
@@ -133,6 +134,15 @@ env = "ZED_PKG_SKIP_VCS_CHECKS"
 default = "false"
 about = "Skip tag/commit verification (loud warning)"
 
+# --- yank -----------------------------------------------------------------
+
+[[flag]]
+command = "yank"
+long = "undo"
+env = "ZED_PKG_YANK_UNDO"
+default = "false"
+about = "Restore a previously yanked version"
+
 # --- r2g (alias: test-local) ----------------------------------------------
 
 [[flag]]
@@ -169,17 +179,17 @@ env = "ZED_PKG_R2G_CLEAN"
 default = "false"
 about = "Delete the throwaway workspace after a successful run"
 
-# --- update self ----------------------------------------------------------
+# --- self-update (alias: update) ------------------------------------------
 
 [[flag]]
-command = "update self"
+command = "self-update"
 long = "check"
 env = "ZED_PKG_UPDATE_CHECK"
 default = "false"
 about = "Only report whether an update is available; don't install"
 
 [[flag]]
-command = "update self"
+command = "self-update"
 long = "force"
 env = "ZED_PKG_UPDATE_FORCE"
 default = "false"

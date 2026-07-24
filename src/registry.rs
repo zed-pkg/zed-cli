@@ -5,8 +5,20 @@ use anyhow::{Context, Result, anyhow, bail};
 use semver::{Version, VersionReq};
 use zed_interfaces::registry::{
     self, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
-    SearchResponse, VersionMetadata,
+    SearchResponse, VersionMetadata, YankRequest, YankResponse,
 };
+
+/// Hard ceiling on artifact download size (bytes); the registry-reported
+/// size is advisory and attacker-influencable, so a static cap backs it up.
+/// Override with `ZED_PKG_MAX_ARTIFACT_BYTES`.
+const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+
+fn max_artifact_bytes() -> u64 {
+    std::env::var("ZED_PKG_MAX_ARTIFACT_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_ARTIFACT_BYTES)
+}
 
 /// Client-side registry abstraction. `file://` URLs get a directory-backed
 /// registry (hermetic tests, `zed test-local`, air-gapped mirrors); anything
@@ -23,6 +35,14 @@ pub trait Registry {
     ) -> Result<PublishResponse>;
     fn claim_org(&self, slug: &str, token: Option<&str>) -> Result<ClaimOrgResponse>;
     fn search(&self, query: &str) -> Result<SearchResponse>;
+    fn yank(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+        token: Option<&str>,
+    ) -> Result<YankResponse>;
 }
 
 pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
@@ -173,6 +193,28 @@ impl Registry for FileRegistry {
         })
     }
 
+    fn yank(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+        _token: Option<&str>,
+    ) -> Result<YankResponse> {
+        let vpath = self.version_json(org, name, version);
+        let text = fs::read_to_string(&vpath)
+            .with_context(|| format!("version {org}/{name}@{version} not found"))?;
+        let mut vm: VersionMetadata = serde_json::from_str(&text)?;
+        vm.yanked = yanked;
+        fs::write(&vpath, serde_json::to_string_pretty(&vm)?)?;
+        Ok(YankResponse {
+            org: org.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            yanked,
+        })
+    }
+
     fn search(&self, query: &str) -> Result<SearchResponse> {
         let mut items = Vec::new();
         let packages_root = self.root.join("packages");
@@ -252,6 +294,29 @@ impl HttpRegistry {
             Err(anyhow!("registry error ({status}): {body}"))
         }
     }
+
+    /// The registry hands us a `download_url` (possibly a presigned S3/R2
+    /// URL on another host). Trusting it verbatim would let a malicious
+    /// registry response redirect fetches to plaintext or internal hosts,
+    /// so the scheme is checked: https is always fine; http only for
+    /// loopback or when the registry itself was configured over http (the
+    /// operator already accepted plaintext for that registry).
+    fn allowed_download_url(&self, raw: &str) -> Result<reqwest::Url> {
+        let url = reqwest::Url::parse(raw).with_context(|| format!("bad download url {raw}"))?;
+        let loopback = matches!(url.host_str(), Some("localhost"))
+            || url
+                .host_str()
+                .and_then(|h| h.parse::<std::net::IpAddr>().ok())
+                .is_some_and(|ip| ip.is_loopback());
+        match url.scheme() {
+            "https" => Ok(url),
+            "http" if loopback || self.base.starts_with("http://") => Ok(url),
+            other => bail!(
+                "refusing artifact download over `{other}` from {raw} \
+                 (https required for non-local registries)"
+            ),
+        }
+    }
 }
 
 impl Registry for HttpRegistry {
@@ -273,14 +338,33 @@ impl Registry for HttpRegistry {
 
     fn download(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let url = if version.download_url.starts_with("http") {
-            version.download_url.clone()
+            self.allowed_download_url(&version.download_url)?
         } else {
-            self.url(&registry::artifact_path(&version.sha256))
+            reqwest::Url::parse(&self.url(&registry::artifact_path(&version.sha256)))
+                .context("registry url is valid")?
         };
-        let mut response = Self::check(self.client.get(url).send()?)?;
+        let response = Self::check(self.client.get(url).send()?)?;
         fs::create_dir_all(dest.parent().context("dest has parent")?)?;
+        // Bound what we write to disk: the declared size (when sane) plus
+        // slack, backed by the global cap. Hash verification happens later
+        // in Store::add_artifact; this guard is about disk exhaustion.
+        let cap = max_artifact_bytes();
+        let limit = if version.size > 0 {
+            version.size.saturating_add(1024 * 1024).min(cap)
+        } else {
+            cap
+        };
         let mut file = fs::File::create(dest)?;
-        response.copy_to(&mut file)?;
+        use std::io::Read as _;
+        let mut limited = response.take(limit.saturating_add(1));
+        let copied = std::io::copy(&mut limited, &mut file)?;
+        if copied > limit {
+            let _ = fs::remove_file(dest);
+            bail!(
+                "artifact exceeded its declared size ({} > {limit} bytes); refusing",
+                copied
+            );
+        }
         Ok(())
     }
 
@@ -328,5 +412,23 @@ impl Registry for HttpRegistry {
             .query(&[("q", query)])
             .send()?;
         Ok(Self::check(response)?.json()?)
+    }
+
+    fn yank(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+        token: Option<&str>,
+    ) -> Result<YankResponse> {
+        let mut request = self
+            .client
+            .post(self.url(&registry::yank_path(org, name, version)))
+            .json(&YankRequest { yanked });
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        Ok(Self::check(request.send()?)?.json()?)
     }
 }
