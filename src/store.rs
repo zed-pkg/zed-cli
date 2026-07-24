@@ -18,6 +18,10 @@ use crate::pack::sha256_file;
 const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Ceiling on archive entry count (inode-exhaustion guard).
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+/// Ceiling on `zed gc --max-age-days`, defending the age computation against
+/// hostile input. ~10,000 years is far past any real cache lifetime while
+/// leaving the seconds conversion well clear of `u64` overflow.
+const MAX_GC_AGE_DAYS: u64 = 3_650_000;
 
 fn max_unpacked_bytes() -> u64 {
     std::env::var("ZED_PKG_MAX_UNPACKED_BYTES")
@@ -336,7 +340,16 @@ impl Store {
         let referenced: BTreeSet<String> = refs.projects.values().flatten().cloned().collect();
         self.save_refs(&refs)?;
 
-        let cutoff = SystemTime::now() - Duration::from_secs(max_age_days * 24 * 60 * 60);
+        // `max_age_days` arrives unvalidated from the CLI/env, so do the age
+        // math without any operation that can panic on hostile input (e.g.
+        // `u64::MAX`). Clamp to a sane ceiling, convert to seconds with a
+        // saturating multiply, then subtract from "now" with a checked_sub,
+        // falling back to the epoch (prune nothing older than epoch) if the
+        // subtraction would underflow.
+        let cutoff_secs = max_age_days.min(MAX_GC_AGE_DAYS).saturating_mul(86_400);
+        let cutoff = SystemTime::now()
+            .checked_sub(Duration::from_secs(cutoff_secs))
+            .unwrap_or(UNIX_EPOCH);
         let too_old = |entry: &Path| -> bool {
             let last = self
                 .last_used(entry)
@@ -571,5 +584,28 @@ pub fn human_size(bytes: u64) -> String {
         format!("{bytes} B")
     } else {
         format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gc_survives_hostile_max_age_days() {
+        // `u64::MAX` days would overflow the naive `days * 86_400` and panic
+        // the `SystemTime - Duration` subtraction; the hardened path must
+        // clamp/saturate and simply prune nothing.
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path());
+        let (entries, cache_files, freed) = store
+            .gc(u64::MAX)
+            .expect("gc must not fail on an empty store");
+        assert_eq!((entries, cache_files, freed), (0, 0, 0));
+
+        // A handful of other extreme values must be equally panic-free.
+        for days in [0, 1, MAX_GC_AGE_DAYS, u64::MAX / 2, u64::MAX - 1] {
+            store.gc(days).expect("gc must not panic for any max_age_days");
+        }
     }
 }
