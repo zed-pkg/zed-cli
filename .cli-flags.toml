@@ -1,0 +1,196 @@
+# Declarative registry of every `zed` CLI flag and its `ZED_PKG_*` environment
+# variable, per the flags-2-env convention (github.com/oresoftware/flags-2-env).
+#
+# TOML only (like `.zpkg.toml`). This file is the human-readable source of
+# truth for the flags-2-env mapping; the `cli_flags_toml_is_in_sync_with_clap`
+# test in src/cli.rs asserts it matches the clap definition exactly, so the two
+# can never drift. When you add or change a flag in src/cli.rs, update the
+# matching `[[flag]]` entry here.
+#
+# `command` is the subcommand the flag belongs to ("*" = a global flag valid on
+# every command). `env` is the flag's `ZED_PKG_*` fallback. `default` is
+# informational.
+
+# --- global ---------------------------------------------------------------
+
+[[flag]]
+command = "*"
+long = "registry"
+env = "ZED_PKG_REGISTRY"
+default = "https://registry.zpkg.tech"
+about = "Registry base URL (http(s):// or file:///… for a local registry)"
+
+[[flag]]
+command = "*"
+long = "home"
+env = "ZED_PKG_HOME"
+default = "~/.zed-pkg"
+about = "zed home directory (store, cache, credentials)"
+
+[[flag]]
+command = "*"
+long = "token"
+env = "ZED_PKG_TOKEN"
+about = "Registry auth token; overrides saved credentials"
+
+# --- init -----------------------------------------------------------------
+
+[[flag]]
+command = "init"
+long = "org"
+env = "ZED_PKG_ORG"
+about = "Org namespace for the new manifest"
+
+[[flag]]
+command = "init"
+long = "name"
+env = "ZED_PKG_NAME"
+about = "Package name for the new manifest (defaults to the directory name)"
+
+# --- install --------------------------------------------------------------
+
+[[flag]]
+command = "install"
+long = "frozen"
+env = "ZED_PKG_FROZEN"
+default = "false"
+about = "Install exactly what .zpkg.lock pins; fail on any drift"
+
+[[flag]]
+command = "install"
+long = "install-mode"
+env = "ZED_PKG_INSTALL_MODE"
+default = "symlink"
+about = "symlink (pnpm-style) or copy (self-contained, for container builds)"
+
+[[flag]]
+command = "install"
+long = "adapter"
+env = "ZED_PKG_ADAPTER"
+default = "auto"
+about = "Ecosystem linking: auto | none | node | java"
+
+[[flag]]
+command = "install"
+long = "allow-build"
+env = "ZED_PKG_ALLOW_BUILD"
+default = "false"
+about = "Run dependencies' [build] commands (package-author code; off by default)"
+
+# --- build ----------------------------------------------------------------
+
+[[flag]]
+command = "build"
+long = "force"
+env = "ZED_PKG_FORCE"
+default = "false"
+about = "Rebuild even when the build cache already has an entry"
+
+# --- gc -------------------------------------------------------------------
+
+[[flag]]
+command = "gc"
+long = "older-than"
+env = "ZED_PKG_GC_OLDER_THAN"
+default = "90d"
+about = "Remove entries not accessed within this window (e.g. 90d, 2w, 12h)"
+
+[[flag]]
+command = "gc"
+long = "dry-run"
+env = "ZED_PKG_GC_DRY_RUN"
+default = "false"
+about = "Report what would be removed without deleting anything"
+
+# --- pack -----------------------------------------------------------------
+
+[[flag]]
+command = "pack"
+long = "out"
+env = "ZED_PKG_PACK_OUT"
+default = ".zed/pack"
+about = "Output directory for the packed artifact"
+
+# --- publish --------------------------------------------------------------
+
+[[flag]]
+command = "publish"
+long = "dry-run"
+env = "ZED_PKG_DRY_RUN"
+default = "false"
+about = "Pack and verify, but do not upload"
+
+[[flag]]
+command = "publish"
+long = "allow-dirty"
+env = "ZED_PKG_ALLOW_DIRTY"
+default = "false"
+about = "Skip the clean-worktree check"
+
+[[flag]]
+command = "publish"
+long = "skip-vcs-checks"
+env = "ZED_PKG_SKIP_VCS_CHECKS"
+default = "false"
+about = "Skip tag/commit verification (loud warning)"
+
+# --- yank -----------------------------------------------------------------
+
+[[flag]]
+command = "yank"
+long = "undo"
+env = "ZED_PKG_YANK_UNDO"
+default = "false"
+about = "Restore a previously yanked version"
+
+# --- r2g (alias: test-local) ----------------------------------------------
+
+[[flag]]
+command = "r2g"
+long = "docker"
+env = "ZED_PKG_R2G_DOCKER"
+default = "false"
+about = "Run the install + smoke test inside a throwaway OCI container"
+
+[[flag]]
+command = "r2g"
+long = "image"
+env = "ZED_PKG_R2G_IMAGE"
+default = "debian:stable-slim"
+about = "Base image for --docker"
+
+[[flag]]
+command = "r2g"
+long = "runtime"
+env = "ZED_PKG_R2G_RUNTIME"
+about = "Container runtime for --docker: docker | podman (auto-detected)"
+
+[[flag]]
+command = "r2g"
+long = "r2g-root"
+env = "ZED_PKG_R2G_ROOT"
+default = "<zed home>/r2g"
+about = "Parent directory for the throwaway consumer project and its store"
+
+[[flag]]
+command = "r2g"
+long = "clean"
+env = "ZED_PKG_R2G_CLEAN"
+default = "false"
+about = "Delete the throwaway workspace after a successful run"
+
+# --- self-update (alias: update) ------------------------------------------
+
+[[flag]]
+command = "self-update"
+long = "check"
+env = "ZED_PKG_UPDATE_CHECK"
+default = "false"
+about = "Only report whether an update is available; don't install"
+
+[[flag]]
+command = "self-update"
+long = "force"
+env = "ZED_PKG_UPDATE_FORCE"
+default = "false"
+about = "Reinstall even if already on the latest version"

@@ -5,14 +5,21 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
+<<<<<<< HEAD
+    BuildSection, Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
+    is_slug,
+=======
     Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection, is_sha256_hex,
     is_slug,
 };
 use zed_interfaces::paths::{
     BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, build_entry_rel, current_platform,
+>>>>>>> harden
 };
+use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, current_platform};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
 use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::{self, Requirement};
@@ -95,7 +102,8 @@ url = "{repo_url}"
 [publish]
 # Extra globs to strip beyond the defaults (tests, CI, .github, READMEs):
 exclude = []
-# Run by `zed test-local` inside a throwaway consumer project:
+# Run by `zed r2g` inside a throwaway consumer project (optionally in a
+# container) that has this package installed the way a real consumer would:
 # smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/.zpkg.toml\""
 
 [scripts]
@@ -442,7 +450,9 @@ fn install_locked(
         // A [build] step (the package's own, or the consumer's override)
         // swaps the link source from the pristine store entry to the
         // per-platform build-cache entry.
-        let link_src = match effective_build(&manifest, pkg_manifest.as_ref(), vm) {
+        let key = format!("{}/{}", vm.org, vm.name);
+        let dep_build = pkg_manifest.as_ref().and_then(|m| m.build.as_ref());
+        let link_src = match manifest.effective_build(&key, dep_build) {
             Some(build) => build_artifact(
                 cfg,
                 store,
@@ -451,6 +461,7 @@ fn install_locked(
                 pkg_manifest.as_ref(),
                 &build,
                 allow_build,
+                false,
             )?,
             None => pkg_dir.clone(),
         };
@@ -498,7 +509,7 @@ fn install_locked(
         }
         installed.push((key.clone(), "workspace".to_string()));
     }
-    hoist_bins(&modules, &bins)?;
+    hoist_bins(&modules, &bins, mode)?;
     if adapter == Adapter::Java {
         jars.sort();
         let classpath_file = project.join(".zed").join("classpath");
@@ -531,6 +542,19 @@ fn install_locked(
     for (name, version) in &installed {
         println!("installed {name}@{version}");
     }
+    if !bins.is_empty() {
+        let mut names: Vec<&String> = bins.keys().collect();
+        names.sort();
+        println!(
+            "{} bin(s) in {MODULES_DIR}/{BIN_DIR}/ ({}); run with `zed run <name>`",
+            names.len(),
+            names
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!(
         "{} package(s) in {MODULES_DIR}/ ({})",
         installed.len(),
@@ -542,40 +566,45 @@ fn install_locked(
     Ok(InstallOutcome { installed })
 }
 
-/// The build step that applies to a dependency: the consumer's
-/// `[overrides.build."org/name"]` wins over the package's own `[build]`,
-/// so a broken upstream build never blocks a project.
-fn effective_build(
-    consumer: &Manifest,
-    pkg_manifest: Option<&Manifest>,
-    vm: &VersionMetadata,
-) -> Option<zed_interfaces::manifest::BuildSection> {
-    let key = format!("{}/{}", vm.org, vm.name);
-    consumer
-        .overrides
-        .build
-        .get(&key)
-        .cloned()
-        .or_else(|| pkg_manifest.and_then(|m| m.build.clone()))
+// ---------------------------------------------------------------------------
+// build hooks (zed-docs issue #5)
+
+/// Build-cache key for a source artifact built with a given command: the
+/// source sha256 plus a short hash of the command and declared outputs. Two
+/// builds with different commands (e.g. a consumer override) never share an
+/// entry.
+fn build_cache_key(source_sha: &str, build: &BuildSection) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(build.command.as_bytes());
+    hasher.update([0]);
+    for out in &build.outputs {
+        hasher.update(out.as_bytes());
+        hasher.update([0]);
+    }
+    let cmd_hash = hex::encode(hasher.finalize());
+    format!("{source_sha}-{}", &cmd_hash[..16])
 }
 
 /// Execute a dependency's build step, isolated from the immutable source
 /// store (issue: source vs build caching):
 ///
-///   store/<sha>/pkg  --copy-->  staging  --command-->  builds/<platform>/<sha>/pkg
+///   store/<sha>/pkg  --copy-->  staging  --command-->  builds/<platform>/<sha>-<cmd>/pkg
 ///
-/// Results cache per (sha256, platform); the staging dir gets the package's
-/// `[build-dependencies]` installed into its own zed_modules first. Builds
-/// run arbitrary package-author code, so they require --allow-build; without
-/// it the pristine source is linked and a warning explains how to opt in.
+/// Results cache per (sha256, platform, command); the staging dir gets the
+/// package's `[build-dependencies]` installed into its own zed_modules
+/// first. Builds run arbitrary package-author code, so they require
+/// --allow-build; without it the pristine source is linked and a warning
+/// explains how to opt in. `force` rebuilds even on a cache hit.
+#[allow(clippy::too_many_arguments)]
 fn build_artifact(
     cfg: &Config,
     store: &Store,
     vm: &VersionMetadata,
     pkg_dir: &Path,
     pkg_manifest: Option<&Manifest>,
-    build: &zed_interfaces::manifest::BuildSection,
+    build: &BuildSection,
     allow_build: bool,
+    force: bool,
 ) -> Result<PathBuf> {
     let key = format!("{}/{}", vm.org, vm.name);
     if !allow_build {
@@ -586,16 +615,17 @@ fn build_artifact(
         return Ok(pkg_dir.to_path_buf());
     }
     let platform = current_platform();
-    let built = cfg
-        .home
-        .join(build_entry_rel(&platform, &vm.sha256))
-        .join("pkg");
-    if built.is_dir() {
+    let cache_key = build_cache_key(&vm.sha256, build);
+    let built = store.build_pkg_dir(&platform, &cache_key);
+    if built.is_dir() && !force {
         return Ok(built);
     }
-    let _lock = store.build_lock(&platform, &vm.sha256)?;
+    let _lock = store.build_lock(&platform, &cache_key)?;
     if built.is_dir() {
-        return Ok(built);
+        if !force {
+            return Ok(built);
+        }
+        let _ = fs::remove_dir_all(store.build_entry(&platform, &cache_key));
     }
 
     println!("building {key}@{} for {platform}...", vm.version);
@@ -681,7 +711,8 @@ fn build_artifact(
     // Promote into the per-platform cache: either the whole staged tree or
     // just the declared outputs (plus the manifest so consumers can always
     // introspect what they linked).
-    let entry_parent = built.parent().context("build entry has a parent")?;
+    let entry = store.build_entry(&platform, &cache_key);
+    let entry_parent = entry.parent().context("build entry has a parent")?;
     fs::create_dir_all(entry_parent)?;
     let promote_tmp = tempfile::tempdir_in(entry_parent)?;
     let promoted = promote_tmp.path().join("pkg");
@@ -711,6 +742,7 @@ fn build_artifact(
             fs::copy(&manifest_src, promoted.join(MANIFEST_FILE))?;
         }
     }
+    fs::create_dir_all(&entry)?;
     let promote_path = promote_tmp.keep().join("pkg");
     match fs::rename(&promote_path, &built) {
         Ok(()) => {}
@@ -726,10 +758,59 @@ fn build_artifact(
     Ok(built)
 }
 
-/// Hoist package-declared executables into `zed_modules/.bin/<name>` as
-/// relative symlinks (copies on non-unix) so `zed run` and PATH-prepending
-/// wrappers find them without polluting the OS PATH.
-fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>) -> Result<()> {
+/// `zed build [--force]` — run (or warm) the [build] steps of the locked
+/// dependency graph on this machine. Running the command is itself consent
+/// to execute package-author build code, like `install --allow-build`.
+pub fn build_cmd(project: &Path, cfg: &Config, force: bool) -> Result<()> {
+    let manifest = read_manifest(project)?;
+    let reg = registry_for(&cfg.registry)?;
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let lock_path = project.join(LOCKFILE_FILE);
+    let text = fs::read_to_string(&lock_path)
+        .with_context(|| format!("zed build needs {LOCKFILE_FILE}; run `zed install` first"))?;
+    let lock = Lockfile::parse(&text)?;
+
+    let mut built = 0usize;
+    for locked in &lock.packages {
+        let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
+        let pkg_dir = ensure_artifact(reg.as_ref(), &store, &vm)?;
+        let pkg_manifest = read_manifest(&pkg_dir).ok();
+        let key = format!("{}/{}", locked.org, locked.name);
+        let dep_build = pkg_manifest.as_ref().and_then(|m| m.build.as_ref());
+        let Some(build) = manifest.effective_build(&key, dep_build) else {
+            continue;
+        };
+        let out = build_artifact(
+            cfg,
+            &store,
+            &vm,
+            &pkg_dir,
+            pkg_manifest.as_ref(),
+            &build,
+            true,
+            force,
+        )?;
+        println!("built {key}@{} -> {}", locked.version, out.display());
+        built += 1;
+    }
+    if built == 0 {
+        println!("no dependencies declare a build step");
+    } else {
+        println!(
+            "built {built} package(s) (build cache: {})",
+            store.builds_root().display()
+        );
+    }
+    Ok(())
+}
+
+/// Hoist package-declared executables into `zed_modules/.bin/<name>` so
+/// `zed run` and PATH-prepending wrappers find them without polluting the OS
+/// PATH. Symlink installs get relative symlinks (they survive moving the
+/// project); copy installs get real file copies so container image layers
+/// stay self-contained.
+fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, mode: InstallMode) -> Result<()> {
     if bins.is_empty() {
         return Ok(());
     }
@@ -755,13 +836,27 @@ fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>) -> Result<()> {
         }
         let link = bin_dir.join(name);
         replace_dest(&link)?;
-        #[cfg(unix)]
-        {
-            let rel = pathdiff_relative(&bin_dir, target);
-            std::os::unix::fs::symlink(&rel, &link)?;
+        match mode {
+            InstallMode::Symlink => {
+                #[cfg(unix)]
+                {
+                    let rel = pathdiff_relative(&bin_dir, target);
+                    std::os::unix::fs::symlink(&rel, &link)?;
+                }
+                #[cfg(not(unix))]
+                fs::copy(target, &link).map(|_| ())?;
+            }
+            InstallMode::Copy => {
+                fs::copy(target, &link)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&link)?.permissions();
+                    perms.set_mode(perms.mode() | 0o755);
+                    fs::set_permissions(&link, perms)?;
+                }
+            }
         }
-        #[cfg(not(unix))]
-        fs::copy(target, &link).map(|_| ())?;
     }
     Ok(())
 }
@@ -787,41 +882,54 @@ fn pathdiff_relative(from_dir: &Path, target: &Path) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// run / yank / gc / self-update
+// run / yank / gc
 
-/// `zed run <bin>` — execute a hoisted binary with zed_modules/.bin
-/// prepended to PATH, npx-style but without global pollution.
-pub fn run_bin(project: &Path, bin: &str, args: &[String]) -> Result<i32> {
+/// `zed run <command>` — run a hoisted dependency binary (from
+/// zed_modules/.bin) or any command, with that directory prepended to PATH —
+/// npx-style, without polluting the OS PATH (zed-docs issue #7). Returns the
+/// child's exit code.
+pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
     let bin_dir = project.join(MODULES_DIR).join(BIN_DIR);
-    let candidate = bin_dir.join(bin);
-    if !candidate.exists() {
-        let available: Vec<String> = fs::read_dir(&bin_dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .collect()
-            })
-            .unwrap_or_default();
-        bail!(
-            "no binary `{bin}` in {}/{BIN_DIR} (available: {}); \
-             packages expose binaries via their [bin] manifest table",
-            MODULES_DIR,
-            if available.is_empty() {
-                "none".to_string()
-            } else {
-                available.join(", ")
-            }
-        );
+    let candidate = bin_dir.join(command);
+    let mut paths: Vec<PathBuf> = vec![bin_dir.clone()];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
     }
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    let status = Command::new(&candidate)
+    let new_path = std::env::join_paths(&paths).context("assembling PATH for zed run")?;
+    // Prefer an exact hoisted bin by absolute path; otherwise fall through to
+    // a normal PATH lookup (with .bin still prepended for the child's tools).
+    let program: &Path = if candidate.exists() {
+        &candidate
+    } else {
+        Path::new(command)
+    };
+    let status = Command::new(program)
         .args(args)
-        .env("PATH", format!("{}:{path_var}", bin_dir.display()))
+        .env("PATH", &new_path)
         .current_dir(project)
-        .status()
-        .with_context(|| format!("spawning {}", candidate.display()))?;
-    Ok(status.code().unwrap_or(1))
+        .status();
+    match status {
+        Ok(status) => Ok(status.code().unwrap_or(1)),
+        Err(_) => {
+            let available: Vec<String> = fs::read_dir(project.join(MODULES_DIR).join(BIN_DIR))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .map(|e| e.file_name().to_string_lossy().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            bail!(
+                "failed to run `{command}` — not a hoisted bin in {MODULES_DIR}/{BIN_DIR}/ \
+                 (available: {}) nor on PATH; packages expose binaries via their [bin] table",
+                if available.is_empty() {
+                    "none".to_string()
+                } else {
+                    available.join(", ")
+                }
+            )
+        }
+    }
 }
 
 /// `zed yank org/name@version [--undo]`.
@@ -845,19 +953,47 @@ pub fn yank(cfg: &Config, spec: &str, undo: bool) -> Result<()> {
     Ok(())
 }
 
-/// `zed gc` — age-aware store collection (see Store::gc).
-pub fn gc(cfg: &Config, max_age_days: u64) -> Result<()> {
-    let store = Store::new(&cfg.home);
-    let _lock = store.install_lock()?;
-    let (entries, cache_files, freed) = store.gc(max_age_days)?;
-    println!(
-        "gc: removed {entries} store entr{}, {cache_files} cached download(s), freed {}",
-        if entries == 1 { "y" } else { "ies" },
-        human_size(freed)
-    );
-    Ok(())
+fn parse_age(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    let (num, secs) = match s.chars().last() {
+        Some('d') => (&s[..s.len() - 1], 86_400u64),
+        Some('h') => (&s[..s.len() - 1], 3_600),
+        Some('w') => (&s[..s.len() - 1], 604_800),
+        _ => (s, 86_400),
+    };
+    let n: u64 = num
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid duration `{s}` (use e.g. 90d, 2w, 12h)"))?;
+    Ok(std::time::Duration::from_secs(n * secs))
 }
 
+<<<<<<< HEAD
+/// `zed gc`: least-recently-used garbage collection of the store, build
+/// cache, and downloads by last use (zed-docs issue #7). Entries still
+/// referenced by a live project are always kept.
+pub fn gc(cfg: &Config, older_than: &str, dry_run: bool) -> Result<()> {
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let age = parse_age(older_than)?;
+    let report = store.gc(age, dry_run)?;
+    println!(
+        "gc: {} {} across {} store/build entr{} and {} cached download(s) not used in {older_than}",
+        if report.dry_run {
+            "would reclaim"
+        } else {
+            "reclaimed"
+        },
+        human_size(report.freed),
+        report.entries_removed,
+        if report.entries_removed == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        report.cache_files_removed,
+    );
+=======
 /// Parse a `SHA256SUMS` file (the `sha256sum` output format, one entry per
 /// line: `<hex>␠␠<filename>`, or `<hex>␠*<filename>` in binary mode) and
 /// return the expected lowercase digest for `filename`, if present and well
@@ -1021,6 +1157,7 @@ pub fn self_update(check_only: bool, skip_checksum: bool) -> Result<()> {
     }
     fs::rename(&staged_next, &current_exe).context("replacing the running binary")?;
     println!("updated zed to {latest_tag} at {}", current_exe.display());
+>>>>>>> harden
     Ok(())
 }
 
@@ -1097,7 +1234,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// pack / publish / test-local
+// pack / publish
 
 pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<PackResult> {
     let manifest = read_manifest(project)?;
@@ -1171,103 +1308,9 @@ pub fn publish(
     Ok(())
 }
 
-/// r2g-style pre-publish check (github.com/oresoftware/r2g): consume your
-/// own artifact exactly the way an end user would, from a throwaway
-/// file:// registry into a throwaway consumer project and store.
-pub fn test_local(project: &Path, _cfg: &Config) -> Result<()> {
-    let manifest = read_manifest(project)?;
-    let tmp = tempfile::tempdir()?;
-    let registry_dir = tmp.path().join("registry");
-    let consumer_dir = tmp.path().join("consumer");
-    let home_dir = tmp.path().join("home");
-    fs::create_dir_all(&consumer_dir)?;
-
-    let packed = pack::pack(project, &manifest, Some(&tmp.path().join("pack")))?;
-    println!(
-        "packed {} ({} files, {} excluded)",
-        human_size(packed.size),
-        packed.file_count,
-        packed.excluded_count
-    );
-    let meta = build_publish_meta(&manifest, &packed, None);
-    let file_registry = crate::registry::FileRegistry::new(registry_dir.clone());
-    file_registry.publish(&meta, &packed.path, None)?;
-
-    let mut dependencies = BTreeMap::new();
-    dependencies.insert(
-        manifest.full_name(),
-        format!("={}", manifest.package.version),
-    );
-    let consumer_manifest = Manifest {
-        package: PackageSection {
-            org: "zed-local".to_string(),
-            name: "consumer".to_string(),
-            version: "0.0.0".to_string(),
-            version_scheme: version::VersionScheme::Semver,
-            description: None,
-            license: None,
-            repository: RepositorySection {
-                vcs: Vcs::Git,
-                url: "https://localhost/zed-local/consumer".to_string(),
-            },
-            keywords: Vec::new(),
-        },
-        dependencies,
-        build_dependencies: BTreeMap::new(),
-        publish: PublishSection::default(),
-        scripts: ScriptsSection::default(),
-        bin: BTreeMap::new(),
-        build: None,
-        workspace: None,
-        overrides: Default::default(),
-    };
-    write_manifest(&consumer_dir, &consumer_manifest)?;
-
-    let test_cfg = Config {
-        registry: format!("file://{}", registry_dir.display()),
-        home: home_dir,
-        token: None,
-    };
-    install(
-        &consumer_dir,
-        &test_cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-        false,
-    )?;
-
-    let target = consumer_dir
-        .join(MODULES_DIR)
-        .join(&manifest.package.org)
-        .join(&manifest.package.name);
-    if !target.join(MANIFEST_FILE).exists() {
-        bail!("installed package is missing {MANIFEST_FILE}; artifact is broken");
-    }
-
-    match &manifest.publish.smoke_test {
-        Some(command) => {
-            println!("running smoke_test: {command}");
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(&consumer_dir)
-                .env("ZED_PKG_TEST_TARGET", &target)
-                .status()?;
-            if !status.success() {
-                bail!("smoke_test failed with {status}");
-            }
-            println!("test-local passed: artifact installs and smoke_test succeeds");
-        }
-        None => {
-            println!(
-                "test-local passed: artifact installs cleanly \
-                 (no publish.smoke_test configured; consider adding one)"
-            );
-        }
-    }
-    Ok(())
-}
+// The r2g roundtrip check (`zed r2g`, alias `zed test-local`) lives in the
+// `r2g` module; it composes `pack`, the `file://` registry, and `install`
+// from here into a consume-your-own-artifact test.
 
 // ---------------------------------------------------------------------------
 // find / login / org / store / cache
@@ -1344,6 +1387,14 @@ pub fn store_status(cfg: &Config) -> Result<()> {
         store.cache_dir().display(),
         human_size(cache_bytes)
     );
+    let build_bytes = store.build_size();
+    if build_bytes > 0 {
+        println!(
+            "builds {}  ({})",
+            store.builds_root().display(),
+            human_size(build_bytes)
+        );
+    }
     Ok(())
 }
 

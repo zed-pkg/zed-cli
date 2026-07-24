@@ -9,7 +9,7 @@ use flate2::read::GzDecoder;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use zed_interfaces::manifest::is_sha256_hex;
-use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, store_entry_rel};
+use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, build_entry_rel, store_entry_rel};
 
 use crate::pack::sha256_file;
 
@@ -36,6 +36,19 @@ fn max_unpacked_bytes() -> u64 {
 pub fn require_sha256(sha256: &str) -> Result<()> {
     if !is_sha256_hex(sha256) {
         bail!("invalid sha256 digest `{sha256}` (expected 64 lowercase hex chars)");
+    }
+    Ok(())
+}
+
+/// Build-cache keys are `<sha256>` or `<sha256>-<command-hash>`; anything
+/// outside lowercase hex plus `-` could traverse, so reject it.
+fn require_build_key(key: &str) -> Result<()> {
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c) || c == '-')
+    {
+        bail!("invalid build cache key `{key}`");
     }
     Ok(())
 }
@@ -117,6 +130,15 @@ impl ProcessLock {
     }
 }
 
+/// What `Store::gc` did (or, with `dry_run`, would do).
+#[derive(Debug)]
+pub struct GcReport {
+    pub entries_removed: usize,
+    pub cache_files_removed: usize,
+    pub freed: u64,
+    pub dry_run: bool,
+}
+
 /// The global content-addressed store under `$HOME/.zed-pkg`. One extracted
 /// copy per artifact per machine; projects symlink (or copy) out of it.
 pub struct Store {
@@ -166,21 +188,50 @@ impl Store {
         self.home.join("locks")
     }
 
+    // --- build cache (zed-docs issue #5) ----------------------------------
+
+    /// Root of the per-platform build cache. Kept separate from the source
+    /// store so the source store stays platform-independent and shareable,
+    /// while compiled output is keyed by platform and build command.
+    pub fn builds_root(&self) -> PathBuf {
+        self.home.join("builds")
+    }
+
+    /// Build-cache entry for a `(platform, key)` pair, where `key` is the
+    /// source sha256, optionally suffixed with a hash of the build command
+    /// and outputs so a consumer override never collides with the package's
+    /// own build.
+    pub fn build_entry(&self, platform: &str, key: &str) -> PathBuf {
+        self.home.join(build_entry_rel(platform, key))
+    }
+
+    pub fn build_pkg_dir(&self, platform: &str, key: &str) -> PathBuf {
+        self.build_entry(platform, key).join(STORE_PKG_DIR)
+    }
+
+    pub fn has_build(&self, platform: &str, key: &str) -> bool {
+        self.build_pkg_dir(platform, key).is_dir()
+    }
+
+    pub fn build_size(&self) -> u64 {
+        dir_size(&self.builds_root())
+    }
+
+    /// Serializes one artifact's build (per platform + key) across processes.
+    pub fn build_lock(&self, platform: &str, key: &str) -> Result<ProcessLock> {
+        require_build_key(key)?;
+        ProcessLock::acquire(
+            &self
+                .locks_dir()
+                .join(format!("build-{platform}-{key}.lock")),
+            &format!("the build of {key}"),
+        )
+    }
+
     /// Serializes the whole install (refs.json + lockfile writes) against
     /// other zed processes. Held by the caller for the duration of install.
     pub fn install_lock(&self) -> Result<ProcessLock> {
         ProcessLock::acquire(&self.locks_dir().join("install.lock"), "the install lock")
-    }
-
-    /// Serializes one artifact's build (per sha + platform) across processes.
-    pub fn build_lock(&self, platform: &str, sha256: &str) -> Result<ProcessLock> {
-        require_sha256(sha256)?;
-        ProcessLock::acquire(
-            &self
-                .locks_dir()
-                .join(format!("build-{platform}-{sha256}.lock")),
-            &format!("the build of {sha256}"),
-        )
     }
 
     /// Verify the archive hash and extract it into the store. Idempotent and
@@ -256,9 +307,12 @@ impl Store {
     }
 
     fn last_used(&self, entry: &Path) -> Option<SystemTime> {
-        let text = fs::read_to_string(entry.join(".last-used")).ok()?;
-        let secs: u64 = text.trim().parse().ok()?;
-        Some(UNIX_EPOCH + Duration::from_secs(secs))
+        if let Ok(text) = fs::read_to_string(entry.join(".last-used"))
+            && let Ok(secs) = text.trim().parse::<u64>()
+        {
+            return Some(UNIX_EPOCH + Duration::from_secs(secs));
+        }
+        entry.metadata().and_then(|m| m.modified()).ok()
     }
 
     fn refs_path(&self) -> PathBuf {
@@ -326,20 +380,27 @@ impl Store {
         Ok((removed, freed))
     }
 
-    /// Age-aware garbage collection (issue: enterprise-scale cache bloat).
-    /// Removes store entries that are BOTH unreferenced by any live project
-    /// AND unused for `max_age_days` (LRU via the `.last-used` marker,
-    /// falling back to directory mtime), plus cached artifact downloads
-    /// older than the cutoff (those are always safely re-downloadable).
-    /// `max_age_days = 0` collects every unreferenced entry immediately.
-    /// Returns (entries_removed, cache_files_removed, bytes_freed).
-    pub fn gc(&self, max_age_days: u64) -> Result<(usize, usize, u64)> {
+    /// Age-aware, LRU-style garbage collection (zed-docs issue #7 /
+    /// enterprise-scale cache bloat). Removes store entries that are BOTH
+    /// unreferenced by any live project AND unused past `max_age` (via the
+    /// `.last-used` marker, falling back to directory mtime), sweeps the
+    /// per-platform build cache by the same age policy (build output is
+    /// always re-buildable), and drops cached downloads older than the
+    /// cutoff (always safely re-downloadable). With `dry_run`, reports what
+    /// would be removed without mutating anything (refs included).
+    pub fn gc(&self, max_age: Duration, dry_run: bool) -> Result<GcReport> {
         let mut refs = self.load_refs();
         refs.projects
             .retain(|project, _| Path::new(project).is_dir());
         let referenced: BTreeSet<String> = refs.projects.values().flatten().cloned().collect();
-        self.save_refs(&refs)?;
+        if !dry_run {
+            self.save_refs(&refs)?;
+        }
 
+<<<<<<< HEAD
+        let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
+        let too_old = |entry: &Path| self.last_used(entry).is_none_or(|t| t <= cutoff);
+=======
         // `max_age_days` arrives unvalidated from the CLI/env, so do the age
         // math without any operation that can panic on hostile input (e.g.
         // `u64::MAX`). Clamp to a sane ceiling, convert to seconds with a
@@ -356,9 +417,11 @@ impl Store {
                 .or_else(|| entry.metadata().and_then(|m| m.modified()).ok());
             last.is_none_or(|t| t <= cutoff)
         };
+>>>>>>> harden
 
         let mut entries_removed = 0usize;
         let mut freed = 0u64;
+        // Source store: store/v1/<shard>/<sha> — guarded by live references.
         let version_root = self.root().join(zed_interfaces::paths::STORE_VERSION);
         if version_root.is_dir() {
             for shard in fs::read_dir(&version_root)? {
@@ -374,14 +437,45 @@ impl Store {
                         .unwrap_or_default();
                     if !referenced.contains(&sha) && too_old(&entry) {
                         freed += dir_size(&entry);
-                        fs::remove_dir_all(&entry)?;
+                        if !dry_run {
+                            fs::remove_dir_all(&entry)?;
+                        }
                         entries_removed += 1;
                     }
                 }
             }
         }
+        // Build cache: builds/v1/<platform>/<shard>/<key> — age-only (a
+        // future install just rebuilds).
+        let builds_root = self
+            .builds_root()
+            .join(zed_interfaces::paths::STORE_VERSION);
+        if builds_root.is_dir() {
+            for platform in fs::read_dir(&builds_root)? {
+                let platform = platform?.path();
+                if !platform.is_dir() {
+                    continue;
+                }
+                for shard in fs::read_dir(&platform)? {
+                    let shard = shard?.path();
+                    if !shard.is_dir() {
+                        continue;
+                    }
+                    for entry in fs::read_dir(&shard)? {
+                        let entry = entry?.path();
+                        if entry.is_dir() && too_old(&entry) {
+                            freed += dir_size(&entry);
+                            if !dry_run {
+                                fs::remove_dir_all(&entry)?;
+                            }
+                            entries_removed += 1;
+                        }
+                    }
+                }
+            }
+        }
 
-        let mut cache_removed = 0usize;
+        let mut cache_files_removed = 0usize;
         if self.cache_dir().is_dir() {
             for file in fs::read_dir(self.cache_dir())? {
                 let file = file?.path();
@@ -392,12 +486,19 @@ impl Store {
                     .unwrap_or(true);
                 if old {
                     freed += file.metadata().map(|m| m.len()).unwrap_or(0);
-                    let _ = fs::remove_file(&file);
-                    cache_removed += 1;
+                    if !dry_run {
+                        let _ = fs::remove_file(&file);
+                    }
+                    cache_files_removed += 1;
                 }
             }
         }
-        Ok((entries_removed, cache_removed, freed))
+        Ok(GcReport {
+            entries_removed,
+            cache_files_removed,
+            freed,
+            dry_run,
+        })
     }
 
     pub fn status(&self) -> (usize, u64, u64) {
