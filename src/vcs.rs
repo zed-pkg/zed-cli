@@ -29,7 +29,7 @@ pub fn ensure_clean(vcs: Vcs, dir: &Path) -> Result<()> {
         Vcs::Hg => !run(dir, "hg", &["status", "-q"])?.is_empty(),
         Vcs::Fossil => !run(dir, "fossil", &["changes"])?.is_empty(),
         Vcs::Pijul => bail!("pijul worktree checks are not supported yet; use --skip-vcs-checks"),
-        _ => unreachable!(),
+        other => bail!("worktree checks for {other} are not supported yet; use --skip-vcs-checks"),
     };
     if dirty {
         bail!("worktree has uncommitted changes (use --allow-dirty to override)");
