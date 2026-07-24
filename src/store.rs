@@ -712,4 +712,109 @@ mod tests {
             store.gc(age, false).expect("gc must not panic for any age");
         }
     }
+
+    fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    /// Create a store entry for `sha` whose `.last-used` stamp is `age_secs`
+    /// in the past. The directory itself is freshly created, so any test that
+    /// sees it pruned has also proven the stamp beats the (fresh) mtime.
+    fn seed_entry(store: &Store, sha: &str, age_secs: u64) -> std::path::PathBuf {
+        let dir = store.entry_dir(sha);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("payload"), b"0123456789").unwrap();
+        fs::write(dir.join(".last-used"), (now_secs() - age_secs).to_string()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn gc_prunes_by_stamp_age_but_spares_referenced_and_fresh_entries() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path());
+        let old_sha = "a".repeat(64);
+        let fresh_sha = "b".repeat(64);
+        let referenced_sha = "c".repeat(64);
+        let garbage_stamp_sha = "d".repeat(64);
+
+        let old = seed_entry(&store, &old_sha, 7_200);
+        let fresh = seed_entry(&store, &fresh_sha, 0);
+        let referenced = seed_entry(&store, &referenced_sha, 7_200);
+        // An unparsable stamp must fall back to the (fresh) dir mtime, not be
+        // treated as immediately collectable.
+        let garbage = seed_entry(&store, &garbage_stamp_sha, 0);
+        fs::write(garbage.join(".last-used"), "not-a-timestamp").unwrap();
+
+        // A live project pins `referenced_sha` even though it is old.
+        let project = tempfile::tempdir().unwrap();
+        store
+            .record_project(project.path(), vec![referenced_sha.clone()])
+            .unwrap();
+
+        // Aged build-cache entry: age-only policy, no reference protection.
+        let build = store
+            .builds_root()
+            .join(zed_interfaces::paths::STORE_VERSION)
+            .join("test-platform")
+            .join("aa")
+            .join("buildkey");
+        fs::create_dir_all(&build).unwrap();
+        fs::write(build.join("out"), b"bin").unwrap();
+        fs::write(build.join(".last-used"), (now_secs() - 7_200).to_string()).unwrap();
+
+        // Dry run: full report, zero mutation.
+        let dry = store.gc(Duration::from_secs(3_600), true).unwrap();
+        assert!(dry.dry_run);
+        assert_eq!(dry.entries_removed, 2, "old store entry + aged build entry");
+        assert!(dry.freed > 0);
+        assert!(old.exists() && build.exists(), "dry run must not delete");
+
+        // Real run: prunes exactly the same set.
+        let report = store.gc(Duration::from_secs(3_600), false).unwrap();
+        assert!(!report.dry_run);
+        assert_eq!(report.entries_removed, 2);
+        assert_eq!(report.freed, dry.freed);
+        assert!(!old.exists(), "old unreferenced entry is pruned");
+        assert!(!build.exists(), "aged build entry is pruned");
+        assert!(fresh.exists(), "fresh entry survives");
+        assert!(referenced.exists(), "referenced entry survives despite age");
+        assert!(garbage.exists(), "garbage stamp falls back to fresh mtime");
+
+        // Idempotent: nothing left to collect.
+        let again = store.gc(Duration::from_secs(3_600), false).unwrap();
+        assert_eq!((again.entries_removed, again.freed), (0, 0));
+    }
+
+    #[test]
+    fn gc_drops_refs_for_projects_that_no_longer_exist() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path());
+        let sha = "e".repeat(64);
+        let entry = seed_entry(&store, &sha, 7_200);
+
+        // The referencing project directory disappears (deleted checkout):
+        // its pin must not keep the entry alive.
+        let project = tempfile::tempdir().unwrap();
+        store
+            .record_project(project.path(), vec![sha.clone()])
+            .unwrap();
+        drop(project);
+
+        let report = store.gc(Duration::from_secs(3_600), false).unwrap();
+        assert_eq!(report.entries_removed, 1);
+        assert!(!entry.exists(), "entry pinned only by a dead project is pruned");
+    }
+
+    #[test]
+    fn human_size_formats_binary_units() {
+        assert_eq!(human_size(0), "0 B");
+        assert_eq!(human_size(1_023), "1023 B");
+        assert_eq!(human_size(1_024), "1.0 KiB");
+        assert_eq!(human_size(1_536), "1.5 KiB");
+        assert_eq!(human_size(5 * 1_024 * 1_024), "5.0 MiB");
+        assert_eq!(human_size(u64::MAX), "16777216.0 TiB");
+    }
 }
