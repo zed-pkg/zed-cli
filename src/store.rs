@@ -165,7 +165,16 @@ impl Store {
     /// Serializes the whole install (refs.json + lockfile writes) against
     /// other zed processes. Held by the caller for the duration of install.
     pub fn install_lock(&self) -> Result<ProcessLock> {
-        ProcessLock::acquire(&self.locks_dir().join("install.lock"))
+        ProcessLock::acquire(&self.locks_dir().join("install.lock"), "the install lock")
+    }
+
+    /// Serializes one artifact's build (per sha + platform) across processes.
+    pub fn build_lock(&self, platform: &str, sha256: &str) -> Result<ProcessLock> {
+        require_sha256(sha256)?;
+        ProcessLock::acquire(
+            &self.locks_dir().join(format!("build-{platform}-{sha256}.lock")),
+            &format!("the build of {sha256}"),
+        )
     }
 
     /// Verify the archive hash and extract it into the store. Idempotent and
@@ -173,6 +182,7 @@ impl Store {
     /// extracts a given artifact, and extraction still goes via a temp dir
     /// and atomic rename as a second line of defense.
     pub fn add_artifact(&self, archive: &Path, expected_sha256: &str) -> Result<PathBuf> {
+        require_sha256(expected_sha256)?;
         let (actual, _) = sha256_file(archive)?;
         if actual != expected_sha256 {
             bail!(
@@ -182,13 +192,17 @@ impl Store {
         }
         let entry = self.entry_dir(expected_sha256);
         if self.has(expected_sha256) {
+            self.touch_last_used(expected_sha256);
             return Ok(entry.join(STORE_PKG_DIR));
         }
         // Only one process extracts this sha at a time; the rest wait here
         // and then see has()==true.
-        let _lock =
-            ProcessLock::acquire(&self.locks_dir().join(format!("{expected_sha256}.lock")))?;
+        let _lock = ProcessLock::acquire(
+            &self.locks_dir().join(format!("{expected_sha256}.lock")),
+            &format!("extraction of {expected_sha256}"),
+        )?;
         if self.has(expected_sha256) {
+            self.touch_last_used(expected_sha256);
             return Ok(entry.join(STORE_PKG_DIR));
         }
         let parent = entry
