@@ -194,3 +194,10 @@ long = "force"
 env = "ZED_PKG_UPDATE_FORCE"
 default = "false"
 about = "Reinstall even if already on the latest version"
+
+[[flag]]
+command = "self-update"
+long = "skip-checksum"
+env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
+default = "false"
+about = "Skip the SHA256SUMS integrity check (unsafe; local testing only)"
