@@ -32,3 +32,4 @@ tempfile = "3"
 toml = "1"
 walkdir = "2"
 fs2 = "0.4.3"
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

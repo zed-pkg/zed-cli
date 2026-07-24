@@ -57,6 +57,27 @@ zed find http
 Every package is `<org>/<name>`, declared in a `.zpkg.toml` manifest at the
 repo root (TOML only). See `zed init` output for the annotated template.
 
+## Versioning
+
+Packages declare a `version_scheme` (default `semver`):
+
+- **semver** — `1.2.3`; ranges (`^1.2`, `>=0.2 <0.5`) resolve to the max
+  satisfying stable version.
+- **calver** — calendar versions (`2026.07.24`); normalized to a semver total
+  order so the same range algebra applies (`>=2026.0.0 <2027.0.0`).
+- **opaque** — arbitrary tags (`legacy-api`); a requirement must match a
+  published version exactly.
+
+Foreign tag spellings are tolerated on resolution: a leading `v`, Go's
+`+incompatible`, and common PEP 440 pre-releases all normalize to a comparable
+version. See [zed-interfaces `version`](https://github.com/zed-pkg/zed-interfaces/blob/main/src/version.rs).
+
+## Artifact formats
+
+Artifacts are `tar.gz` by default; `zip` is fully supported (both pack
+deterministically and install through the store's magic-byte extraction). The
+registry hosts both on S3/Cloudflare R2.
+
 ## Commands
 
 | Command | What it does |

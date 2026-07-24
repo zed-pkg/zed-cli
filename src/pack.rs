@@ -8,6 +8,7 @@ use flate2::write::GzEncoder;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
+use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{ARCHIVE_ROOT, IGNORE_FILE, PACK_OUT_DIR};
@@ -18,6 +19,7 @@ pub struct PackResult {
     pub size: u64,
     pub file_count: usize,
     pub excluded_count: usize,
+    pub format: ArtifactFormat,
 }
 
 fn glob_set(patterns: &[String]) -> Result<GlobSet> {
@@ -33,10 +35,21 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
-/// Build the pruned, deterministic artifact for the project. Entries are
-/// rooted under `pkg/`, sorted by path, with zeroed timestamps and ids so
-/// the same tree always produces the same sha256.
+/// Build the pruned, deterministic `tar.gz` artifact (the default format).
 pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Result<PackResult> {
+    pack_format(project, manifest, out_dir, ArtifactFormat::TarGz)
+}
+
+/// Build the pruned, deterministic artifact for the project in the given
+/// format (`tar.gz` or `zip`). Entries are rooted under `pkg/`, sorted by
+/// path, with zeroed timestamps and ids so the same tree always produces the
+/// same sha256 regardless of format.
+pub fn pack_format(
+    project: &Path,
+    manifest: &Manifest,
+    out_dir: Option<&Path>,
+    format: ArtifactFormat,
+) -> Result<PackResult> {
     let mut extra = manifest.publish.exclude.clone();
     let ignore_file = project.join(IGNORE_FILE);
     if ignore_file.exists() {
@@ -81,15 +94,36 @@ pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Resu
     };
     fs::create_dir_all(&out_dir)?;
     let file_name = format!(
-        "{}-{}-{}.tar.gz",
-        manifest.package.org, manifest.package.name, manifest.package.version
+        "{}-{}-{}.{}",
+        manifest.package.org,
+        manifest.package.name,
+        manifest.package.version,
+        format.extension()
     );
     let out_path = out_dir.join(file_name);
 
-    let file = fs::File::create(&out_path)?;
+    match format {
+        ArtifactFormat::TarGz => write_tar_gz(project, &included, &out_path)?,
+        ArtifactFormat::Zip => write_zip(project, &included, &out_path)?,
+    }
+
+    let (sha256, size) = sha256_file(&out_path)?;
+    Ok(PackResult {
+        path: out_path,
+        sha256,
+        size,
+        file_count: included.len(),
+        excluded_count,
+        format,
+    })
+}
+
+/// Deterministic gzip'd tar: entries rooted under `pkg/`, zeroed mtime/uid/gid.
+fn write_tar_gz(project: &Path, included: &[PathBuf], out_path: &Path) -> Result<()> {
+    let file = fs::File::create(out_path)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = tar::Builder::new(encoder);
-    for rel in &included {
+    for rel in included {
         let full = project.join(rel);
         let data = fs::read(&full)?;
         let mut header = tar::Header::new_gnu();
@@ -104,16 +138,29 @@ pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Resu
     let encoder = builder.into_inner()?;
     let mut file = encoder.finish()?;
     file.flush()?;
-    drop(file);
+    Ok(())
+}
 
-    let (sha256, size) = sha256_file(&out_path)?;
-    Ok(PackResult {
-        path: out_path,
-        sha256,
-        size,
-        file_count: included.len(),
-        excluded_count,
-    })
+/// Deterministic zip: entries rooted under `pkg/`, fixed 1980 zip-epoch
+/// timestamp so the same tree always produces the same sha256.
+fn write_zip(project: &Path, included: &[PathBuf], out_path: &Path) -> Result<()> {
+    use std::io::Write as _;
+    let file = fs::File::create(out_path)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let epoch = zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).unwrap_or_default();
+    for rel in included {
+        let full = project.join(rel);
+        let data = fs::read(&full)?;
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .unix_permissions(file_mode(&full)?)
+            .last_modified_time(epoch);
+        let archive_path = format!("{ARCHIVE_ROOT}/{}", rel.to_string_lossy());
+        writer.start_file(archive_path, options)?;
+        writer.write_all(&data)?;
+    }
+    writer.finish()?;
+    Ok(())
 }
 
 #[cfg(unix)]

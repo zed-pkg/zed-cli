@@ -139,17 +139,15 @@ impl Registry for FileRegistry {
             description: meta.manifest.package.description.clone(),
             vcs: meta.manifest.package.repository.vcs,
             repo_url: meta.manifest.package.repository.url.clone(),
+            version_scheme: meta.manifest.package.version_scheme,
             latest: None,
             versions: Vec::new(),
         });
         if !pkg.versions.contains(version) {
             pkg.versions.push(version.clone());
         }
-        pkg.versions.sort_by(|a, b| {
-            let pa = Version::parse(a).ok();
-            let pb = Version::parse(b).ok();
-            pb.cmp(&pa)
-        });
+        zed_interfaces::version::sort_desc(&mut pkg.versions);
+        pkg.version_scheme = meta.manifest.package.version_scheme;
         pkg.latest = pkg.versions.first().cloned();
         pkg.description = meta.manifest.package.description.clone();
         fs::write(

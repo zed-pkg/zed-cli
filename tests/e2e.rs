@@ -706,6 +706,236 @@ fn concurrent_installs_share_the_store_safely() {
 }
 
 #[test]
+fn zip_artifacts_pack_deterministically_and_install() {
+    // The registry hosts tarballs AND zip files. A zip artifact must pack
+    // deterministically, prune the same way, and install through the store's
+    // magic-byte extraction just like a tar.gz.
+    use zed_cli::pack::pack_format;
+    use zed_interfaces::artifact::ArtifactFormat;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let project = fixture_package(
+        tmp.path(),
+        "acme",
+        "zipped",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[
+            ("dist/bundle.js", "zip me\n"),
+            ("LICENSE", "MIT\n"),
+            ("tests/t.rs", "strip\n"),
+        ],
+    );
+    let manifest =
+        Manifest::parse(&fs::read_to_string(project.join(MANIFEST_FILE)).unwrap()).unwrap();
+    let a = pack_format(&project, &manifest, None, ArtifactFormat::Zip).unwrap();
+    let b = pack_format(&project, &manifest, None, ArtifactFormat::Zip).unwrap();
+    assert_eq!(a.sha256, b.sha256, "zip pack must be deterministic");
+    assert!(a.path.extension().unwrap() == "zip");
+    assert_eq!(a.format, ArtifactFormat::Zip);
+
+    // Publish the zip to a file registry and install it into a consumer.
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let meta = ops::build_publish_meta(&manifest, &a, Some("deadbeef".into()));
+    assert_eq!(meta.format, ArtifactFormat::Zip);
+    registry.publish(&meta, &a.path, None).unwrap();
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "zipconsumer",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/zipped".to_string(), "^1".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+    let dest = consumer.join(MODULES_DIR).join("acme/zipped");
+    assert!(
+        dest.join("dist/bundle.js").exists(),
+        "zip artifact extracted"
+    );
+    assert!(
+        !dest.join("tests").exists(),
+        "tests pruned from the zip too"
+    );
+}
+
+#[test]
+fn calendar_versions_resolve() {
+    // A calver-scheme package publishes 2026.* tags; a semver range over them
+    // resolves to the newest, proving the shared version resolver is wired in.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    for ver in ["2026.06.01", "2026.07.24", "2026.08.01"] {
+        let dir = tmp.path().join(format!("cal-{ver}"));
+        fs::create_dir_all(&dir).unwrap();
+        let toml = format!(
+            "[package]\norg = \"acme\"\nname = \"caltool\"\nversion = \"{ver}\"\nversion_scheme = \"calver\"\n\n[package.repository]\nvcs = \"git\"\nurl = \"https://github.com/acme/caltool\"\n"
+        );
+        fs::write(dir.join(MANIFEST_FILE), &toml).unwrap();
+        fs::write(dir.join("f.txt"), "x\n").unwrap();
+        publish_to(&registry, &dir);
+    }
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "calapp",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert(
+                "acme/caltool".to_string(),
+                ">=2026.0.0 <2027.0.0".to_string(),
+            );
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+    let lock = Lockfile::parse(&fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap()).unwrap();
+    assert_eq!(
+        lock.find("acme", "caltool").unwrap().version,
+        "2026.08.01",
+        "newest calendar version resolved"
+    );
+}
+
+/// Write a package fixture whose manifest declares a non-default
+/// `version_scheme` (issue #3), so calendar/opaque versions publish and
+/// install like any other package.
+fn scheme_fixture(root: &Path, name: &str, version: &str, scheme: &str) -> PathBuf {
+    let dir = root.join(format!("{name}-{}", version.replace(['.', '-'], "_")));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(MANIFEST_FILE),
+        format!(
+            r#"[package]
+org = "acme"
+name = "{name}"
+version = "{version}"
+version_scheme = "{scheme}"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/{name}"
+"#
+        ),
+    )
+    .unwrap();
+    write_files(&dir, &[("f.txt", "x\n"), ("LICENSE", "MIT\n")]);
+    dir
+}
+
+#[test]
+fn calver_versions_resolve_by_semver_range() {
+    // A calendar-versioned package resolves under normal semver ranges: the
+    // resolver normalizes 2026.07.24 -> 2026.7.24 to a total order.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    for v in ["2026.07.24", "2026.08.01"] {
+        publish_to(
+            &registry,
+            &scheme_fixture(tmp.path(), "caltool", v, "calver"),
+        );
+    }
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "calapp",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert(
+                "acme/caltool".to_string(),
+                ">=2026.0.0, <2027.0.0".to_string(),
+            );
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    let outcome =
+        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+    assert_eq!(
+        outcome.installed,
+        vec![("acme/caltool".to_string(), "2026.08.01".to_string())]
+    );
+    let lock = Lockfile::parse(&fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap()).unwrap();
+    assert_eq!(lock.find("acme", "caltool").unwrap().version, "2026.08.01");
+}
+
+#[test]
+fn opaque_versions_require_exact_match() {
+    // Opaque-scheme packages have no range algebra; the requirement must match
+    // a published tag exactly, and a semver-range request finds nothing.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    for v in ["legacy-api", "release-candidate-1"] {
+        publish_to(
+            &registry,
+            &scheme_fixture(tmp.path(), "opaquetool", v, "opaque"),
+        );
+    }
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    let exact = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "opaqueapp",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/opaquetool".to_string(), "legacy-api".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let outcome = ops::install(&exact, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+    assert_eq!(
+        outcome.installed,
+        vec![("acme/opaquetool".to_string(), "legacy-api".to_string())]
+    );
+
+    let ranged = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "opaquerange",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/opaquetool".to_string(), "^1".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let err = ops::install(&ranged, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("no version"),
+        "unexpected error: {err:#}"
+    );
+}
+
+#[test]
 fn store_prune_removes_unreferenced_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let registry_dir = tmp.path().join("registry");

@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use semver::{Version, VersionReq};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
     Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
@@ -13,11 +12,12 @@ use zed_interfaces::manifest::{
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
 use zed_interfaces::vcs::Vcs;
+use zed_interfaces::version::{self, Requirement};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::pack::{self, PackResult};
-use crate::registry::{Registry, registry_for, resolve_version};
+use crate::registry::{Registry, registry_for};
 use crate::store::{Store, human_size};
 use crate::vcs::verify_publish_provenance;
 
@@ -203,9 +203,8 @@ pub fn install(
             let entry = lock
                 .find(&org, &name)
                 .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
-            let req = VersionReq::parse(req_str)?;
-            let version = Version::parse(&entry.version)?;
-            if !req.matches(&version) {
+            let req = Requirement::parse(req_str);
+            if !req.matches(&entry.version) {
                 bail!(
                     "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
                     entry.version
@@ -233,11 +232,9 @@ pub fn install(
         }
         while let Some((org, name, req_str)) = queue.pop_front() {
             let key = format!("{org}/{name}");
-            let req = VersionReq::parse(&req_str)
-                .with_context(|| format!("invalid requirement `{req_str}` for {key}"))?;
+            let req = Requirement::parse(&req_str);
             if let Some(existing) = resolved.get(&key) {
-                let version = Version::parse(&existing.version)?;
-                if req.matches(&version) {
+                if req.matches(&existing.version) {
                     continue;
                 }
                 bail!(
@@ -247,13 +244,13 @@ pub fn install(
                 );
             }
             let pkg = reg.get_package(&org, &name)?;
-            let version = resolve_version(&req, &pkg.versions).with_context(|| {
+            let version = version::resolve(&req, &pkg.versions).with_context(|| {
                 format!(
                     "no version of {key} satisfies `{req_str}` (available: {})",
                     pkg.versions.join(", ")
                 )
             })?;
-            let vm = reg.get_version(&org, &name, &version.to_string())?;
+            let vm = reg.get_version(&org, &name, version)?;
             let pkg_dir = ensure_artifact(reg.as_ref(), &store, &vm)?;
             resolved.insert(key, vm);
             if let Ok(sub_manifest) = read_manifest(&pkg_dir) {
@@ -353,7 +350,10 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let (org, name) = split_key(&rest)?;
     let req = match req {
         Some(req) => {
-            VersionReq::parse(&req).with_context(|| format!("invalid requirement `{req}`"))?;
+            if req.trim().is_empty() {
+                bail!("empty requirement for {org}/{name}");
+            }
+            // Any non-empty spec is valid: a semver range or an opaque tag.
             req
         }
         None => {
@@ -362,7 +362,11 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
             let latest = pkg
                 .latest
                 .with_context(|| format!("{org}/{name} has no published versions"))?;
-            format!("^{latest}")
+            // Caret-range a semver-ish latest; pin an opaque tag exactly.
+            match version::parse_version(&latest) {
+                Some(_) => format!("^{latest}"),
+                None => latest,
+            }
         }
     };
     let mut manifest = read_manifest(project)?;
@@ -421,7 +425,7 @@ pub fn build_publish_meta(
         vcs_commit: commit,
         sha256: packed.sha256.clone(),
         size: packed.size,
-        format: zed_interfaces::ArtifactFormat::TarGz,
+        format: packed.format,
     }
 }
 
@@ -500,6 +504,7 @@ pub fn test_local(project: &Path, _cfg: &Config) -> Result<()> {
             org: "zed-local".to_string(),
             name: "consumer".to_string(),
             version: "0.0.0".to_string(),
+            version_scheme: version::VersionScheme::Semver,
             description: None,
             license: None,
             repository: RepositorySection {

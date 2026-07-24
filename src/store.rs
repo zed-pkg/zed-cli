@@ -123,9 +123,9 @@ impl Store {
         fs::create_dir_all(&parent)?;
         let tmp = tempfile::tempdir_in(&parent)?;
 
-        let file = fs::File::open(archive)?;
-        let mut tar = tar::Archive::new(GzDecoder::new(file));
-        tar.unpack(tmp.path())?;
+        // Detect the format by magic bytes rather than trusting a filename:
+        // gzip starts with 1f 8b, zip with "PK\x03\x04". Both are supported.
+        extract_archive(archive, tmp.path())?;
         // Archives root files under `pkg/`, which matches STORE_PKG_DIR.
         if !tmp.path().join(ARCHIVE_ROOT).is_dir() {
             bail!(
@@ -233,6 +233,33 @@ impl Store {
             fs::remove_dir_all(&dir)?;
         }
         Ok(freed)
+    }
+}
+
+/// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic bytes.
+fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
+    let mut magic = [0u8; 4];
+    let read = {
+        use std::io::Read as _;
+        let mut file = fs::File::open(archive)?;
+        file.read(&mut magic).unwrap_or(0)
+    };
+    if read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+        let file = fs::File::open(archive)?;
+        let mut tar = tar::Archive::new(GzDecoder::new(file));
+        tar.unpack(dest)?;
+        Ok(())
+    } else if read >= 4 && &magic == b"PK\x03\x04" {
+        let file = fs::File::open(archive)?;
+        let mut zip = zip::ZipArchive::new(file)
+            .with_context(|| format!("reading zip {}", archive.display()))?;
+        zip.extract(dest)?;
+        Ok(())
+    } else {
+        bail!(
+            "unrecognized artifact format in {} (expected gzip or zip)",
+            archive.display()
+        );
     }
 }
 
