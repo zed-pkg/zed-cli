@@ -389,9 +389,10 @@ fn install_locked(
                 );
             }
             let pkg = reg.get_package(&org, &name)?;
-            // Yanked versions are skipped for range requirements (next-best
-            // wins); exact pins still install with a warning, so existing
-            // lockfiles keep working, cargo-style.
+            // Fresh resolution never selects a yanked version, cargo-style:
+            // ranges fall through to the next-best match, exact requirements
+            // fail loudly. Installs pinned by an existing lockfile keep
+            // working because the --frozen path skips resolution entirely.
             let mut candidates = pkg.versions.clone();
             let vm = loop {
                 let version = version::resolve(&req, &candidates)
@@ -404,11 +405,14 @@ fn install_locked(
                     .to_string();
                 let vm = reg.get_version(&org, &name, &version)?;
                 if vm.yanked {
-                    if matches!(req, Requirement::Range(_)) {
-                        candidates.retain(|v| *v != version);
-                        continue;
+                    if matches!(req, Requirement::Exact(_)) {
+                        bail!(
+                            "{key}@{version} is yanked and cannot be newly installed \
+                             (existing lockfiles keep working via `zed install --frozen`)"
+                        );
                     }
-                    eprintln!("warning: {key}@{version} is yanked; installing pinned version");
+                    candidates.retain(|v| *v != version);
+                    continue;
                 }
                 break vm;
             };
