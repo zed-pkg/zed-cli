@@ -61,6 +61,69 @@ pub fn is_newer(current: &str, latest_tag: &str) -> bool {
     }
 }
 
+/// Parse a `SHA256SUMS` file (the `sha256sum` output format, one entry per
+/// line: `<hex>␠␠<filename>`, or `<hex>␠*<filename>` in binary mode) and
+/// return the expected lowercase digest for `filename`, if present and well
+/// formed. Comment/blank lines and entries for other assets are ignored.
+fn expected_sha256_for(sums: &str, filename: &str) -> Option<String> {
+    for line in sums.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((hex, name)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        // Binary-mode entries prefix the name with `*`; strip it plus any
+        // surrounding whitespace before comparing.
+        let name = name.trim().trim_start_matches('*').trim();
+        if name == filename {
+            let hex = hex.trim().to_ascii_lowercase();
+            return is_sha256_hex(&hex).then_some(hex);
+        }
+    }
+    None
+}
+
+/// Verify a downloaded release asset against the release's published
+/// SHA256SUMS before anything is extracted or installed. A corrupted download
+/// or swapped asset is caught here — before it can replace the running
+/// binary. Failing to FETCH the sums refuses the update (there is nothing to
+/// verify against); `skip_checksum` bypasses the whole check for local
+/// testing only.
+fn verify_asset_checksum(
+    client: &reqwest::blocking::Client,
+    tag: &str,
+    asset: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/SHA256SUMS");
+    let resp = client
+        .get(&sums_url)
+        .send()
+        .with_context(|| format!("fetching {sums_url}"))?;
+    if !resp.status().is_success() {
+        bail!(
+            "refusing to self-update: could not fetch {sums_url} ({}); there is no \
+             checksum to verify {asset} against (pass --skip-checksum to override, unsafe)",
+            resp.status()
+        );
+    }
+    let sums = resp.text().context("reading SHA256SUMS")?;
+    let expected = expected_sha256_for(&sums, asset).with_context(|| {
+        format!("SHA256SUMS from the release has no entry for {asset}; refusing to self-update")
+    })?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        bail!(
+            "checksum mismatch for {asset}: expected {expected}, got {actual}; \
+             refusing to replace the binary"
+        );
+    }
+    println!("verified {asset} sha256 {actual}");
+    Ok(())
+}
+
 /// Extract the `zed` (or `zed.exe`) binary bytes from a release archive.
 fn extract_binary(bytes: &[u8], bin_name: &str, is_zip: bool) -> Result<Vec<u8>> {
     if is_zip {
