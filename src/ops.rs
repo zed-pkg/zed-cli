@@ -7,7 +7,8 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
-    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection, is_slug,
+    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection, is_sha256_hex,
+    is_slug,
 };
 use zed_interfaces::paths::{
     BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, build_entry_rel, current_platform,
