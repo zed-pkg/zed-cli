@@ -937,8 +937,8 @@ pub fn self_update(check_only: bool, skip_checksum: bool) -> Result<()> {
     } else {
         ("tar.gz", "zed")
     };
-    let url =
-        format!("https://github.com/{REPO}/releases/download/v{latest_tag}/zed-{target}.{ext}");
+    let asset = format!("zed-{target}.{ext}");
+    let url = format!("https://github.com/{REPO}/releases/download/v{latest_tag}/{asset}");
     println!("downloading {url}");
     let response = client.get(&url).send()?;
     if !response.status().is_success() {
@@ -949,6 +949,46 @@ pub fn self_update(check_only: bool, skip_checksum: bool) -> Result<()> {
     let staging = tempfile::tempdir()?;
     let archive_path = staging.path().join(format!("zed.{ext}"));
     fs::write(&archive_path, &bytes)?;
+
+    // Verify the archive against the release's published SHA256SUMS before we
+    // trust its contents. GitHub serves both over the same TLS origin, so a
+    // corrupted download or a swapped asset is caught here — before we ever
+    // extract it or replace the running binary.
+    if skip_checksum {
+        eprintln!(
+            "WARNING: --skip-checksum set; installing {asset} WITHOUT verifying its \
+             sha256. This defeats self-update integrity checking and is intended \
+             only for local testing."
+        );
+    } else {
+        let sums_url =
+            format!("https://github.com/{REPO}/releases/download/v{latest_tag}/SHA256SUMS");
+        let sums_resp = client
+            .get(&sums_url)
+            .send()
+            .with_context(|| format!("fetching {sums_url}"))?;
+        if !sums_resp.status().is_success() {
+            bail!(
+                "refusing to self-update: could not fetch {sums_url} ({}); \
+                 there is no checksum to verify {asset} against \
+                 (pass --skip-checksum to override, unsafe)",
+                sums_resp.status()
+            );
+        }
+        let sums = sums_resp.text().context("reading SHA256SUMS")?;
+        let expected = expected_sha256_for(&sums, &asset).with_context(|| {
+            format!("SHA256SUMS from the release has no entry for {asset}; refusing to self-update")
+        })?;
+        let (actual, _) = pack::sha256_file(&archive_path)?;
+        if actual != expected {
+            bail!(
+                "checksum mismatch for {asset}: expected {expected}, got {actual}; \
+                 refusing to replace the binary"
+            );
+        }
+        println!("verified {asset} sha256 {actual}");
+    }
+
     let extracted = staging.path().join("extract");
     fs::create_dir_all(&extracted)?;
     crate::store::extract_archive_for_update(&archive_path, &extracted)?;
