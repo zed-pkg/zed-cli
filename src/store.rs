@@ -172,7 +172,9 @@ impl Store {
     pub fn build_lock(&self, platform: &str, sha256: &str) -> Result<ProcessLock> {
         require_sha256(sha256)?;
         ProcessLock::acquire(
-            &self.locks_dir().join(format!("build-{platform}-{sha256}.lock")),
+            &self
+                .locks_dir()
+                .join(format!("build-{platform}-{sha256}.lock")),
             &format!("the build of {sha256}"),
         )
     }
@@ -417,8 +419,7 @@ pub fn extract_archive_for_update(archive: &Path, dest: &Path) -> Result<()> {
 /// True when an archive-declared path is safe to create under `dest`:
 /// relative, no `..`, no absolute/prefix components.
 fn safe_entry_path(path: &Path) -> bool {
-    path.components().all(|c| matches!(c, Component::Normal(_)))
-        && !path.as_os_str().is_empty()
+    path.components().all(|c| matches!(c, Component::Normal(_))) && !path.as_os_str().is_empty()
 }
 
 /// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic
@@ -458,7 +459,10 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
             let mut entry = entry?;
             let path = entry.path()?.to_path_buf();
             if !safe_entry_path(&path) {
-                bail!("artifact entry `{}` escapes the extraction root", path.display());
+                bail!(
+                    "artifact entry `{}` escapes the extraction root",
+                    path.display()
+                );
             }
             let kind = entry.header().entry_type();
             match kind {
@@ -484,7 +488,10 @@ fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
             let mut out = fs::File::create(&target)?;
             let copied = std::io::copy(&mut limited, &mut out)?;
             if copied > declared {
-                bail!("artifact entry `{}` exceeds its declared size", path.display());
+                bail!(
+                    "artifact entry `{}` exceeds its declared size",
+                    path.display()
+                );
             }
             #[cfg(unix)]
             if let Ok(mode) = entry.header().mode() {

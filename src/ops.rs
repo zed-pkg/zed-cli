@@ -135,12 +135,11 @@ pub struct WorkspaceInfo {
 fn find_workspace(project: &Path) -> Option<WorkspaceInfo> {
     let mut dir: Option<&Path> = Some(project);
     while let Some(d) = dir {
-        if d.join(MANIFEST_FILE).exists() {
-            if let Ok(manifest) = read_manifest(d) {
-                if let Some(ws) = &manifest.workspace {
-                    return Some(collect_members(d, &ws.members));
-                }
-            }
+        if d.join(MANIFEST_FILE).exists()
+            && let Ok(manifest) = read_manifest(d)
+            && let Some(ws) = &manifest.workspace
+        {
+            return Some(collect_members(d, &ws.members));
         }
         dir = d.parent();
     }
@@ -826,16 +825,18 @@ pub fn run_bin(project: &Path, bin: &str, args: &[String]) -> Result<i32> {
 
 /// `zed yank org/name@version [--undo]`.
 pub fn yank(cfg: &Config, spec: &str, undo: bool) -> Result<()> {
-    let (key, version) = spec
-        .split_once('@')
-        .context("expected org/name@version")?;
+    let (key, version) = spec.split_once('@').context("expected org/name@version")?;
     let (org, name) = split_key(key)?;
     let reg = registry_for(&cfg.registry)?;
     let token = cfg.resolve_token();
     let response = reg.yank(&org, &name, version, !undo, token.as_deref())?;
     println!(
         "{} {}/{}@{}",
-        if response.yanked { "yanked" } else { "restored" },
+        if response.yanked {
+            "yanked"
+        } else {
+            "restored"
+        },
         response.org,
         response.name,
         response.version
@@ -909,9 +910,8 @@ pub fn self_update(check_only: bool) -> Result<()> {
     } else {
         ("tar.gz", "zed")
     };
-    let url = format!(
-        "https://github.com/{REPO}/releases/download/v{latest_tag}/zed-{target}.{ext}"
-    );
+    let url =
+        format!("https://github.com/{REPO}/releases/download/v{latest_tag}/zed-{target}.{ext}");
     println!("downloading {url}");
     let response = client.get(&url).send()?;
     if !response.status().is_success() {
@@ -931,9 +931,7 @@ pub fn self_update(check_only: bool) -> Result<()> {
     }
 
     let current_exe = std::env::current_exe().context("locating current executable")?;
-    let current_exe = current_exe
-        .canonicalize()
-        .unwrap_or(current_exe);
+    let current_exe = current_exe.canonicalize().unwrap_or(current_exe);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -995,7 +993,14 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         .insert(format!("{org}/{name}"), req.clone());
     write_manifest(project, &manifest)?;
     println!("added {org}/{name} = \"{req}\"");
-    install(project, cfg, false, InstallMode::Symlink, Adapter::None, false)?;
+    install(
+        project,
+        cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )?;
     Ok(())
 }
 
@@ -1013,7 +1018,14 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let dest = project.join(MODULES_DIR).join(&org).join(&name);
     replace_dest(&dest)?;
     println!("removed {org}/{name}");
-    install(project, cfg, false, InstallMode::Symlink, Adapter::None, false)?;
+    install(
+        project,
+        cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )?;
     Ok(())
 }
 

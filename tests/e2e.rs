@@ -266,8 +266,15 @@ fn publish_install_roundtrip_with_transitive_deps() {
     );
 
     let cfg = test_config(tmp.path(), &registry_dir);
-    let outcome =
-        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    let outcome = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     assert_eq!(outcome.installed.len(), 2, "direct + transitive");
 
     let demo_link = consumer.join(MODULES_DIR).join("acme").join("demo");
@@ -295,7 +302,15 @@ fn publish_install_roundtrip_with_transitive_deps() {
 
     // Frozen re-install from the lockfile succeeds after wiping modules.
     fs::remove_dir_all(consumer.join(MODULES_DIR)).unwrap();
-    ops::install(&consumer, &cfg, true, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        true,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
 }
 
@@ -331,7 +346,15 @@ fn copy_mode_is_container_safe() {
     );
 
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Copy, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Copy,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
 
     let modules = consumer.join(MODULES_DIR);
     let mut checked = 0;
@@ -394,8 +417,15 @@ fn circular_deps_terminate_and_install_both() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    let outcome =
-        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    let outcome = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         outcome.installed.len(),
         2,
@@ -439,7 +469,15 @@ fn node_adapter_links_into_node_modules() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::Node, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Node,
+        false,
+    )
+    .unwrap();
 
     let node_link = consumer.join("node_modules").join("@acme").join("nodelib");
     assert!(node_link.join("package.json").exists());
@@ -589,8 +627,15 @@ fn version_conflicts_fail_loudly() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    let err =
-        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap_err();
+    let err = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("version conflict"),
         "unexpected error: {err:#}"
@@ -689,7 +734,15 @@ fn concurrent_installs_share_the_store_safely() {
                 home: (*home).clone(),
                 token: None,
             };
-            ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+            ops::install(
+                &consumer,
+                &cfg,
+                false,
+                InstallMode::Symlink,
+                Adapter::None,
+                false,
+            )
+            .unwrap();
             assert!(
                 consumer
                     .join(MODULES_DIR)
@@ -758,7 +811,15 @@ fn zip_artifacts_pack_deterministically_and_install() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme/zipped");
     assert!(
         dest.join("dist/bundle.js").exists(),
@@ -806,7 +867,15 @@ fn calendar_versions_resolve() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(
         lock.find("acme", "caltool").unwrap().version,
@@ -873,8 +942,15 @@ fn calver_versions_resolve_by_semver_range() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    let outcome =
-        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    let outcome = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         outcome.installed,
         vec![("acme/caltool".to_string(), "2026.08.01".to_string())]
@@ -911,7 +987,15 @@ fn opaque_versions_require_exact_match() {
         None,
         &[],
     );
-    let outcome = ops::install(&exact, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    let outcome = ops::install(
+        &exact,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     assert_eq!(
         outcome.installed,
         vec![("acme/opaquetool".to_string(), "legacy-api".to_string())]
@@ -930,7 +1014,15 @@ fn opaque_versions_require_exact_match() {
         None,
         &[],
     );
-    let err = ops::install(&ranged, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap_err();
+    let err = ops::install(
+        &ranged,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap_err();
     assert!(
         format!("{err:#}").contains("no version"),
         "unexpected error: {err:#}"
@@ -969,7 +1061,15 @@ fn store_prune_removes_unreferenced_entries() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
 
     let store = zed_cli::store::Store::new(&cfg.home);
     assert_eq!(store.status().0, 1);
@@ -1019,7 +1119,15 @@ fn bins_are_hoisted_and_runnable() {
         manifest_toml("zed-local", "consumer", "0.0.0", &deps, None),
     )
     .unwrap();
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
 
     let hoisted = consumer.join(MODULES_DIR).join(".bin").join("hello");
     assert!(hoisted.exists(), "hoisted bin link missing");
@@ -1068,7 +1176,15 @@ fn workspace_members_link_from_source() {
     .unwrap();
 
     // No registry publish for liba: resolution must come from the workspace.
-    ops::install(&app, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &app,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
 
     let link = app.join(MODULES_DIR).join("acme").join("liba");
     let linked_lib = link.join("src/lib.txt");
@@ -1123,14 +1239,36 @@ fn build_hooks_stage_build_and_cache() {
     .unwrap();
 
     // Without --allow-build the pristine source is linked (no out.txt).
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme").join("native");
     assert!(!dest.join("out.txt").exists());
 
     // With --allow-build the built tree is linked instead.
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, true).unwrap();
-    assert_eq!(fs::read_to_string(dest.join("out.txt")).unwrap(), "compiled");
-    assert!(dest.join("src/lib.c").exists(), "declared output dirs survive");
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(dest.join("out.txt")).unwrap(),
+        "compiled"
+    );
+    assert!(
+        dest.join("src/lib.c").exists(),
+        "declared output dirs survive"
+    );
 
     // The store's source entry must remain build-free (immutability).
     let store = zed_cli::store::Store::new(&cfg.home);
@@ -1187,7 +1325,15 @@ fn build_overrides_replace_broken_commands() {
     )
     .unwrap();
 
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, true).unwrap();
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        true,
+    )
+    .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme").join("broken-build");
     assert_eq!(fs::read_to_string(dest.join("out.txt")).unwrap(), "patched");
 }
@@ -1226,11 +1372,21 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         manifest_toml("zed-local", "pinned", "0.0.0", &deps, None),
     )
     .unwrap();
-    ops::install(&pinned, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &pinned,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.1.0");
 
-    registry.yank("acme", "yankable", "1.1.0", true, None).unwrap();
+    registry
+        .yank("acme", "yankable", "1.1.0", true, None)
+        .unwrap();
 
     // Fresh range resolution now skips the yanked 1.1.0 and picks 1.0.0.
     let ranged = tmp.path().join("ranged");
@@ -1242,7 +1398,15 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         manifest_toml("zed-local", "ranged", "0.0.0", &deps, None),
     )
     .unwrap();
-    ops::install(&ranged, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &ranged,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.0.0");
 
@@ -1256,19 +1420,44 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         manifest_toml("zed-local", "fresh-pin", "0.0.0", &deps, None),
     )
     .unwrap();
-    let err = ops::install(&fresh_pin, &cfg, false, InstallMode::Symlink, Adapter::None, false)
-        .unwrap_err();
+    let err = ops::install(
+        &fresh_pin,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap_err();
     assert!(err.to_string().contains("yanked"), "unexpected: {err:#}");
 
     // ...but the pre-existing lockfile keeps working via --frozen.
-    ops::install(&pinned, &cfg, true, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &pinned,
+        &cfg,
+        true,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.1.0");
 
     // Restoring the version makes it resolvable again.
-    registry.yank("acme", "yankable", "1.1.0", false, None).unwrap();
+    registry
+        .yank("acme", "yankable", "1.1.0", false, None)
+        .unwrap();
     fs::remove_file(ranged.join(LOCKFILE_FILE)).unwrap();
-    ops::install(&ranged, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    ops::install(
+        &ranged,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.1.0");
 }
@@ -1304,7 +1493,15 @@ fn gc_collects_unreferenced_entries() {
             manifest_toml("zed-local", "consumer", "0.0.0", &deps, None),
         )
         .unwrap();
-        ops::install(consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+        ops::install(
+            consumer,
+            &cfg,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+        )
+        .unwrap();
     }
 
     let store = zed_cli::store::Store::new(&cfg.home);
@@ -1362,8 +1559,15 @@ fn malicious_registry_responses_are_rejected() {
         manifest_toml("zed-local", "consumer", "0.0.0", &deps, None),
     )
     .unwrap();
-    let err = ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false)
-        .unwrap_err();
+    let err = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("invalid package identity"),
         "unexpected error: {err:#}"
@@ -1372,8 +1576,15 @@ fn malicious_registry_responses_are_rejected() {
     // Non-hex sha256 (a path, say) must be refused before any disk use.
     let evil_sha = regex_replace_sha(&text, "../../escape");
     fs::write(&vjson, &evil_sha).unwrap();
-    let err = ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None, false)
-        .unwrap_err();
+    let err = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap_err();
     assert!(
         err.to_string().contains("invalid sha256"),
         "unexpected error: {err:#}"
