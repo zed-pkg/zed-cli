@@ -75,11 +75,9 @@ pub fn pack_format(
         if !entry.file_type().is_file() {
             continue;
         }
-        let rel = entry
-            .path()
-            .strip_prefix(project)
-            .expect("walkdir stays under root")
-            .to_path_buf();
+        let Ok(rel) = entry.path().strip_prefix(project).map(Path::to_path_buf) else {
+            continue;
+        };
         if always.is_match(&rel) || !excludes.is_match(&rel) {
             included.push(rel);
         } else {
