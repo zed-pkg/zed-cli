@@ -223,6 +223,16 @@ pub fn self_update(current_version: &str, check: bool, force: bool, skip_checksu
         .bytes()
         .context("reading release asset")?;
 
+    if skip_checksum {
+        eprintln!(
+            "WARNING: --skip-checksum set; installing {asset} WITHOUT verifying its \
+             sha256. This defeats self-update integrity checking and is intended \
+             only for local testing."
+        );
+    } else {
+        verify_asset_checksum(&client, &tag, &asset, &bytes)?;
+    }
+
     let bin_name = if is_zip { "zed.exe" } else { "zed" };
     let new_bin = extract_binary(&bytes, bin_name, is_zip)?;
     let exe = std::env::current_exe().context("locating the running executable")?;
