@@ -1,0 +1,5 @@
+# Pin the toolchain so CI cache keys stay stable and every machine builds the
+# same way (zed-docs issue #8).
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

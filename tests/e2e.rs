@@ -610,8 +610,12 @@ fn resolver_picks_max_satisfying_stable() {
 }
 
 #[test]
-fn test_local_runs_smoke_test_like_a_consumer() {
+fn r2g_runs_smoke_test_like_a_consumer() {
+    use zed_cli::r2g::{self, R2gOptions};
+
     let tmp = tempfile::tempdir().unwrap();
+    // The r2g workspace defaults to <home>/r2g; the test config's home is a
+    // temp dir, so the whole roundtrip stays hermetic (no real ~/.zed-pkg).
     let good = fixture_package(
         tmp.path(),
         "acme",
@@ -622,7 +626,7 @@ fn test_local_runs_smoke_test_like_a_consumer() {
         BASE_FILES,
     );
     let cfg = test_config(tmp.path(), &tmp.path().join("unused-registry"));
-    ops::test_local(&good, &cfg).unwrap();
+    r2g::run(&good, &cfg, &R2gOptions::default()).unwrap();
 
     let bad = fixture_package(
         tmp.path(),
@@ -633,7 +637,7 @@ fn test_local_runs_smoke_test_like_a_consumer() {
         Some("exit 7"),
         BASE_FILES,
     );
-    let err = ops::test_local(&bad, &cfg).unwrap_err();
+    let err = r2g::run(&bad, &cfg, &R2gOptions::default()).unwrap_err();
     assert!(format!("{err:#}").contains("smoke_test failed"));
 }
 
@@ -975,4 +979,415 @@ fn store_prune_removes_unreferenced_entries() {
     let (removed, _) = store.prune().unwrap();
     assert_eq!(removed, 1);
     assert_eq!(store.status().0, 0);
+}
+
+// --- Build cache (zed-docs issue #5) -------------------------------------
+
+/// Publish a package that ships source plus a `[build]` step. The command is
+/// embedded as a TOML multi-line literal so it can contain quotes freely.
+fn build_fixture(root: &Path, name: &str, version: &str, command: &str) -> PathBuf {
+    let dir = root.join(format!("bf-{name}"));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(MANIFEST_FILE),
+        format!(
+            r#"[package]
+org = "acme"
+name = "{name}"
+version = "{version}"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/{name}"
+
+[build]
+command = '''{command}'''
+"#
+        ),
+    )
+    .unwrap();
+    write_files(&dir, &[("src.txt", "source\n"), ("LICENSE", "MIT\n")]);
+    dir
+}
+
+#[test]
+fn build_step_compiles_and_is_cached() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    // Each build appends to a counter outside the sandbox, so we can prove the
+    // build ran exactly once across two installs (the second is a cache hit).
+    let counter = tmp.path().join("build-runs.log");
+    let command = format!(
+        "echo run >> \"{}\"; echo compiled > built.txt",
+        counter.display()
+    );
+    let pkg = build_fixture(tmp.path(), "native", "1.0.0", &command);
+    publish_to(&registry, &pkg);
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "buildapp",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/native".to_string(), "^1".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+
+    let module = consumer.join(MODULES_DIR).join("acme").join("native");
+    assert!(module.join("built.txt").exists(), "compiled output missing");
+    assert!(module.join("src.txt").exists(), "source should remain too");
+    let store = zed_cli::store::Store::new(&cfg.home);
+    assert!(store.build_size() > 0, "build cache should be populated");
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap().lines().count(),
+        1,
+        "build should have run once"
+    );
+
+    // Re-install after wiping modules: a build-cache hit, no rebuild.
+    fs::remove_dir_all(consumer.join(MODULES_DIR)).unwrap();
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+    assert!(module.join("built.txt").exists());
+    assert_eq!(
+        fs::read_to_string(&counter).unwrap().lines().count(),
+        1,
+        "second install must hit the build cache, not rebuild"
+    );
+}
+
+#[test]
+fn consumer_can_override_dependency_build() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    // The package's own build produces built.txt...
+    let pkg = build_fixture(
+        tmp.path(),
+        "patchable",
+        "1.0.0",
+        "echo compiled > built.txt",
+    );
+    publish_to(&registry, &pkg);
+
+    // ...but the consumer patches it to produce a different artifact instead.
+    let consumer = tmp.path().join("override-consumer");
+    fs::create_dir_all(&consumer).unwrap();
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        r#"[package]
+org = "consumerorg"
+name = "overrideapp"
+version = "0.0.1"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/consumerorg/overrideapp"
+
+[dependencies]
+"acme/patchable" = "^1"
+
+[build-overrides."acme/patchable"]
+command = '''echo overridden > overridden.txt'''
+"#,
+    )
+    .unwrap();
+
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+
+    let module = consumer.join(MODULES_DIR).join("acme").join("patchable");
+    assert!(
+        module.join("overridden.txt").exists(),
+        "consumer override should have run"
+    );
+    assert!(
+        !module.join("built.txt").exists(),
+        "upstream build must not run when overridden"
+    );
+}
+
+// --- Binary hoisting + zed run (zed-docs issue #7) -----------------------
+
+#[cfg(unix)]
+fn write_executable(path: &Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, contents).unwrap();
+    let mut perms = fs::metadata(path).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(path, perms).unwrap();
+}
+
+/// A package exposing one executable via `[bin]`, with the script marked +x so
+/// pack preserves its mode.
+#[cfg(unix)]
+fn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {
+    let dir = root.join(format!("binf-{name}"));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join(MANIFEST_FILE),
+        format!(
+            r#"[package]
+org = "acme"
+name = "{name}"
+version = "1.0.0"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/{name}"
+
+[bin]
+{bin_name} = "bin/{bin_name}"
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(dir.join("LICENSE"), "MIT\n").unwrap();
+    write_executable(&dir.join("bin").join(bin_name), script);
+    dir
+}
+
+#[cfg(unix)]
+fn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {
+    let mut map = BTreeMap::new();
+    for d in deps {
+        map.insert(format!("acme/{d}"), "^1".to_string());
+    }
+    fixture_package(root, "consumerorg", name, "0.0.1", &map, None, &[])
+}
+
+#[test]
+#[cfg(unix)]
+fn bins_are_hoisted_and_runnable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    publish_to(
+        &registry,
+        &bin_fixture(
+            tmp.path(),
+            "greeter",
+            "greet",
+            "#!/bin/sh\necho hello\nexit 0\n",
+        ),
+    );
+    publish_to(
+        &registry,
+        &bin_fixture(tmp.path(), "boomer", "boom", "#!/bin/sh\nexit 7\n"),
+    );
+
+    let consumer = bin_consumer(tmp.path(), "binapp", &["greeter", "boomer"]);
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+
+    let bin_dir = consumer.join(MODULES_DIR).join(".bin");
+    assert!(bin_dir.join("greet").exists(), "greet not hoisted");
+    assert!(bin_dir.join("boom").exists(), "boom not hoisted");
+
+    // zed run resolves the hoisted bin and propagates its exit code.
+    assert_eq!(ops::run(&consumer, "greet", &[]).unwrap(), 0);
+    assert_eq!(ops::run(&consumer, "boom", &[]).unwrap(), 7);
+    assert!(
+        ops::run(&consumer, "definitely-not-a-real-bin-xyz", &[]).is_err(),
+        "unknown command should error"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn hoisted_bins_are_container_safe_in_copy_mode() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    publish_to(
+        &registry,
+        &bin_fixture(tmp.path(), "ctool", "ctool", "#!/bin/sh\nexit 0\n"),
+    );
+
+    let consumer = bin_consumer(tmp.path(), "copybinapp", &["ctool"]);
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Copy, Adapter::None).unwrap();
+
+    let shim = consumer.join(MODULES_DIR).join(".bin").join("ctool");
+    assert!(
+        !fs::symlink_metadata(&shim)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "copy mode must materialize a real bin file, not a symlink"
+    );
+    assert_eq!(ops::run(&consumer, "ctool", &[]).unwrap(), 0);
+}
+
+// --- Monorepo workspaces (zed-docs issue #7) -----------------------------
+
+#[test]
+fn workspace_installs_members_against_one_lock() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    // A published external dependency.
+    let ext = fixture_package(
+        tmp.path(),
+        "acme",
+        "ext",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[("e.txt", "e\n"), ("LICENSE", "MIT\n")],
+    );
+    publish_to(&registry, &ext);
+
+    // Workspace root: a package that also declares members.
+    let root = tmp.path().join("mono");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join(MANIFEST_FILE),
+        r#"[package]
+org = "acme"
+name = "mono"
+version = "0.0.0"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/mono"
+
+[workspace]
+members = ["packages/*", "apps/*"]
+"#,
+    )
+    .unwrap();
+
+    // Local member with no deps.
+    let util = root.join("packages").join("util");
+    fs::create_dir_all(&util).unwrap();
+    fs::write(
+        util.join(MANIFEST_FILE),
+        manifest_toml("acme", "util", "0.1.0", &BTreeMap::new(), None),
+    )
+    .unwrap();
+    write_files(&util, &[("util.txt", "u\n")]);
+
+    // Local member depending on the local util (path) and the external ext.
+    let web = root.join("apps").join("web");
+    fs::create_dir_all(&web).unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/util".to_string(), "^0.1".to_string());
+    deps.insert("acme/ext".to_string(), "^1".to_string());
+    fs::write(
+        web.join(MANIFEST_FILE),
+        manifest_toml("acme", "web", "0.1.0", &deps, None),
+    )
+    .unwrap();
+    write_files(&web, &[("web.txt", "w\n")]);
+
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&root, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+
+    // The local member is path-linked to its source (live editing)...
+    let util_link = web.join(MODULES_DIR).join("acme").join("util");
+    assert!(
+        fs::symlink_metadata(&util_link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(util_link.join("util.txt").exists());
+    assert_eq!(
+        fs::canonicalize(&util_link).unwrap(),
+        fs::canonicalize(&util).unwrap(),
+        "local member must link to its source dir, not the store"
+    );
+
+    // ...while the external dep resolves from the shared store.
+    let ext_link = web.join(MODULES_DIR).join("acme").join("ext");
+    assert!(ext_link.join("e.txt").exists());
+    assert!(
+        fs::canonicalize(&ext_link)
+            .unwrap()
+            .starts_with(fs::canonicalize(cfg.home.join("store")).unwrap())
+    );
+
+    // One lockfile at the root: external locked, local member not.
+    let lock = Lockfile::parse(&fs::read_to_string(root.join(LOCKFILE_FILE)).unwrap()).unwrap();
+    assert!(
+        lock.find("acme", "ext").is_some(),
+        "external must be locked"
+    );
+    assert!(
+        lock.find("acme", "util").is_none(),
+        "workspace-local members are path-linked, not locked"
+    );
+    assert!(
+        !web.join(LOCKFILE_FILE).exists(),
+        "members share the root lock"
+    );
+}
+
+// --- zed gc: access-time LRU (zed-docs issue #7) -------------------------
+
+#[test]
+fn gc_reclaims_entries_older_than_threshold() {
+    use std::time::Duration;
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let lib = fixture_package(
+        tmp.path(),
+        "acme",
+        "gclib",
+        "0.1.0",
+        &BTreeMap::new(),
+        None,
+        &[("f.txt", "x\n"), ("LICENSE", "MIT\n")],
+    );
+    publish_to(&registry, &lib);
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "gcapp",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/gclib".to_string(), "^0.1".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+
+    let store = zed_cli::store::Store::new(&cfg.home);
+    assert_eq!(store.status().0, 1);
+
+    // A huge threshold reclaims nothing (fresh entry); dry-run never deletes.
+    let long = store.gc(Duration::from_secs(3600), true).unwrap();
+    assert_eq!(long.removed, 0);
+    assert_eq!(store.status().0, 1);
+
+    // Age 0 treats everything as stale and reclaims it.
+    let zero = store.gc(Duration::from_secs(0), false).unwrap();
+    assert!(
+        zero.removed >= 1,
+        "expected at least the store entry reclaimed"
+    );
+    assert!(zero.freed > 0);
+    assert_eq!(store.status().0, 0, "store entry should be gone");
 }

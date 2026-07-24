@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
@@ -85,6 +86,36 @@ impl Store {
 
     fn locks_dir(&self) -> PathBuf {
         self.home.join("locks")
+    }
+
+    /// Root of the per-target build cache (zed-docs issue #5). Kept separate
+    /// from the source store so the source store stays platform-independent
+    /// and shareable, while compiled output is keyed by target.
+    pub fn build_root(&self) -> PathBuf {
+        self.home.join("build")
+    }
+
+    /// Build-cache entry for a `(target triple, key)` pair, where `key`
+    /// folds in the source sha256 and the build command.
+    pub fn build_entry(&self, triple: &str, key: &str) -> PathBuf {
+        self.build_root().join(triple).join(key)
+    }
+
+    pub fn build_pkg_dir(&self, triple: &str, key: &str) -> PathBuf {
+        self.build_entry(triple, key).join(STORE_PKG_DIR)
+    }
+
+    pub fn has_build(&self, triple: &str, key: &str) -> bool {
+        self.build_pkg_dir(triple, key).is_dir()
+    }
+
+    /// Serialize concurrent builds of the same key (only one process builds).
+    pub fn build_lock(&self, key: &str) -> Result<ProcessLock> {
+        ProcessLock::acquire(&self.locks_dir().join(format!("build-{key}.lock")))
+    }
+
+    pub fn build_size(&self) -> u64 {
+        dir_size(&self.build_root())
     }
 
     /// Serializes the whole install (refs.json + lockfile writes) against
@@ -234,6 +265,89 @@ impl Store {
         }
         Ok(freed)
     }
+
+    /// Least-recently-used garbage collection (zed-docs issue #7): drop source
+    /// store entries, per-target build-cache entries, and cached downloads not
+    /// accessed within `max_age`. Complements ref-based [`Store::prune`] —
+    /// everything removed is content-addressed and re-fetchable on next
+    /// install. `dry_run` reports what would go without deleting.
+    pub fn gc(&self, max_age: Duration, dry_run: bool) -> Result<GcReport> {
+        let cutoff = SystemTime::now().checked_sub(max_age).unwrap_or(UNIX_EPOCH);
+        let mut removed = 0usize;
+        let mut freed = 0u64;
+
+        let mut sweep_dir_of_entries = |dir: &Path| -> Result<()> {
+            for shard in read_children(dir) {
+                for entry in read_children(&shard) {
+                    if entry.is_dir() && last_access(&entry) < cutoff {
+                        freed += dir_size(&entry);
+                        if !dry_run {
+                            fs::remove_dir_all(&entry)?;
+                        }
+                        removed += 1;
+                    }
+                }
+            }
+            Ok(())
+        };
+        // Source store: store/v1/<shard>/<sha>.
+        sweep_dir_of_entries(&self.root().join(zed_interfaces::paths::STORE_VERSION))?;
+        // Build cache: build/<triple>/<key>.
+        sweep_dir_of_entries(&self.build_root())?;
+
+        // Download cache: cache/<sha>.tar.gz (flat files).
+        for file in read_children(&self.cache_dir()) {
+            if file.is_file() && last_access(&file) < cutoff {
+                freed += file.metadata().map(|m| m.len()).unwrap_or(0);
+                if !dry_run {
+                    let _ = fs::remove_file(&file);
+                }
+                removed += 1;
+            }
+        }
+        Ok(GcReport {
+            removed,
+            freed,
+            dry_run,
+        })
+    }
+}
+
+/// Result of a [`Store::gc`] sweep.
+#[derive(Debug, Clone, Copy)]
+pub struct GcReport {
+    pub removed: usize,
+    pub freed: u64,
+    pub dry_run: bool,
+}
+
+fn read_children(dir: &Path) -> Vec<PathBuf> {
+    match fs::read_dir(dir) {
+        Ok(rd) => rd.flatten().map(|e| e.path()).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The most recent access time within `path` (file or directory tree),
+/// falling back to modification time on filesystems that don't track atime
+/// (e.g. `noatime`/`relatime`), so a stale entry is still reaped by age.
+fn last_access(path: &Path) -> SystemTime {
+    let mut newest = UNIX_EPOCH;
+    for entry in walkdir::WalkDir::new(path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if let Ok(md) = entry.metadata() {
+            let t = md
+                .accessed()
+                .or_else(|_| md.modified())
+                .unwrap_or(UNIX_EPOCH);
+            if t > newest {
+                newest = t;
+            }
+        }
+    }
+    newest
 }
 
 /// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic bytes.

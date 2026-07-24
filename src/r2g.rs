@@ -1,0 +1,374 @@
+//! `zed r2g` — roundtrip-to-consumer pre-publish check, after
+//! [r2g](https://github.com/oresoftware/r2g).
+//!
+//! The failure mode it kills is "works in my repo, breaks once installed."
+//! Instead of testing the working tree, r2g exercises the *published
+//! artifact* the way a real consumer would: it packs the package (the same
+//! pruned, deterministic tarball `zed publish` uploads), publishes it to a
+//! throwaway `file://` registry, installs it into a mock consumer project
+//! under the user's home directory, and runs the package's
+//! `publish.smoke_test` against the installed copy — optionally inside a
+//! fresh OCI container so the artifact is proven in a clean, host-independent
+//! environment (fresh `$HOME`, distro libraries, no host toolchain leaking
+//! in). If it passes here, it will pass for your users.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, Result, bail};
+use zed_interfaces::manifest::{
+    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
+};
+use zed_interfaces::paths::{MANIFEST_FILE, MODULES_DIR};
+use zed_interfaces::vcs::Vcs;
+use zed_interfaces::version::VersionScheme;
+
+use crate::cli::{Adapter, ContainerRuntime, InstallMode};
+use crate::config::{Config, read_manifest, write_manifest};
+use crate::ops::{build_publish_meta, install};
+use crate::pack;
+use crate::registry::{FileRegistry, Registry};
+use crate::store::human_size;
+
+/// Options for `zed r2g`, mirroring its CLI flags (all also `ZED_PKG_R2G_*`
+/// environment variables per the flags-2-env convention).
+#[derive(Debug, Clone)]
+pub struct R2gOptions {
+    /// Run the install + smoke test inside a throwaway OCI container.
+    pub docker: bool,
+    /// Base image for container mode.
+    pub image: String,
+    /// Container runtime; auto-detected when `None`.
+    pub runtime: Option<ContainerRuntime>,
+    /// Parent dir for the throwaway workspace; defaults to `<home>/r2g`.
+    pub root: Option<PathBuf>,
+    /// Delete the workspace after a successful run instead of leaving it.
+    pub clean: bool,
+}
+
+impl Default for R2gOptions {
+    fn default() -> Self {
+        Self {
+            docker: false,
+            image: "debian:stable-slim".to_string(),
+            runtime: None,
+            root: None,
+            clean: false,
+        }
+    }
+}
+
+/// Mount point for the mock consumer project inside the container.
+const CONTAINER_CONSUMER: &str = "/r2g/consumer";
+
+pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
+    let manifest = read_manifest(project)?;
+    let full = manifest.full_name();
+
+    // 1. A throwaway workspace under the user's home directory (r2g-style),
+    //    wiped fresh each run so nothing from a previous run can mask a bug.
+    let root = opts.root.clone().unwrap_or_else(|| cfg.home.join("r2g"));
+    let workspace = root.join(format!(
+        "{}-{}",
+        manifest.package.org, manifest.package.name
+    ));
+    if workspace.exists() {
+        fs::remove_dir_all(&workspace)
+            .with_context(|| format!("clearing previous r2g workspace {}", workspace.display()))?;
+    }
+    let registry_dir = workspace.join("registry");
+    let consumer_dir = workspace.join("consumer");
+    let home_dir = workspace.join("home");
+    fs::create_dir_all(&consumer_dir)?;
+    println!("r2g: workspace {}", workspace.display());
+
+    // 2. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
+    let packed = pack::pack(project, &manifest, Some(&workspace.join("pack")))?;
+    println!(
+        "r2g: packed {} ({} files, {} excluded by publish rules)",
+        human_size(packed.size),
+        packed.file_count,
+        packed.excluded_count
+    );
+
+    // 3. Publish it to a throwaway file:// registry.
+    let meta = build_publish_meta(&manifest, &packed, None);
+    let file_registry = FileRegistry::new(registry_dir.clone());
+    file_registry.publish(&meta, &packed.path, None)?;
+
+    // 4. Synthesize a mock consumer that depends on exactly this version.
+    let mut dependencies = BTreeMap::new();
+    dependencies.insert(full.clone(), format!("={}", manifest.package.version));
+    let consumer_manifest = Manifest {
+        workspace: None,
+        package: PackageSection {
+            org: "zed-local".to_string(),
+            name: "consumer".to_string(),
+            version: "0.0.0".to_string(),
+            version_scheme: VersionScheme::Semver,
+            description: Some(format!("r2g mock consumer of {full}")),
+            license: None,
+            repository: RepositorySection {
+                vcs: Vcs::Git,
+                url: "https://localhost/zed-local/consumer".to_string(),
+            },
+            keywords: Vec::new(),
+        },
+        dependencies,
+        build_dependencies: BTreeMap::new(),
+        build: None,
+        build_overrides: BTreeMap::new(),
+        bin: BTreeMap::new(),
+        publish: PublishSection::default(),
+        scripts: ScriptsSection::default(),
+    };
+    write_manifest(&consumer_dir, &consumer_manifest)?;
+
+    // 5. Install it the way a consumer would, from the throwaway registry into
+    //    a throwaway store. Container mode uses copy install so the installed
+    //    files are self-contained (no store symlinks) and can be bind-mounted
+    //    into the container — the same guarantee `--install-mode copy` gives
+    //    OCI image builds.
+    let mode = if opts.docker {
+        InstallMode::Copy
+    } else {
+        InstallMode::Symlink
+    };
+    let test_cfg = Config {
+        registry: format!("file://{}", registry_dir.display()),
+        home: home_dir,
+        token: None,
+    };
+    install(&consumer_dir, &test_cfg, false, mode, Adapter::None)?;
+
+    let target = consumer_dir
+        .join(MODULES_DIR)
+        .join(&manifest.package.org)
+        .join(&manifest.package.name);
+    if !target.join(MANIFEST_FILE).exists() {
+        bail!("installed package is missing {MANIFEST_FILE}; artifact is broken");
+    }
+    println!(
+        "r2g: installed {full}@{} into mock consumer ({})",
+        manifest.package.version,
+        match mode {
+            InstallMode::Symlink => "symlinked from a throwaway store",
+            InstallMode::Copy => "copied, container-safe",
+        }
+    );
+
+    // 6. Run the smoke test — on the host, or inside a fresh container.
+    let smoke = manifest.publish.smoke_test.clone();
+    if opts.docker {
+        run_in_container(opts, &consumer_dir, &manifest, smoke.as_deref())?;
+    } else {
+        run_on_host(&consumer_dir, &target, smoke.as_deref())?;
+    }
+
+    // 7. Leave the workspace for inspection (r2g-style) unless asked to clean.
+    if opts.clean {
+        let _ = fs::remove_dir_all(&workspace);
+    } else {
+        println!(
+            "r2g: workspace left at {} (pass --clean to remove it)",
+            workspace.display()
+        );
+    }
+    Ok(())
+}
+
+/// Run `publish.smoke_test` on the host against the installed package.
+fn run_on_host(consumer_dir: &Path, target: &Path, smoke: Option<&str>) -> Result<()> {
+    match smoke {
+        Some(command) => {
+            println!("r2g: running smoke_test: {command}");
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(consumer_dir)
+                .env("ZED_PKG_TEST_TARGET", target)
+                .status()
+                .with_context(|| format!("running smoke_test `{command}`"))?;
+            if !status.success() {
+                bail!("smoke_test failed with {status}");
+            }
+            println!("r2g: PASS — artifact installs and its smoke_test succeeds");
+        }
+        None => println!(
+            "r2g: PASS — artifact installs cleanly \
+             (no publish.smoke_test configured; consider adding one)"
+        ),
+    }
+    Ok(())
+}
+
+/// Run the smoke test inside a throwaway OCI container. The mock consumer
+/// directory (which already holds the copy-installed package) is bind-mounted
+/// in, and the smoke test runs against it with `ZED_PKG_TEST_TARGET` pointing
+/// at the installed package inside the container.
+fn run_in_container(
+    opts: &R2gOptions,
+    consumer_dir: &Path,
+    manifest: &Manifest,
+    smoke: Option<&str>,
+) -> Result<()> {
+    let runtime = resolve_runtime(opts.runtime)?;
+    // Canonicalize so the bind mount uses a real absolute path the runtime's
+    // file sharing can resolve (macOS maps ~ and /private by default).
+    let consumer_host = fs::canonicalize(consumer_dir)
+        .with_context(|| format!("resolving {}", consumer_dir.display()))?;
+    let args = container_args(
+        &opts.image,
+        &consumer_host,
+        &manifest.package.org,
+        &manifest.package.name,
+        smoke,
+    );
+
+    println!(
+        "r2g: running smoke test in a throwaway {} container ({})",
+        runtime.program(),
+        opts.image
+    );
+    match smoke {
+        Some(s) => println!("r2g: smoke_test: {s}"),
+        None => println!(
+            "r2g: no publish.smoke_test set; checking the artifact is present in-container"
+        ),
+    }
+
+    let status = Command::new(runtime.program())
+        .args(&args)
+        .status()
+        .with_context(|| {
+            format!(
+                "launching `{}` (is it installed and on PATH?)",
+                runtime.program()
+            )
+        })?;
+    if !status.success() {
+        bail!(
+            "r2g container smoke test failed with {status} (image {})",
+            opts.image
+        );
+    }
+    println!(
+        "r2g: PASS — artifact installs and passes its smoke test inside {}",
+        opts.image
+    );
+    Ok(())
+}
+
+/// Build the `run` argument vector for docker/podman. Pure (no IO) so it can
+/// be unit-tested without a container runtime present.
+fn container_args(
+    image: &str,
+    consumer_host: &Path,
+    org: &str,
+    name: &str,
+    smoke: Option<&str>,
+) -> Vec<String> {
+    let target_in = format!("{CONTAINER_CONSUMER}/{MODULES_DIR}/{org}/{name}");
+    // With no smoke test, still exercise the container path by proving the
+    // installed artifact is present and well-formed inside the container.
+    let script = smoke
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("test -f \"$ZED_PKG_TEST_TARGET/{MANIFEST_FILE}\""));
+    vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "-v".to_string(),
+        format!("{}:{CONTAINER_CONSUMER}", consumer_host.display()),
+        "-w".to_string(),
+        CONTAINER_CONSUMER.to_string(),
+        "-e".to_string(),
+        format!("ZED_PKG_TEST_TARGET={target_in}"),
+        image.to_string(),
+        "sh".to_string(),
+        "-c".to_string(),
+        script,
+    ]
+}
+
+/// Pick the container runtime: the explicit choice if given (and installed),
+/// otherwise the first of docker/podman found on `PATH`.
+fn resolve_runtime(explicit: Option<ContainerRuntime>) -> Result<ContainerRuntime> {
+    if let Some(runtime) = explicit {
+        if !program_on_path(runtime.program()) {
+            bail!(
+                "--runtime {} requested but `{}` was not found on PATH",
+                runtime.program(),
+                runtime.program()
+            );
+        }
+        return Ok(runtime);
+    }
+    for runtime in [ContainerRuntime::Docker, ContainerRuntime::Podman] {
+        if program_on_path(runtime.program()) {
+            return Ok(runtime);
+        }
+    }
+    bail!(
+        "no container runtime found for --docker: install docker or podman, \
+         or set --runtime / ZED_PKG_R2G_RUNTIME (drop --docker to test on the host)"
+    );
+}
+
+fn program_on_path(program: &str) -> bool {
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&paths)
+        .any(|dir| dir.join(program).is_file() || dir.join(format!("{program}.exe")).is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn container_args_mount_workdir_and_target() {
+        let args = container_args(
+            "node:22-slim",
+            Path::new("/home/u/.zed-pkg/r2g/acme-widget/consumer"),
+            "acme",
+            "widget",
+            Some("node -e \"require('@acme/widget')\""),
+        );
+        // The consumer is mounted, workdir is set there, and the smoke test
+        // sees the installed package via ZED_PKG_TEST_TARGET.
+        assert!(args.contains(&"run".to_string()));
+        assert!(args.contains(&"--rm".to_string()));
+        assert!(args.windows(2).any(|w| w[0] == "-v"
+            && w[1] == format!("/home/u/.zed-pkg/r2g/acme-widget/consumer:{CONTAINER_CONSUMER}")));
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "-w" && w[1] == CONTAINER_CONSUMER)
+        );
+        assert!(args.windows(2).any(|w| w[0] == "-e"
+            && w[1]
+                == format!("ZED_PKG_TEST_TARGET={CONTAINER_CONSUMER}/{MODULES_DIR}/acme/widget")));
+        assert_eq!(args.last().unwrap(), "node -e \"require('@acme/widget')\"");
+        // Image precedes the `sh -c <script>` trailer.
+        let sh = args.iter().position(|a| a == "sh").unwrap();
+        assert_eq!(args[sh - 1], "node:22-slim");
+        assert_eq!(args[sh + 1], "-c");
+    }
+
+    #[test]
+    fn container_args_default_checks_artifact_presence() {
+        let args = container_args(
+            "debian:stable-slim",
+            Path::new("/tmp/consumer"),
+            "acme",
+            "widget",
+            None,
+        );
+        assert_eq!(
+            args.last().unwrap(),
+            &format!("test -f \"$ZED_PKG_TEST_TARGET/{MANIFEST_FILE}\"")
+        );
+    }
+}

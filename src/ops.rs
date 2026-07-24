@@ -6,12 +6,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
-use zed_interfaces::manifest::{
-    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
-};
+use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
-use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::{self, Requirement};
 
 use crate::cli::{Adapter, InstallMode};
@@ -75,7 +72,8 @@ url = "{repo_url}"
 [publish]
 # Extra globs to strip beyond the defaults (tests, CI, .github, READMEs):
 exclude = []
-# Run by `zed test-local` inside a throwaway consumer project:
+# Run by `zed r2g` inside a throwaway consumer project (optionally in a
+# container) that has this package installed the way a real consumer would:
 # smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/.zpkg.toml\""
 
 [scripts]
@@ -115,6 +113,102 @@ fn ensure_artifact(reg: &dyn Registry, store: &Store, vm: &VersionMetadata) -> R
         reg.download(vm, &cached)?;
     }
     store.add_artifact(&cached, &vm.sha256)
+}
+
+/// Link a dependency's direct build-dependencies (source only) into a build
+/// sandbox's `zed_modules/` so the build command can find them. They are
+/// dropped before the built artifact is promoted (zed-docs issue #5).
+fn link_build_deps(
+    reg: &dyn Registry,
+    store: &Store,
+    deps: &BTreeMap<String, String>,
+    work: &Path,
+) -> Result<()> {
+    for (dep_key, req_str) in deps {
+        let (org, name) = split_key(dep_key)?;
+        let req = Requirement::parse(req_str);
+        let pkg = reg.get_package(&org, &name)?;
+        let version = version::resolve(&req, &pkg.versions).with_context(|| {
+            format!("build-dependency {dep_key}: no version satisfies `{req_str}`")
+        })?;
+        let vm = reg.get_version(&org, &name, version)?;
+        let src = ensure_artifact(reg, store, &vm)?;
+        let dest = work.join(MODULES_DIR).join(&org).join(&name);
+        link_or_copy(&src, &dest, InstallMode::Symlink)?;
+    }
+    Ok(())
+}
+
+/// The directory a resolved dependency should be linked from: its source in
+/// the store, or — if the dependency (or a consumer override) declares a
+/// `[build]` step — the compiled output from the per-target build cache.
+fn dep_link_source(
+    reg: &dyn Registry,
+    store: &Store,
+    consumer: &Manifest,
+    vm: &VersionMetadata,
+    target: &str,
+    force: bool,
+) -> Result<PathBuf> {
+    let pkg_dir = ensure_artifact(reg, store, vm)?;
+    let dep_manifest = read_manifest(&pkg_dir).ok();
+    let dep_build = dep_manifest.as_ref().and_then(|m| m.build.clone());
+    let key = format!("{}/{}", vm.org, vm.name);
+    let Some(build) = consumer.effective_build(&key, dep_build.as_ref()) else {
+        return Ok(pkg_dir);
+    };
+    let build_deps = dep_manifest
+        .map(|m| m.build_dependencies)
+        .unwrap_or_default();
+    crate::build::ensure_built(store, target, &vm.sha256, &pkg_dir, &build, force, |work| {
+        link_build_deps(reg, store, &build_deps, work)
+    })
+}
+
+/// Hoist a dependency's declared executables into `zed_modules/.bin/` so they
+/// resolve on PATH under `zed run` (zed-docs issue #7). Shims point at the
+/// project-local module directory, so they work in symlink and copy modes.
+fn hoist_bins(
+    project: &Path,
+    module_dest: &Path,
+    bins: &BTreeMap<String, String>,
+    mode: InstallMode,
+) -> Result<Vec<String>> {
+    if bins.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bin_dir = project.join(MODULES_DIR).join(".bin");
+    fs::create_dir_all(&bin_dir)?;
+    let mut names = Vec::new();
+    for (name, rel) in bins {
+        let target = module_dest.join(rel);
+        let shim = bin_dir.join(name);
+        replace_dest(&shim)?;
+        match mode {
+            InstallMode::Symlink => {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&target, &shim)?;
+                #[cfg(not(unix))]
+                fs::copy(&target, &shim)?;
+            }
+            InstallMode::Copy => {
+                fs::copy(&target, &shim)?;
+                #[cfg(unix)]
+                make_executable(&shim)?;
+            }
+        }
+        names.push(name.clone());
+    }
+    Ok(names)
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = fs::metadata(path)?.permissions();
+    perms.set_mode(perms.mode() | 0o755);
+    fs::set_permissions(path, perms)?;
+    Ok(())
 }
 
 fn replace_dest(dest: &Path) -> Result<()> {
@@ -173,6 +267,247 @@ fn detect_adapter(project: &Path) -> Adapter {
     }
 }
 
+/// Expand `[workspace].members` glob patterns to member directories (each
+/// containing a `.zpkg.toml`), relative to the workspace root. Heavy dirs
+/// (`zed_modules`, `.git`, `node_modules`, `target`) are skipped.
+fn expand_members(root: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
+    use globset::{GlobBuilder, GlobSetBuilder};
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .with_context(|| format!("invalid workspace member glob `{pattern}`"))?,
+        );
+    }
+    let set = builder.build()?;
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|e| {
+            !matches!(
+                e.file_name().to_string_lossy().as_ref(),
+                MODULES_DIR | ".git" | "node_modules" | "target"
+            )
+        })
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        if set.is_match(rel) && entry.path().join(MANIFEST_FILE).exists() {
+            out.push(entry.path().to_path_buf());
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// Resolve one external (non-member) dependency, honoring `--frozen` by
+/// pinning to the workspace lock and verifying the artifact hash.
+fn resolve_external(
+    reg: &dyn Registry,
+    key: &str,
+    org: &str,
+    name: &str,
+    req: &Requirement,
+    req_str: &str,
+    frozen: bool,
+    lock: Option<&Lockfile>,
+) -> Result<VersionMetadata> {
+    if frozen {
+        let lock = lock.context("--frozen requires a lockfile")?;
+        let entry = lock
+            .find(org, name)
+            .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
+        if !req.matches(&entry.version) {
+            bail!(
+                "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
+                entry.version
+            );
+        }
+        let vm = reg.get_version(org, name, &entry.version)?;
+        if vm.sha256 != entry.sha256 {
+            bail!(
+                "registry artifact for {key}@{} changed (lock {} vs registry {}); refusing",
+                entry.version,
+                entry.sha256,
+                vm.sha256
+            );
+        }
+        Ok(vm)
+    } else {
+        let pkg = reg.get_package(org, name)?;
+        let version = version::resolve(req, &pkg.versions).with_context(|| {
+            format!(
+                "no version of {key} satisfies `{req_str}` (available: {})",
+                pkg.versions.join(", ")
+            )
+        })?;
+        reg.get_version(org, name, version)
+    }
+}
+
+/// Monorepo workspace install (zed-docs issue #7): resolve every member's
+/// dependencies against one store, path-link member→member deps for live
+/// editing, and write a single root `.zpkg.lock`. zed's "one version per
+/// package" rule holds workspace-wide.
+fn install_workspace(
+    root: &Path,
+    root_manifest: &Manifest,
+    cfg: &Config,
+    frozen: bool,
+    mode: InstallMode,
+) -> Result<InstallOutcome> {
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let reg = registry_for(&cfg.registry)?;
+    let target = crate::build::target_triple();
+
+    let patterns = &root_manifest.workspace.as_ref().unwrap().members;
+    let mut member_dirs = expand_members(root, patterns)?;
+    // The root participates too, so its own dependencies get installed.
+    member_dirs.insert(0, root.to_path_buf());
+    member_dirs.dedup();
+
+    // Index every workspace-local package by `org/name` for path linking.
+    let mut index: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut manifests: BTreeMap<PathBuf, Manifest> = BTreeMap::new();
+    for dir in &member_dirs {
+        let m = read_manifest(dir)?;
+        index.insert(m.full_name(), dir.clone());
+        manifests.insert(dir.clone(), m);
+    }
+
+    let existing_lock = if frozen {
+        let text = fs::read_to_string(root.join(LOCKFILE_FILE))
+            .with_context(|| format!("--frozen requires {LOCKFILE_FILE} at the workspace root"))?;
+        Some(Lockfile::parse(&text)?)
+    } else {
+        None
+    };
+
+    let mut union: BTreeMap<String, VersionMetadata> = BTreeMap::new();
+    let mut all_shas: Vec<String> = Vec::new();
+    let mut installed: Vec<(String, String)> = Vec::new();
+
+    for dir in &member_dirs {
+        let member_manifest = &manifests[dir];
+        let mut member_external: BTreeMap<String, String> = BTreeMap::new();
+        let mut linked_local: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+        let mut queue: VecDeque<(String, String, String)> = VecDeque::new();
+        for (k, r) in &member_manifest.dependencies {
+            let (o, n) = split_key(k)?;
+            queue.push_back((o, n, r.clone()));
+        }
+        while let Some((org, name, req_str)) = queue.pop_front() {
+            let key = format!("{org}/{name}");
+            let req = Requirement::parse(&req_str);
+
+            if let Some(local_dir) = index.get(&key) {
+                if local_dir == dir || !linked_local.insert(key.clone()) {
+                    continue;
+                }
+                // Live path link to the member's source (no build/registry).
+                let dest = dir.join(MODULES_DIR).join(&org).join(&name);
+                link_or_copy(local_dir, &dest, mode)?;
+                let bins = manifests
+                    .get(local_dir)
+                    .map(|m| m.bin.clone())
+                    .unwrap_or_default();
+                hoist_bins(dir, &dest, &bins, mode)?;
+                if let Some(lm) = manifests.get(local_dir) {
+                    for (k, r) in &lm.dependencies {
+                        let (o, n) = split_key(k)?;
+                        queue.push_back((o, n, r.clone()));
+                    }
+                }
+                installed.push((key, "workspace".to_string()));
+                continue;
+            }
+
+            if let Some(existing) = member_external.get(&key) {
+                if req.matches(existing) {
+                    continue;
+                }
+                bail!(
+                    "version conflict for {key} in member {}: resolved {existing} but `{req_str}` also required",
+                    dir.display()
+                );
+            }
+            let vm = resolve_external(
+                reg.as_ref(),
+                &key,
+                &org,
+                &name,
+                &req,
+                &req_str,
+                frozen,
+                existing_lock.as_ref(),
+            )?;
+            let link_src =
+                dep_link_source(reg.as_ref(), &store, member_manifest, &vm, &target, false)?;
+            let dest = dir.join(MODULES_DIR).join(&org).join(&name);
+            link_or_copy(&link_src, &dest, mode)?;
+            let bins = read_manifest(&store.pkg_dir(&vm.sha256))
+                .map(|m| m.bin)
+                .unwrap_or_default();
+            hoist_bins(dir, &dest, &bins, mode)?;
+            if let Ok(sub) = read_manifest(&store.pkg_dir(&vm.sha256)) {
+                for (k, r) in sub.dependencies {
+                    let (o, n) = split_key(&k)?;
+                    queue.push_back((o, n, r));
+                }
+            }
+            if let Some(prev) = union.get(&key) {
+                if prev.version != vm.version {
+                    bail!(
+                        "workspace installs one version per package, but {key} resolves to both {} and {}",
+                        prev.version,
+                        vm.version
+                    );
+                }
+            } else {
+                union.insert(key.clone(), vm.clone());
+                installed.push((key.clone(), vm.version.clone()));
+            }
+            all_shas.push(vm.sha256.clone());
+            member_external.insert(key, vm.version.clone());
+        }
+    }
+
+    let mut lock = Lockfile::default();
+    for vm in union.values() {
+        lock.upsert(LockedPackage {
+            org: vm.org.clone(),
+            name: vm.name.clone(),
+            version: vm.version.clone(),
+            sha256: vm.sha256.clone(),
+            size: vm.size,
+            format: vm.format,
+            vcs_tag: vm.vcs_tag.clone(),
+            vcs_commit: vm.vcs_commit.clone(),
+            source: cfg.registry.clone(),
+        });
+    }
+    fs::write(root.join(LOCKFILE_FILE), lock.to_toml_string()?)?;
+    all_shas.sort();
+    all_shas.dedup();
+    store.record_project(root, all_shas)?;
+
+    println!(
+        "workspace: {} member(s), {} external package(s) in one {LOCKFILE_FILE}",
+        member_dirs.len(),
+        union.len()
+    );
+    Ok(InstallOutcome { installed })
+}
+
 pub fn install(
     project: &Path,
     cfg: &Config,
@@ -180,11 +515,14 @@ pub fn install(
     mode: InstallMode,
     adapter: Adapter,
 ) -> Result<InstallOutcome> {
+    let manifest = read_manifest(project)?;
+    if manifest.is_workspace_root() {
+        return install_workspace(project, &manifest, cfg, frozen, mode);
+    }
     let adapter = match adapter {
         Adapter::Auto => detect_adapter(project),
         other => other,
     };
-    let manifest = read_manifest(project)?;
     let reg = registry_for(&cfg.registry)?;
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
@@ -263,20 +601,28 @@ pub fn install(
     }
 
     let modules = project.join(MODULES_DIR);
+    let target = crate::build::target_triple();
     let mut installed = Vec::new();
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
+    let mut hoisted_bins: Vec<String> = Vec::new();
     for vm in resolved.values() {
-        let pkg_dir = ensure_artifact(reg.as_ref(), &store, vm)?;
+        // Source, or compiled output if the package declares a build step.
+        let link_src = dep_link_source(reg.as_ref(), &store, &manifest, vm, &target, false)?;
         let dest = modules.join(&vm.org).join(&vm.name);
-        link_or_copy(&pkg_dir, &dest, mode)?;
+        link_or_copy(&link_src, &dest, mode)?;
+        // Expose any executables the package declares (zed-docs issue #7).
+        let bins = read_manifest(&store.pkg_dir(&vm.sha256))
+            .map(|m| m.bin)
+            .unwrap_or_default();
+        hoisted_bins.extend(hoist_bins(project, &dest, &bins, mode)?);
         match adapter {
             Adapter::Node => {
                 let node_dest = project
                     .join("node_modules")
                     .join(format!("@{}", vm.org))
                     .join(&vm.name);
-                link_or_copy(&pkg_dir, &node_dest, mode)?;
+                link_or_copy(&link_src, &node_dest, mode)?;
             }
             Adapter::Java => {
                 // Classpath entries point at the project-local link so the
@@ -328,6 +674,14 @@ pub fn install(
     for (name, version) in &installed {
         println!("installed {name}@{version}");
     }
+    if !hoisted_bins.is_empty() {
+        hoisted_bins.sort();
+        println!(
+            "{} bin(s) in {MODULES_DIR}/.bin/ ({}); run with `zed run <name>`",
+            hoisted_bins.len(),
+            hoisted_bins.join(", ")
+        );
+    }
     println!(
         "{} package(s) in {MODULES_DIR}/ ({})",
         installed.len(),
@@ -337,6 +691,96 @@ pub fn install(
         }
     );
     Ok(InstallOutcome { installed })
+}
+
+// ---------------------------------------------------------------------------
+// build
+
+/// Materialize the build cache for the locked dependency graph on a target
+/// (zed-docs issue #5). Runs each dependency's (or consumer-overridden) build
+/// step, caching per `(target, source sha, command)`. `--target` warms a
+/// specific triple's cache; `--force` rebuilds even on a cache hit.
+pub fn build(project: &Path, cfg: &Config, target: Option<String>, force: bool) -> Result<()> {
+    let manifest = read_manifest(project)?;
+    let reg = registry_for(&cfg.registry)?;
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let lock_path = project.join(LOCKFILE_FILE);
+    let text = fs::read_to_string(&lock_path)
+        .with_context(|| format!("zed build needs {LOCKFILE_FILE}; run `zed install` first"))?;
+    let lock = Lockfile::parse(&text)?;
+    let target = target.unwrap_or_else(crate::build::target_triple);
+
+    let mut built = 0usize;
+    for locked in &lock.packages {
+        let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
+        let pkg_dir = ensure_artifact(reg.as_ref(), &store, &vm)?;
+        let dep_manifest = read_manifest(&pkg_dir).ok();
+        let dep_build = dep_manifest.as_ref().and_then(|m| m.build.clone());
+        let key = format!("{}/{}", locked.org, locked.name);
+        let Some(build_step) = manifest.effective_build(&key, dep_build.as_ref()) else {
+            continue;
+        };
+        let build_deps = dep_manifest
+            .map(|m| m.build_dependencies)
+            .unwrap_or_default();
+        let out = crate::build::ensure_built(
+            &store,
+            &target,
+            &vm.sha256,
+            &pkg_dir,
+            &build_step,
+            force,
+            |work| link_build_deps(reg.as_ref(), &store, &build_deps, work),
+        )?;
+        println!("built {key}@{} -> {}", locked.version, out.display());
+        built += 1;
+    }
+    if built == 0 {
+        println!("no dependencies declare a build step for target {target}");
+    } else {
+        println!(
+            "built {built} package(s) for {target} (build cache: {})",
+            store.build_root().display()
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// run
+
+/// Run a hoisted dependency binary (or any command) with `zed_modules/.bin`
+/// prepended to `PATH`, so a project's tools resolve to the versions it
+/// installed without polluting the global `PATH` (zed-docs issue #7). Returns
+/// the child's exit code.
+pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
+    let bin_dir = project.join(MODULES_DIR).join(".bin");
+    let mut paths: Vec<PathBuf> = vec![bin_dir];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    let new_path = std::env::join_paths(&paths).context("assembling PATH for zed run")?;
+    // Prefer an exact hoisted bin by absolute path; otherwise fall through to a
+    // normal PATH lookup (with .bin still prepended for the child's own tools).
+    let direct = paths[0].join(command);
+    let program = if direct.exists() {
+        direct
+    } else {
+        PathBuf::from(command)
+    };
+    let status = Command::new(&program)
+        .args(args)
+        .env("PATH", &new_path)
+        .current_dir(project)
+        .status()
+        .with_context(|| {
+            format!(
+                "failed to run `{command}` \
+                 (not a hoisted bin in {MODULES_DIR}/.bin/ nor on PATH?)"
+            )
+        })?;
+    Ok(status.code().unwrap_or(1))
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +842,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// pack / publish / test-local
+// pack / publish
 
 pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<PackResult> {
     let manifest = read_manifest(project)?;
@@ -472,97 +916,9 @@ pub fn publish(
     Ok(())
 }
 
-/// r2g-style pre-publish check (github.com/oresoftware/r2g): consume your
-/// own artifact exactly the way an end user would, from a throwaway
-/// file:// registry into a throwaway consumer project and store.
-pub fn test_local(project: &Path, _cfg: &Config) -> Result<()> {
-    let manifest = read_manifest(project)?;
-    let tmp = tempfile::tempdir()?;
-    let registry_dir = tmp.path().join("registry");
-    let consumer_dir = tmp.path().join("consumer");
-    let home_dir = tmp.path().join("home");
-    fs::create_dir_all(&consumer_dir)?;
-
-    let packed = pack::pack(project, &manifest, Some(&tmp.path().join("pack")))?;
-    println!(
-        "packed {} ({} files, {} excluded)",
-        human_size(packed.size),
-        packed.file_count,
-        packed.excluded_count
-    );
-    let meta = build_publish_meta(&manifest, &packed, None);
-    let file_registry = crate::registry::FileRegistry::new(registry_dir.clone());
-    file_registry.publish(&meta, &packed.path, None)?;
-
-    let mut dependencies = BTreeMap::new();
-    dependencies.insert(
-        manifest.full_name(),
-        format!("={}", manifest.package.version),
-    );
-    let consumer_manifest = Manifest {
-        package: PackageSection {
-            org: "zed-local".to_string(),
-            name: "consumer".to_string(),
-            version: "0.0.0".to_string(),
-            version_scheme: version::VersionScheme::Semver,
-            description: None,
-            license: None,
-            repository: RepositorySection {
-                vcs: Vcs::Git,
-                url: "https://localhost/zed-local/consumer".to_string(),
-            },
-            keywords: Vec::new(),
-        },
-        dependencies,
-        publish: PublishSection::default(),
-        scripts: ScriptsSection::default(),
-    };
-    write_manifest(&consumer_dir, &consumer_manifest)?;
-
-    let test_cfg = Config {
-        registry: format!("file://{}", registry_dir.display()),
-        home: home_dir,
-        token: None,
-    };
-    install(
-        &consumer_dir,
-        &test_cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-    )?;
-
-    let target = consumer_dir
-        .join(MODULES_DIR)
-        .join(&manifest.package.org)
-        .join(&manifest.package.name);
-    if !target.join(MANIFEST_FILE).exists() {
-        bail!("installed package is missing {MANIFEST_FILE}; artifact is broken");
-    }
-
-    match &manifest.publish.smoke_test {
-        Some(command) => {
-            println!("running smoke_test: {command}");
-            let status = Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(&consumer_dir)
-                .env("ZED_PKG_TEST_TARGET", &target)
-                .status()?;
-            if !status.success() {
-                bail!("smoke_test failed with {status}");
-            }
-            println!("test-local passed: artifact installs and smoke_test succeeds");
-        }
-        None => {
-            println!(
-                "test-local passed: artifact installs cleanly \
-                 (no publish.smoke_test configured; consider adding one)"
-            );
-        }
-    }
-    Ok(())
-}
+// The r2g roundtrip check (`zed r2g`, alias `zed test-local`) lives in the
+// `r2g` module; it composes `pack`, the `file://` registry, and `install`
+// from here into a consume-your-own-artifact test.
 
 // ---------------------------------------------------------------------------
 // find / login / org / store / cache
@@ -639,6 +995,14 @@ pub fn store_status(cfg: &Config) -> Result<()> {
         store.cache_dir().display(),
         human_size(cache_bytes)
     );
+    let build_bytes = store.build_size();
+    if build_bytes > 0 {
+        println!(
+            "build  {}  ({})",
+            store.build_root().display(),
+            human_size(build_bytes)
+        );
+    }
     Ok(())
 }
 
@@ -656,5 +1020,42 @@ pub fn cache_clean(cfg: &Config) -> Result<()> {
     let store = Store::new(&cfg.home);
     let freed = store.clean_cache()?;
     println!("cleaned cache, freed {}", human_size(freed));
+    Ok(())
+}
+
+/// Parse a coarse age like `90d`, `2w`, `12h` (bare number = days).
+fn parse_age(s: &str) -> Result<std::time::Duration> {
+    let s = s.trim();
+    let (num, secs) = match s.chars().last() {
+        Some('d') => (&s[..s.len() - 1], 86_400u64),
+        Some('h') => (&s[..s.len() - 1], 3_600),
+        Some('w') => (&s[..s.len() - 1], 604_800),
+        _ => (s, 86_400),
+    };
+    let n: u64 = num
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid duration `{s}` (use e.g. 90d, 2w, 12h)"))?;
+    Ok(std::time::Duration::from_secs(n * secs))
+}
+
+/// `zed gc`: least-recently-used garbage collection of the global caches by
+/// access time (zed-docs issue #7).
+pub fn gc(cfg: &Config, older_than: &str, dry_run: bool) -> Result<()> {
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let age = parse_age(older_than)?;
+    let report = store.gc(age, dry_run)?;
+    println!(
+        "gc: {} {} across {} entr{} not accessed in {older_than}",
+        if report.dry_run {
+            "would reclaim"
+        } else {
+            "reclaimed"
+        },
+        human_size(report.freed),
+        report.removed,
+        if report.removed == 1 { "y" } else { "ies" },
+    );
     Ok(())
 }

@@ -45,7 +45,7 @@ declares the conflict; if you use both, install with
 cd my-lib
 zed init --org acme
 git tag v0.1.0
-zed test-local        # r2g-style: consume your own artifact before shipping
+zed r2g               # consume your own artifact before shipping (add --docker for a container)
 zed publish
 
 # consume packages
@@ -90,7 +90,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
-| `zed test-local` (`zed r2g`) | Install your own artifact into a throwaway consumer and run `publish.smoke_test` |
+| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed login` | Save a registry token to `~/.zed-pkg/credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
 | `zed store status\|path\|prune` | Inspect or garbage-collect the global store |
@@ -99,7 +99,10 @@ registry hosts both on S3/Cloudflare R2.
 ## Flags-2-env
 
 Following the [flags-2-env](https://github.com/oresoftware/flags-2-env)
-convention, every flag can be set via a `ZED_PKG_*` environment variable:
+convention, every flag can be set via a `ZED_PKG_*` environment variable. The
+full mapping is declared, TOML-only, in
+[`.cli-flags.toml`](.cli-flags.toml) — a `cargo test` asserts that file and the
+actual CLI never drift, so it is always authoritative:
 
 | Flag | Env var | Default |
 | --- | --- | --- |
@@ -109,13 +112,22 @@ convention, every flag can be set via a `ZED_PKG_*` environment variable:
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
+| `--target` (build) | `ZED_PKG_TARGET` | host triple |
+| `--force` (build) | `ZED_PKG_FORCE` | off |
+| `--dry-run` (publish) | `ZED_PKG_DRY_RUN` | off |
 | `--allow-dirty` | `ZED_PKG_ALLOW_DIRTY` | off |
 | `--skip-vcs-checks` | `ZED_PKG_SKIP_VCS_CHECKS` | off |
 | `--out` (pack) | `ZED_PKG_PACK_OUT` | `.zed/pack` |
 | `--org` (init) | `ZED_PKG_ORG` | - |
+| `--name` (init) | `ZED_PKG_NAME` | directory name |
+| `--docker` (r2g) | `ZED_PKG_R2G_DOCKER` | off |
+| `--image` (r2g) | `ZED_PKG_R2G_IMAGE` | `debian:stable-slim` |
+| `--runtime` (r2g) | `ZED_PKG_R2G_RUNTIME` | auto (docker, then podman) |
+| `--r2g-root` (r2g) | `ZED_PKG_R2G_ROOT` | `<home>/r2g` |
+| `--clean` (r2g) | `ZED_PKG_R2G_CLEAN` | off |
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
-air-gapped mirrors, and `zed test-local` all use it.
+air-gapped mirrors, and `zed r2g` all use it.
 
 ## Containers & OCI
 
@@ -145,14 +157,40 @@ COPY --from=build /app/out /app
 The test suite asserts copy-mode installs contain zero symlinks; run the
 whole suite inside a clean container with `scripts/container-smoke.sh`.
 
-## test-local (r2g)
+## r2g (test-local)
 
-Inspired by [r2g](https://github.com/oresoftware/r2g): the failure mode it
-kills is "works in my repo, breaks when installed." `zed test-local` packs
-your artifact, publishes it to a throwaway `file://` registry, installs it
-into a throwaway consumer project with a throwaway store, then runs your
-`publish.smoke_test` with `ZED_PKG_TEST_TARGET` pointing at the installed
-package. If the smoke test passes there, it will pass for your users.
+Named after [r2g](https://github.com/oresoftware/r2g): the failure mode it
+kills is "works in my repo, breaks when installed." Instead of testing your
+working tree, `zed r2g` exercises the *published artifact* the way a real
+consumer would:
+
+1. **Pack** — builds the exact pruned, deterministic tarball `zed publish`
+   would upload.
+2. **Publish** — to a throwaway `file://` registry.
+3. **Install** — into a mock consumer project (`zed-local/consumer`) with its
+   own throwaway store, so the tarball actually roundtrips through
+   extraction — no reaching back into your source tree.
+4. **Smoke test** — runs your `publish.smoke_test` with `ZED_PKG_TEST_TARGET`
+   pointing at the installed package.
+
+The whole workspace lives under your home directory at
+`~/.zed-pkg/r2g/<org>-<name>/` (registry + consumer + store), wiped fresh each
+run and left behind for inspection (pass `--clean`, or set `--r2g-root` to
+relocate it). `zed test-local` is a backwards-compatible alias.
+
+```sh
+zed r2g                       # roundtrip on the host
+zed r2g --docker              # ...inside a fresh debian:stable-slim container
+zed r2g --docker --image node:22-slim   # pick an image with the runtime you need
+```
+
+With `--docker`, r2g installs in copy mode (self-contained, zero symlinks —
+the same guarantee `--install-mode copy` gives OCI builds), bind-mounts the
+mock consumer into a throwaway container, and runs the smoke test *there* —
+proving the artifact works in a clean, host-independent environment (fresh
+`$HOME`, distro libraries, none of your host toolchain leaking in). The
+runtime is auto-detected (docker, then podman) or forced with `--runtime`.
+If the smoke test passes here, it will pass for your users.
 
 ## VCS support
 
