@@ -44,7 +44,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             skip_vcs_checks,
         } => ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks),
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
-<<<<<<< HEAD
         Cmd::R2g {
             docker,
             image,
@@ -62,16 +61,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 clean,
             },
         ),
-        Cmd::SelfUpdate { check, force } => {
-            update::self_update(env!("CARGO_PKG_VERSION"), check, force)
-        }
-=======
-        Cmd::Gc { max_age_days } => ops::gc(&cfg, max_age_days),
         Cmd::SelfUpdate {
             check,
+            force,
             skip_checksum,
-        } => ops::self_update(check, skip_checksum),
->>>>>>> harden
+        } => update::self_update(env!("CARGO_PKG_VERSION"), check, force, skip_checksum),
         Cmd::Login => ops::login(&cfg),
         Cmd::Org { cmd } => match cmd {
             OrgCmd::Claim { slug } => ops::org_claim(&cfg, &slug),
