@@ -8,16 +8,8 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
-<<<<<<< HEAD
     BuildSection, Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
     is_slug,
-=======
-    Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection, is_sha256_hex,
-    is_slug,
-};
-use zed_interfaces::paths::{
-    BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, build_entry_rel, current_platform,
->>>>>>> harden
 };
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, current_platform};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
