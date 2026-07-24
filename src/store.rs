@@ -4,10 +4,39 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, store_entry_rel};
 
 use crate::pack::sha256_file;
+
+/// An advisory (flock-based) process lock held for the life of the guard.
+/// CLI commands are highly concurrent — two `zed install` runs in different
+/// terminals, or N parallel CI runners — so store mutations that must not
+/// interleave (extracting the same artifact, rewriting refs.json) take a
+/// lock first. The OS releases it if the process dies, so a crash can't
+/// wedge the store.
+pub struct ProcessLock {
+    _file: fs::File,
+}
+
+impl ProcessLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("opening lock file {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("locking {}", path.display()))?;
+        Ok(Self { _file: file })
+    }
+}
 
 /// The global content-addressed store under `$HOME/.zed-pkg`. One extracted
 /// copy per artifact per machine; projects symlink (or copy) out of it.
@@ -54,8 +83,20 @@ impl Store {
         self.pkg_dir(sha256).is_dir()
     }
 
-    /// Verify the archive hash and extract it into the store (idempotent;
-    /// extraction goes to a temp dir first, then an atomic rename).
+    fn locks_dir(&self) -> PathBuf {
+        self.home.join("locks")
+    }
+
+    /// Serializes the whole install (refs.json + lockfile writes) against
+    /// other zed processes. Held by the caller for the duration of install.
+    pub fn install_lock(&self) -> Result<ProcessLock> {
+        ProcessLock::acquire(&self.locks_dir().join("install.lock"))
+    }
+
+    /// Verify the archive hash and extract it into the store. Idempotent and
+    /// safe under concurrency: a per-sha flock means only one process
+    /// extracts a given artifact, and extraction still goes via a temp dir
+    /// and atomic rename as a second line of defense.
     pub fn add_artifact(&self, archive: &Path, expected_sha256: &str) -> Result<PathBuf> {
         let (actual, _) = sha256_file(archive)?;
         if actual != expected_sha256 {
@@ -65,6 +106,13 @@ impl Store {
             );
         }
         let entry = self.entry_dir(expected_sha256);
+        if self.has(expected_sha256) {
+            return Ok(entry.join(STORE_PKG_DIR));
+        }
+        // Only one process extracts this sha at a time; the rest wait here
+        // and then see has()==true.
+        let _lock =
+            ProcessLock::acquire(&self.locks_dir().join(format!("{expected_sha256}.lock")))?;
         if self.has(expected_sha256) {
             return Ok(entry.join(STORE_PKG_DIR));
         }

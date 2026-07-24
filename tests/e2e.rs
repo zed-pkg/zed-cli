@@ -638,6 +638,74 @@ fn test_local_runs_smoke_test_like_a_consumer() {
 }
 
 #[test]
+fn concurrent_installs_share_the_store_safely() {
+    // Issue #6: CLI commands are highly concurrent. Many processes installing
+    // the same artifact into one store must not corrupt it. We drive threads
+    // (each install takes the process flock) at one shared ZED_PKG_HOME.
+    use std::sync::Arc;
+    use std::thread;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let lib = fixture_package(
+        tmp.path(),
+        "acme",
+        "shared",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[("src/x.txt", "shared\n"), ("LICENSE", "MIT\n")],
+    );
+    publish_to(&registry, &lib);
+
+    let home = Arc::new(tmp.path().join("shared-home"));
+    let registry_dir = Arc::new(registry_dir);
+    let root = Arc::new(tmp.path().to_path_buf());
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let home = Arc::clone(&home);
+        let registry_dir = Arc::clone(&registry_dir);
+        let root = Arc::clone(&root);
+        handles.push(thread::spawn(move || {
+            let consumer = fixture_package(
+                &root,
+                "consumerorg",
+                &format!("concur{i}"),
+                "0.0.1",
+                &{
+                    let mut deps = BTreeMap::new();
+                    deps.insert("acme/shared".to_string(), "^1".to_string());
+                    deps
+                },
+                None,
+                &[],
+            );
+            let cfg = Config {
+                registry: format!("file://{}", registry_dir.display()),
+                home: (*home).clone(),
+                token: None,
+            };
+            ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+            assert!(
+                consumer
+                    .join(MODULES_DIR)
+                    .join("acme/shared/src/x.txt")
+                    .exists()
+            );
+        }));
+    }
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Exactly one extracted copy in the shared store despite 8 installers.
+    let store = zed_cli::store::Store::new(&home);
+    assert_eq!(store.status().0, 1);
+}
+
+#[test]
 fn store_prune_removes_unreferenced_entries() {
     let tmp = tempfile::tempdir().unwrap();
     let registry_dir = tmp.path().join("registry");

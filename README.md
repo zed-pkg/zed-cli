@@ -144,6 +144,22 @@ package. If the smoke test passes there, it will pass for your users.
 | fossil | yes | not yet (`--skip-vcs-checks`) |
 | pijul | not yet | not yet (`--skip-vcs-checks`) |
 
+## Concurrency
+
+`zed install` is safe to run from many processes at once (two terminals,
+parallel CI runners). It takes an advisory `flock` on `~/.zed-pkg/locks/`
+around store extraction (per-artifact) and the refs/lockfile writes
+(per-install), so concurrent runs share one store without corrupting it, and
+a crashed process never wedges the store (the OS drops the lock). See the
+`concurrent_installs_share_the_store_safely` test.
+
+## Platforms
+
+Releases ship prebuilt `zed` binaries for macOS (Apple Silicon + Intel),
+Linux (arm64 + x64, gnu and musl), and Windows via
+[`.github/workflows/release.yml`](.github/workflows/release.yml) on every
+`v*` tag. musl builds are static — ideal for distroless/scratch containers.
+
 ## Store layout
 
 ```

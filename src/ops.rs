@@ -187,6 +187,9 @@ pub fn install(
     let manifest = read_manifest(project)?;
     let reg = registry_for(&cfg.registry)?;
     let store = Store::new(&cfg.home);
+    // Serialize against concurrent `zed install` processes (other terminals,
+    // parallel CI runners) writing the store, refs.json, and lockfile.
+    let _install_lock = store.install_lock()?;
     let lock_path = project.join(LOCKFILE_FILE);
 
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
