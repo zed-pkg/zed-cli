@@ -7,6 +7,8 @@ use std::io::{Cursor, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest, Sha256};
+use zed_interfaces::manifest::is_sha256_hex;
 
 /// The CLI's own source repository, where releases are published.
 const REPO: &str = "zed-pkg/zed-cli";
@@ -57,6 +59,69 @@ pub fn is_newer(current: &str, latest_tag: &str) -> bool {
         (Ok(cur), Ok(new)) => new > cur,
         _ => false,
     }
+}
+
+/// Parse a `SHA256SUMS` file (the `sha256sum` output format, one entry per
+/// line: `<hex>␠␠<filename>`, or `<hex>␠*<filename>` in binary mode) and
+/// return the expected lowercase digest for `filename`, if present and well
+/// formed. Comment/blank lines and entries for other assets are ignored.
+fn expected_sha256_for(sums: &str, filename: &str) -> Option<String> {
+    for line in sums.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((hex, name)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        // Binary-mode entries prefix the name with `*`; strip it plus any
+        // surrounding whitespace before comparing.
+        let name = name.trim().trim_start_matches('*').trim();
+        if name == filename {
+            let hex = hex.trim().to_ascii_lowercase();
+            return is_sha256_hex(&hex).then_some(hex);
+        }
+    }
+    None
+}
+
+/// Verify a downloaded release asset against the release's published
+/// SHA256SUMS before anything is extracted or installed. A corrupted download
+/// or swapped asset is caught here — before it can replace the running
+/// binary. Failing to FETCH the sums refuses the update (there is nothing to
+/// verify against); `skip_checksum` bypasses the whole check for local
+/// testing only.
+fn verify_asset_checksum(
+    client: &reqwest::blocking::Client,
+    tag: &str,
+    asset: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/SHA256SUMS");
+    let resp = client
+        .get(&sums_url)
+        .send()
+        .with_context(|| format!("fetching {sums_url}"))?;
+    if !resp.status().is_success() {
+        bail!(
+            "refusing to self-update: could not fetch {sums_url} ({}); there is no \
+             checksum to verify {asset} against (pass --skip-checksum to override, unsafe)",
+            resp.status()
+        );
+    }
+    let sums = resp.text().context("reading SHA256SUMS")?;
+    let expected = expected_sha256_for(&sums, asset).with_context(|| {
+        format!("SHA256SUMS from the release has no entry for {asset}; refusing to self-update")
+    })?;
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        bail!(
+            "checksum mismatch for {asset}: expected {expected}, got {actual}; \
+             refusing to replace the binary"
+        );
+    }
+    println!("verified {asset} sha256 {actual}");
+    Ok(())
 }
 
 /// Extract the `zed` (or `zed.exe`) binary bytes from a release archive.
@@ -116,8 +181,9 @@ fn replace_exe(exe: &Path, new_bytes: &[u8]) -> Result<()> {
 }
 
 /// Run the self-update. `check` only reports; `force` reinstalls even when
-/// already current.
-pub fn self_update(current_version: &str, check: bool, force: bool) -> Result<()> {
+/// already current; `skip_checksum` bypasses SHA256SUMS verification (unsafe,
+/// local testing only).
+pub fn self_update(current_version: &str, check: bool, force: bool, skip_checksum: bool) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
         .build()?;
@@ -157,6 +223,16 @@ pub fn self_update(current_version: &str, check: bool, force: bool) -> Result<()
         .bytes()
         .context("reading release asset")?;
 
+    if skip_checksum {
+        eprintln!(
+            "WARNING: --skip-checksum set; installing {asset} WITHOUT verifying its \
+             sha256. This defeats self-update integrity checking and is intended \
+             only for local testing."
+        );
+    } else {
+        verify_asset_checksum(&client, &tag, &asset, &bytes)?;
+    }
+
     let bin_name = if is_zip { "zed.exe" } else { "zed" };
     let new_bin = extract_binary(&bytes, bin_name, is_zip)?;
     let exe = std::env::current_exe().context("locating the running executable")?;
@@ -195,6 +271,58 @@ mod tests {
         assert!(!is_newer("1.0.0", "v1.0.0"));
         assert!(!is_newer("1.2.0", "v1.1.9"));
         assert!(!is_newer("0.1.0", "not-a-version"));
+    }
+
+    const DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn sha256sums_matches_asset_line() {
+        let sums = format!(
+            "# release checksums\n\
+             {DIGEST}  zed-aarch64-apple-darwin.tar.gz\n\
+             1111111111111111111111111111111111111111111111111111111111111111  zed-x86_64-unknown-linux-musl.tar.gz\n"
+        );
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").as_deref(),
+            Some(DIGEST)
+        );
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-x86_64-unknown-linux-musl.tar.gz").as_deref(),
+            Some("1111111111111111111111111111111111111111111111111111111111111111")
+        );
+    }
+
+    #[test]
+    fn sha256sums_handles_binary_mode_and_uppercase() {
+        // `sha256sum -b` writes `<hex> *<name>`; digests may be uppercase.
+        let sums = format!("{}  *zed-x86_64-pc-windows-msvc.zip\n", DIGEST.to_uppercase());
+        assert_eq!(
+            expected_sha256_for(&sums, "zed-x86_64-pc-windows-msvc.zip").as_deref(),
+            Some(DIGEST),
+            "expected lowercased digest with the `*` binary-mode marker stripped"
+        );
+    }
+
+    #[test]
+    fn sha256sums_rejects_missing_or_malformed() {
+        let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
+        // No entry for the requested asset -> None, so the caller aborts.
+        assert_eq!(expected_sha256_for(&sums, "zed-x86_64-apple-darwin.tar.gz"), None);
+        // A non-hex "digest" for the asset is not accepted.
+        let bad = "nothexnothexnothex  zed-aarch64-apple-darwin.tar.gz\n";
+        assert_eq!(expected_sha256_for(bad, "zed-aarch64-apple-darwin.tar.gz"), None);
+        // Empty file yields nothing.
+        assert_eq!(expected_sha256_for("", "zed-aarch64-apple-darwin.tar.gz"), None);
+    }
+
+    #[test]
+    fn sha256sums_mismatch_is_detectable() {
+        // Mirrors the self_update comparison: a differing digest must not
+        // equal the archive's actual hash, so the update is refused.
+        let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
+        let expected = expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").unwrap();
+        let actual = "1111111111111111111111111111111111111111111111111111111111111111";
+        assert_ne!(expected, actual);
     }
 
     #[test]

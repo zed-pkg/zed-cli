@@ -215,6 +215,9 @@ pub enum Cmd {
         /// Reinstall even if already on the latest version
         #[arg(long, env = "ZED_PKG_UPDATE_FORCE")]
         force: bool,
+        /// Skip the SHA256SUMS integrity check (unsafe; local testing only)
+        #[arg(long, env = "ZED_PKG_UPDATE_SKIP_CHECKSUM")]
+        skip_checksum: bool,
     },
     /// Save a registry token to ~/.zed-pkg/credentials.toml
     Login,
