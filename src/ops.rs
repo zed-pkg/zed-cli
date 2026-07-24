@@ -858,10 +858,36 @@ pub fn gc(cfg: &Config, max_age_days: u64) -> Result<()> {
     Ok(())
 }
 
+/// Parse a `SHA256SUMS` file (the `sha256sum` output format, one entry per
+/// line: `<hex>␠␠<filename>`, or `<hex>␠*<filename>` in binary mode) and
+/// return the expected lowercase digest for `filename`, if present and well
+/// formed. Comment/blank lines and entries for other assets are ignored.
+fn expected_sha256_for(sums: &str, filename: &str) -> Option<String> {
+    for line in sums.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((hex, name)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        // Binary-mode entries prefix the name with `*`; strip it plus any
+        // surrounding whitespace before comparing.
+        let name = name.trim().trim_start_matches('*').trim();
+        if name == filename {
+            let hex = hex.trim().to_ascii_lowercase();
+            return is_sha256_hex(&hex).then_some(hex);
+        }
+    }
+    None
+}
+
 /// `zed self-update` — fetch the latest GitHub release for this platform
 /// and atomically replace the current binary. Uses the /releases/latest
-/// redirect (no API quota) and refuses downgrades.
-pub fn self_update(check_only: bool) -> Result<()> {
+/// redirect (no API quota) and refuses downgrades. Before extraction the
+/// downloaded archive is verified against the release's published
+/// SHA256SUMS; `skip_checksum` bypasses that check for local testing only.
+pub fn self_update(check_only: bool, skip_checksum: bool) -> Result<()> {
     const REPO: &str = "zed-pkg/zed-cli";
     let current = env!("CARGO_PKG_VERSION");
 
