@@ -21,6 +21,8 @@ const MAX_ARCHIVE_ENTRIES: usize = 200_000;
 /// Ceiling on `zed gc --max-age-days`, defending the age computation against
 /// hostile input. ~10,000 years is far past any real cache lifetime while
 /// leaving the seconds conversion well clear of `u64` overflow.
+/// Only exercised by the hostile-age gc test since parse_age saturates.
+#[cfg(test)]
 const MAX_GC_AGE_DAYS: u64 = 3_650_000;
 
 fn max_unpacked_bytes() -> u64 {
