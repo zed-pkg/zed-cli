@@ -118,6 +118,82 @@ exclude = []
 }
 
 // ---------------------------------------------------------------------------
+// workspaces
+
+/// A discovered monorepo workspace: the root manifest's `[workspace]`
+/// member globs expanded to actual member packages.
+#[derive(Debug, Default)]
+pub struct WorkspaceInfo {
+    pub root: PathBuf,
+    /// `org/name` -> member source directory.
+    pub members: BTreeMap<String, PathBuf>,
+}
+
+/// Walk up from `project` looking for a manifest with a `[workspace]`
+/// section; expand its member globs into packages. Members are linked from
+/// source instead of the registry so edits show up in consumers instantly.
+fn find_workspace(project: &Path) -> Option<WorkspaceInfo> {
+    let mut dir: Option<&Path> = Some(project);
+    while let Some(d) = dir {
+        if d.join(MANIFEST_FILE).exists() {
+            if let Ok(manifest) = read_manifest(d) {
+                if let Some(ws) = &manifest.workspace {
+                    return Some(collect_members(d, &ws.members));
+                }
+            }
+        }
+        dir = d.parent();
+    }
+    None
+}
+
+fn collect_members(root: &Path, globs: &[String]) -> WorkspaceInfo {
+    let mut info = WorkspaceInfo {
+        root: root.to_path_buf(),
+        members: BTreeMap::new(),
+    };
+    for pattern in globs {
+        // Member globs are directory patterns like `packages/*`; expand one
+        // path segment at a time so we never walk unrelated trees.
+        let mut candidates = vec![root.to_path_buf()];
+        for segment in pattern.split('/') {
+            let mut next = Vec::new();
+            for base in &candidates {
+                if segment.contains('*') {
+                    let Ok(glob) = globset::Glob::new(segment) else {
+                        continue;
+                    };
+                    let matcher = glob.compile_matcher();
+                    if let Ok(entries) = fs::read_dir(base) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name();
+                            if entry.path().is_dir()
+                                && matcher.is_match(Path::new(&name))
+                                && !name.to_string_lossy().starts_with('.')
+                            {
+                                next.push(entry.path());
+                            }
+                        }
+                    }
+                } else {
+                    let candidate = base.join(segment);
+                    if candidate.is_dir() {
+                        next.push(candidate);
+                    }
+                }
+            }
+            candidates = next;
+        }
+        for member_dir in candidates {
+            if let Ok(member) = read_manifest(&member_dir) {
+                info.members.insert(member.full_name(), member_dir);
+            }
+        }
+    }
+    info
+}
+
+// ---------------------------------------------------------------------------
 // install
 
 #[derive(Debug)]
@@ -126,6 +202,7 @@ pub struct InstallOutcome {
 }
 
 fn ensure_artifact(reg: &dyn Registry, store: &Store, vm: &VersionMetadata) -> Result<PathBuf> {
+    validate_version_metadata(vm)?;
     if store.has(&vm.sha256) {
         return Ok(store.pkg_dir(&vm.sha256));
     }
