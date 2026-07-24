@@ -95,6 +95,11 @@ pub enum Cmd {
         /// site-packages and deeper maven integration are planned)
         #[arg(long, value_enum, env = "ZED_PKG_ADAPTER", default_value = "auto")]
         adapter: Adapter,
+        /// Run dependencies' [build] commands (arbitrary code from the
+        /// package author — off by default; builds are cached per
+        /// (artifact, platform) under ~/.zed-pkg/builds)
+        #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
+        allow_build: bool,
     },
     /// Search the registry
     Find { query: String },
@@ -118,6 +123,37 @@ pub enum Cmd {
     /// Test this package the way a consumer would install it (r2g-style)
     #[command(name = "test-local", alias = "r2g")]
     TestLocal,
+    /// Run an executable exposed by an installed package (hoisted into
+    /// zed_modules/.bin), with that directory prepended to PATH
+    Run {
+        /// Name of the binary as declared in the package's [bin] table
+        bin: String,
+        /// Arguments passed through to the binary
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Mark a published version as yanked (hidden from resolution; still
+    /// downloadable for existing lockfiles). --undo restores it.
+    Yank {
+        /// org/name@version
+        spec: String,
+        #[arg(long)]
+        undo: bool,
+    },
+    /// Garbage-collect the store: remove entries unreferenced by any live
+    /// project and unused past the age cutoff, plus stale download caches
+    Gc {
+        /// Only collect entries unused for at least this many days
+        #[arg(long, env = "ZED_PKG_GC_MAX_AGE_DAYS", default_value_t = 90)]
+        max_age_days: u64,
+    },
+    /// Update zed itself to the latest GitHub release
+    #[command(name = "self-update")]
+    SelfUpdate {
+        /// Check and report, but do not replace the binary
+        #[arg(long)]
+        check: bool,
+    },
     /// Save a registry token to ~/.zed-pkg/credentials.toml
     Login,
     /// Org namespace operations

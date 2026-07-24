@@ -23,7 +23,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             frozen,
             install_mode,
             adapter,
-        } => ops::install(&cwd, &cfg, frozen, install_mode, adapter).map(|_| ()),
+            allow_build,
+        } => ops::install(&cwd, &cfg, frozen, install_mode, adapter, allow_build).map(|_| ()),
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
         Cmd::Publish {
@@ -32,6 +33,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             skip_vcs_checks,
         } => ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks),
         Cmd::TestLocal => ops::test_local(&cwd, &cfg),
+        Cmd::Run { bin, args } => {
+            let code = ops::run_bin(&cwd, &bin, &args)?;
+            std::process::exit(code);
+        }
+        Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
+        Cmd::Gc { max_age_days } => ops::gc(&cfg, max_age_days),
+        Cmd::SelfUpdate { check } => ops::self_update(check),
         Cmd::Login => ops::login(&cfg),
         Cmd::Org { cmd } => match cmd {
             OrgCmd::Claim { slug } => ops::org_claim(&cfg, &slug),

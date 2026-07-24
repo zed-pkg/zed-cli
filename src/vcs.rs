@@ -29,7 +29,7 @@ pub fn ensure_clean(vcs: Vcs, dir: &Path) -> Result<()> {
         Vcs::Hg => !run(dir, "hg", &["status", "-q"])?.is_empty(),
         Vcs::Fossil => !run(dir, "fossil", &["changes"])?.is_empty(),
         Vcs::Pijul => bail!("pijul worktree checks are not supported yet; use --skip-vcs-checks"),
-        _ => unreachable!(),
+        other => bail!("worktree checks for {other} are not supported yet; use --skip-vcs-checks"),
     };
     if dirty {
         bail!("worktree has uncommitted changes (use --allow-dirty to override)");
@@ -57,7 +57,7 @@ pub fn tag_commit(vcs: Vcs, dir: &Path, tag: &str) -> Result<Option<String>> {
         Vcs::Fossil | Vcs::Pijul => {
             bail!("tag verification for {vcs} is not supported yet; use --skip-vcs-checks")
         }
-        _ => unreachable!(),
+        other => bail!("tag verification for {other} is not supported yet; use --skip-vcs-checks"),
     }
 }
 
@@ -68,7 +68,7 @@ pub fn head_commit(vcs: Vcs, dir: &Path) -> Result<String> {
         Vcs::Fossil | Vcs::Pijul => {
             bail!("head lookup for {vcs} is not supported yet; use --skip-vcs-checks")
         }
-        _ => unreachable!(),
+        other => bail!("head lookup for {other} is not supported yet; use --skip-vcs-checks"),
     }
 }
 
