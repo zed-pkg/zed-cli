@@ -413,4 +413,22 @@ impl Registry for HttpRegistry {
             .send()?;
         Ok(Self::check(response)?.json()?)
     }
+
+    fn yank(
+        &self,
+        org: &str,
+        name: &str,
+        version: &str,
+        yanked: bool,
+        token: Option<&str>,
+    ) -> Result<YankResponse> {
+        let mut request = self
+            .client
+            .post(self.url(&registry::yank_path(org, name, version)))
+            .json(&YankRequest { yanked });
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        Ok(Self::check(request.send()?)?.json()?)
+    }
 }
