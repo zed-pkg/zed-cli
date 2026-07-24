@@ -37,6 +37,24 @@ pub struct Globals {
     pub token: Option<String>,
 }
 
+/// Contextual adapters translate zed's universal layout into what a
+/// language's toolchain expects, per the "structural translation" goal:
+/// the same artifact lands where Node, the JVM, or plain zed_modules/
+/// consumers respectively look for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Adapter {
+    /// Detect from the project: package.json -> node, pom.xml/build.gradle
+    /// -> java, otherwise none
+    Auto,
+    /// zed_modules/ only
+    None,
+    /// Additionally link into node_modules/@<org>/<name> for Node resolution
+    Node,
+    /// Additionally write .zed/classpath listing installed .jar paths for
+    /// javac/java -cp and build-tool integration
+    Java,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum InstallMode {
     /// Symlink from the global store into zed_modules/ (pnpm-style)
@@ -72,6 +90,11 @@ pub enum Cmd {
             default_value = "symlink"
         )]
         install_mode: InstallMode,
+        /// Also link packages where the language ecosystem expects them,
+        /// inferred from the project by default (experimental; python
+        /// site-packages and deeper maven integration are planned)
+        #[arg(long, value_enum, env = "ZED_PKG_ADAPTER", default_value = "auto")]
+        adapter: Adapter,
     },
     /// Search the registry
     Find { query: String },
@@ -134,4 +157,42 @@ pub enum StoreCmd {
 pub enum CacheCmd {
     /// Delete all cached artifact downloads
     Clean,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// The flags-2-env convention (github.com/oresoftware/flags-2-env):
+    /// every user-facing option must be settable via a ZED_PKG_* env var.
+    #[test]
+    fn flags_2_env_convention_holds() {
+        let cmd = Cli::command();
+        for arg in cmd.get_arguments() {
+            let Some(long) = arg.get_long() else { continue };
+            if long == "help" || long == "version" {
+                continue;
+            }
+            let env = arg
+                .get_env()
+                .unwrap_or_else(|| panic!("--{long} lacks an env fallback"))
+                .to_string_lossy();
+            assert!(
+                env.starts_with("ZED_PKG_"),
+                "--{long} env `{env}` must use the ZED_PKG_ prefix"
+            );
+        }
+
+        let env_of = |name: &str| {
+            Cli::command()
+                .get_arguments()
+                .find(|a| a.get_long() == Some(name))
+                .and_then(|a| a.get_env().map(|e| e.to_string_lossy().to_string()))
+        };
+        assert_eq!(env_of("registry").as_deref(), Some("ZED_PKG_REGISTRY"));
+        assert_eq!(env_of("home").as_deref(), Some("ZED_PKG_HOME"));
+        assert_eq!(env_of("token").as_deref(), Some("ZED_PKG_TOKEN"));
+    }
 }

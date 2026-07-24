@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use semver::VersionReq;
-use zed_cli::cli::InstallMode;
+use zed_cli::cli::{Adapter, InstallMode};
 use zed_cli::config::Config;
 use zed_cli::ops;
 use zed_cli::pack;
@@ -266,7 +266,8 @@ fn publish_install_roundtrip_with_transitive_deps() {
     );
 
     let cfg = test_config(tmp.path(), &registry_dir);
-    let outcome = ops::install(&consumer, &cfg, false, InstallMode::Symlink).unwrap();
+    let outcome =
+        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
     assert_eq!(outcome.installed.len(), 2, "direct + transitive");
 
     let demo_link = consumer.join(MODULES_DIR).join("acme").join("demo");
@@ -294,7 +295,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
 
     // Frozen re-install from the lockfile succeeds after wiping modules.
     fs::remove_dir_all(consumer.join(MODULES_DIR)).unwrap();
-    ops::install(&consumer, &cfg, true, InstallMode::Symlink).unwrap();
+    ops::install(&consumer, &cfg, true, InstallMode::Symlink, Adapter::None).unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
 }
 
@@ -330,7 +331,7 @@ fn copy_mode_is_container_safe() {
     );
 
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Copy).unwrap();
+    ops::install(&consumer, &cfg, false, InstallMode::Copy, Adapter::None).unwrap();
 
     let modules = consumer.join(MODULES_DIR);
     let mut checked = 0;
@@ -345,6 +346,178 @@ fn copy_mode_is_container_safe() {
     }
     assert!(checked > 0);
     assert!(modules.join("acme/libpkg/dist/bundle.js").exists());
+}
+
+#[test]
+fn circular_deps_terminate_and_install_both() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    // a -> b -> a: the resolver must terminate and install one copy of each.
+    let mut a_deps = BTreeMap::new();
+    a_deps.insert("acme/cyc-b".to_string(), "^0.1".to_string());
+    let a = fixture_package(
+        tmp.path(),
+        "acme",
+        "cyc-a",
+        "0.1.0",
+        &a_deps,
+        None,
+        &[("a.txt", "a\n")],
+    );
+    let mut b_deps = BTreeMap::new();
+    b_deps.insert("acme/cyc-a".to_string(), "^0.1".to_string());
+    let b = fixture_package(
+        tmp.path(),
+        "acme",
+        "cyc-b",
+        "0.1.0",
+        &b_deps,
+        None,
+        &[("b.txt", "b\n")],
+    );
+    publish_to(&registry, &a);
+    publish_to(&registry, &b);
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "cyclic",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/cyc-a".to_string(), "^0.1".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    let outcome =
+        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
+    assert_eq!(
+        outcome.installed.len(),
+        2,
+        "cycle resolved to exactly two packages"
+    );
+    assert!(consumer.join(MODULES_DIR).join("acme/cyc-a/a.txt").exists());
+    assert!(consumer.join(MODULES_DIR).join("acme/cyc-b/b.txt").exists());
+}
+
+#[test]
+fn node_adapter_links_into_node_modules() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    let lib = fixture_package(
+        tmp.path(),
+        "acme",
+        "nodelib",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[
+            ("package.json", "{\"name\":\"@acme/nodelib\"}\n"),
+            ("index.js", "module.exports = 1\n"),
+        ],
+    );
+    publish_to(&registry, &lib);
+
+    let consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "nodeapp",
+        "0.0.1",
+        &{
+            let mut deps = BTreeMap::new();
+            deps.insert("acme/nodelib".to_string(), "^1".to_string());
+            deps
+        },
+        None,
+        &[],
+    );
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::Node).unwrap();
+
+    let node_link = consumer.join("node_modules").join("@acme").join("nodelib");
+    assert!(node_link.join("package.json").exists());
+    assert!(node_link.join("index.js").exists());
+}
+
+#[test]
+fn adapter_auto_is_context_aware_node_and_java() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    let lib = fixture_package(
+        tmp.path(),
+        "acme",
+        "jarlib",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[
+            ("lib/jarlib.jar", "not-really-a-jar\n"),
+            ("index.js", "x\n"),
+        ],
+    );
+    publish_to(&registry, &lib);
+    let deps = {
+        let mut deps = BTreeMap::new();
+        deps.insert("acme/jarlib".to_string(), "^1".to_string());
+        deps
+    };
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    // package.json present -> auto selects the node adapter.
+    let node_consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "autonode",
+        "0.0.1",
+        &deps,
+        None,
+        &[("package.json", "{}\n")],
+    );
+    ops::install(
+        &node_consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Auto,
+    )
+    .unwrap();
+    assert!(
+        node_consumer
+            .join("node_modules/@acme/jarlib/index.js")
+            .exists()
+    );
+
+    // pom.xml present -> auto selects the java adapter and writes a
+    // classpath file pointing at the installed jars.
+    let java_consumer = fixture_package(
+        tmp.path(),
+        "consumerorg",
+        "autojava",
+        "0.0.1",
+        &deps,
+        None,
+        &[("pom.xml", "<project/>\n")],
+    );
+    ops::install(
+        &java_consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Auto,
+    )
+    .unwrap();
+    let classpath = fs::read_to_string(java_consumer.join(".zed/classpath")).unwrap();
+    assert!(classpath.contains("jarlib.jar"), "classpath: {classpath}");
+    assert!(!java_consumer.join("node_modules").exists());
 }
 
 fn walkdir_all(root: &Path) -> Vec<PathBuf> {
@@ -414,7 +587,8 @@ fn version_conflicts_fail_loudly() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    let err = ops::install(&consumer, &cfg, false, InstallMode::Symlink).unwrap_err();
+    let err =
+        ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap_err();
     assert!(
         format!("{err:#}").contains("version conflict"),
         "unexpected error: {err:#}"
@@ -495,7 +669,7 @@ fn store_prune_removes_unreferenced_entries() {
         &[],
     );
     let cfg = test_config(tmp.path(), &registry_dir);
-    ops::install(&consumer, &cfg, false, InstallMode::Symlink).unwrap();
+    ops::install(&consumer, &cfg, false, InstallMode::Symlink, Adapter::None).unwrap();
 
     let store = zed_cli::store::Store::new(&cfg.home);
     assert_eq!(store.status().0, 1);

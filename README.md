@@ -86,6 +86,7 @@ convention, every flag can be set via a `ZED_PKG_*` environment variable:
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
+| `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-dirty` | `ZED_PKG_ALLOW_DIRTY` | off |
 | `--skip-vcs-checks` | `ZED_PKG_SKIP_VCS_CHECKS` | off |

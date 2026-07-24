@@ -14,7 +14,7 @@ use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
 use zed_interfaces::vcs::Vcs;
 
-use crate::cli::InstallMode;
+use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for, resolve_version};
@@ -157,12 +157,33 @@ fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
     Ok(())
 }
 
+/// Pick the ecosystem adapter from what the project looks like: Node
+/// projects resolve from node_modules/, JVM projects need a classpath,
+/// Rust/others use zed_modules/ directly.
+fn detect_adapter(project: &Path) -> Adapter {
+    if project.join("package.json").exists() {
+        Adapter::Node
+    } else if project.join("pom.xml").exists()
+        || project.join("build.gradle").exists()
+        || project.join("build.gradle.kts").exists()
+    {
+        Adapter::Java
+    } else {
+        Adapter::None
+    }
+}
+
 pub fn install(
     project: &Path,
     cfg: &Config,
     frozen: bool,
     mode: InstallMode,
+    adapter: Adapter,
 ) -> Result<InstallOutcome> {
+    let adapter = match adapter {
+        Adapter::Auto => detect_adapter(project),
+        other => other,
+    };
     let manifest = read_manifest(project)?;
     let reg = registry_for(&cfg.registry)?;
     let store = Store::new(&cfg.home);
@@ -244,12 +265,47 @@ pub fn install(
     let modules = project.join(MODULES_DIR);
     let mut installed = Vec::new();
     let mut shas = Vec::new();
+    let mut jars: Vec<String> = Vec::new();
     for vm in resolved.values() {
         let pkg_dir = ensure_artifact(reg.as_ref(), &store, vm)?;
         let dest = modules.join(&vm.org).join(&vm.name);
         link_or_copy(&pkg_dir, &dest, mode)?;
+        match adapter {
+            Adapter::Node => {
+                let node_dest = project
+                    .join("node_modules")
+                    .join(format!("@{}", vm.org))
+                    .join(&vm.name);
+                link_or_copy(&pkg_dir, &node_dest, mode)?;
+            }
+            Adapter::Java => {
+                // Classpath entries point at the project-local link so the
+                // file works in both symlink and copy (container) modes.
+                for entry in walkdir::WalkDir::new(&dest)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|e| e.ok())
+                {
+                    if entry.path().extension().is_some_and(|e| e == "jar") {
+                        jars.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+            Adapter::Auto | Adapter::None => {}
+        }
         installed.push((format!("{}/{}", vm.org, vm.name), vm.version.clone()));
         shas.push(vm.sha256.clone());
+    }
+    if adapter == Adapter::Java {
+        jars.sort();
+        let classpath_file = project.join(".zed").join("classpath");
+        fs::create_dir_all(classpath_file.parent().context("classpath parent")?)?;
+        fs::write(&classpath_file, jars.join(":") + "\n")?;
+        println!(
+            "wrote {} ({} jars); use: java -cp \"$(cat .zed/classpath)\" ...",
+            classpath_file.display(),
+            jars.len()
+        );
     }
 
     let mut lock = Lockfile::default();
@@ -312,7 +368,7 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         .insert(format!("{org}/{name}"), req.clone());
     write_manifest(project, &manifest)?;
     println!("added {org}/{name} = \"{req}\"");
-    install(project, cfg, false, InstallMode::Symlink)?;
+    install(project, cfg, false, InstallMode::Symlink, Adapter::None)?;
     Ok(())
 }
 
@@ -330,7 +386,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let dest = project.join(MODULES_DIR).join(&org).join(&name);
     replace_dest(&dest)?;
     println!("removed {org}/{name}");
-    install(project, cfg, false, InstallMode::Symlink)?;
+    install(project, cfg, false, InstallMode::Symlink, Adapter::None)?;
     Ok(())
 }
 
@@ -460,7 +516,13 @@ pub fn test_local(project: &Path, _cfg: &Config) -> Result<()> {
         home: home_dir,
         token: None,
     };
-    install(&consumer_dir, &test_cfg, false, InstallMode::Symlink)?;
+    install(
+        &consumer_dir,
+        &test_cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+    )?;
 
     let target = consumer_dir
         .join(MODULES_DIR)
