@@ -18,6 +18,10 @@ use crate::pack::sha256_file;
 const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Ceiling on archive entry count (inode-exhaustion guard).
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+/// Ceiling on `zed gc --max-age-days`, defending the age computation against
+/// hostile input. ~10,000 years is far past any real cache lifetime while
+/// leaving the seconds conversion well clear of `u64` overflow.
+const MAX_GC_AGE_DAYS: u64 = 3_650_000;
 
 fn max_unpacked_bytes() -> u64 {
     std::env::var("ZED_PKG_MAX_UNPACKED_BYTES")
