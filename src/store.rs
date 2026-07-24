@@ -336,7 +336,16 @@ impl Store {
         let referenced: BTreeSet<String> = refs.projects.values().flatten().cloned().collect();
         self.save_refs(&refs)?;
 
-        let cutoff = SystemTime::now() - Duration::from_secs(max_age_days * 24 * 60 * 60);
+        // `max_age_days` arrives unvalidated from the CLI/env, so do the age
+        // math without any operation that can panic on hostile input (e.g.
+        // `u64::MAX`). Clamp to a sane ceiling, convert to seconds with a
+        // saturating multiply, then subtract from "now" with a checked_sub,
+        // falling back to the epoch (prune nothing older than epoch) if the
+        // subtraction would underflow.
+        let cutoff_secs = max_age_days.min(MAX_GC_AGE_DAYS).saturating_mul(86_400);
+        let cutoff = SystemTime::now()
+            .checked_sub(Duration::from_secs(cutoff_secs))
+            .unwrap_or(UNIX_EPOCH);
         let too_old = |entry: &Path| -> bool {
             let last = self
                 .last_used(entry)
