@@ -685,20 +685,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn gc_survives_hostile_max_age_days() {
-        // `u64::MAX` days would overflow the naive `days * 86_400` and panic
-        // the `SystemTime - Duration` subtraction; the hardened path must
-        // clamp/saturate and simply prune nothing.
+    fn gc_survives_hostile_max_age() {
+        // A hostile age (`u64::MAX` seconds) would overflow naive epoch math
+        // and panic the `SystemTime - Duration` subtraction; the hardened
+        // path (saturating parse_age + checked_sub falling back to the epoch)
+        // must simply prune nothing.
         let home = tempfile::tempdir().unwrap();
         let store = Store::new(home.path());
-        let (entries, cache_files, freed) = store
-            .gc(u64::MAX)
+        let report = store
+            .gc(Duration::from_secs(u64::MAX), false)
             .expect("gc must not fail on an empty store");
-        assert_eq!((entries, cache_files, freed), (0, 0, 0));
+        assert_eq!(
+            (
+                report.entries_removed,
+                report.cache_files_removed,
+                report.freed
+            ),
+            (0, 0, 0)
+        );
 
-        // A handful of other extreme values must be equally panic-free.
-        for days in [0, 1, MAX_GC_AGE_DAYS, u64::MAX / 2, u64::MAX - 1] {
-            store.gc(days).expect("gc must not panic for any max_age_days");
+        // A handful of other extreme ages must be equally panic-free.
+        for days in [0u64, 1, MAX_GC_AGE_DAYS, u64::MAX / 2, u64::MAX - 1] {
+            let age = Duration::from_secs(days.saturating_mul(86_400));
+            store.gc(age, false).expect("gc must not panic for any age");
         }
     }
 }
