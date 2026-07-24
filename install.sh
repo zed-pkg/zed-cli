@@ -184,6 +184,7 @@ case ":${PATH}:" in
   *":${INSTALL_DIR}:"*) : ;; # already on PATH for this session
   *)
     info "restart your shell, or run this to use it now:"
+    # shellcheck disable=SC2016  # print $PATH literally as a copy-paste command
     printf '    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
     ;;
 esac
