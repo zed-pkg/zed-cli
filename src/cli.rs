@@ -95,6 +95,11 @@ pub enum Cmd {
         /// site-packages and deeper maven integration are planned)
         #[arg(long, value_enum, env = "ZED_PKG_ADAPTER", default_value = "auto")]
         adapter: Adapter,
+        /// Run dependencies' [build] commands (arbitrary code from the
+        /// package author — off by default; builds are cached per
+        /// (artifact, platform) under ~/.zed-pkg/builds)
+        #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
+        allow_build: bool,
     },
     /// Search the registry
     Find { query: String },
