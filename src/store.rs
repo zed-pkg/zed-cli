@@ -408,24 +408,125 @@ impl Store {
     }
 }
 
-/// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic bytes.
+/// True when an archive-declared path is safe to create under `dest`:
+/// relative, no `..`, no absolute/prefix components.
+fn safe_entry_path(path: &Path) -> bool {
+    path.components().all(|c| matches!(c, Component::Normal(_)))
+        && !path.as_os_str().is_empty()
+}
+
+/// Extract a `tar.gz` or `zip` artifact into `dest`, detected by magic
+/// bytes. Every entry is screened before touching the disk: traversal
+/// paths, symlinks/hardlinks, and non-file specials are rejected, and the
+/// total decompressed size is capped — archives come from the network, so
+/// the extractor is a security boundary, not a convenience.
 fn extract_archive(archive: &Path, dest: &Path) -> Result<()> {
     let mut magic = [0u8; 4];
     let read = {
-        use std::io::Read as _;
         let mut file = fs::File::open(archive)?;
         file.read(&mut magic).unwrap_or(0)
     };
+    let budget = max_unpacked_bytes();
+    let mut written: u64 = 0;
+    let mut entries: usize = 0;
+
+    let mut charge = |bytes: u64, entries: &mut usize| -> Result<()> {
+        *entries += 1;
+        if *entries > MAX_ARCHIVE_ENTRIES {
+            bail!("artifact has more than {MAX_ARCHIVE_ENTRIES} entries; refusing");
+        }
+        written = written.saturating_add(bytes);
+        if written > budget {
+            bail!(
+                "artifact expands past the {budget}-byte cap \
+                 (set ZED_PKG_MAX_UNPACKED_BYTES to raise it); refusing"
+            );
+        }
+        Ok(())
+    };
+
     if read >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
         let file = fs::File::open(archive)?;
         let mut tar = tar::Archive::new(GzDecoder::new(file));
-        tar.unpack(dest)?;
+        for entry in tar.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_path_buf();
+            if !safe_entry_path(&path) {
+                bail!("artifact entry `{}` escapes the extraction root", path.display());
+            }
+            let kind = entry.header().entry_type();
+            match kind {
+                tar::EntryType::Regular | tar::EntryType::Directory => {}
+                other => bail!(
+                    "artifact entry `{}` has unsupported type {other:?} \
+                     (only files and directories are allowed)",
+                    path.display()
+                ),
+            }
+            charge(entry.header().size().unwrap_or(0), &mut entries)?;
+            let target = dest.join(&path);
+            if kind == tar::EntryType::Directory {
+                fs::create_dir_all(&target)?;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // take(size+1): a lying header cannot stream more than declared.
+            let declared = entry.header().size().unwrap_or(0);
+            let mut limited = (&mut entry).take(declared.saturating_add(1));
+            let mut out = fs::File::create(&target)?;
+            let copied = std::io::copy(&mut limited, &mut out)?;
+            if copied > declared {
+                bail!("artifact entry `{}` exceeds its declared size", path.display());
+            }
+            #[cfg(unix)]
+            if let Ok(mode) = entry.header().mode() {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
+                let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
+            }
+        }
         Ok(())
     } else if read >= 4 && &magic == b"PK\x03\x04" {
         let file = fs::File::open(archive)?;
         let mut zip = zip::ZipArchive::new(file)
             .with_context(|| format!("reading zip {}", archive.display()))?;
-        zip.extract(dest)?;
+        for index in 0..zip.len() {
+            let mut entry = zip.by_index(index)?;
+            // enclosed_name() is the zip crate's traversal-safe accessor.
+            let Some(path) = entry.enclosed_name() else {
+                bail!("zip entry `{}` escapes the extraction root", entry.name());
+            };
+            if !safe_entry_path(&path) {
+                bail!("zip entry `{}` escapes the extraction root", entry.name());
+            }
+            if entry.is_symlink() {
+                bail!("zip entry `{}` is a symlink; refusing", entry.name());
+            }
+            charge(entry.size(), &mut entries)?;
+            let target = dest.join(&path);
+            if entry.is_dir() {
+                fs::create_dir_all(&target)?;
+                continue;
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let declared = entry.size();
+            let mut limited = (&mut entry).take(declared.saturating_add(1));
+            let mut out = fs::File::create(&target)?;
+            let copied = std::io::copy(&mut limited, &mut out)?;
+            if copied > declared {
+                bail!("zip entry `{}` exceeds its declared size", target.display());
+            }
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
+                let _ = fs::set_permissions(&target, fs::Permissions::from_mode(mode));
+            }
+        }
         Ok(())
     } else {
         bail!(
