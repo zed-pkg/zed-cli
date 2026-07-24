@@ -1214,8 +1214,25 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         publish_to(&registry, &pkg);
         fs::remove_dir_all(&pkg).unwrap();
     }
+
+    // A lockfile pinned to 1.1.0 exists BEFORE the yank (a consumer that
+    // installed it while it was live).
+    let pinned = tmp.path().join("pinned");
+    fs::create_dir_all(&pinned).unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/yankable".to_string(), "^1".to_string());
+    fs::write(
+        pinned.join(MANIFEST_FILE),
+        manifest_toml("zed-local", "pinned", "0.0.0", &deps, None),
+    )
+    .unwrap();
+    ops::install(&pinned, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
+    assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.1.0");
+
     registry.yank("acme", "yankable", "1.1.0", true, None).unwrap();
 
+    // Fresh range resolution now skips the yanked 1.1.0 and picks 1.0.0.
     let ranged = tmp.path().join("ranged");
     fs::create_dir_all(&ranged).unwrap();
     let mut deps = BTreeMap::new();
@@ -1229,20 +1246,26 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.0.0");
 
-    let pinned = tmp.path().join("pinned");
-    fs::create_dir_all(&pinned).unwrap();
+    // A fresh exact pin on a yanked version fails loudly...
+    let fresh_pin = tmp.path().join("fresh_pin");
+    fs::create_dir_all(&fresh_pin).unwrap();
     let mut deps = BTreeMap::new();
     deps.insert("acme/yankable".to_string(), "=1.1.0".to_string());
     fs::write(
-        pinned.join(MANIFEST_FILE),
-        manifest_toml("zed-local", "pinned", "0.0.0", &deps, None),
+        fresh_pin.join(MANIFEST_FILE),
+        manifest_toml("zed-local", "fresh-pin", "0.0.0", &deps, None),
     )
     .unwrap();
-    ops::install(&pinned, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
+    let err = ops::install(&fresh_pin, &cfg, false, InstallMode::Symlink, Adapter::None, false)
+        .unwrap_err();
+    assert!(err.to_string().contains("yanked"), "unexpected: {err:#}");
+
+    // ...but the pre-existing lockfile keeps working via --frozen.
+    ops::install(&pinned, &cfg, true, InstallMode::Symlink, Adapter::None, false).unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
     assert_eq!(lock.find("acme", "yankable").unwrap().version, "1.1.0");
 
-    // Restore works too.
+    // Restoring the version makes it resolvable again.
     registry.yank("acme", "yankable", "1.1.0", false, None).unwrap();
     fs::remove_file(ranged.join(LOCKFILE_FILE)).unwrap();
     ops::install(&ranged, &cfg, false, InstallMode::Symlink, Adapter::None, false).unwrap();
