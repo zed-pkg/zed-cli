@@ -534,6 +534,428 @@ fn install_locked(
     Ok(InstallOutcome { installed })
 }
 
+/// The build step that applies to a dependency: the consumer's
+/// `[overrides.build."org/name"]` wins over the package's own `[build]`,
+/// so a broken upstream build never blocks a project.
+fn effective_build(
+    consumer: &Manifest,
+    pkg_manifest: Option<&Manifest>,
+    vm: &VersionMetadata,
+) -> Option<zed_interfaces::manifest::BuildSection> {
+    let key = format!("{}/{}", vm.org, vm.name);
+    consumer
+        .overrides
+        .build
+        .get(&key)
+        .cloned()
+        .or_else(|| pkg_manifest.and_then(|m| m.build.clone()))
+}
+
+/// Execute a dependency's build step, isolated from the immutable source
+/// store (issue: source vs build caching):
+///
+///   store/<sha>/pkg  --copy-->  staging  --command-->  builds/<platform>/<sha>/pkg
+///
+/// Results cache per (sha256, platform); the staging dir gets the package's
+/// `[build-dependencies]` installed into its own zed_modules first. Builds
+/// run arbitrary package-author code, so they require --allow-build; without
+/// it the pristine source is linked and a warning explains how to opt in.
+fn build_artifact(
+    cfg: &Config,
+    store: &Store,
+    vm: &VersionMetadata,
+    pkg_dir: &Path,
+    pkg_manifest: Option<&Manifest>,
+    build: &zed_interfaces::manifest::BuildSection,
+    allow_build: bool,
+) -> Result<PathBuf> {
+    let key = format!("{}/{}", vm.org, vm.name);
+    if !allow_build {
+        eprintln!(
+            "warning: {key} declares a [build] step; linking unbuilt source \
+             (re-run with --allow-build or ZED_PKG_ALLOW_BUILD=1 to execute it)"
+        );
+        return Ok(pkg_dir.to_path_buf());
+    }
+    let platform = current_platform();
+    let built = cfg
+        .home
+        .join(build_entry_rel(&platform, &vm.sha256))
+        .join("pkg");
+    if built.is_dir() {
+        return Ok(built);
+    }
+    let _lock = store.build_lock(&platform, &vm.sha256)?;
+    if built.is_dir() {
+        return Ok(built);
+    }
+
+    println!("building {key}@{} for {platform}...", vm.version);
+    let staging = tempfile::tempdir()?;
+    let work = staging.path().join("pkg");
+    copy_dir(pkg_dir, &work)?;
+
+    let build_deps = pkg_manifest
+        .map(|m| m.build_dependencies.clone())
+        .unwrap_or_default();
+    if !build_deps.is_empty() {
+        // Build deps live only in the staging dir for the duration of the
+        // command; they are never linked into the consumer's project.
+        let staging_manifest = Manifest {
+            package: PackageSection {
+                org: "zed-build".to_string(),
+                name: "staging".to_string(),
+                version: "0.0.0".to_string(),
+                version_scheme: version::VersionScheme::Semver,
+                description: None,
+                license: None,
+                repository: RepositorySection {
+                    vcs: Vcs::Git,
+                    url: "https://localhost/zed-build/staging".to_string(),
+                },
+                keywords: Vec::new(),
+            },
+            dependencies: build_deps,
+            build_dependencies: BTreeMap::new(),
+            publish: PublishSection::default(),
+            scripts: ScriptsSection::default(),
+            bin: BTreeMap::new(),
+            build: None,
+            workspace: None,
+            overrides: Default::default(),
+        };
+        let deps_dir = staging.path().join("build-deps");
+        fs::create_dir_all(&deps_dir)?;
+        write_manifest(&deps_dir, &staging_manifest)?;
+        install_locked(
+            &deps_dir,
+            cfg,
+            store,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+        )?;
+        // Expose their hoisted bins to the build command's PATH.
+        let bin_dir = deps_dir.join(MODULES_DIR).join(BIN_DIR);
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        unsafe { std::env::set_var("ZED_BUILD_DEPS_PATH", format!("{}", bin_dir.display())) };
+        let _ = path_var;
+    }
+
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&build.command)
+        .current_dir(&work)
+        .env("ZED_BUILD_PLATFORM", &platform)
+        .env("ZED_BUILD_SRC", &work);
+    if !pkg_manifest
+        .map(|m| m.build_dependencies.is_empty())
+        .unwrap_or(true)
+    {
+        let bin_dir = staging
+            .path()
+            .join("build-deps")
+            .join(MODULES_DIR)
+            .join(BIN_DIR);
+        let modules_dir = staging.path().join("build-deps").join(MODULES_DIR);
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        command
+            .env("PATH", format!("{}:{path_var}", bin_dir.display()))
+            .env("ZED_BUILD_MODULES", &modules_dir);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("running [build] command for {key}"))?;
+    if !status.success() {
+        bail!(
+            "[build] command for {key} failed with {status} \
+             (override it via [overrides.build.\"{key}\"] in your manifest)"
+        );
+    }
+
+    // Promote into the per-platform cache: either the whole staged tree or
+    // just the declared outputs (plus the manifest so consumers can always
+    // introspect what they linked).
+    let entry_parent = built.parent().context("build entry has a parent")?;
+    fs::create_dir_all(entry_parent)?;
+    let promote_tmp = tempfile::tempdir_in(entry_parent)?;
+    let promoted = promote_tmp.path().join("pkg");
+    if build.outputs.is_empty() {
+        copy_dir(&work, &promoted)?;
+        // Staging-only artifacts never ship to consumers.
+        let _ = fs::remove_dir_all(promoted.join(MODULES_DIR));
+        let _ = fs::remove_file(promoted.join(LOCKFILE_FILE));
+    } else {
+        fs::create_dir_all(&promoted)?;
+        for output in &build.outputs {
+            let from = work.join(output);
+            let to = promoted.join(output);
+            if from.is_dir() {
+                copy_dir(&from, &to)?;
+            } else if from.is_file() {
+                if let Some(parent) = to.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(&from, &to)?;
+            } else {
+                bail!("[build] output `{output}` was not produced by the build of {key}");
+            }
+        }
+        let manifest_src = work.join(MANIFEST_FILE);
+        if manifest_src.is_file() {
+            fs::copy(&manifest_src, promoted.join(MANIFEST_FILE))?;
+        }
+    }
+    let promote_path = promote_tmp.keep().join("pkg");
+    match fs::rename(&promote_path, &built) {
+        Ok(()) => {}
+        Err(_) if built.is_dir() => {
+            let _ = fs::remove_dir_all(promote_path.parent().unwrap_or(&promote_path));
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(promote_path.parent().unwrap_or(&promote_path));
+            return Err(e.into());
+        }
+    }
+    println!("built {key}@{} -> {}", vm.version, built.display());
+    Ok(built)
+}
+
+/// Hoist package-declared executables into `zed_modules/.bin/<name>` as
+/// relative symlinks (copies on non-unix) so `zed run` and PATH-prepending
+/// wrappers find them without polluting the OS PATH.
+fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>) -> Result<()> {
+    if bins.is_empty() {
+        return Ok(());
+    }
+    let bin_dir = modules.join(BIN_DIR);
+    fs::create_dir_all(&bin_dir)?;
+    for (name, target) in bins {
+        if !target.exists() {
+            eprintln!(
+                "warning: bin `{name}` points at missing {}; skipping",
+                target.display()
+            );
+            continue;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = fs::metadata(target)?;
+            let mut permissions = metadata.permissions();
+            if permissions.mode() & 0o111 == 0 {
+                permissions.set_mode(0o755);
+                let _ = fs::set_permissions(target, permissions);
+            }
+        }
+        let link = bin_dir.join(name);
+        replace_dest(&link)?;
+        #[cfg(unix)]
+        {
+            let rel = pathdiff_relative(&bin_dir, target);
+            std::os::unix::fs::symlink(&rel, &link)?;
+        }
+        #[cfg(not(unix))]
+        fs::copy(target, &link).map(|_| ())?;
+    }
+    Ok(())
+}
+
+/// Relative path from `from_dir` to `target` without touching the
+/// filesystem (both are project-local, so component-wise diffing is safe).
+fn pathdiff_relative(from_dir: &Path, target: &Path) -> PathBuf {
+    let from: Vec<_> = from_dir.components().collect();
+    let to: Vec<_> = target.components().collect();
+    let common = from
+        .iter()
+        .zip(to.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut rel = PathBuf::new();
+    for _ in common..from.len() {
+        rel.push("..");
+    }
+    for component in &to[common..] {
+        rel.push(component);
+    }
+    rel
+}
+
+// ---------------------------------------------------------------------------
+// run / yank / gc / self-update
+
+/// `zed run <bin>` — execute a hoisted binary with zed_modules/.bin
+/// prepended to PATH, npx-style but without global pollution.
+pub fn run_bin(project: &Path, bin: &str, args: &[String]) -> Result<i32> {
+    let bin_dir = project.join(MODULES_DIR).join(BIN_DIR);
+    let candidate = bin_dir.join(bin);
+    if !candidate.exists() {
+        let available: Vec<String> = fs::read_dir(&bin_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        bail!(
+            "no binary `{bin}` in {}/{BIN_DIR} (available: {}); \
+             packages expose binaries via their [bin] manifest table",
+            MODULES_DIR,
+            if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            }
+        );
+    }
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    let status = Command::new(&candidate)
+        .args(args)
+        .env("PATH", format!("{}:{path_var}", bin_dir.display()))
+        .current_dir(project)
+        .status()
+        .with_context(|| format!("spawning {}", candidate.display()))?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// `zed yank org/name@version [--undo]`.
+pub fn yank(cfg: &Config, spec: &str, undo: bool) -> Result<()> {
+    let (key, version) = spec
+        .split_once('@')
+        .context("expected org/name@version")?;
+    let (org, name) = split_key(key)?;
+    let reg = registry_for(&cfg.registry)?;
+    let token = cfg.resolve_token();
+    let response = reg.yank(&org, &name, version, !undo, token.as_deref())?;
+    println!(
+        "{} {}/{}@{}",
+        if response.yanked { "yanked" } else { "restored" },
+        response.org,
+        response.name,
+        response.version
+    );
+    Ok(())
+}
+
+/// `zed gc` — age-aware store collection (see Store::gc).
+pub fn gc(cfg: &Config, max_age_days: u64) -> Result<()> {
+    let store = Store::new(&cfg.home);
+    let _lock = store.install_lock()?;
+    let (entries, cache_files, freed) = store.gc(max_age_days)?;
+    println!(
+        "gc: removed {entries} store entr{}, {cache_files} cached download(s), freed {}",
+        if entries == 1 { "y" } else { "ies" },
+        human_size(freed)
+    );
+    Ok(())
+}
+
+/// `zed self-update` — fetch the latest GitHub release for this platform
+/// and atomically replace the current binary. Uses the /releases/latest
+/// redirect (no API quota) and refuses downgrades.
+pub fn self_update(check_only: bool) -> Result<()> {
+    const REPO: &str = "zed-pkg/zed-cli";
+    let current = env!("CARGO_PKG_VERSION");
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let response = client
+        .get(format!("https://github.com/{REPO}/releases/latest"))
+        .send()
+        .context("checking latest release")?;
+    let final_url = response.url().to_string();
+    let latest_tag = final_url
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .trim_start_matches('v')
+        .to_string();
+    if latest_tag.is_empty() || latest_tag == "latest" || latest_tag == "releases" {
+        bail!("could not determine the latest release (no releases published yet?)");
+    }
+    let newer = match (
+        semver::Version::parse(current),
+        semver::Version::parse(&latest_tag),
+    ) {
+        (Ok(cur), Ok(latest)) => latest > cur,
+        _ => latest_tag != current,
+    };
+    if !newer {
+        println!("zed {current} is already the latest release");
+        return Ok(());
+    }
+    println!("zed {current} -> {latest_tag} available");
+    if check_only {
+        return Ok(());
+    }
+
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        (os, arch) => bail!("no prebuilt binary for {os}/{arch}; build from source"),
+    };
+    let (ext, bin_name) = if cfg!(windows) {
+        ("zip", "zed.exe")
+    } else {
+        ("tar.gz", "zed")
+    };
+    let url = format!(
+        "https://github.com/{REPO}/releases/download/v{latest_tag}/zed-{target}.{ext}"
+    );
+    println!("downloading {url}");
+    let response = client.get(&url).send()?;
+    if !response.status().is_success() {
+        bail!("download failed with {} for {url}", response.status());
+    }
+    let bytes = response.bytes()?;
+
+    let staging = tempfile::tempdir()?;
+    let archive_path = staging.path().join(format!("zed.{ext}"));
+    fs::write(&archive_path, &bytes)?;
+    let extracted = staging.path().join("extract");
+    fs::create_dir_all(&extracted)?;
+    crate::store::extract_archive_for_update(&archive_path, &extracted)?;
+    let new_bin = extracted.join(bin_name);
+    if !new_bin.is_file() {
+        bail!("release archive did not contain `{bin_name}`");
+    }
+
+    let current_exe = std::env::current_exe().context("locating current executable")?;
+    let current_exe = current_exe
+        .canonicalize()
+        .unwrap_or(current_exe);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&new_bin, fs::Permissions::from_mode(0o755))?;
+    }
+    // Rename-over is atomic on the same filesystem; fall back to a
+    // sidestep dance when the exe dir is on another mount.
+    let staged_next = current_exe.with_extension("new");
+    fs::copy(&new_bin, &staged_next).with_context(|| {
+        format!(
+            "writing {} (is {} writable?)",
+            staged_next.display(),
+            current_exe.parent().unwrap_or(Path::new("/")).display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged_next, fs::Permissions::from_mode(0o755))?;
+    }
+    fs::rename(&staged_next, &current_exe).context("replacing the running binary")?;
+    println!("updated zed to {latest_tag} at {}", current_exe.display());
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // add / remove
 
