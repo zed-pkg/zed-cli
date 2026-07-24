@@ -805,7 +805,10 @@ mod tests {
 
         let report = store.gc(Duration::from_secs(3_600), false).unwrap();
         assert_eq!(report.entries_removed, 1);
-        assert!(!entry.exists(), "entry pinned only by a dead project is pruned");
+        assert!(
+            !entry.exists(),
+            "entry pinned only by a dead project is pruned"
+        );
     }
 
     #[test]
