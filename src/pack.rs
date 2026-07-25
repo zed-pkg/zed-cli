@@ -51,6 +51,14 @@ pub fn pack_format(
     format: ArtifactFormat,
 ) -> Result<PackResult> {
     let mut extra = manifest.publish.exclude.clone();
+    // The default excludes strip `zed_modules/**`, but a package may relocate
+    // its installed tree with `[install].dir`. Never publish a dependency
+    // tree: it bloats the artifact and (in symlink mode) would ship links
+    // into the author's own store that mean nothing on a consumer's machine.
+    let modules_dir = manifest.modules_dir().trim_matches('/').to_string();
+    if !modules_dir.is_empty() {
+        extra.push(format!("{modules_dir}/**"));
+    }
     let ignore_file = project.join(IGNORE_FILE);
     if ignore_file.exists() {
         for line in fs::read_to_string(&ignore_file)?.lines() {

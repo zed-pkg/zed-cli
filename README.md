@@ -111,6 +111,23 @@ registry hosts both on S3/Cloudflare R2.
 | `zed cache clean` | Drop cached downloads |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
 
+### Where dependencies land (`[install].dir`)
+
+zed complements npm/maven/etc. rather than replacing them, so its (few,
+hand-picked) dependencies live in their own tree alongside the native one.
+That tree defaults to `zed_modules/` and can be relocated:
+
+```toml
+[install]
+dir = ".vendor/.zed"     # default: zed_modules
+adapter = "node"         # optional; omitted = auto-detect (or --adapter)
+```
+
+Every command that touches the tree honors this: `zed install` writes it,
+`zed run` finds hoisted bins in `<dir>/.bin/`, `zed remove` unlinks from it,
+and `zed pack`/`zed publish` always exclude it — a relocated dependency tree
+is never published (see `a_relocated_install_dir_is_never_published`).
+
 ### Monorepo workspaces
 
 A root manifest with a `[workspace]` table links member packages from source

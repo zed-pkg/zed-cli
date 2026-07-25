@@ -21,7 +21,7 @@ use anyhow::{Context, Result, bail};
 use zed_interfaces::manifest::{
     Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
 };
-use zed_interfaces::paths::{MANIFEST_FILE, MODULES_DIR};
+use zed_interfaces::paths::MANIFEST_FILE;
 use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::VersionScheme;
 
@@ -147,8 +147,12 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     // possible".
     install(&consumer_dir, &test_cfg, false, mode, Adapter::None, true)?;
 
+    // Ask the consumer manifest where install materialized the tree rather
+    // than assuming the default, so this keeps working if the mock consumer
+    // ever declares an [install].dir.
+    let modules_dir = consumer_manifest.modules_dir();
     let target = consumer_dir
-        .join(MODULES_DIR)
+        .join(modules_dir)
         .join(&manifest.package.org)
         .join(&manifest.package.name);
     if !target.join(MANIFEST_FILE).exists() {
@@ -166,7 +170,13 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     // 6. Run the smoke test — on the host, or inside a fresh container.
     let smoke = manifest.publish.smoke_test.clone();
     if opts.docker {
-        run_in_container(opts, &consumer_dir, &manifest, smoke.as_deref())?;
+        run_in_container(
+            opts,
+            &consumer_dir,
+            modules_dir,
+            &manifest,
+            smoke.as_deref(),
+        )?;
     } else {
         run_on_host(&consumer_dir, &target, smoke.as_deref())?;
     }
@@ -215,6 +225,7 @@ fn run_on_host(consumer_dir: &Path, target: &Path, smoke: Option<&str>) -> Resul
 fn run_in_container(
     opts: &R2gOptions,
     consumer_dir: &Path,
+    modules_dir: &str,
     manifest: &Manifest,
     smoke: Option<&str>,
 ) -> Result<()> {
@@ -226,6 +237,7 @@ fn run_in_container(
     let args = container_args(
         &opts.image,
         &consumer_host,
+        modules_dir,
         &manifest.package.org,
         &manifest.package.name,
         smoke,
@@ -266,15 +278,18 @@ fn run_in_container(
 }
 
 /// Build the `run` argument vector for docker/podman. Pure (no IO) so it can
-/// be unit-tested without a container runtime present.
+/// be unit-tested without a container runtime present. `modules_dir` is the
+/// consumer's installed-tree directory (`[install].dir`, default
+/// `zed_modules`), so the in-container target path matches what install wrote.
 fn container_args(
     image: &str,
     consumer_host: &Path,
+    modules_dir: &str,
     org: &str,
     name: &str,
     smoke: Option<&str>,
 ) -> Vec<String> {
-    let target_in = format!("{CONTAINER_CONSUMER}/{MODULES_DIR}/{org}/{name}");
+    let target_in = format!("{CONTAINER_CONSUMER}/{modules_dir}/{org}/{name}");
     // With no smoke test, still exercise the container path by proving the
     // installed artifact is present and well-formed inside the container.
     let script = smoke
@@ -330,6 +345,8 @@ fn program_on_path(program: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use zed_interfaces::paths::MODULES_DIR;
+
     use super::*;
 
     #[test]
@@ -337,6 +354,7 @@ mod tests {
         let args = container_args(
             "node:22-slim",
             Path::new("/home/u/.zed-pkg/r2g/acme-widget/consumer"),
+            MODULES_DIR,
             "acme",
             "widget",
             Some("node -e \"require('@acme/widget')\""),
@@ -366,6 +384,7 @@ mod tests {
         let args = container_args(
             "debian:stable-slim",
             Path::new("/tmp/consumer"),
+            MODULES_DIR,
             "acme",
             "widget",
             None,
@@ -373,6 +392,29 @@ mod tests {
         assert_eq!(
             args.last().unwrap(),
             &format!("test -f \"$ZED_PKG_TEST_TARGET/{MANIFEST_FILE}\"")
+        );
+    }
+
+    /// A relocated install tree ([install].dir) must be reflected in the
+    /// in-container target path, or the smoke test would look in the wrong
+    /// place for the package it is supposed to exercise.
+    #[test]
+    fn container_args_honor_a_relocated_install_dir() {
+        let args = container_args(
+            "debian:stable-slim",
+            Path::new("/tmp/consumer"),
+            ".vendor/.zed",
+            "acme",
+            "widget",
+            None,
+        );
+        assert!(
+            args.windows(2).any(|w| w[0] == "-e"
+                && w[1]
+                    == format!(
+                        "ZED_PKG_TEST_TARGET={CONTAINER_CONSUMER}/.vendor/.zed/acme/widget"
+                    )),
+            "relocated install dir missing from the container target: {args:?}"
         );
     }
 }

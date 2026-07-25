@@ -117,6 +117,11 @@ pub enum Cmd {
         /// (artifact, platform, command) under ~/.zed-pkg/builds)
         #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
         allow_build: bool,
+        /// Which language subtree to take from polyglot dependencies (a repo
+        /// shipping e.g. node/, python/, go/). Overrides [install].target;
+        /// omitted = infer from the project
+        #[arg(long, env = "ZED_PKG_TARGET")]
+        target: Option<String>,
     },
     /// Run (or warm the build cache for) the [build] steps the locked
     /// dependency graph declares (zed-docs issue #5). Running `zed build` is
