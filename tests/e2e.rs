@@ -479,7 +479,8 @@ fn node_adapter_links_into_node_modules() {
         false,
         InstallMode::Symlink,
         Adapter::Node,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
 
@@ -530,7 +531,8 @@ fn adapter_auto_is_context_aware_node_and_java() {
         false,
         InstallMode::Symlink,
         Adapter::Auto,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     assert!(
@@ -556,7 +558,8 @@ fn adapter_auto_is_context_aware_node_and_java() {
         false,
         InstallMode::Symlink,
         Adapter::Auto,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     let classpath = fs::read_to_string(java_consumer.join(".zed/classpath")).unwrap();
@@ -750,7 +753,7 @@ fn concurrent_installs_share_the_store_safely() {
                 InstallMode::Symlink,
                 Adapter::None,
                 false,
-        None,
+                None,
             )
             .unwrap();
             assert!(
@@ -1006,7 +1009,8 @@ fn opaque_versions_require_exact_match() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -1033,7 +1037,8 @@ fn opaque_versions_require_exact_match() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -1197,7 +1202,8 @@ fn workspace_members_link_from_source() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
 
@@ -1398,7 +1404,8 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1424,7 +1431,8 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1446,7 +1454,8 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("yanked"), "unexpected: {err:#}");
@@ -1458,7 +1467,8 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         true,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1475,7 +1485,8 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1519,7 +1530,8 @@ fn gc_collects_unreferenced_entries() {
             false,
             InstallMode::Symlink,
             Adapter::None,
-            false,            None,
+            false,
+            None,
         )
         .unwrap();
     }
@@ -1877,7 +1889,8 @@ members = ["packages/*", "apps/*"]
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,        None,
+        false,
+        None,
     )
     .unwrap();
 
