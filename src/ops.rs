@@ -253,6 +253,57 @@ fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
     Ok(())
 }
 
+/// Pick the language subtree to take from *polyglot* dependencies — a repo
+/// that ships the same library for several ecosystems under e.g. `node/`,
+/// `python/`, `go/`. Precedence, most explicit first:
+///
+///   1. `--target` / `ZED_PKG_TARGET`
+///   2. `[install].target` in the consumer's manifest
+///   3. inference from the project's own native manifest
+///
+/// Inference is what makes `zed install zedtest/polyglot-lib` do the right
+/// thing in each consumer without any extra configuration: the same command
+/// in a Node app and a Python app materializes different source folders.
+/// Returns `None` when nothing indicates a language, which installs the whole
+/// tree (the pre-polyglot behavior).
+fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Option<String> {
+    if let Some(explicit) = flag.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(explicit.to_string());
+    }
+    if let Some(configured) = manifest.requested_target() {
+        return Some(configured.to_string());
+    }
+    detect_target(project)
+}
+
+/// Infer the ecosystem from the files a project keeps at its root. Ordered so
+/// the most specific marker wins when a repo carries several (a Next.js app
+/// with a Dockerfile is still `node`).
+fn detect_target(project: &Path) -> Option<String> {
+    const MARKERS: &[(&str, &str)] = &[
+        ("package.json", "node"),
+        ("Cargo.toml", "rust"),
+        ("go.mod", "go"),
+        ("pyproject.toml", "python"),
+        ("setup.py", "python"),
+        ("requirements.txt", "python"),
+        ("pubspec.yaml", "dart"),
+        ("mix.exs", "elixir"),
+        ("rebar.config", "erlang"),
+        ("gleam.toml", "gleam"),
+        ("pom.xml", "java"),
+        ("build.gradle", "java"),
+        ("build.gradle.kts", "java"),
+        ("Gemfile", "ruby"),
+        ("composer.json", "php"),
+        ("CMakeLists.txt", "cpp"),
+    ];
+    MARKERS
+        .iter()
+        .find(|(marker, _)| project.join(marker).exists())
+        .map(|(_, target)| (*target).to_string())
+}
+
 /// Pick the ecosystem adapter from what the project looks like: Node
 /// projects resolve from node_modules/, JVM projects need a classpath,
 /// Rust/others use zed_modules/ directly.
@@ -269,6 +320,7 @@ fn detect_adapter(project: &Path) -> Adapter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     project: &Path,
     cfg: &Config,
@@ -276,17 +328,28 @@ pub fn install(
     mode: InstallMode,
     adapter: Adapter,
     allow_build: bool,
+    target: Option<&str>,
 ) -> Result<InstallOutcome> {
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
     // parallel CI runners) writing the store, refs.json, and lockfile.
     let _install_lock = store.install_lock()?;
-    install_locked(project, cfg, &store, frozen, mode, adapter, allow_build)
+    install_locked(
+        project,
+        cfg,
+        &store,
+        frozen,
+        mode,
+        adapter,
+        allow_build,
+        target,
+    )
 }
 
 /// Install body, called with the store lock already held. Split out so the
 /// build-hook path can install `[build-dependencies]` into a staging dir
 /// under the same lock without deadlocking on a re-acquire.
+#[allow(clippy::too_many_arguments)]
 fn install_locked(
     project: &Path,
     cfg: &Config,
@@ -295,12 +358,14 @@ fn install_locked(
     mode: InstallMode,
     adapter: Adapter,
     allow_build: bool,
+    target: Option<&str>,
 ) -> Result<InstallOutcome> {
     let adapter = match adapter {
         Adapter::Auto => detect_adapter(project),
         other => other,
     };
     let manifest = read_manifest(project)?;
+    let resolved_target = resolve_target(project, &manifest, target);
     let reg = registry_for(&cfg.registry)?;
     let lock_path = project.join(LOCKFILE_FILE);
 
@@ -457,6 +522,31 @@ fn install_locked(
                 false,
             )?,
             None => pkg_dir.clone(),
+        };
+        // Polyglot dependency: narrow the link source to this consumer's
+        // language subtree, so a Python project gets `python/` at its import
+        // root instead of a tree with the Node and Go sources beside it.
+        // Single-language packages are unaffected (target_subdir -> None).
+        let link_src = match pkg_manifest.as_ref() {
+            Some(pm) => match pm.target_subdir(resolved_target.as_deref()) {
+                Ok(Some(subdir)) => {
+                    let scoped = link_src.join(subdir);
+                    if !scoped.is_dir() {
+                        bail!(
+                            "package `{key}` declares target `{}` at `{subdir}`, but that \
+                             directory is missing from the published artifact",
+                            resolved_target.as_deref().unwrap_or_default()
+                        );
+                    }
+                    scoped
+                }
+                Ok(None) => link_src,
+                // An explicit request the package cannot satisfy: fail with
+                // the list of targets it does publish rather than installing
+                // a tree the consumer's toolchain cannot use.
+                Err(err) => bail!("{err}"),
+            },
+            None => link_src,
         };
         let dest = modules.join(&vm.org).join(&vm.name);
         link_or_copy(&link_src, &dest, mode)?;
@@ -668,6 +758,7 @@ fn build_artifact(
             workspace: None,
             overrides: Default::default(),
             install: Default::default(),
+            targets: Default::default(),
         };
         let deps_dir = staging.path().join("build-deps");
         fs::create_dir_all(&deps_dir)?;
@@ -680,6 +771,9 @@ fn build_artifact(
             InstallMode::Symlink,
             Adapter::None,
             false,
+            // Build dependencies are toolchain, not the consumer's language:
+            // take them whole rather than slicing them to a target.
+            None,
         )?;
     }
 
@@ -1059,6 +1153,9 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        // Re-install after the manifest edit; the target comes from
+        // [install].target or project inference, same as a bare `zed install`.
+        None,
     )?;
     Ok(())
 }
@@ -1086,6 +1183,9 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        // Re-install after the manifest edit; the target comes from
+        // [install].target or project inference, same as a bare `zed install`.
+        None,
     )?;
     Ok(())
 }

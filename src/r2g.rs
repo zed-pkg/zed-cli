@@ -124,6 +124,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        targets: Default::default(),
     };
     write_manifest(&consumer_dir, &consumer_manifest)?;
 
@@ -145,7 +146,18 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     // The author is roundtripping their own package, so running its [build]
     // step is consented — that's part of "as close to a real install as
     // possible".
-    install(&consumer_dir, &test_cfg, false, mode, Adapter::None, true)?;
+    // No target: the mock consumer is language-agnostic, so a polyglot package
+    // roundtrips as its whole tree. `zed r2g --target <t>` could narrow this
+    // once there is a reason to test one slice in isolation.
+    install(
+        &consumer_dir,
+        &test_cfg,
+        false,
+        mode,
+        Adapter::None,
+        true,
+        None,
+    )?;
 
     // Ask the consumer manifest where install materialized the tree rather
     // than assuming the default, so this keeps working if the mock consumer

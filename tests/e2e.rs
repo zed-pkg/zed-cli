@@ -273,6 +273,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     assert_eq!(outcome.installed.len(), 2, "direct + transitive");
@@ -309,6 +310,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
@@ -353,6 +355,7 @@ fn copy_mode_is_container_safe() {
         InstallMode::Copy,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
 
@@ -424,6 +427,7 @@ fn circular_deps_terminate_and_install_both() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -475,7 +479,7 @@ fn node_adapter_links_into_node_modules() {
         false,
         InstallMode::Symlink,
         Adapter::Node,
-        false,
+        false,        None,
     )
     .unwrap();
 
@@ -526,7 +530,7 @@ fn adapter_auto_is_context_aware_node_and_java() {
         false,
         InstallMode::Symlink,
         Adapter::Auto,
-        false,
+        false,        None,
     )
     .unwrap();
     assert!(
@@ -552,7 +556,7 @@ fn adapter_auto_is_context_aware_node_and_java() {
         false,
         InstallMode::Symlink,
         Adapter::Auto,
-        false,
+        false,        None,
     )
     .unwrap();
     let classpath = fs::read_to_string(java_consumer.join(".zed/classpath")).unwrap();
@@ -634,6 +638,7 @@ fn version_conflicts_fail_loudly() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -745,6 +750,7 @@ fn concurrent_installs_share_the_store_safely() {
                 InstallMode::Symlink,
                 Adapter::None,
                 false,
+        None,
             )
             .unwrap();
             assert!(
@@ -822,6 +828,7 @@ fn zip_artifacts_pack_deterministically_and_install() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme/zipped");
@@ -878,6 +885,7 @@ fn calendar_versions_resolve() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -953,6 +961,7 @@ fn calver_versions_resolve_by_semver_range() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -997,7 +1006,7 @@ fn opaque_versions_require_exact_match() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
     assert_eq!(
@@ -1024,7 +1033,7 @@ fn opaque_versions_require_exact_match() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap_err();
     assert!(
@@ -1072,6 +1081,7 @@ fn store_prune_removes_unreferenced_entries() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1130,6 +1140,7 @@ fn bins_are_hoisted_and_runnable() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1186,7 +1197,7 @@ fn workspace_members_link_from_source() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
 
@@ -1250,6 +1261,7 @@ fn build_hooks_stage_build_and_cache() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme").join("native");
@@ -1263,6 +1275,7 @@ fn build_hooks_stage_build_and_cache() {
         InstallMode::Symlink,
         Adapter::None,
         true,
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -1338,6 +1351,7 @@ fn build_overrides_replace_broken_commands() {
         InstallMode::Symlink,
         Adapter::None,
         true,
+        None,
     )
     .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme").join("broken-build");
@@ -1384,7 +1398,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1410,7 +1424,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1432,7 +1446,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap_err();
     assert!(err.to_string().contains("yanked"), "unexpected: {err:#}");
@@ -1444,7 +1458,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         true,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1461,7 +1475,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1505,7 +1519,7 @@ fn gc_collects_unreferenced_entries() {
             false,
             InstallMode::Symlink,
             Adapter::None,
-            false,
+            false,            None,
         )
         .unwrap();
     }
@@ -1572,6 +1586,7 @@ fn malicious_registry_responses_are_rejected() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -1589,6 +1604,7 @@ fn malicious_registry_responses_are_rejected() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -1714,6 +1730,7 @@ fn hoisted_bins_are_container_safe_in_copy_mode() {
         InstallMode::Copy,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1766,6 +1783,7 @@ fn gc_reclaims_entries_older_than_threshold() {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
 
@@ -1859,7 +1877,7 @@ members = ["packages/*", "apps/*"]
         false,
         InstallMode::Symlink,
         Adapter::None,
-        false,
+        false,        None,
     )
     .unwrap();
 
@@ -1962,6 +1980,7 @@ fn build_step_compiles_and_is_cached() {
         InstallMode::Symlink,
         Adapter::None,
         true,
+        None,
     )
     .unwrap();
 
@@ -1985,6 +2004,7 @@ fn build_step_compiles_and_is_cached() {
         InstallMode::Symlink,
         Adapter::None,
         true,
+        None,
     )
     .unwrap();
     assert!(module.join("built.txt").exists());
@@ -2042,6 +2062,7 @@ command = '''echo overridden > overridden.txt'''
         InstallMode::Symlink,
         Adapter::None,
         true,
+        None,
     )
     .unwrap();
 
@@ -2102,6 +2123,7 @@ dir = ".vendor/.zed"
         InstallMode::Symlink,
         Adapter::None,
         false,
+        None,
     )
     .unwrap();
 

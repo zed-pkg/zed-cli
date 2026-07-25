@@ -201,3 +201,9 @@ long = "skip-checksum"
 env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
 default = "false"
 about = "Skip the SHA256SUMS integrity check (unsafe; local testing only)"
+
+[[flag]]
+command = "install"
+long = "target"
+env = "ZED_PKG_TARGET"
+about = "Language target to install from a polyglot package (e.g. nodejs, java, golang)"
