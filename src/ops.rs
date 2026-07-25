@@ -771,6 +771,9 @@ fn build_artifact(
             InstallMode::Symlink,
             Adapter::None,
             false,
+            // Build dependencies are toolchain, not the consumer's language:
+            // take them whole rather than slicing them to a target.
+            None,
         )?;
     }
 
