@@ -253,6 +253,57 @@ fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
     Ok(())
 }
 
+/// Pick the language subtree to take from *polyglot* dependencies — a repo
+/// that ships the same library for several ecosystems under e.g. `node/`,
+/// `python/`, `go/`. Precedence, most explicit first:
+///
+///   1. `--target` / `ZED_PKG_TARGET`
+///   2. `[install].target` in the consumer's manifest
+///   3. inference from the project's own native manifest
+///
+/// Inference is what makes `zed install zedtest/polyglot-lib` do the right
+/// thing in each consumer without any extra configuration: the same command
+/// in a Node app and a Python app materializes different source folders.
+/// Returns `None` when nothing indicates a language, which installs the whole
+/// tree (the pre-polyglot behavior).
+fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Option<String> {
+    if let Some(explicit) = flag.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(explicit.to_string());
+    }
+    if let Some(configured) = manifest.requested_target() {
+        return Some(configured.to_string());
+    }
+    detect_target(project)
+}
+
+/// Infer the ecosystem from the files a project keeps at its root. Ordered so
+/// the most specific marker wins when a repo carries several (a Next.js app
+/// with a Dockerfile is still `node`).
+fn detect_target(project: &Path) -> Option<String> {
+    const MARKERS: &[(&str, &str)] = &[
+        ("package.json", "node"),
+        ("Cargo.toml", "rust"),
+        ("go.mod", "go"),
+        ("pyproject.toml", "python"),
+        ("setup.py", "python"),
+        ("requirements.txt", "python"),
+        ("pubspec.yaml", "dart"),
+        ("mix.exs", "elixir"),
+        ("rebar.config", "erlang"),
+        ("gleam.toml", "gleam"),
+        ("pom.xml", "java"),
+        ("build.gradle", "java"),
+        ("build.gradle.kts", "java"),
+        ("Gemfile", "ruby"),
+        ("composer.json", "php"),
+        ("CMakeLists.txt", "cpp"),
+    ];
+    MARKERS
+        .iter()
+        .find(|(marker, _)| project.join(marker).exists())
+        .map(|(_, target)| (*target).to_string())
+}
+
 /// Pick the ecosystem adapter from what the project looks like: Node
 /// projects resolve from node_modules/, JVM projects need a classpath,
 /// Rust/others use zed_modules/ directly.
