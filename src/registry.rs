@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use semver::{Version, VersionReq};
 use zed_interfaces::registry::{
-    self, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
-    SearchResponse, VersionMetadata, YankRequest, YankResponse,
+    self, AuditLogResponse, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,
+    PublishResponse, SearchResponse, VersionMetadata, YankRequest, YankResponse,
 };
 
 /// Hard ceiling on artifact download size (bytes); the registry-reported
@@ -43,6 +43,13 @@ pub trait Registry {
         yanked: bool,
         token: Option<&str>,
     ) -> Result<YankResponse>;
+    /// The org's audit log, newest first (owner-scoped; zed-docs issue #7).
+    fn audit_log(
+        &self,
+        org: &str,
+        limit: Option<u64>,
+        token: Option<&str>,
+    ) -> Result<AuditLogResponse>;
 }
 
 pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
@@ -213,6 +220,22 @@ impl Registry for FileRegistry {
             version: version.to_string(),
             yanked,
         })
+    }
+
+    /// A `file://` registry is a plain directory with no server enforcing
+    /// authority, so there is no trustworthy "who did what" to report. Say so
+    /// rather than returning an empty log that could be mistaken for "nothing
+    /// ever happened".
+    fn audit_log(
+        &self,
+        _org: &str,
+        _limit: Option<u64>,
+        _token: Option<&str>,
+    ) -> Result<AuditLogResponse> {
+        bail!(
+            "a file:// registry keeps no audit log (no server records who acted); \
+             point --registry at a zed-api-server to read one"
+        )
     }
 
     fn search(&self, query: &str) -> Result<SearchResponse> {
@@ -426,6 +449,22 @@ impl Registry for HttpRegistry {
             .client
             .post(self.url(&registry::yank_path(org, name, version)))
             .json(&YankRequest { yanked });
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        Ok(Self::check(request.send()?)?.json()?)
+    }
+
+    fn audit_log(
+        &self,
+        org: &str,
+        limit: Option<u64>,
+        token: Option<&str>,
+    ) -> Result<AuditLogResponse> {
+        let mut request = self.client.get(self.url(&registry::audit_path(org)));
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit.to_string())]);
+        }
         if let Some(token) = token {
             request = request.bearer_auth(token);
         }

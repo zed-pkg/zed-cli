@@ -201,3 +201,12 @@ long = "skip-checksum"
 env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
 default = "false"
 about = "Skip the SHA256SUMS integrity check (unsafe; local testing only)"
+
+# --- org audit ------------------------------------------------------------
+
+[[flag]]
+command = "org audit"
+long = "limit"
+env = "ZED_PKG_AUDIT_LIMIT"
+default = "100 (server-side; clamped to 1000)"
+about = "Maximum audit entries to show, newest first"

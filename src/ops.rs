@@ -1231,6 +1231,55 @@ pub fn org_claim(cfg: &Config, slug: &str) -> Result<()> {
     Ok(())
 }
 
+/// `zed org audit <slug>` — print the org's audit trail, newest first
+/// (owner-scoped; zed-docs issue #7 governance).
+pub fn org_audit(cfg: &Config, slug: &str, limit: Option<u64>) -> Result<()> {
+    if !zed_interfaces::manifest::is_slug(slug) {
+        bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
+    }
+    let reg = registry_for(&cfg.registry)?;
+    let token = cfg.resolve_token();
+    let log = reg.audit_log(slug, limit, token.as_deref())?;
+    if log.entries.is_empty() {
+        println!("no audit entries for org `{}`", log.org);
+        return Ok(());
+    }
+    // Widths from the data so columns line up without truncating real values.
+    let action_w = log
+        .entries
+        .iter()
+        .map(|e| e.action.len())
+        .max()
+        .unwrap_or(6);
+    let actor_w = log
+        .entries
+        .iter()
+        .map(|e| e.actor_token_name.len() + e.actor_role.len() + 2)
+        .max()
+        .unwrap_or(10);
+    for entry in &log.entries {
+        let actor = format!("{}({})", entry.actor_token_name, entry.actor_role);
+        println!(
+            "{}  {:<action_w$}  {:<actor_w$}  {}{}",
+            entry.at,
+            entry.action,
+            actor,
+            entry.subject,
+            entry
+                .detail
+                .as_deref()
+                .map(|d| format!("  [{d}]"))
+                .unwrap_or_default()
+        );
+    }
+    println!(
+        "{} entr{}",
+        log.entries.len(),
+        if log.entries.len() == 1 { "y" } else { "ies" }
+    );
+    Ok(())
+}
+
 pub fn store_status(cfg: &Config) -> Result<()> {
     let store = Store::new(&cfg.home);
     let (count, store_bytes, cache_bytes) = store.status();

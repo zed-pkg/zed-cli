@@ -69,6 +69,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Login => ops::login(&cfg),
         Cmd::Org { cmd } => match cmd {
             OrgCmd::Claim { slug } => ops::org_claim(&cfg, &slug),
+            OrgCmd::Audit { slug, limit } => ops::org_audit(&cfg, &slug, limit),
         },
         Cmd::Store { cmd } => match cmd {
             StoreCmd::Status => ops::store_status(&cfg),

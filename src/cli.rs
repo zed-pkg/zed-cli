@@ -242,6 +242,14 @@ pub enum Cmd {
 pub enum OrgCmd {
     /// Claim an org namespace on the registry
     Claim { slug: String },
+    /// Show the org's audit trail — who published, yanked, or claimed, and
+    /// when. Requires an `owner` (or admin) token (zed-docs issue #7)
+    Audit {
+        slug: String,
+        /// Maximum entries to show, newest first (server clamps to 1000)
+        #[arg(long, env = "ZED_PKG_AUDIT_LIMIT")]
+        limit: Option<u64>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
