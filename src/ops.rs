@@ -562,7 +562,7 @@ fn install_locked(
         );
     }
     println!(
-        "{} package(s) in {MODULES_DIR}/ ({})",
+        "{} package(s) in {modules_dir}/ ({})",
         installed.len(),
         match mode {
             InstallMode::Symlink => "symlinked from the global store",
