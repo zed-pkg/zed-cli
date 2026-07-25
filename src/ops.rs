@@ -431,7 +431,8 @@ fn install_locked(
         }
     }
 
-    let modules = project.join(MODULES_DIR);
+    let modules_dir = manifest.modules_dir();
+    let modules = project.join(modules_dir);
     let mut installed = Vec::new();
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
