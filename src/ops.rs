@@ -365,6 +365,7 @@ fn install_locked(
         other => other,
     };
     let manifest = read_manifest(project)?;
+    let resolved_target = resolve_target(project, &manifest, target);
     let reg = registry_for(&cfg.registry)?;
     let lock_path = project.join(LOCKFILE_FILE);
 
