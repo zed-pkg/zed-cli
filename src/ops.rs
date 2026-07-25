@@ -552,7 +552,7 @@ fn install_locked(
         let mut names: Vec<&String> = bins.keys().collect();
         names.sort();
         println!(
-            "{} bin(s) in {MODULES_DIR}/{BIN_DIR}/ ({}); run with `zed run <name>`",
+            "{} bin(s) in {modules_dir}/{BIN_DIR}/ ({}); run with `zed run <name>`",
             names.len(),
             names
                 .iter()
