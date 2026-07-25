@@ -522,6 +522,31 @@ fn install_locked(
             )?,
             None => pkg_dir.clone(),
         };
+        // Polyglot dependency: narrow the link source to this consumer's
+        // language subtree, so a Python project gets `python/` at its import
+        // root instead of a tree with the Node and Go sources beside it.
+        // Single-language packages are unaffected (target_subdir -> None).
+        let link_src = match pkg_manifest.as_ref() {
+            Some(pm) => match pm.target_subdir(resolved_target.as_deref()) {
+                Ok(Some(subdir)) => {
+                    let scoped = link_src.join(subdir);
+                    if !scoped.is_dir() {
+                        bail!(
+                            "package `{key}` declares target `{}` at `{subdir}`, but that \
+                             directory is missing from the published artifact",
+                            resolved_target.as_deref().unwrap_or_default()
+                        );
+                    }
+                    scoped
+                }
+                Ok(None) => link_src,
+                // An explicit request the package cannot satisfy: fail with
+                // the list of targets it does publish rather than installing
+                // a tree the consumer's toolchain cannot use.
+                Err(err) => bail!("{err}"),
+            },
+            None => link_src,
+        };
         let dest = modules.join(&vm.org).join(&vm.name);
         link_or_copy(&link_src, &dest, mode)?;
         if let Some(pm) = &pkg_manifest {
