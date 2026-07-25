@@ -514,6 +514,19 @@ fn install_locked(
             jars.len()
         );
     }
+    if adapter == Adapter::Node {
+        // Complement npm rather than replace it: the per-package
+        // node_modules/@<org>/<name> links above already resolve, and this
+        // NODE_PATH points Node at the zed tree root so `require("<org>/<name>")`
+        // works too — set `NODE_PATH="$(cat .zed/node_path)"`.
+        let node_path_file = project.join(".zed").join("node_path");
+        fs::create_dir_all(node_path_file.parent().context("node_path parent")?)?;
+        fs::write(&node_path_file, format!("{modules_dir}\n"))?;
+        println!(
+            "wrote {} ({modules_dir}); use: NODE_PATH=\"$(cat .zed/node_path)\" node ...",
+            node_path_file.display()
+        );
+    }
 
     let mut lock = Lockfile::default();
     for vm in resolved.values() {
