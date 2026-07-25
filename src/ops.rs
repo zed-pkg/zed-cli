@@ -1193,18 +1193,30 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // pack / publish
 
-pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<PackResult> {
+pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<pack::PackagedTarget>> {
     let manifest = read_manifest(project)?;
-    let result = pack::pack(project, &manifest, out)?;
-    println!("packed {}", result.path.display());
-    println!(
-        "  sha256 {}\n  size {} ({} files, {} excluded by publish rules)",
-        result.sha256,
-        human_size(result.size),
-        result.file_count,
-        result.excluded_count
-    );
-    Ok(result)
+    let packages = pack::pack_all(project, &manifest, out)?;
+    for package in &packages {
+        println!(
+            "packed {}@{}{}",
+            package.manifest.full_name(),
+            package.manifest.package.version,
+            package
+                .target
+                .as_deref()
+                .map(|target| format!(" (target {target})"))
+                .unwrap_or_default()
+        );
+        println!("  {}", package.packed.path.display());
+        println!(
+            "  sha256 {}\n  size {} ({} files, {} excluded by publish rules)",
+            package.packed.sha256,
+            human_size(package.packed.size),
+            package.packed.file_count,
+            package.packed.excluded_count
+        );
+    }
+    Ok(packages)
 }
 
 pub fn build_publish_meta(
@@ -1240,28 +1252,55 @@ pub fn publish(
         Some(verify_publish_provenance(vcs, project, &tag, allow_dirty)?)
     };
 
-    let packed = pack_cmd(project, None)?;
-    let meta = build_publish_meta(&manifest, &packed, commit);
+    let packages = pack_cmd(project, None)?;
 
     if dry_run {
-        println!(
-            "dry run: would publish {}@{} (tag {}, sha256 {}) to {}",
-            manifest.full_name(),
-            manifest.package.version,
-            meta.vcs_tag,
-            meta.sha256,
-            cfg.registry
-        );
+        for package in &packages {
+            let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
+            println!(
+                "dry run: would publish {}@{} (tag {}, sha256 {}) to {}",
+                package.manifest.full_name(),
+                package.manifest.package.version,
+                meta.vcs_tag,
+                meta.sha256,
+                cfg.registry
+            );
+        }
         return Ok(());
     }
 
     let reg = registry_for(&cfg.registry)?;
     let token = cfg.resolve_token();
-    let response = reg.publish(&meta, &packed.path, token.as_deref())?;
-    println!(
-        "published {}/{}@{} to {}",
-        response.org, response.name, response.version, cfg.registry
-    );
+    for package in &packages {
+        let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
+        let identity = &package.manifest.package;
+        // Multi-package releases cannot be a single HTTP transaction. Make
+        // retries safe instead: an already-published byte-identical target is
+        // accepted, while a same-version/different-hash target remains an
+        // immutable-version error.
+        if let Ok(existing) = reg.get_version(&identity.org, &identity.name, &identity.version) {
+            if existing.sha256 == meta.sha256 {
+                println!(
+                    "already published {}/{}@{} with identical sha256; skipping",
+                    identity.org, identity.name, identity.version
+                );
+                continue;
+            }
+            bail!(
+                "{}/{}@{} already exists with sha256 {}; refusing to replace it with {}",
+                identity.org,
+                identity.name,
+                identity.version,
+                existing.sha256,
+                meta.sha256
+            );
+        }
+        let response = reg.publish(&meta, &package.packed.path, token.as_deref())?;
+        println!(
+            "published {}/{}@{} to {}",
+            response.org, response.name, response.version, cfg.registry
+        );
+    }
     Ok(())
 }
 
