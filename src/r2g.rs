@@ -124,6 +124,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        targets: Default::default(),
     };
     write_manifest(&consumer_dir, &consumer_manifest)?;
 

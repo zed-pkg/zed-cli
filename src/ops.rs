@@ -1153,6 +1153,9 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        // Re-install after the manifest edit; the target comes from
+        // [install].target or project inference, same as a bare `zed install`.
+        None,
     )?;
     Ok(())
 }
@@ -1180,6 +1183,9 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         InstallMode::Symlink,
         Adapter::None,
         false,
+        // Re-install after the manifest edit; the target comes from
+        // [install].target or project inference, same as a bare `zed install`.
+        None,
     )?;
     Ok(())
 }
