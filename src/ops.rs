@@ -320,6 +320,7 @@ fn detect_adapter(project: &Path) -> Adapter {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn install(
     project: &Path,
     cfg: &Config,
@@ -327,12 +328,22 @@ pub fn install(
     mode: InstallMode,
     adapter: Adapter,
     allow_build: bool,
+    target: Option<&str>,
 ) -> Result<InstallOutcome> {
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
     // parallel CI runners) writing the store, refs.json, and lockfile.
     let _install_lock = store.install_lock()?;
-    install_locked(project, cfg, &store, frozen, mode, adapter, allow_build)
+    install_locked(
+        project,
+        cfg,
+        &store,
+        frozen,
+        mode,
+        adapter,
+        allow_build,
+        target,
+    )
 }
 
 /// Install body, called with the store lock already held. Split out so the
