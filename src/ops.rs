@@ -349,6 +349,7 @@ pub fn install(
 /// Install body, called with the store lock already held. Split out so the
 /// build-hook path can install `[build-dependencies]` into a staging dir
 /// under the same lock without deadlocking on a re-acquire.
+#[allow(clippy::too_many_arguments)]
 fn install_locked(
     project: &Path,
     cfg: &Config,
@@ -357,6 +358,7 @@ fn install_locked(
     mode: InstallMode,
     adapter: Adapter,
     allow_build: bool,
+    target: Option<&str>,
 ) -> Result<InstallOutcome> {
     let adapter = match adapter {
         Adapter::Auto => detect_adapter(project),
