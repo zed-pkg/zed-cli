@@ -667,6 +667,7 @@ fn build_artifact(
             build: None,
             workspace: None,
             overrides: Default::default(),
+            install: Default::default(),
         };
         let deps_dir = staging.path().join("build-deps");
         fs::create_dir_all(&deps_dir)?;
