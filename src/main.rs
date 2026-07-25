@@ -26,7 +26,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             install_mode,
             adapter,
             allow_build,
-        } => ops::install(&cwd, &cfg, frozen, install_mode, adapter, allow_build).map(|_| ()),
+            target,
+        } => ops::install(
+            &cwd,
+            &cfg,
+            frozen,
+            install_mode,
+            adapter,
+            allow_build,
+            target.as_deref(),
+        )
+        .map(|_| ()),
         Cmd::Build { force } => ops::build_cmd(&cwd, &cfg, force),
         Cmd::Run { command, args } => match ops::run(&cwd, &command, &args) {
             Ok(code) => std::process::exit(code),
