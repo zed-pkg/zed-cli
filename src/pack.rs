@@ -123,7 +123,10 @@ fn copy_files(source: &Path, destination: &Path, manifest: &Manifest) -> Result<
         &manifest.publish.exclude,
         manifest.publish.include_readme,
     ))?;
-    let always: Vec<String> = ALWAYS_INCLUDE.iter().map(|value| value.to_string()).collect();
+    let always: Vec<String> = ALWAYS_INCLUDE
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
     let always = glob_set(&always)?;
     for entry in WalkDir::new(source)
         .min_depth(1)

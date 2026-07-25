@@ -340,6 +340,23 @@ impl HttpRegistry {
             ),
         }
     }
+
+    /// Resolve an artifact URL without defeating an explicit registry
+    /// override. A server's ordinary `/v1/artifacts/<sha>` URL is only its
+    /// public canonical address, so mirrors, port-forwards, and local
+    /// registries must fetch that route from `self.base`. A genuinely
+    /// external/presigned object URL (different path and/or signed query) is
+    /// still honored.
+    fn artifact_download_url(&self, raw: &str, sha256: &str) -> Result<reqwest::Url> {
+        let artifact_path = registry::artifact_path(sha256);
+        if raw.starts_with("http") {
+            let advertised = self.allowed_download_url(raw)?;
+            if advertised.path() != artifact_path || advertised.query().is_some() {
+                return Ok(advertised);
+            }
+        }
+        reqwest::Url::parse(&self.url(&artifact_path)).context("registry url is valid")
+    }
 }
 
 impl Registry for HttpRegistry {
@@ -360,12 +377,7 @@ impl Registry for HttpRegistry {
     }
 
     fn download(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
-        let url = if version.download_url.starts_with("http") {
-            self.allowed_download_url(&version.download_url)?
-        } else {
-            reqwest::Url::parse(&self.url(&registry::artifact_path(&version.sha256)))
-                .context("registry url is valid")?
-        };
+        let url = self.artifact_download_url(&version.download_url, &version.sha256)?;
         let response = Self::check(self.client.get(url).send()?)?;
         fs::create_dir_all(dest.parent().context("dest has parent")?)?;
         // Bound what we write to disk: the declared size (when sane) plus
@@ -469,5 +481,34 @@ impl Registry for HttpRegistry {
             request = request.bearer_auth(token);
         }
         Ok(Self::check(request.send()?)?.json()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpRegistry;
+
+    #[test]
+    fn canonical_artifact_url_respects_registry_override() {
+        let registry = HttpRegistry::new("http://127.0.0.1:18080".into()).unwrap();
+        let url = registry
+            .artifact_download_url("https://registry.zpkg.tech/v1/artifacts/abc123", "abc123")
+            .unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1:18080/v1/artifacts/abc123");
+    }
+
+    #[test]
+    fn presigned_external_artifact_url_is_preserved() {
+        let registry = HttpRegistry::new("https://registry.zpkg.tech".into()).unwrap();
+        let url = registry
+            .artifact_download_url(
+                "https://objects.example.test/bucket/abc123?X-Amz-Signature=signed",
+                "abc123",
+            )
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://objects.example.test/bucket/abc123?X-Amz-Signature=signed"
+        );
     }
 }

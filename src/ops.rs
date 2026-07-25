@@ -320,6 +320,15 @@ fn detect_adapter(project: &Path) -> Adapter {
     }
 }
 
+fn named_adapter(value: &str) -> Result<Adapter> {
+    match value {
+        "node" => Ok(Adapter::Node),
+        "java" => Ok(Adapter::Java),
+        "none" => Ok(Adapter::None),
+        other => bail!("unsupported install adapter `{other}`"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn install(
     project: &Path,
@@ -360,11 +369,25 @@ fn install_locked(
     allow_build: bool,
     target: Option<&str>,
 ) -> Result<InstallOutcome> {
+    let manifest = read_manifest(project)?;
+    let configured_adapter = manifest
+        .install
+        .adapter
+        .as_deref()
+        .map(named_adapter)
+        .transpose()?;
+    // CLI selection wins, then the consumer manifest, then project markers.
+    // If all three leave us at `none`, each dependency may still request its
+    // own adapter. Per-target publish manifests use that last path so a
+    // `*-nodejs` package wires itself into node_modules even in a freshly
+    // initialized project with no package.json yet.
+    let use_dependency_adapters = adapter == Adapter::Auto
+        && configured_adapter.is_none()
+        && detect_adapter(project) == Adapter::None;
     let adapter = match adapter {
-        Adapter::Auto => detect_adapter(project),
+        Adapter::Auto => configured_adapter.unwrap_or_else(|| detect_adapter(project)),
         other => other,
     };
-    let manifest = read_manifest(project)?;
     let resolved_target = resolve_target(project, &manifest, target);
     let reg = registry_for(&cfg.registry)?;
     let lock_path = project.join(LOCKFILE_FILE);
@@ -502,6 +525,8 @@ fn install_locked(
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
     let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut used_node_adapter = false;
+    let mut used_java_adapter = false;
     for vm in resolved.values() {
         let pkg_dir = ensure_artifact(reg.as_ref(), store, vm)?;
         let pkg_manifest = read_manifest(&pkg_dir).ok();
@@ -555,8 +580,19 @@ fn install_locked(
                 bins.insert(bin_name.clone(), dest.join(rel_target));
             }
         }
-        match adapter {
+        let dependency_adapter = if use_dependency_adapters {
+            pkg_manifest
+                .as_ref()
+                .and_then(|pm| pm.install.adapter.as_deref())
+                .map(named_adapter)
+                .transpose()?
+                .unwrap_or(adapter)
+        } else {
+            adapter
+        };
+        match dependency_adapter {
             Adapter::Node => {
+                used_node_adapter = true;
                 let node_dest = project
                     .join("node_modules")
                     .join(format!("@{}", vm.org))
@@ -564,6 +600,7 @@ fn install_locked(
                 link_or_copy(&link_src, &node_dest, mode)?;
             }
             Adapter::Java => {
+                used_java_adapter = true;
                 // Classpath entries point at the project-local link so the
                 // file works in both symlink and copy (container) modes.
                 for entry in walkdir::WalkDir::new(&dest)
@@ -593,7 +630,7 @@ fn install_locked(
         installed.push((key.clone(), "workspace".to_string()));
     }
     hoist_bins(&modules, &bins, mode)?;
-    if adapter == Adapter::Java {
+    if used_java_adapter {
         jars.sort();
         let classpath_file = project.join(".zed").join("classpath");
         fs::create_dir_all(classpath_file.parent().context("classpath parent")?)?;
@@ -604,7 +641,7 @@ fn install_locked(
             jars.len()
         );
     }
-    if adapter == Adapter::Node {
+    if used_node_adapter {
         // Complement npm rather than replace it: the per-package
         // node_modules/@<org>/<name> links above already resolve, and this
         // NODE_PATH points Node at the zed tree root so `require("<org>/<name>")`
