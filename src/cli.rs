@@ -392,4 +392,80 @@ mod tests {
             "flags declared in .cli-flags.toml but absent from the CLI: {stale:?}"
         );
     }
+
+    /// Every command path the CLI exposes, as space-joined words
+    /// (`["install", "org claim", "org audit", ...]`). Aliases are skipped —
+    /// the canonical name is what must be documented.
+    fn command_paths(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            let name = sub.get_name();
+            if name == "help" {
+                continue;
+            }
+            let path = if prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{prefix} {name}")
+            };
+            if sub.get_subcommands().next().is_some() {
+                // A group (`org`, `store`): document its leaves, not the group.
+                command_paths(sub, &path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+
+    /// The README's command table is the front door: every shipped command
+    /// must appear in it. This repo is developed by several people/sessions
+    /// at once, so a command can land with its docs silently missing (that is
+    /// exactly how `zed org audit` shipped undocumented). Same idea as the
+    /// `.cli-flags.toml` gate above, applied to commands.
+    #[test]
+    fn readme_documents_every_command() {
+        let readme = include_str!("../README.md");
+        let mut paths = Vec::new();
+        command_paths(&Cli::command(), "", &mut paths);
+        assert!(
+            paths.len() > 10,
+            "command discovery looks broken: {paths:?}"
+        );
+
+        let mut undocumented = Vec::new();
+        for path in &paths {
+            let mut words = path.rsplitn(2, ' ');
+            let leaf = words.next().unwrap_or(path);
+            let parent = words.next();
+            // A leaf is documented either by its own row (`zed org audit`) or
+            // by a grouped row that lists it (`zed store status|path|prune`).
+            let documented = readme.lines().any(|line| {
+                let anchor = match parent {
+                    Some(parent) => format!("zed {parent} "),
+                    None => "zed ".to_string(),
+                };
+                line.contains("| `zed ") && line.contains(&anchor) && mentions_word(line, leaf)
+            });
+            if !documented {
+                undocumented.push(path.clone());
+            }
+        }
+        assert!(
+            undocumented.is_empty(),
+            "commands missing from the README table: {undocumented:?}"
+        );
+    }
+
+    /// Whole-word match so `zed run` is not satisfied by `zed r2g`, and
+    /// `path` in `status\\|path\\|prune` still counts.
+    fn mentions_word(haystack: &str, word: &str) -> bool {
+        haystack.match_indices(word).any(|(idx, _)| {
+            let before = haystack[..idx].chars().next_back();
+            let after = haystack[idx + word.len()..].chars().next();
+            let boundary = |c: Option<char>| match c {
+                None => true,
+                Some(c) => !(c.is_ascii_alphanumeric() || c == '-'),
+            };
+            boundary(before) && boundary(after)
+        })
+    }
 }
