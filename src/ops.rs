@@ -431,7 +431,8 @@ fn install_locked(
         }
     }
 
-    let modules = project.join(MODULES_DIR);
+    let modules_dir = manifest.modules_dir();
+    let modules = project.join(modules_dir);
     let mut installed = Vec::new();
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
@@ -513,6 +514,19 @@ fn install_locked(
             jars.len()
         );
     }
+    if adapter == Adapter::Node {
+        // Complement npm rather than replace it: the per-package
+        // node_modules/@<org>/<name> links above already resolve, and this
+        // NODE_PATH points Node at the zed tree root so `require("<org>/<name>")`
+        // works too — set `NODE_PATH="$(cat .zed/node_path)"`.
+        let node_path_file = project.join(".zed").join("node_path");
+        fs::create_dir_all(node_path_file.parent().context("node_path parent")?)?;
+        fs::write(&node_path_file, format!("{modules_dir}\n"))?;
+        println!(
+            "wrote {} ({modules_dir}); use: NODE_PATH=\"$(cat .zed/node_path)\" node ...",
+            node_path_file.display()
+        );
+    }
 
     let mut lock = Lockfile::default();
     for vm in resolved.values() {
@@ -538,7 +552,7 @@ fn install_locked(
         let mut names: Vec<&String> = bins.keys().collect();
         names.sort();
         println!(
-            "{} bin(s) in {MODULES_DIR}/{BIN_DIR}/ ({}); run with `zed run <name>`",
+            "{} bin(s) in {modules_dir}/{BIN_DIR}/ ({}); run with `zed run <name>`",
             names.len(),
             names
                 .iter()
@@ -548,7 +562,7 @@ fn install_locked(
         );
     }
     println!(
-        "{} package(s) in {MODULES_DIR}/ ({})",
+        "{} package(s) in {modules_dir}/ ({})",
         installed.len(),
         match mode {
             InstallMode::Symlink => "symlinked from the global store",
@@ -653,6 +667,7 @@ fn build_artifact(
             build: None,
             workspace: None,
             overrides: Default::default(),
+            install: Default::default(),
         };
         let deps_dir = staging.path().join("build-deps");
         fs::create_dir_all(&deps_dir)?;

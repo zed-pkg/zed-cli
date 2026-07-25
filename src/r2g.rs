@@ -123,6 +123,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         bin: BTreeMap::new(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
+        install: Default::default(),
     };
     write_manifest(&consumer_dir, &consumer_manifest)?;
 
