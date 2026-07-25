@@ -50,3 +50,94 @@ jobs:
       - name: Doctests
         run: cargo test --doc
         working-directory: zed-cli
+
+  docker-install:
+    name: Docker install boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+
+      - name: Build a container with the zed CLI
+        run: |
+          docker build \
+            --file zed-cli/.github/docker/install-test.Dockerfile \
+            --tag zed-pkg/install-test \
+            .
+
+      - name: Prepare hermetic fixtures
+        run: |
+          cp -R zed-cli/tests/fixtures/docker-install "$RUNNER_TEMP/fixtures"
+          mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/zed-home"
+
+      - name: Publish the zed-pkg fixture inside Docker
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-lib:/package" \
+            --volume "$RUNNER_TEMP/registry:/registry" \
+            --workdir /package \
+            zed-pkg/install-test \
+            zed publish --registry file:///registry --skip-vcs-checks
+
+      - name: Symlink install works when the store is mounted
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            sh -euc '
+              zed install \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode symlink
+              test -L .vendor/.zed/zed-pkg/docker-node-lib
+              test -L node_modules/@zed-pkg/docker-node-lib
+              node src/main.js
+            '
+
+      - name: Store-backed links do not cross an unmounted boundary
+        run: |
+          if docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work:ro" \
+            --workdir /work \
+            node:22-bookworm-slim \
+            node src/main.js
+          then
+            echo "expected the unmounted store-backed symlinks to fail"
+            exit 1
+          fi
+
+      - name: Frozen copy install is self-contained
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            sh -euc '
+              zed install \
+                --frozen \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode copy
+              test ! -L .vendor/.zed/zed-pkg/docker-node-lib
+              test ! -L node_modules/@zed-pkg/docker-node-lib
+              test -z "$(find .vendor/.zed node_modules/@zed-pkg -type l -print -quit)"
+              node src/main.js
+            '
+
+      - name: Copy install runs in a fresh runtime container
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work:ro" \
+            --workdir /work \
+            node:22-bookworm-slim \
+            node src/main.js

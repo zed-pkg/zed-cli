@@ -1,0 +1,10 @@
+[package]
+org = "zed-pkg"
+name = "docker-node-lib"
+version = "1.0.0"
+description = "Container-boundary fixture for zed install."
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-cli"
