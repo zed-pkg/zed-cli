@@ -891,12 +891,24 @@ fn pathdiff_relative(from_dir: &Path, target: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------
 // run / yank / gc
 
+/// The project's installed-dependency directory name, honoring
+/// `[install].dir` when the project has a readable manifest. Commands that
+/// only locate an existing tree (`zed run`, `zed remove`) resolve it this way
+/// so they agree with wherever `zed install` actually materialized packages;
+/// with no manifest they fall back to the default `zed_modules`.
+fn project_modules_dir(project: &Path) -> String {
+    read_manifest(project)
+        .map(|m| m.modules_dir().to_string())
+        .unwrap_or_else(|_| MODULES_DIR.to_string())
+}
+
 /// `zed run <command>` — run a hoisted dependency binary (from
-/// zed_modules/.bin) or any command, with that directory prepended to PATH —
-/// npx-style, without polluting the OS PATH (zed-docs issue #7). Returns the
-/// child's exit code.
+/// `<install.dir>/.bin`, default `zed_modules/.bin`) or any command, with that
+/// directory prepended to PATH — npx-style, without polluting the OS PATH
+/// (zed-docs issue #7). Returns the child's exit code.
 pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
-    let bin_dir = project.join(MODULES_DIR).join(BIN_DIR);
+    let modules_dir = project_modules_dir(project);
+    let bin_dir = project.join(&modules_dir).join(BIN_DIR);
     let candidate = bin_dir.join(command);
     let mut paths: Vec<PathBuf> = vec![bin_dir.clone()];
     if let Some(existing) = std::env::var_os("PATH") {
@@ -918,7 +930,7 @@ pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
     match status {
         Ok(status) => Ok(status.code().unwrap_or(1)),
         Err(_) => {
-            let available: Vec<String> = fs::read_dir(project.join(MODULES_DIR).join(BIN_DIR))
+            let available: Vec<String> = fs::read_dir(&bin_dir)
                 .map(|entries| {
                     entries
                         .flatten()
@@ -927,7 +939,7 @@ pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
                 })
                 .unwrap_or_default();
             bail!(
-                "failed to run `{command}` — not a hoisted bin in {MODULES_DIR}/{BIN_DIR}/ \
+                "failed to run `{command}` — not a hoisted bin in {modules_dir}/{BIN_DIR}/ \
                  (available: {}) nor on PATH; packages expose binaries via their [bin] table",
                 if available.is_empty() {
                     "none".to_string()
@@ -1062,7 +1074,9 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         bail!("{org}/{name} is not a dependency");
     }
     write_manifest(project, &manifest)?;
-    let dest = project.join(MODULES_DIR).join(&org).join(&name);
+    // Unlink from wherever install put it ([install].dir, default zed_modules),
+    // otherwise a relocated tree keeps a stale copy of a removed dependency.
+    let dest = project.join(manifest.modules_dir()).join(&org).join(&name);
     replace_dest(&dest)?;
     println!("removed {org}/{name}");
     install(

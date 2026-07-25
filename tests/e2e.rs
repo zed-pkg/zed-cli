@@ -2055,3 +2055,137 @@ command = '''echo overridden > overridden.txt'''
         "upstream build must not run when overridden"
     );
 }
+
+/// `[install].dir` relocates the installed tree. Every command that locates
+/// that tree must agree on where it is — install writes it, `zed run` finds
+/// hoisted bins in it, and `zed remove` unlinks from it. A command still
+/// hardcoding `zed_modules/` would silently look in the wrong place (bins
+/// unrunnable, removed deps left on disk).
+#[test]
+fn install_dir_is_honored_by_install_run_and_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    publish_to(
+        &registry,
+        &bin_fixture(tmp.path(), "reloctool", "reloctool", "#!/bin/sh\nexit 0\n"),
+    );
+
+    let consumer = tmp.path().join("reloc-consumer");
+    fs::create_dir_all(&consumer).unwrap();
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        r#"[package]
+org = "consumerorg"
+name = "relocapp"
+version = "0.0.1"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/consumerorg/relocapp"
+
+[dependencies]
+"acme/reloctool" = "^1"
+
+[install]
+dir = ".vendor/.zed"
+"#,
+    )
+    .unwrap();
+
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+    )
+    .unwrap();
+
+    // install: the tree lands in the configured dir, not the default.
+    let relocated = consumer.join(".vendor/.zed").join("acme").join("reloctool");
+    assert!(
+        relocated.join(MANIFEST_FILE).exists(),
+        "package should install under [install].dir"
+    );
+    assert!(
+        !consumer.join(MODULES_DIR).exists(),
+        "default zed_modules/ must not be created when [install].dir is set"
+    );
+
+    // run: the hoisted bin resolves from the relocated .bin dir.
+    assert!(
+        consumer
+            .join(".vendor/.zed")
+            .join(".bin")
+            .join("reloctool")
+            .exists(),
+        "bins should hoist into the relocated tree"
+    );
+    assert_eq!(
+        ops::run(&consumer, "reloctool", &[]).unwrap(),
+        0,
+        "zed run must find bins under [install].dir"
+    );
+
+    // remove: unlinks from the relocated dir rather than leaving it behind.
+    ops::remove(&consumer, &cfg, "acme/reloctool").unwrap();
+    assert!(
+        !relocated.exists(),
+        "zed remove must unlink from [install].dir, not leave a stale copy"
+    );
+}
+
+/// A relocated `[install].dir` must never be published. The static default
+/// excludes only cover `zed_modules/**`, so pack has to derive the pattern
+/// from the manifest — otherwise an author using `.vendor/.zed` ships their
+/// whole dependency tree (and, in symlink mode, links into their own store).
+#[test]
+fn a_relocated_install_dir_is_never_published() {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("reloc-publisher");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join(MANIFEST_FILE),
+        r#"[package]
+org = "acme"
+name = "relocpub"
+version = "1.0.0"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/relocpub"
+
+[install]
+dir = ".vendor/.zed"
+"#,
+    )
+    .unwrap();
+    write_files(
+        &project,
+        &[
+            ("src/lib.txt", "real source\n"),
+            ("LICENSE", "MIT\n"),
+            // A dependency tree sitting in the relocated install dir.
+            (".vendor/.zed/acme/dep/.zpkg.toml", "[package]\n"),
+            (".vendor/.zed/acme/dep/huge.bin", "vendored bytes\n"),
+            (".vendor/.zed/.bin/tool", "#!/bin/sh\n"),
+        ],
+    );
+
+    let manifest =
+        Manifest::parse(&fs::read_to_string(project.join(MANIFEST_FILE)).unwrap()).unwrap();
+    let packed = pack::pack(&project, &manifest, None).unwrap();
+    let entries = archive_entries(&packed.path);
+
+    assert!(entries.contains(&"pkg/src/lib.txt".to_string()));
+    assert!(entries.contains(&"pkg/LICENSE".to_string()));
+    assert!(
+        !entries.iter().any(|e| e.contains(".vendor")),
+        "relocated install dir leaked into the artifact: {entries:?}"
+    );
+}
