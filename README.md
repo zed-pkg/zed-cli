@@ -106,6 +106,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
 | `zed login` | Save a registry token to `~/.zed-pkg/credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
+| `zed org audit <slug> [--limit N]` | Read the org's audit log — who changed published state, newest first (server registries only; needs an `owner` token) |
 | `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
 | `zed gc [--older-than 90d] [--dry-run]` | LRU collection: drop store/build entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |

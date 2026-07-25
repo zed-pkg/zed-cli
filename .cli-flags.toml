@@ -207,3 +207,11 @@ command = "install"
 long = "target"
 env = "ZED_PKG_TARGET"
 about = "Language target to install from a polyglot package (e.g. nodejs, java, golang)"
+# --- org audit ------------------------------------------------------------
+
+[[flag]]
+command = "org audit"
+long = "limit"
+env = "ZED_PKG_AUDIT_LIMIT"
+default = "100 (server-side; clamped to 1000)"
+about = "Maximum audit entries to show, newest first"
