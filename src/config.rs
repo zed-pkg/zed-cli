@@ -21,11 +21,22 @@ pub struct Config {
 
 impl Config {
     pub fn from_globals(globals: &Globals) -> Result<Self> {
-        let home = match &globals.home {
+        let configured_home = match &globals.home {
             Some(h) => h.clone(),
             None => dirs::home_dir()
                 .context("could not determine home directory; set ZED_PKG_HOME")?
                 .join(ZED_HOME_DIR_NAME),
+        };
+        // Store paths become symlink targets during installation. Keeping a
+        // relative --home here would make that target relative to the nested
+        // zed_modules/<org>/ (or node_modules/@<org>/) link directory rather
+        // than to the project where the user invoked zed.
+        let home = if configured_home.is_absolute() {
+            configured_home
+        } else {
+            std::env::current_dir()
+                .context("could not determine current directory")?
+                .join(configured_home)
         };
         let registry = globals.registry.trim_end_matches('/').to_string();
         let auth_url = globals
@@ -150,6 +161,23 @@ pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relative_home_is_resolved_from_the_invocation_directory() {
+        let globals = Globals {
+            registry: "https://reg.example.com/".to_string(),
+            home: Some(PathBuf::from(".zed-home")),
+            token: None,
+            auth_url: None,
+            supabase_url: None,
+            supabase_key: None,
+        };
+        let cfg = Config::from_globals(&globals).unwrap();
+
+        assert!(cfg.home.is_absolute());
+        assert_eq!(cfg.home, std::env::current_dir().unwrap().join(".zed-home"));
+        assert_eq!(cfg.registry, "https://reg.example.com");
+    }
 
     #[test]
     fn credentials_roundtrip_normalizes_registry_slashes() {
