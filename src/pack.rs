@@ -88,7 +88,11 @@ pub fn pack_all(
                 section.dir
             );
         }
-        if source.join(zed_interfaces::paths::MANIFEST_FILE).exists() {
+        // `dir = "."` is the explicit whole-repository target used alongside
+        // language slices. Its manifest is the source manifest by definition
+        // and is replaced with the derived single-target manifest below.
+        // Nested targets must still never carry a second manifest.
+        if section.dir != "." && source.join(zed_interfaces::paths::MANIFEST_FILE).exists() {
             bail!(
                 "target `{target}` contains its own {}; declare packages only in the repository-root manifest",
                 zed_interfaces::paths::MANIFEST_FILE
@@ -435,5 +439,62 @@ adapter = "java"
         let derived = Manifest::parse(&manifest_text).unwrap();
         assert!(!derived.is_polyglot());
         assert_eq!(derived.install.adapter.as_deref(), Some("node"));
+    }
+
+    #[test]
+    fn polyglot_pack_can_include_a_whole_repository_target() {
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir_all(project.path().join("clients/ts/src")).unwrap();
+        fs::write(
+            project.path().join("clients/ts/package.json"),
+            r#"{"name":"@acme/client"}"#,
+        )
+        .unwrap();
+        fs::write(project.path().join("clients/ts/src/index.js"), "export {};").unwrap();
+        fs::write(project.path().join("LICENSE"), "MIT").unwrap();
+
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "clients"
+version = "1.2.3"
+
+[package.repository]
+url = "https://github.com/acme/clients"
+
+[targets.repository]
+dir = "."
+name = "clients-repository"
+
+[targets.nodejs]
+dir = "clients/ts"
+adapter = "node"
+"#;
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
+
+        let packages = pack_all(project.path(), &manifest, None).unwrap();
+        assert_eq!(packages.len(), 2);
+
+        let repository = packages
+            .iter()
+            .find(|package| package.target.as_deref() == Some("repository"))
+            .unwrap();
+        assert_eq!(repository.manifest.package.name, "clients-repository");
+        assert!(!repository.manifest.is_polyglot());
+
+        let files = archive_files(&repository.packed.path);
+        assert!(files.contains("pkg/.zpkg.toml"));
+        assert!(files.contains("pkg/clients/ts/package.json"));
+        assert!(files.contains("pkg/clients/ts/src/index.js"));
+        assert!(files.contains("pkg/LICENSE"));
+        assert!(
+            !files.iter().any(|path| path.starts_with("pkg/.zed-pack/")),
+            "the pack output directory must never be packed into the repository target"
+        );
     }
 }
