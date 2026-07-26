@@ -462,6 +462,9 @@ version = "1.2.3"
 [package.repository]
 url = "https://github.com/acme/clients"
 
+[publish]
+exclude = [".zed-pack/**"]
+
 [targets.repository]
 dir = "."
 name = "clients-repository"
