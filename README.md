@@ -104,7 +104,13 @@ registry hosts both on S3/Cloudflare R2.
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
-| `zed login` | Save a registry token to `~/.zed-pkg/credentials.toml` |
+| `zed login` / `zed signin` | Sign in (`zed auth login` / `zed auth signin` are identical) |
+| `zed signup` / `zed register` | Create an account (`zed auth signup` / `zed auth register` are identical) |
+| `zed logout` / `zed signout` | Revoke and remove the session (`zed auth logout` / `zed auth signout` are identical) |
+| `zed auth status` | Show the current account, authorities, and JWT expiries |
+| `zed auth refresh` | Rotate shared-auth and Supabase refresh tokens now |
+| `zed auth token` | Print the preferred current access JWT for scripting |
+| `zed auth import-token` | Save a legacy opaque registry token to `credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
 | `zed org audit <slug> [--limit N]` | Read the org's audit log — who changed published state, newest first (server registries only; needs an `owner` token) |
 | `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
@@ -183,6 +189,9 @@ actual CLI never drift, so it is always authoritative:
 | `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.tech` |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
+| `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
+| `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
+| `--supabase-key` | `ZED_PKG_SUPABASE_KEY` | optional public publishable/anon key |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
@@ -207,6 +216,23 @@ actual CLI never drift, so it is always authoritative:
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
 air-gapped mirrors, and `zed r2g` all use it.
+
+## Authentication
+
+`zed login` and `zed auth login` are the same operation. With
+`ZED_PKG_SUPABASE_URL` and the public `ZED_PKG_SUPABASE_KEY` configured, zed
+uses Supabase Auth for the credential exchange and then exchanges that provider
+JWT at shared-auth. It retains both independently refreshable sessions:
+shared-auth is preferred, while the Supabase JWT remains available as the
+dual-auth fallback. Without Supabase configuration, login and registration use
+shared-auth directly.
+
+Passwords are read from a hidden terminal prompt and never stored. For
+non-interactive use, pass `--password-stdin` or inject
+`ZED_PKG_AUTH_PASSWORD`. Access and rotating refresh tokens are stored in
+`~/.zed-pkg/auth/sessions.toml`; the directory is mode `0700` and the file is
+mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
+always removes the local session.
 
 ## Containers & OCI
 
@@ -306,8 +332,9 @@ Linux (arm64 + x64, gnu and musl), and Windows via
   builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
   cache/<sha256>.tar.gz                downloaded archives
   locks/                               advisory flocks (per-artifact, per-install, per-build)
+  auth/sessions.toml                   shared-auth + Supabase token pairs (0600)
   refs.json                            project -> artifact references (for prune/gc)
-  credentials.toml                     registry tokens (0600)
+  credentials.toml                     legacy opaque registry tokens (0600)
 ```
 
 ## Hardening

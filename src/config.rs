@@ -14,6 +14,9 @@ pub struct Config {
     pub registry: String,
     pub home: PathBuf,
     pub token: Option<String>,
+    pub auth_url: String,
+    pub supabase_url: Option<String>,
+    pub supabase_key: Option<String>,
 }
 
 impl Config {
@@ -24,21 +27,45 @@ impl Config {
                 .context("could not determine home directory; set ZED_PKG_HOME")?
                 .join(ZED_HOME_DIR_NAME),
         };
+        let registry = globals.registry.trim_end_matches('/').to_string();
+        let auth_url = globals
+            .auth_url
+            .clone()
+            .unwrap_or_else(|| format!("{registry}/shared-auth"))
+            .trim_end_matches('/')
+            .to_string();
         Ok(Self {
-            registry: globals.registry.trim_end_matches('/').to_string(),
+            registry,
             home,
             token: globals.token.clone(),
+            auth_url,
+            supabase_url: globals
+                .supabase_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.trim_end_matches('/').to_string()),
+            supabase_key: globals
+                .supabase_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
         })
     }
 
-    /// Explicit token flag/env wins; otherwise saved credentials.
-    pub fn resolve_token(&self) -> Option<String> {
+    /// Explicit token flag/env wins, followed by the refreshable human auth
+    /// session and finally a legacy saved registry token.
+    pub fn resolve_token(&self) -> Result<Option<String>> {
         if self.token.is_some() {
-            return self.token.clone();
+            return Ok(self.token.clone());
         }
-        Credentials::load(&self.home)
+        if let Some(token) = crate::auth::resolve_bearer(self)? {
+            return Ok(Some(token));
+        }
+        Ok(Credentials::load(&self.home)
             .ok()
-            .and_then(|c| c.token_for(&self.registry))
+            .and_then(|c| c.token_for(&self.registry)))
     }
 }
 
@@ -191,21 +218,33 @@ mod tests {
             registry: "https://reg.example.com".to_string(),
             home: home.path().to_path_buf(),
             token: Some("from-flag".to_string()),
+            auth_url: "https://reg.example.com/shared-auth".to_string(),
+            supabase_url: None,
+            supabase_key: None,
         };
-        assert_eq!(explicit.resolve_token().as_deref(), Some("from-flag"));
+        assert_eq!(
+            explicit.resolve_token().unwrap().as_deref(),
+            Some("from-flag")
+        );
 
         let fallback = Config {
             token: None,
             ..explicit.clone()
         };
-        assert_eq!(fallback.resolve_token().as_deref(), Some("from-file"));
+        assert_eq!(
+            fallback.resolve_token().unwrap().as_deref(),
+            Some("from-file")
+        );
 
         let unknown_registry = Config {
             registry: "https://elsewhere.example.com".to_string(),
             home: home.path().to_path_buf(),
             token: None,
+            auth_url: "https://elsewhere.example.com/shared-auth".to_string(),
+            supabase_url: None,
+            supabase_key: None,
         };
-        assert_eq!(unknown_registry.resolve_token(), None);
+        assert_eq!(unknown_registry.resolve_token().unwrap(), None);
     }
 
     #[test]
@@ -216,8 +255,11 @@ mod tests {
             registry: "https://reg.example.com".to_string(),
             home: home.path().to_path_buf(),
             token: None,
+            auth_url: "https://reg.example.com/shared-auth".to_string(),
+            supabase_url: None,
+            supabase_key: None,
         };
         // A corrupt file must degrade to "no saved token", not a panic/err.
-        assert_eq!(cfg.resolve_token(), None);
+        assert_eq!(cfg.resolve_token().unwrap(), None);
     }
 }

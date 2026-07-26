@@ -1087,7 +1087,7 @@ pub fn yank(cfg: &Config, spec: &str, undo: bool) -> Result<()> {
     let (key, version) = spec.split_once('@').context("expected org/name@version")?;
     let (org, name) = split_key(key)?;
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
+    let token = cfg.resolve_token()?;
     let response = reg.yank(&org, &name, version, !undo, token.as_deref())?;
     println!(
         "{} {}/{}@{}",
@@ -1307,7 +1307,7 @@ pub fn publish(
     }
 
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
+    let token = cfg.resolve_token()?;
     for package in &packages {
         let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
         let identity = &package.manifest.package;
@@ -1397,7 +1397,7 @@ pub fn org_claim(cfg: &Config, slug: &str) -> Result<()> {
         bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
     }
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
+    let token = cfg.resolve_token()?;
     let response = reg.claim_org(slug, token.as_deref())?;
     if response.created {
         println!("claimed org `{}`", response.slug);
@@ -1414,7 +1414,7 @@ pub fn org_audit(cfg: &Config, slug: &str, limit: Option<u64>) -> Result<()> {
         bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
     }
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
+    let token = cfg.resolve_token()?;
     let log = reg.audit_log(slug, limit, token.as_deref())?;
     if log.entries.is_empty() {
         println!("no audit entries for org `{}`", log.org);

@@ -1,5 +1,6 @@
 use clap::Parser;
-use zed_cli::cli::{CacheCmd, Cli, Cmd, OrgCmd, StoreCmd};
+use zed_cli::auth;
+use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, StoreCmd};
 use zed_cli::config::Config;
 use zed_cli::ops;
 use zed_cli::r2g::{self, R2gOptions};
@@ -7,6 +8,7 @@ use zed_cli::store::Store;
 use zed_cli::update;
 
 fn main() {
+    zed_cli::flags::apply_cli_flags();
     let cli = Cli::parse();
     if let Err(error) = run(cli) {
         eprintln!("error: {error:#}");
@@ -76,7 +78,48 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             force,
             skip_checksum,
         } => update::self_update(env!("CARGO_PKG_VERSION"), check, force, skip_checksum),
-        Cmd::Login => ops::login(&cfg),
+        Cmd::Login {
+            email,
+            provider,
+            password_stdin,
+        } => auth::login(&cfg, email.as_deref(), provider, password_stdin),
+        Cmd::Signup {
+            email,
+            provider,
+            display_name,
+            password_stdin,
+        } => auth::signup(
+            &cfg,
+            email.as_deref(),
+            provider,
+            display_name.as_deref(),
+            password_stdin,
+        ),
+        Cmd::Logout => auth::signout(&cfg),
+        Cmd::Auth { cmd } => match cmd {
+            AuthCmd::Login {
+                email,
+                provider,
+                password_stdin,
+            } => auth::login(&cfg, email.as_deref(), provider, password_stdin),
+            AuthCmd::Signup {
+                email,
+                provider,
+                display_name,
+                password_stdin,
+            } => auth::signup(
+                &cfg,
+                email.as_deref(),
+                provider,
+                display_name.as_deref(),
+                password_stdin,
+            ),
+            AuthCmd::Signout => auth::signout(&cfg),
+            AuthCmd::ImportToken => ops::login(&cfg),
+            AuthCmd::Status => auth::status(&cfg),
+            AuthCmd::Refresh => auth::refresh(&cfg),
+            AuthCmd::Token => auth::print_token(&cfg),
+        },
         Cmd::Org { cmd } => match cmd {
             OrgCmd::Claim { slug } => ops::org_claim(&cfg, &slug),
             OrgCmd::Audit { slug, limit } => ops::org_audit(&cfg, &slug, limit),

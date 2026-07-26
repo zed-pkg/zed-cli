@@ -142,6 +142,9 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         registry: format!("file://{}", registry_dir.display()),
         home: home_dir,
         token: None,
+        auth_url: cfg.auth_url.clone(),
+        supabase_url: cfg.supabase_url.clone(),
+        supabase_key: cfg.supabase_key.clone(),
     };
     // The author is roundtripping their own package, so running its [build]
     // step is consented — that's part of "as close to a real install as

@@ -101,6 +101,9 @@ fn test_config(tmp: &Path, registry_dir: &Path) -> Config {
         registry: format!("file://{}", registry_dir.display()),
         home: tmp.join("zed-home"),
         token: None,
+        auth_url: "http://127.0.0.1:8120".to_string(),
+        supabase_url: None,
+        supabase_key: None,
     }
 }
 
@@ -147,7 +150,13 @@ fn pack_is_pruned_and_deterministic() {
 #[test]
 fn language_conventions_are_stripped() {
     let tmp = tempfile::tempdir().unwrap();
-    let cases: &[(&str, &[(&str, &str)], &[&str], &[&str])] = &[
+    type FlagCase<'a> = (
+        &'a str,
+        &'a [(&'a str, &'a str)],
+        &'a [&'a str],
+        &'a [&'a str],
+    );
+    let cases: &[FlagCase<'_>] = &[
         (
             "node-pkg",
             &[
@@ -745,6 +754,9 @@ fn concurrent_installs_share_the_store_safely() {
                 registry: format!("file://{}", registry_dir.display()),
                 home: (*home).clone(),
                 token: None,
+                auth_url: "http://127.0.0.1:8120".to_string(),
+                supabase_url: None,
+                supabase_key: None,
             };
             ops::install(
                 &consumer,

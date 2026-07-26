@@ -35,6 +35,23 @@ pub struct Globals {
     /// Registry auth token; overrides saved credentials
     #[arg(long, global = true, env = "ZED_PKG_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
+
+    /// shared-auth base URL; defaults to <registry>/shared-auth
+    #[arg(long, global = true, env = "ZED_PKG_AUTH_URL")]
+    pub auth_url: Option<String>,
+
+    /// Supabase project URL used for provider login/signup
+    #[arg(long, global = true, env = "ZED_PKG_SUPABASE_URL")]
+    pub supabase_url: Option<String>,
+
+    /// Supabase publishable/anon key (never a service-role key)
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_SUPABASE_KEY",
+        hide_env_values = true
+    )]
+    pub supabase_key: Option<String>,
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -62,6 +79,18 @@ pub enum InstallMode {
     /// Copy files out of the store; use inside container image builds so
     /// layers stay self-contained across multi-stage COPYs
     Copy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AuthProvider {
+    /// Use Supabase when its project URL and publishable key are configured,
+    /// otherwise use shared-auth directly
+    Auto,
+    /// Authenticate directly against shared-auth's local account authority
+    SharedAuth,
+    /// Authenticate with Supabase Auth, then exchange into shared-auth while
+    /// retaining the Supabase session as the independent fallback authority
+    Supabase,
 }
 
 /// OCI runtime used by `zed r2g --docker` to roundtrip-test the package
@@ -224,8 +253,46 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_UPDATE_SKIP_CHECKSUM")]
         skip_checksum: bool,
     },
-    /// Save a registry token to ~/.zed-pkg/credentials.toml
-    Login,
+    /// Sign in (same as `zed auth login`)
+    #[command(alias = "signin")]
+    Login {
+        #[arg(long, env = "ZED_PKG_AUTH_EMAIL")]
+        email: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_AUTH_PROVIDER",
+            default_value = "auto"
+        )]
+        provider: AuthProvider,
+        #[arg(long, env = "ZED_PKG_AUTH_PASSWORD_STDIN")]
+        password_stdin: bool,
+    },
+    /// Sign up (same as `zed auth signup`)
+    #[command(alias = "register")]
+    Signup {
+        #[arg(long, env = "ZED_PKG_AUTH_EMAIL")]
+        email: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_AUTH_PROVIDER",
+            default_value = "auto"
+        )]
+        provider: AuthProvider,
+        #[arg(long, env = "ZED_PKG_AUTH_DISPLAY_NAME")]
+        display_name: Option<String>,
+        #[arg(long, env = "ZED_PKG_AUTH_PASSWORD_STDIN")]
+        password_stdin: bool,
+    },
+    /// Sign out (same as `zed auth logout` / `zed auth signout`)
+    #[command(alias = "signout")]
+    Logout,
+    /// Human account authentication through shared-auth and Supabase
+    Auth {
+        #[command(subcommand)]
+        cmd: AuthCmd,
+    },
     /// Org namespace operations
     Org {
         #[command(subcommand)]
@@ -241,6 +308,55 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: CacheCmd,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuthCmd {
+    /// Sign in and save a refreshable local session
+    #[command(alias = "signin")]
+    Login {
+        #[arg(long, env = "ZED_PKG_AUTH_EMAIL")]
+        email: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_AUTH_PROVIDER",
+            default_value = "auto"
+        )]
+        provider: AuthProvider,
+        /// Read the password as one line from stdin instead of prompting
+        #[arg(long, env = "ZED_PKG_AUTH_PASSWORD_STDIN")]
+        password_stdin: bool,
+    },
+    /// Create an account and save its session when immediately confirmed
+    #[command(alias = "register")]
+    Signup {
+        #[arg(long, env = "ZED_PKG_AUTH_EMAIL")]
+        email: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_AUTH_PROVIDER",
+            default_value = "auto"
+        )]
+        provider: AuthProvider,
+        #[arg(long, env = "ZED_PKG_AUTH_DISPLAY_NAME")]
+        display_name: Option<String>,
+        /// Read the password as one line from stdin instead of prompting
+        #[arg(long, env = "ZED_PKG_AUTH_PASSWORD_STDIN")]
+        password_stdin: bool,
+    },
+    /// Revoke remote sessions when possible and always delete local tokens
+    #[command(alias = "logout")]
+    Signout,
+    /// Save a legacy opaque registry token
+    ImportToken,
+    /// Show the locally authenticated identity and token expiry
+    Status,
+    /// Rotate refresh tokens now
+    Refresh,
+    /// Print the current access token, refreshing it first when needed
+    Token,
 }
 
 #[derive(Debug, Subcommand)]
@@ -277,9 +393,73 @@ pub enum CacheCmd {
 mod tests {
     use std::collections::BTreeSet;
 
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
 
-    use super::Cli;
+    use super::{AuthCmd, Cli, Cmd};
+
+    #[test]
+    fn flat_and_nested_auth_spellings_dispatch_identically() {
+        fn action(words: &[&str]) -> &'static str {
+            let cli = Cli::try_parse_from(
+                std::iter::once("zed")
+                    .chain(words.iter().copied())
+                    .chain(["--email", "person@example.com"]),
+            )
+            .unwrap();
+            match cli.cmd {
+                Cmd::Login { .. }
+                | Cmd::Auth {
+                    cmd: AuthCmd::Login { .. },
+                } => "login",
+                Cmd::Signup { .. }
+                | Cmd::Auth {
+                    cmd: AuthCmd::Signup { .. },
+                } => "signup",
+                Cmd::Logout
+                | Cmd::Auth {
+                    cmd: AuthCmd::Signout,
+                } => "logout",
+                other => panic!("unexpected auth command: {other:?}"),
+            }
+        }
+
+        for words in [
+            &["login"][..],
+            &["signin"],
+            &["auth", "login"],
+            &["auth", "signin"],
+        ] {
+            assert_eq!(action(words), "login", "{words:?}");
+        }
+        for words in [
+            &["signup"][..],
+            &["register"],
+            &["auth", "signup"],
+            &["auth", "register"],
+        ] {
+            assert_eq!(action(words), "signup", "{words:?}");
+        }
+
+        fn logout_action(words: &[&str]) -> &'static str {
+            let cli =
+                Cli::try_parse_from(std::iter::once("zed").chain(words.iter().copied())).unwrap();
+            match cli.cmd {
+                Cmd::Logout
+                | Cmd::Auth {
+                    cmd: AuthCmd::Signout,
+                } => "logout",
+                other => panic!("unexpected logout command: {other:?}"),
+            }
+        }
+        for words in [
+            &["logout"][..],
+            &["signout"],
+            &["auth", "logout"],
+            &["auth", "signout"],
+        ] {
+            assert_eq!(logout_action(words), "logout", "{words:?}");
+        }
+    }
 
     /// The flags-2-env convention (github.com/oresoftware/flags-2-env):
     /// every user-facing option must be settable via a ZED_PKG_* env var.
@@ -348,40 +528,37 @@ mod tests {
     /// every other command's) documented and env-addressable.
     #[test]
     fn cli_flags_toml_is_in_sync_with_clap() {
-        #[derive(serde::Deserialize)]
-        struct FlagsFile {
-            flag: Vec<FlagEntry>,
-        }
-        #[derive(serde::Deserialize)]
-        struct FlagEntry {
-            command: String,
-            long: String,
-            env: String,
-        }
-
-        let doc: FlagsFile = toml::from_str(include_str!("../.cli-flags.toml"))
+        let doc: toml::Value = toml::from_str(include_str!("../.cli-flags.toml"))
             .expect(".cli-flags.toml must be valid TOML");
 
-        let mut file_envs = BTreeSet::new();
-        for entry in &doc.flag {
-            assert!(!entry.long.is_empty(), "a flag entry is missing `long`");
-            assert!(
-                !entry.command.is_empty(),
-                "flag --{} is missing `command`",
-                entry.long
-            );
-            assert!(
-                entry.env.starts_with("ZED_PKG_"),
-                "flag --{} env `{}` must use the ZED_PKG_ prefix",
-                entry.long,
-                entry.env
-            );
-            assert!(
-                file_envs.insert(entry.env.clone()),
-                "duplicate env `{}` in .cli-flags.toml",
-                entry.env
-            );
+        fn collect_file_envs(value: &toml::Value, envs: &mut BTreeSet<String>) {
+            let Some(table) = value.as_table() else {
+                return;
+            };
+            if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
+                for (name, flag) in flags {
+                    let env = flag
+                        .get("env")
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
+                    assert!(
+                        env.starts_with("ZED_PKG_"),
+                        "flag --{} env `{env}` must use the ZED_PKG_ prefix",
+                        name.replace('_', "-")
+                    );
+                    assert!(
+                        envs.insert(env.to_string()),
+                        "duplicate env `{env}` in .cli-flags.toml"
+                    );
+                }
+            }
+            for child in table.values() {
+                collect_file_envs(child, envs);
+            }
         }
+
+        let mut file_envs = BTreeSet::new();
+        collect_file_envs(&doc, &mut file_envs);
 
         let mut clap_envs = BTreeSet::new();
         collect_flag_envs(&Cli::command(), &mut clap_envs);
