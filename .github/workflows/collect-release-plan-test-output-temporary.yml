@@ -1,0 +1,53 @@
+name: Collect release-plan test output (temporary)
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'feat/den-100-release-plan' &&
+      github.actor == 'ORESoftware'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.head_ref }}
+          path: zed-cli
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: main
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+      - name: Capture exact test output
+        working-directory: zed-cli
+        run: |
+          set +e
+          cargo test --locked > ci-release-plan-test-output.txt 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "cargo test passed" > ci-release-plan-test-output.txt
+          else
+            printf '\nexit_status=%s\n' "$status" >> ci-release-plan-test-output.txt
+          fi
+      - name: Commit diagnostic output to the feature branch
+        working-directory: zed-cli
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ci-release-plan-test-output.txt
+          git commit -m "ci: capture release-plan test output"
+          git push origin HEAD:feat/den-100-release-plan
