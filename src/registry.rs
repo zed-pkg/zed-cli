@@ -169,6 +169,7 @@ impl Registry for FileRegistry {
             version_scheme: meta.manifest.package.version_scheme,
             latest: None,
             versions: Vec::new(),
+            tags: meta.manifest.package.keywords.clone(),
         });
         if !pkg.versions.contains(version) {
             pkg.versions.push(version.clone());
@@ -177,6 +178,7 @@ impl Registry for FileRegistry {
         pkg.version_scheme = meta.manifest.package.version_scheme;
         pkg.latest = pkg.versions.first().cloned();
         pkg.description = meta.manifest.package.description.clone();
+        pkg.tags = meta.manifest.package.keywords.clone();
         fs::write(
             self.package_json(org, name),
             serde_json::to_string_pretty(&pkg)?,
@@ -267,6 +269,7 @@ impl Registry for FileRegistry {
                             name: meta.name,
                             description: meta.description,
                             latest: meta.latest,
+                            tags: meta.tags,
                         });
                     }
                 }
