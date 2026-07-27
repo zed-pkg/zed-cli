@@ -7,6 +7,7 @@ pub mod config;
 pub mod flags;
 pub mod ops;
 pub mod pack;
+pub mod preflight;
 pub mod r2g;
 pub mod registry;
 pub mod release;
