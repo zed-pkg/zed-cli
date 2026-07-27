@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -16,6 +17,15 @@ const CREDENTIAL_ENV_VARS: &[&str] = &[
     "PUB_HOSTED_URL",
     "PUB_TOKEN",
     "DART_PUB_TOKEN",
+    "TWINE_USERNAME",
+    "TWINE_PASSWORD",
+    "TWINE_REPOSITORY_URL",
+    "UV_PUBLISH_TOKEN",
+    "UV_PUBLISH_USERNAME",
+    "UV_PUBLISH_PASSWORD",
+    "PYPI_TOKEN",
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +47,16 @@ pub struct ProcessRunner;
 
 impl CommandRunner for ProcessRunner {
     fn run(&self, spec: &NativePreflightSpec) -> Result<Output> {
+        if spec.registry == NativeRegistry::PyPi {
+            let output = spec.cwd.join(".zed/native-preflight/pypi");
+            if output.exists() {
+                fs::remove_dir_all(&output).with_context(|| {
+                    format!("remove stale PyPI preflight output {}", output.display())
+                })?;
+            }
+            fs::create_dir_all(&output)
+                .with_context(|| format!("create PyPI preflight output {}", output.display()))?;
+        }
         let mut command = Command::new(&spec.program);
         command
             .args(&spec.args)
@@ -58,6 +78,10 @@ impl CommandRunner for ProcessRunner {
     }
 }
 
+fn python_program() -> &'static str {
+    if cfg!(windows) { "python" } else { "python3" }
+}
+
 pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSpec> {
     manifest
         .native_release_routes()
@@ -70,6 +94,16 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                 ),
                 NativeRegistry::CratesIo => ("cargo", vec!["package", "--list", "--allow-dirty"]),
                 NativeRegistry::PubDev => ("dart", vec!["pub", "publish", "--dry-run"]),
+                NativeRegistry::PyPi => (
+                    python_program(),
+                    vec![
+                        "-m",
+                        "build",
+                        "--no-isolation",
+                        "--outdir",
+                        ".zed/native-preflight/pypi",
+                    ],
+                ),
             };
             NativePreflightSpec {
                 target: route.target,
@@ -172,6 +206,12 @@ dir = "clients/dart"
 [targets.dart.native]
 registry = "pub.dev"
 package = "acme_client"
+
+[targets.python]
+dir = "clients/python"
+[targets.python.native]
+registry = "pypi"
+package = "Acme.Client"
 "#,
         )
         .unwrap()
@@ -180,7 +220,7 @@ package = "acme_client"
     #[test]
     fn adapter_commands_are_fixed_and_deterministic() {
         let specs = build_specs(Path::new("/repo"), &manifest());
-        assert_eq!(specs.len(), 3);
+        assert_eq!(specs.len(), 4);
         assert_eq!(specs[0].target, "dart");
         assert_eq!(specs[0].program, "dart");
         assert_eq!(specs[0].args, ["pub", "publish", "--dry-run"]);
@@ -192,10 +232,23 @@ package = "acme_client"
             ["pack", "--dry-run", "--json", "--ignore-scripts"]
         );
         assert_eq!(specs[1].cwd, Path::new("/repo/clients/typescript"));
-        assert_eq!(specs[2].target, "rust");
-        assert_eq!(specs[2].program, "cargo");
-        assert_eq!(specs[2].args, ["package", "--list", "--allow-dirty"]);
-        assert_eq!(specs[2].cwd, Path::new("/repo/clients/rust"));
+        assert_eq!(specs[2].target, "python");
+        assert_eq!(specs[2].program, python_program());
+        assert_eq!(
+            specs[2].args,
+            [
+                "-m",
+                "build",
+                "--no-isolation",
+                "--outdir",
+                ".zed/native-preflight/pypi",
+            ]
+        );
+        assert_eq!(specs[2].cwd, Path::new("/repo/clients/python"));
+        assert_eq!(specs[3].target, "rust");
+        assert_eq!(specs[3].program, "cargo");
+        assert_eq!(specs[3].args, ["package", "--list", "--allow-dirty"]);
+        assert_eq!(specs[3].cwd, Path::new("/repo/clients/rust"));
     }
 
     struct FakeRunner {
@@ -234,7 +287,7 @@ package = "acme_client"
                 .iter()
                 .map(|call| call.target.as_str())
                 .collect::<Vec<_>>(),
-            vec!["dart", "nodejs", "rust"]
+            vec!["dart", "nodejs", "python", "rust"]
         );
     }
 

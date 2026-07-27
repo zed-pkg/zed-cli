@@ -68,6 +68,37 @@ enum CargoPublishPolicy {
     Registries(Vec<String>),
 }
 
+#[derive(Debug, Deserialize)]
+struct PythonProjectManifest {
+    project: Option<PythonProjectSection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PythonProjectSection {
+    name: String,
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    dynamic: Vec<String>,
+}
+
+fn normalize_pypi_name(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut separator = false;
+    for byte in value.bytes() {
+        if matches!(byte, b'.' | b'_' | b'-') {
+            separator = true;
+            continue;
+        }
+        if separator && !normalized.is_empty() {
+            normalized.push('-');
+        }
+        separator = false;
+        normalized.push((byte as char).to_ascii_lowercase());
+    }
+    normalized
+}
+
 pub fn build_plan(manifest: &Manifest) -> ReleasePlan {
     let source_package = manifest.full_name();
     let version = manifest.package.version.clone();
@@ -147,6 +178,14 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
             NativeRegistry::PubDev => {
                 validate_pubspec_manifest(
                     &target_root.join("pubspec.yaml"),
+                    &route.target,
+                    &route.package,
+                    &manifest.package.version,
+                )?;
+            }
+            NativeRegistry::PyPi => {
+                validate_pyproject_manifest(
+                    &target_root.join("pyproject.toml"),
                     &route.target,
                     &route.package,
                     &manifest.package.version,
@@ -272,6 +311,47 @@ fn validate_pubspec_manifest(
     if let Some(destination) = pubspec_scalar(&text, path, "publish_to")? {
         bail!(
             "native pub.dev target `{target}` cannot be released because {} sets `publish_to: {destination}`; pub.dev packages must omit `publish_to`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_pyproject_manifest(
+    path: &Path,
+    target: &str,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("native PyPI target `{target}` has no {}", path.display()))?;
+    let manifest: PythonProjectManifest = toml::from_str(&text)
+        .with_context(|| format!("invalid Python project manifest {}", path.display()))?;
+    let project = manifest
+        .project
+        .with_context(|| format!("{} has no `[project]` table", path.display()))?;
+    if normalize_pypi_name(&project.name) != normalize_pypi_name(expected_name) {
+        bail!(
+            "native PyPI target `{target}` declares package `{expected_name}`, but {} names `{}`",
+            path.display(),
+            project.name
+        );
+    }
+    if project.dynamic.iter().any(|field| field == "version") {
+        bail!(
+            "native PyPI target `{target}` cannot join a coordinated release while {} declares `version` as dynamic",
+            path.display()
+        );
+    }
+    let version = project.version.with_context(|| {
+        format!(
+            "native PyPI target `{target}` requires a static `[project].version` in {}",
+            path.display()
+        )
+    })?;
+    if version != expected_version {
+        bail!(
+            "native PyPI target `{target}` must use release-set version `{expected_version}`, but {} uses `{version}`",
             path.display()
         );
     }
@@ -409,18 +489,27 @@ dir = "clients/dart"
 [targets.dart.native]
 registry = "pub.dev"
 package = "acme_client"
+
+[targets.python]
+dir = "clients/python"
+
+[targets.python.native]
+registry = "pypi"
+package = "Acme.Client"
 "#,
         )
         .unwrap()
     }
 
-    fn write_native_manifests(root: &Path, npm: &str, cargo: &str, pubspec: &str) {
+    fn write_native_manifests(root: &Path, npm: &str, cargo: &str, pubspec: &str, pyproject: &str) {
         fs::create_dir_all(root.join("clients/typescript")).unwrap();
         fs::create_dir_all(root.join("clients/rust")).unwrap();
         fs::create_dir_all(root.join("clients/dart")).unwrap();
+        fs::create_dir_all(root.join("clients/python")).unwrap();
         fs::write(root.join("clients/typescript/package.json"), npm).unwrap();
         fs::write(root.join("clients/rust/Cargo.toml"), cargo).unwrap();
         fs::write(root.join("clients/dart/pubspec.yaml"), pubspec).unwrap();
+        fs::write(root.join("clients/python/pyproject.toml"), pyproject).unwrap();
     }
 
     #[test]
@@ -434,7 +523,7 @@ package = "acme_client"
                 .iter()
                 .map(|artifact| artifact.target.as_deref().unwrap())
                 .collect::<Vec<_>>(),
-            vec!["dart", "nodejs", "repository", "rust"]
+            vec!["dart", "nodejs", "python", "repository", "rust"]
         );
         assert_eq!(
             plan.native
@@ -444,6 +533,7 @@ package = "acme_client"
             vec![
                 ("pub.dev", "acme_client"),
                 ("npm", "@acme/client"),
+                ("pypi", "Acme.Client"),
                 ("crates-io", "acme-client"),
             ]
         );
@@ -468,6 +558,7 @@ version = "1.2.3"
 publish = ["crates-io"]
 "#,
             "name: acme_client\nversion: 1.2.3\n",
+            "[project]\nname = \"acme-client\"\nversion = \"1.2.3\"\n",
         );
 
         validate_native_manifests(root.path(), &polyglot_manifest()).unwrap();
@@ -534,6 +625,7 @@ publish = false
                 npm,
                 cargo,
                 "name: acme_client\nversion: 1.2.3\n",
+                "[project]\nname = \"Acme.Client\"\nversion = \"1.2.3\"\n",
             );
             let error = validate_native_manifests(root.path(), &polyglot_manifest())
                 .unwrap_err()
@@ -570,6 +662,54 @@ publish = false
                 r#"{"name":"@acme/client","version":"1.2.3"}"#,
                 "[package]\nname = \"acme-client\"\nversion = \"1.2.3\"\n",
                 pubspec,
+                "[project]\nname = \"Acme.Client\"\nversion = \"1.2.3\"\n",
+            );
+            let result = validate_native_manifests(root.path(), &polyglot_manifest());
+            if expected == "__valid__" {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(
+                    error.contains(expected),
+                    "{error:?} did not contain {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pyproject_mismatches_fail_before_planning() {
+        let cases = [
+            (
+                "[project]\nname = \"wrong-client\"\nversion = \"1.2.3\"\n",
+                "names `wrong-client`",
+            ),
+            (
+                "[project]\nname = \"Acme.Client\"\nversion = \"9.9.9\"\n",
+                "uses `9.9.9`",
+            ),
+            (
+                "[project]\nname = \"Acme.Client\"\ndynamic = [\"version\"]\n",
+                "declares `version` as dynamic",
+            ),
+            (
+                "[build-system]\nrequires = []\nbuild-backend = \"example.backend\"\n",
+                "has no `[project]` table",
+            ),
+            (
+                "[project]\nname = \"acme_client\"\nversion = \"1.2.3\"\n",
+                "__valid__",
+            ),
+        ];
+
+        for (pyproject, expected) in cases {
+            let root = tempfile::tempdir().unwrap();
+            write_native_manifests(
+                root.path(),
+                r#"{"name":"@acme/client","version":"1.2.3"}"#,
+                "[package]\nname = \"acme-client\"\nversion = \"1.2.3\"\n",
+                "name: acme_client\nversion: 1.2.3\n",
+                pyproject,
             );
             let result = validate_native_manifests(root.path(), &polyglot_manifest());
             if expected == "__valid__" {
