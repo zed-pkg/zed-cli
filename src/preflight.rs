@@ -13,6 +13,9 @@ const CREDENTIAL_ENV_VARS: &[&str] = &[
     "NPM_CONFIG_TOKEN",
     "CARGO_REGISTRY_TOKEN",
     "CARGO_REGISTRIES_CRATES_IO_TOKEN",
+    "PUB_HOSTED_URL",
+    "PUB_TOKEN",
+    "DART_PUB_TOKEN",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                     vec!["pack", "--dry-run", "--json", "--ignore-scripts"],
                 ),
                 NativeRegistry::CratesIo => ("cargo", vec!["package", "--list", "--allow-dirty"]),
+                NativeRegistry::PubDev => ("dart", vec!["pub", "publish", "--dry-run"]),
             };
             NativePreflightSpec {
                 target: route.target,
@@ -162,6 +166,12 @@ dir = "clients/typescript"
 [targets.nodejs.native]
 registry = "npm"
 package = "@acme/client"
+
+[targets.dart]
+dir = "clients/dart"
+[targets.dart.native]
+registry = "pub.dev"
+package = "acme_client"
 "#,
         )
         .unwrap()
@@ -170,18 +180,22 @@ package = "@acme/client"
     #[test]
     fn adapter_commands_are_fixed_and_deterministic() {
         let specs = build_specs(Path::new("/repo"), &manifest());
-        assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].target, "nodejs");
-        assert_eq!(specs[0].program, "npm");
+        assert_eq!(specs.len(), 3);
+        assert_eq!(specs[0].target, "dart");
+        assert_eq!(specs[0].program, "dart");
+        assert_eq!(specs[0].args, ["pub", "publish", "--dry-run"]);
+        assert_eq!(specs[0].cwd, Path::new("/repo/clients/dart"));
+        assert_eq!(specs[1].target, "nodejs");
+        assert_eq!(specs[1].program, "npm");
         assert_eq!(
-            specs[0].args,
+            specs[1].args,
             ["pack", "--dry-run", "--json", "--ignore-scripts"]
         );
-        assert_eq!(specs[0].cwd, Path::new("/repo/clients/typescript"));
-        assert_eq!(specs[1].target, "rust");
-        assert_eq!(specs[1].program, "cargo");
-        assert_eq!(specs[1].args, ["package", "--list", "--allow-dirty"]);
-        assert_eq!(specs[1].cwd, Path::new("/repo/clients/rust"));
+        assert_eq!(specs[1].cwd, Path::new("/repo/clients/typescript"));
+        assert_eq!(specs[2].target, "rust");
+        assert_eq!(specs[2].program, "cargo");
+        assert_eq!(specs[2].args, ["package", "--list", "--allow-dirty"]);
+        assert_eq!(specs[2].cwd, Path::new("/repo/clients/rust"));
     }
 
     struct FakeRunner {
@@ -220,7 +234,7 @@ package = "@acme/client"
                 .iter()
                 .map(|call| call.target.as_str())
                 .collect::<Vec<_>>(),
-            vec!["nodejs", "rust"]
+            vec!["dart", "nodejs", "rust"]
         );
     }
 
