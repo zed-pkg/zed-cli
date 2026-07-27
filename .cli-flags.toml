@@ -119,6 +119,13 @@ aliases = ["out"]
 type = "string"
 help = "Packed artifact output path."
 
+[flags.release_json]
+env = "ZED_PKG_RELEASE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit a machine-readable release plan."
+
 [flags.allow_dirty]
 env = "ZED_PKG_ALLOW_DIRTY"
 aliases = ["allow-dirty"]
@@ -254,6 +261,19 @@ help = "Search the registry."
 
 [commands.pack]
 help = "Pack an artifact."
+
+[commands.release]
+help = "Coordinate Zed and native-registry releases."
+
+[commands.release.commands.plan]
+help = "Print a credential-free deterministic release plan."
+
+[commands.release.commands.plan.flags.release_json]
+env = "ZED_PKG_RELEASE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit the release plan as JSON."
 
 [commands.publish]
 help = "Publish an artifact."
