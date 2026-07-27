@@ -119,13 +119,6 @@ aliases = ["out"]
 type = "string"
 help = "Packed artifact output path."
 
-[flags.release_json]
-env = "ZED_PKG_RELEASE_JSON"
-aliases = ["json"]
-type = "bool"
-default = "false"
-help = "Emit a machine-readable release plan."
-
 [flags.allow_dirty]
 env = "ZED_PKG_ALLOW_DIRTY"
 aliases = ["allow-dirty"]
