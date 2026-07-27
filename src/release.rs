@@ -423,7 +423,10 @@ publish = false
             let error = validate_native_manifests(root.path(), &polyglot_manifest())
                 .unwrap_err()
                 .to_string();
-            assert!(error.contains(expected), "{error:?} did not contain {expected:?}");
+            assert!(
+                error.contains(expected),
+                "{error:?} did not contain {expected:?}"
+            );
         }
     }
 
