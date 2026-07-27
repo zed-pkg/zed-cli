@@ -14,28 +14,31 @@ jobs:
       github.head_ref == 'feat/den-100-release-manifest-validation' &&
       github.actor == 'ORESoftware'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.head_ref }}
+          path: zed-cli
           fetch-depth: 0
           persist-credentials: true
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: zed-pkg/zed-interfaces
           ref: main
-          path: ../zed-interfaces
+          path: zed-interfaces
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: stable
           components: rustfmt
       - name: Format and verify
+        working-directory: zed-cli
         run: |
           cargo fmt --all
           cargo test --locked
       - name: Commit formatting to the feature branch
+        working-directory: zed-cli
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
