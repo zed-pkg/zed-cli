@@ -35,11 +35,9 @@ jobs:
       - name: Wire Clap, flags2env, and documentation
         working-directory: zed-cli
         run: python3 scripts/apply_release_plan_cli.py
-      - name: Format and test
+      - name: Format candidate changes
         working-directory: zed-cli
-        run: |
-          cargo fmt --all
-          cargo test --locked
+        run: cargo fmt --all
       - name: Commit release-plan wiring to the feature branch
         working-directory: zed-cli
         run: |
@@ -52,3 +50,6 @@ jobs:
           fi
           git commit -m "feat: expose release plan command"
           git push origin HEAD:feat/den-100-release-plan
+      - name: Test the committed candidate
+        working-directory: zed-cli
+        run: cargo test --locked
