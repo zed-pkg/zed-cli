@@ -65,9 +65,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                     "npm",
                     vec!["pack", "--dry-run", "--json", "--ignore-scripts"],
                 ),
-                NativeRegistry::CratesIo => {
-                    ("cargo", vec!["package", "--list", "--allow-dirty"])
-                }
+                NativeRegistry::CratesIo => ("cargo", vec!["package", "--list", "--allow-dirty"]),
             };
             NativePreflightSpec {
                 target: route.target,
@@ -122,9 +120,25 @@ pub fn preflight(project: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::process::ExitStatus;
+
+    #[cfg(unix)]
     use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
 
     use super::*;
+
+    fn exit_status(success: bool) -> ExitStatus {
+        #[cfg(unix)]
+        {
+            ExitStatus::from_raw(if success { 0 } else { 1 << 8 })
+        }
+        #[cfg(windows)]
+        {
+            ExitStatus::from_raw(if success { 0 } else { 1 })
+        }
+    }
 
     fn manifest() -> Manifest {
         Manifest::parse(
@@ -166,10 +180,7 @@ package = "@acme/client"
         assert_eq!(specs[0].cwd, Path::new("/repo/clients/typescript"));
         assert_eq!(specs[1].target, "rust");
         assert_eq!(specs[1].program, "cargo");
-        assert_eq!(
-            specs[1].args,
-            ["package", "--list", "--allow-dirty"]
-        );
+        assert_eq!(specs[1].args, ["package", "--list", "--allow-dirty"]);
         assert_eq!(specs[1].cwd, Path::new("/repo/clients/rust"));
     }
 
@@ -183,11 +194,7 @@ package = "@acme/client"
             self.calls.borrow_mut().push(spec.clone());
             let success = self.fail_target != Some(spec.target.as_str());
             Ok(Output {
-                status: if success {
-                    std::process::ExitStatus::from_raw(0)
-                } else {
-                    std::process::ExitStatus::from_raw(1 << 8)
-                },
+                status: exit_status(success),
                 stdout: if success { b"ok".to_vec() } else { Vec::new() },
                 stderr: if success {
                     Vec::new()
