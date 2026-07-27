@@ -1,9 +1,10 @@
 use clap::Parser;
 use zed_cli::auth;
-use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, StoreCmd};
+use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::config::Config;
 use zed_cli::ops;
 use zed_cli::r2g::{self, R2gOptions};
+use zed_cli::release;
 use zed_cli::store::Store;
 use zed_cli::update;
 
@@ -50,6 +51,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => ops::gc(&cfg, &older_than, dry_run),
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
+        Cmd::Release { cmd } => match cmd {
+            ReleaseCmd::Plan { json } => release::plan(&cwd, json),
+        },
         Cmd::Publish {
             dry_run,
             allow_dirty,

@@ -189,6 +189,11 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_PACK_OUT")]
         out: Option<PathBuf>,
     },
+    /// Plan a coordinated Zed + native-registry release without credentials or uploads
+    Release {
+        #[command(subcommand)]
+        cmd: ReleaseCmd,
+    },
     /// Pack, verify VCS tag provenance, and upload to the registry
     Publish {
         #[arg(long, env = "ZED_PKG_DRY_RUN")]
@@ -307,6 +312,16 @@ pub enum Cmd {
     Cache {
         #[command(subcommand)]
         cmd: CacheCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ReleaseCmd {
+    /// Print the deterministic release set derived from `.zpkg.toml`
+    Plan {
+        /// Emit machine-readable JSON rather than the human summary
+        #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
+        json: bool,
     },
 }
 
