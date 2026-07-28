@@ -141,6 +141,7 @@ jobs:
               scripts/prepare-den-567-hardener.py \
               scripts/harden-den-567-product.py \
               .den-567-validation.txt
+            rm -rf scripts/__pycache__ tests/__pycache__
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git status --short
