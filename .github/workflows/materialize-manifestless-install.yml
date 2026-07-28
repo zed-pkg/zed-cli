@@ -7,6 +7,12 @@ on:
     paths:
       - '.github/workflows/materialize-manifestless-install.yml'
       - 'scripts/materialize-manifestless-install.py'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/materialize-manifestless-install.yml'
+      - 'scripts/materialize-manifestless-install.py'
 
 permissions:
   contents: write
@@ -17,7 +23,9 @@ concurrency:
 
 jobs:
   materialize:
-    if: github.repository == 'zed-pkg/zed-cli'
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      (github.event_name == 'push' || github.head_ref == 'agent/manifestless-install')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -78,5 +86,3 @@ jobs:
           git diff --cached --name-status
           git commit -m 'feat: support manifestless dependency installs'
           git push origin HEAD:agent/manifestless-install
-
-# Activation update: the workflow already existed in the branch parent.
