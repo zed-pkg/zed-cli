@@ -78,3 +78,5 @@ jobs:
           git diff --cached --name-status
           git commit -m 'feat: support manifestless dependency installs'
           git push origin HEAD:agent/manifestless-install
+
+# Activation update: the workflow already existed in the branch parent.
