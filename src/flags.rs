@@ -43,6 +43,7 @@ pub fn apply_cli_flags() -> Result<()> {
         );
     }
 
+    normalize_active_boolean_environment(&parsed.subcommands)?;
     let explicit_envs = explicit_env_keys(&argv, &parsed.subcommands)?;
     for (key, value) in parsed.flags {
         if should_apply_value(
@@ -59,6 +60,84 @@ pub fn apply_cli_flags() -> Result<()> {
 
 fn should_apply_value(environment_exists: bool, explicitly_supplied: bool) -> bool {
     explicitly_supplied || !environment_exists
+}
+
+/// Clap's boolean environment parser accepts canonical `true`/`false`, while
+/// shell and deployment configuration commonly use `1`, `0`, `yes`, `no`,
+/// `on`, and `off`. Canonicalize only boolean keys declared in the active
+/// flags2env scopes, before Clap reads them. Invalid values fail closed.
+fn normalize_active_boolean_environment(subcommands: &[String]) -> Result<()> {
+    let contract: toml::Value =
+        toml::from_str(CONTRACT).context("parsing embedded flags2env contract")?;
+    for env in active_boolean_env_keys(&contract, subcommands)? {
+        let Some(raw) = std::env::var_os(&env) else {
+            continue;
+        };
+        let raw = raw
+            .to_str()
+            .with_context(|| format!("boolean environment variable `{env}` is not valid UTF-8"))?;
+        let normalized = normalize_boolean_value(raw).with_context(|| {
+            format!(
+                "boolean environment variable `{env}` must be one of                  true/false, 1/0, yes/no, or on/off"
+            )
+        })?;
+        if raw != normalized {
+            // SAFETY: apply_cli_flags runs once at process startup, before Clap
+            // or any worker thread reads or mutates the process environment.
+            unsafe { std::env::set_var(env, normalized) };
+        }
+    }
+    Ok(())
+}
+
+fn normalize_boolean_value(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some("true"),
+        "false" | "0" | "no" | "off" => Some("false"),
+        _ => None,
+    }
+}
+
+fn active_boolean_env_keys(
+    contract: &toml::Value,
+    subcommands: &[String],
+) -> Result<BTreeSet<String>> {
+    let mut scope = contract
+        .as_table()
+        .context("embedded flags2env contract root must be a table")?;
+    let mut envs = BTreeSet::new();
+    collect_scope_boolean_env_keys(scope, &mut envs)?;
+    for command in subcommands {
+        scope = find_command_scope(scope, command)?;
+        collect_scope_boolean_env_keys(scope, &mut envs)?;
+    }
+    Ok(envs)
+}
+
+fn collect_scope_boolean_env_keys(
+    scope: &toml::value::Table,
+    envs: &mut BTreeSet<String>,
+) -> Result<()> {
+    let Some(flags) = scope.get("flags").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    for (canonical, flag) in flags {
+        let is_bool = flag
+            .get("type")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|kind| kind == "bool");
+        if !is_bool {
+            continue;
+        }
+        let env = flag
+            .get("env")
+            .and_then(toml::Value::as_str)
+            .with_context(|| {
+                format!("boolean flag `{canonical}` is missing its environment key")
+            })?;
+        envs.insert(env.to_string());
+    }
+    Ok(())
 }
 
 fn explicit_env_keys(argv: &[String], subcommands: &[String]) -> Result<BTreeSet<String>> {
@@ -276,6 +355,36 @@ mod tests {
         let parsed = parse_embedded(&argv).unwrap();
         let keys = explicit_env_keys(&argv, &parsed.subcommands).unwrap();
         assert_eq!(keys, BTreeSet::from(["ZED_PKG_FORCE".to_string()]));
+    }
+
+    #[test]
+    fn boolean_environment_values_are_canonicalized_and_invalid_values_fail() {
+        for (input, expected) in [
+            ("true", "true"),
+            (" TRUE ", "true"),
+            ("1", "true"),
+            ("yes", "true"),
+            ("ON", "true"),
+            ("false", "false"),
+            (" FALSE ", "false"),
+            ("0", "false"),
+            ("no", "false"),
+            ("OFF", "false"),
+        ] {
+            assert_eq!(normalize_boolean_value(input), Some(expected));
+        }
+        for invalid in ["", "2", "maybe", "enabled"] {
+            assert_eq!(normalize_boolean_value(invalid), None, "{invalid}");
+        }
+    }
+
+    #[test]
+    fn install_scope_declares_the_manifestless_boolean_environment() {
+        let contract: toml::Value = toml::from_str(CONTRACT).unwrap();
+        let envs = active_boolean_env_keys(&contract, &["install".to_string()]).unwrap();
+        assert!(envs.contains("ZED_PKG_ALLOW_NO_MANIFEST"));
+        assert!(envs.contains("ZED_PKG_FROZEN"));
+        assert!(!envs.contains("ZED_PKG_UPDATE_FORCE"));
     }
 
     #[test]
