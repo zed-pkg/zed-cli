@@ -1,0 +1,148 @@
+name: Materialize DEN-567 product diff
+
+on:
+  push:
+    branches:
+      - feat/den-567-manifestless-flags-completion
+    paths:
+      - '.github/workflows/materialize-den-567.yml'
+      - 'scripts/materialize-den-567.py'
+      - 'scripts/prepare-den-567-materializer.py'
+      - 'scripts/harden-den-567-product.py'
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/materialize-den-567.yml'
+      - 'scripts/materialize-den-567.py'
+      - 'scripts/prepare-den-567-materializer.py'
+      - 'scripts/harden-den-567-product.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-567-final-product
+  cancel-in-progress: true
+
+jobs:
+  materialize:
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      (github.event_name == 'push' || github.head_ref == 'feat/den-567-manifestless-flags-completion') &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the writable feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/den-567-manifestless-flags-completion
+          path: zed-cli
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Merge current main without rebasing
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch --no-tags origin main
+          git merge --no-edit --no-ff origin/main
+          if git grep -nE '^(<<<<<<<|=======|>>>>>>>)' -- . ':!vendor'; then
+            echo 'git conflict marker found after semantic merge' >&2
+            exit 1
+          fi
+
+      - name: Check out the sibling interfaces crate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Apply the consolidated product patch
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/prepare-den-567-materializer.py \
+            scripts/materialize-den-567.py \
+            scripts/harden-den-567-product.py
+          python3 scripts/prepare-den-567-materializer.py
+          python3 scripts/materialize-den-567.py
+          python3 scripts/harden-den-567-product.py
+          python3 -m py_compile tests/manifestless_pty.py
+
+      - name: Synchronize the immutable flags2env lock entry
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'rev = "9483b92c1fb259f598858fdd2bef66417d87fb2c"' Cargo.toml
+          cargo update -p flags2env
+          grep -F '9483b92c1fb259f598858fdd2bef66417d87fb2c' Cargo.lock
+
+      - name: Format, lint, test, and build release
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --check
+          cargo test --all-targets
+          cargo test --doc
+          cargo clippy --all-targets -- -D warnings
+          cargo build --release --locked --bin zed
+
+      - name: Smoke Bash and Zsh generation from the real binary
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./target/release/zed completions bash > "${RUNNER_TEMP}/zed.bash"
+          ./target/release/zed completions zsh > "${RUNNER_TEMP}/_zed"
+          bash -n "${RUNNER_TEMP}/zed.bash"
+          grep -F -- '--allow-no-manifest' "${RUNNER_TEMP}/zed.bash"
+          grep -F -- '--skip-manifest' "${RUNNER_TEMP}/_zed"
+          grep -F -- 'completions' "${RUNNER_TEMP}/zed.bash"
+
+      - name: Commit only the validated product diff
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/apply-den-567.yml \
+            .github/workflows/den-567-materialize.yml \
+            .github/workflows/materialize-den-567.yml \
+            scripts/apply_den_567.py \
+            scripts/den-567-wire.py \
+            scripts/materialize-den-567.py \
+            scripts/prepare-den-567-materializer.py \
+            scripts/harden-den-567-product.py \
+            .den-567-validation.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          if git diff --cached --unified=0 | grep -E '^\+(<<<<<<<|=======|>>>>>>>)'; then
+            echo 'new conflict marker detected' >&2
+            exit 1
+          fi
+          test -z "$(git diff --cached --name-only | grep -E 'den-567-(apply|wire|materialize|harden|prepare)|apply_den_567' || true)"
+          git diff --cached --name-status
+          git commit -m 'feat(DEN-567): harden manifestless installs and shell completion'
+          git push origin HEAD:feat/den-567-manifestless-flags-completion
