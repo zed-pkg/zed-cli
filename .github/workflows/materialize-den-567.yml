@@ -147,7 +147,7 @@ jobs:
           fi
           unexpected_bootstrap="$({
             git diff --cached --name-status \
-              | awk '$1 != "D" && $2 ~ /(den-567-(apply|wire|materialize|harden|prepare)|apply_den_567)/ {print}'
+              | awk '$1 != "D" && $2 != ".github/workflows/materialize-den-567.yml" && $2 ~ /(den-567-(apply|wire|materialize|harden|prepare)|apply_den_567)/ {print}'
           } || true)"
           test -z "$unexpected_bootstrap"
           git diff --cached --name-status
