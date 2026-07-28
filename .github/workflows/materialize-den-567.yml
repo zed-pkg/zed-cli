@@ -1,9 +1,9 @@
 name: Materialize DEN-567 product diff
 
 on:
-  push:
-    branches:
-      - feat/den-567-manifestless-flags-completion
+  pull_request:
+    branches: [main]
+    types: [synchronize, reopened]
     paths:
       - '.github/workflows/materialize-den-567.yml'
       - 'scripts/materialize-den-567.py'
@@ -14,14 +14,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: den-567-final-product-${{ github.sha }}
+  group: den-567-final-product-${{ github.event.pull_request.head.sha }}
   cancel-in-progress: false
 
 jobs:
   materialize:
     if: >-
       github.repository == 'zed-pkg/zed-cli' &&
-      github.ref_name == 'feat/den-567-manifestless-flags-completion' &&
+      github.head_ref == 'feat/den-567-manifestless-flags-completion' &&
       github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
