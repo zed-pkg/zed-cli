@@ -127,6 +127,15 @@ replace_once(
 /// under the same lock without deadlocking on a re-acquire.
 #[allow(clippy::too_many_arguments)]
 fn install_locked(
+    project: &Path,
+    cfg: &Config,
+    store: &Store,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+) -> Result<InstallOutcome> {
 ''',
     '''fn validate_frozen_manifest_requirements(
     manifest: &Manifest,
@@ -161,16 +170,13 @@ fn install_locked(
 /// under the same lock without deadlocking on a re-acquire.
 #[allow(clippy::too_many_arguments)]
 fn install_locked(
-''',
-)
-
-replace_once(
-    "src/ops.rs",
-    '''    allow_build: bool,
-    target: Option<&str>,
-) -> Result<InstallOutcome> {
-''',
-    '''    allow_build: bool,
+    project: &Path,
+    cfg: &Config,
+    store: &Store,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
     target: Option<&str>,
     validate_manifest_requirements: bool,
 ) -> Result<InstallOutcome> {
