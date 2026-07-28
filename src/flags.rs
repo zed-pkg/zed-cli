@@ -99,7 +99,10 @@ mod tests {
         assert!(parsed.unknown_options.is_empty());
         assert!(parsed.errors.is_empty());
         assert_eq!(
-            parsed.flags.get("ZED_PKG_ALLOW_NO_MANIFEST").map(String::as_str),
+            parsed
+                .flags
+                .get("ZED_PKG_ALLOW_NO_MANIFEST")
+                .map(String::as_str),
             Some("true")
         );
         assert_eq!(

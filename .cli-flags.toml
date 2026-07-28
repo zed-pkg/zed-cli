@@ -4,7 +4,9 @@
 
 [parse]
 command_env = "ZED_PKG_COMMAND"
-allow_unknown = true
+unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
+errors_env = "ZED_PKG_PARSE_ERRORS"
+allow_unknown = false
 
 [help]
 url = "https://github.com/zed-pkg/zed-cli"
@@ -91,6 +93,13 @@ env = "ZED_PKG_TARGET"
 aliases = ["target"]
 type = "string"
 help = "Polyglot package target."
+
+[flags.allow_no_manifest]
+env = "ZED_PKG_ALLOW_NO_MANIFEST"
+aliases = ["allow-no-manifest", "skip-manifest"]
+type = "bool"
+default = "false"
+help = "Proceed non-interactively when no .zpkg.toml is present."
 
 [flags.force]
 env = "ZED_PKG_FORCE"
@@ -231,6 +240,9 @@ help = "Remove a dependency."
 [commands.install]
 aliases = ["i"]
 help = "Install dependencies."
+
+[commands.completions]
+help = "Generate Bash or Zsh completion from the typed CLI model."
 
 [commands.build]
 help = "Run dependency build hooks."

@@ -1,36 +1,4 @@
-#!/usr/bin/env python3
-"""Apply the final DEN-567 safety and integration invariants.
-
-Runs after `materialize-den-567.py` has produced the broad product diff. This
-pass keeps confirmation ahead of registry/network resolution, adds bounded
-folder-structure inference, exercises the interaction on a real PTY, and
-removes surprising manifest-backed positional-install behavior.
-"""
-
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def read(path: str) -> str:
-    return (ROOT / path).read_text(encoding="utf-8")
-
-
-def write(path: str, content: str) -> None:
-    target = ROOT / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-
-
-def replace_once(path: str, old: str, new: str, label: str) -> None:
-    content = read(path)
-    count = content.count(old)
-    if count != 1:
-        raise RuntimeError(f"{path}: {label}: expected one target, found {count}")
-    write(path, content.replace(old, new, 1))
-
-
-MANIFESTLESS_RS = r'''//! Manifestless dependency installation.
+//! Manifestless dependency installation.
 //!
 //! A missing `.zpkg.toml` is an explicit consent boundary, not a second
 //! resolver. This module selects a conservative project root, parses a
@@ -273,7 +241,9 @@ fn split_dependency_spec(spec: &str) -> Result<(String, Option<String>)> {
     let (org, name) = key
         .split_once('/')
         .filter(|(org, name)| !org.is_empty() && !name.is_empty())
-        .with_context(|| format!("invalid package spec `{spec}` (expected org/name[@requirement])"))?;
+        .with_context(|| {
+            format!("invalid package spec `{spec}` (expected org/name[@requirement])")
+        })?;
     if name.contains('/') {
         bail!("invalid package spec `{spec}` (expected exactly org/name[@requirement])");
     }
@@ -412,8 +382,7 @@ fn unique_nested_project(start: &Path) -> Option<PathBuf> {
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_type().is_dir())
         .filter(|entry| {
-            entry.path().join(LOCKFILE_FILE).is_file()
-                || ops::detect_target(entry.path()).is_some()
+            entry.path().join(LOCKFILE_FILE).is_file() || ops::detect_target(entry.path()).is_some()
         })
         .map(|entry| entry.into_path())
         .collect();
@@ -470,7 +439,11 @@ fn confirm_manifestless_with<R: BufRead, W: Write>(
         "  detected target: {}",
         plan.target.as_deref().unwrap_or("universal")
     )?;
-    writeln!(output, "  ecosystem adapter: {}", adapter_label(plan.adapter))?;
+    writeln!(
+        output,
+        "  ecosystem adapter: {}",
+        adapter_label(plan.adapter)
+    )?;
     writeln!(
         output,
         "  universal dependency tree: {}",
@@ -548,7 +521,11 @@ mod tests {
 
     #[test]
     fn explicit_yes_is_required_and_the_complete_plan_is_printed() {
-        for accepted in [b"y\n".as_slice(), b"YES\n".as_slice(), b" yes \n".as_slice()] {
+        for accepted in [
+            b"y\n".as_slice(),
+            b"YES\n".as_slice(),
+            b" yes \n".as_slice(),
+        ] {
             let mut output = Vec::new();
             confirm_manifestless_with(
                 &plan(Path::new("/tmp/project")),
@@ -662,13 +639,10 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(missing.contains("no package specs"));
-        let incompatible = requested_dependencies(
-            temp.path(),
-            &["acme/http-kit@^1".to_string()],
-            true,
-        )
-        .unwrap_err()
-        .to_string();
+        let incompatible =
+            requested_dependencies(temp.path(), &["acme/http-kit@^1".to_string()], true)
+                .unwrap_err()
+                .to_string();
         assert!(incompatible.contains("cannot be combined"));
     }
 
@@ -689,392 +663,3 @@ mod tests {
         assert!(!temp.path().join(MANIFEST_FILE).exists());
     }
 }
-'''
-
-write("src/manifestless.rs", MANIFESTLESS_RS)
-
-replace_once(
-    "src/ops.rs",
-    '''pub(crate) fn detect_target(project: &Path) -> Option<String> {
-    const MARKERS: &[(&str, &str)] = &[
-        ("package.json", "node"),
-        ("Cargo.toml", "rust"),
-        ("go.mod", "go"),
-        ("pyproject.toml", "python"),
-        ("setup.py", "python"),
-        ("requirements.txt", "python"),
-        ("pubspec.yaml", "dart"),
-        ("mix.exs", "elixir"),
-        ("rebar.config", "erlang"),
-        ("gleam.toml", "gleam"),
-        ("pom.xml", "java"),
-        ("build.gradle", "java"),
-        ("build.gradle.kts", "java"),
-        ("Gemfile", "ruby"),
-        ("composer.json", "php"),
-        ("CMakeLists.txt", "cpp"),
-    ];
-    MARKERS
-        .iter()
-        .find(|(marker, _)| project.join(marker).exists())
-        .map(|(_, target)| (*target).to_string())
-}
-
-/// Pick the ecosystem adapter from what the project looks like: Node
-/// projects resolve from node_modules/, JVM projects need a classpath,
-/// Rust/others use zed_modules/ directly.
-pub(crate) fn detect_adapter(project: &Path) -> Adapter {
-    if project.join("package.json").exists() {
-        Adapter::Node
-    } else if project.join("pom.xml").exists()
-        || project.join("build.gradle").exists()
-        || project.join("build.gradle.kts").exists()
-    {
-        Adapter::Java
-    } else {
-        Adapter::None
-    }
-}''',
-    '''pub(crate) fn detect_target(project: &Path) -> Option<String> {
-    const MARKERS: &[(&str, &str)] = &[
-        ("package.json", "node"),
-        ("tsconfig.json", "node"),
-        ("Cargo.toml", "rust"),
-        ("go.mod", "go"),
-        ("pyproject.toml", "python"),
-        ("setup.py", "python"),
-        ("requirements.txt", "python"),
-        ("pubspec.yaml", "dart"),
-        ("mix.exs", "elixir"),
-        ("rebar.config", "erlang"),
-        ("gleam.toml", "gleam"),
-        ("pom.xml", "java"),
-        ("build.gradle", "java"),
-        ("build.gradle.kts", "java"),
-        ("Gemfile", "ruby"),
-        ("composer.json", "php"),
-        ("CMakeLists.txt", "cpp"),
-    ];
-    if let Some((_, target)) = MARKERS
-        .iter()
-        .find(|(marker, _)| project.join(marker).exists())
-    {
-        return Some((*target).to_string());
-    }
-
-    // Some consumer folders are intentionally pre-manifest (for example,
-    // generated app skeletons). Keep this bounded and shallow so Zed never
-    // recursively classifies an unrelated large checkout.
-    const STRUCTURE_MARKERS: &[(&str, &str)] = &[
-        ("src/main.rs", "rust"),
-        ("src/lib.rs", "rust"),
-        ("src/index.ts", "node"),
-        ("src/main.ts", "node"),
-        ("src/index.js", "node"),
-        ("src/main.js", "node"),
-        ("main.go", "go"),
-        ("cmd/main.go", "go"),
-        ("main.py", "python"),
-        ("app.py", "python"),
-        ("src/main.py", "python"),
-        ("lib/main.dart", "dart"),
-        ("src/main.gleam", "gleam"),
-        ("src/main/java", "java"),
-        ("src/main/kotlin", "java"),
-    ];
-    STRUCTURE_MARKERS
-        .iter()
-        .find(|(marker, _)| project.join(marker).exists())
-        .map(|(_, target)| (*target).to_string())
-}
-
-/// Pick the ecosystem adapter from the same language inference used for target
-/// slicing so marker-only and structure-only consumer folders agree.
-pub(crate) fn detect_adapter(project: &Path) -> Adapter {
-    match detect_target(project).as_deref() {
-        Some("node") => Adapter::Node,
-        Some("java") => Adapter::Java,
-        _ => Adapter::None,
-    }
-}''',
-    "extend bounded language and adapter inference",
-)
-
-replace_once(
-    "README.md",
-    '''outputs. `zed install --frozen --skip-manifest` can reconstruct a no-manifest
-install from an existing lockfile without package operands. Positional specs in
-a project that already has a manifest are transient; use `zed add` to persist
-them.''',
-    '''outputs. `zed install --frozen --skip-manifest` can reconstruct a no-manifest
-install from an existing lockfile without package operands. In a project that
-already has a manifest, use `zed add` to persist a dependency; positional
-package operands on `zed install` are rejected rather than silently creating a
-non-persistent manifest override.''',
-    "document the manifest-backed positional boundary",
-)
-
-PTY_HELPER = r'''#!/usr/bin/env python3
-"""Run a command under a real PTY and answer Zed's confirmation prompt."""
-
-import os
-import select
-import signal
-import sys
-import time
-
-
-def main() -> int:
-    if len(sys.argv) < 4 or "--" not in sys.argv:
-        raise SystemExit("usage: manifestless_pty.py <yes|no|eof> -- <command> [args...]")
-    mode = sys.argv[1]
-    if mode not in {"yes", "no", "eof"}:
-        raise SystemExit(f"unsupported mode: {mode}")
-    split = sys.argv.index("--")
-    command = sys.argv[split + 1 :]
-    if not command:
-        raise SystemExit("missing command")
-
-    pid, fd = os.forkpty()
-    if pid == 0:
-        os.execvp(command[0], command)
-
-    deadline = time.monotonic() + 60
-    output = bytearray()
-    answered = False
-    status = None
-    try:
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([fd], [], [], 0.2)
-            if ready:
-                try:
-                    chunk = os.read(fd, 65536)
-                except OSError:
-                    chunk = b""
-                if chunk:
-                    output.extend(chunk)
-                    sys.stdout.buffer.write(chunk)
-                    sys.stdout.buffer.flush()
-                    if not answered and b"[y/N]" in output:
-                        os.write(fd, {"yes": b"yes\n", "no": b"no\n", "eof": b"\x04"}[mode])
-                        answered = True
-            waited, raw = os.waitpid(pid, os.WNOHANG)
-            if waited == pid:
-                status = raw
-                break
-        if status is None:
-            os.kill(pid, signal.SIGKILL)
-            _, status = os.waitpid(pid, 0)
-            raise SystemExit("pseudo-terminal command timed out")
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-
-    if not answered:
-        raise SystemExit("command exited before showing the manifestless consent prompt")
-    return os.waitstatus_to_exitcode(status)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-'''
-write("tests/manifestless_pty.py", PTY_HELPER)
-
-replace_once(
-    ".github/workflows/ci.yml",
-    '''          for name in interactive reject allow alias frozen; do''',
-    '''          for name in interactive redirected negative eof no-network allow alias frozen; do''',
-    "prepare all manifestless interaction fixtures",
-)
-replace_once(
-    ".github/workflows/ci.yml",
-    '''      - name: Manifestless install fails closed without a terminal or bypass
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/manifestless-reject"
-          if docker run --rm \
-            --volume "$root:/work" \
-            --volume "$RUNNER_TEMP/registry:/registry:ro" \
-            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-            --workdir /work \
-            zed-pkg/install-test \
-            zed install zed-pkg/docker-node-lib@^1 \
-              --registry file:///registry \
-              --home /zed-home/reject \
-              --install-mode copy </dev/null
-          then
-            echo "non-interactive manifestless install unexpectedly succeeded" >&2
-            exit 1
-          fi
-          test ! -e "$root/.zpkg.toml"
-          test ! -e "$root/.zpkg.lock"
-          test ! -e "$root/zed_modules"
-
-      - name: Interactive manifestless install confirms on a real pseudo-terminal
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/manifestless-interactive"
-          printf 'y\n' | script -qfec "docker run --rm -it \
-            --volume '$root:/work' \
-            --volume '$RUNNER_TEMP/registry:/registry:ro' \
-            --volume '$RUNNER_TEMP/zed-home:/zed-home' \
-            --workdir /work \
-            zed-pkg/install-test \
-            zed install zed-pkg/docker-node-lib@^1 \
-              --registry file:///registry \
-              --home /zed-home/interactive \
-              --install-mode copy" /dev/null
-          test ! -e "$root/.zpkg.toml"
-          test -f "$root/.zpkg.lock"
-          test -d "$root/zed_modules/zed-pkg/docker-node-lib"
-          test -d "$root/node_modules/@zed-pkg/docker-node-lib"
-          docker run --rm --volume "$root:/work:ro" --workdir /work node:22-bookworm-slim node src/main.js
-''',
-    '''      - name: Redirected stdin fails closed even when it contains yes
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/manifestless-redirected"
-          if printf 'yes\n' | docker run --rm -i \
-            --volume "$root:/work" \
-            --volume "$RUNNER_TEMP/registry:/registry:ro" \
-            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-            --workdir /work \
-            zed-pkg/install-test \
-            zed install zed-pkg/docker-node-lib@^1 \
-              --registry file:///registry \
-              --home /zed-home/redirected \
-              --install-mode copy
-          then
-            echo "redirected stdin unexpectedly bypassed the TTY boundary" >&2
-            exit 1
-          fi
-          test ! -e "$root/.zpkg.toml"
-          test ! -e "$root/.zpkg.lock"
-          test ! -e "$root/zed_modules"
-
-      - name: Interactive yes, no, and EOF use a real pseudo-terminal
-        run: |
-          set -euo pipefail
-          yes_root="$RUNNER_TEMP/manifestless-interactive"
-          python3 zed-cli/tests/manifestless_pty.py yes -- \
-            docker run --rm -it \
-              --volume "$yes_root:/work" \
-              --volume "$RUNNER_TEMP/registry:/registry:ro" \
-              --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-              --workdir /work \
-              zed-pkg/install-test \
-              zed install zed-pkg/docker-node-lib@^1 \
-                --registry file:///registry \
-                --home /zed-home/interactive \
-                --install-mode copy
-          test ! -e "$yes_root/.zpkg.toml"
-          test -f "$yes_root/.zpkg.lock"
-          test -d "$yes_root/zed_modules/zed-pkg/docker-node-lib"
-          test -d "$yes_root/node_modules/@zed-pkg/docker-node-lib"
-          test -z "$(find "$yes_root/zed_modules" "$yes_root/node_modules" -type l -print -quit)"
-          docker run --rm --volume "$yes_root:/work:ro" --workdir /work \
-            node:22-bookworm-slim node src/main.js
-
-          for mode in no eof; do
-            case "$mode" in
-              no) root="$RUNNER_TEMP/manifestless-negative" ;;
-              eof) root="$RUNNER_TEMP/manifestless-eof" ;;
-            esac
-            if python3 zed-cli/tests/manifestless_pty.py "$mode" -- \
-              docker run --rm -it \
-                --volume "$root:/work" \
-                --volume "$RUNNER_TEMP/registry:/registry:ro" \
-                --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-                --workdir /work \
-                zed-pkg/install-test \
-                zed install zed-pkg/docker-node-lib@^1 \
-                  --registry file:///registry \
-                  --home "/zed-home/$mode" \
-                  --install-mode copy
-            then
-              echo "$mode unexpectedly accepted manifestless installation" >&2
-              exit 1
-            fi
-            test ! -e "$root/.zpkg.toml"
-            test ! -e "$root/.zpkg.lock"
-            test ! -e "$root/zed_modules"
-          done
-
-      - name: Consent is requested before unversioned registry resolution
-        run: |
-          set -euo pipefail
-          root="$RUNNER_TEMP/manifestless-no-network"
-          if python3 zed-cli/tests/manifestless_pty.py no -- \
-            docker run --rm -it \
-              --volume "$root:/work" \
-              --workdir /work \
-              zed-pkg/install-test \
-              zed install zed-pkg/docker-node-lib \
-                --registry http://127.0.0.1:9 \
-                --home /tmp/zed-home \
-                --install-mode copy
-          then
-            echo "negative confirmation unexpectedly installed" >&2
-            exit 1
-          fi
-          test ! -e "$root/.zpkg.toml"
-          test ! -e "$root/.zpkg.lock"
-          test ! -e "$root/zed_modules"
-''',
-    "exercise real TTY and pre-resolution consent boundaries",
-)
-replace_once(
-    ".github/workflows/ci.yml",
-    '''          rm -rf "$root/zed_modules" "$root/node_modules" "$root/.zed"
-          docker run --rm \
-            --volume "$root:/work" \
-            --volume "$RUNNER_TEMP/registry:/registry:ro" \
-            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-            --workdir /work \
-            zed-pkg/install-test \
-            sh -euc '
-              zed install --frozen --skip-manifest \
-                --registry file:///registry \
-                --home /zed-home/frozen \
-                --install-mode copy
-              test ! -e .zpkg.toml
-              test -f .zpkg.lock
-              node src/main.js
-            ' ''',
-    '''          if docker run --rm \
-            --volume "$root:/work" \
-            --volume "$RUNNER_TEMP/registry:/registry:ro" \
-            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-            --workdir /work \
-            zed-pkg/install-test \
-            zed install --skip-manifest \
-              --registry file:///registry \
-              --home /zed-home/frozen \
-              --install-mode copy
-          then
-            echo "lock-only manifestless reinstall without --frozen unexpectedly succeeded" >&2
-            exit 1
-          fi
-          rm -rf "$root/zed_modules" "$root/node_modules" "$root/.zed"
-          docker run --rm \
-            --volume "$root:/work" \
-            --volume "$RUNNER_TEMP/registry:/registry:ro" \
-            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
-            --workdir /work \
-            zed-pkg/install-test \
-            sh -euc '
-              zed install --frozen --skip-manifest \
-                --registry file:///registry \
-                --home /zed-home/frozen \
-                --install-mode copy
-              test ! -e .zpkg.toml
-              test -f .zpkg.lock
-              test -z "$(find zed_modules node_modules -type l -print -quit)"
-              node src/main.js
-            ' ''',
-    "require explicit frozen mode for lock-only reinstall",
-)
-
-print("DEN-567 safety hardening applied")

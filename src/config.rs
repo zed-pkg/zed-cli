@@ -1,8 +1,9 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{MANIFEST_FILE, ZED_HOME_DIR_NAME};
@@ -145,7 +146,69 @@ impl Credentials {
     }
 }
 
+#[derive(Debug)]
+struct ManifestOverride {
+    project: PathBuf,
+    text: String,
+}
+
+thread_local! {
+    static MANIFEST_OVERRIDE: RefCell<Option<ManifestOverride>> = const { RefCell::new(None) };
+}
+
+struct ManifestOverrideGuard;
+
+impl Drop for ManifestOverrideGuard {
+    fn drop(&mut self) {
+        MANIFEST_OVERRIDE.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+fn normalized_project(project: &Path) -> PathBuf {
+    fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf())
+}
+
+/// Run one installer operation with an in-memory root manifest. Package
+/// manifests read from the store still come from disk; only the exact consumer
+/// directory is overridden. The guard is thread-local and panic-safe, so a
+/// manifestless install never creates or leaves a temporary `.zpkg.toml`.
+pub(crate) fn with_manifest_override<T>(
+    project: &Path,
+    text: String,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let project = normalized_project(project);
+    MANIFEST_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err(anyhow!(
+                "a manifest override is already active on this thread"
+            ));
+        }
+        *slot = Some(ManifestOverride { project, text });
+        Ok(())
+    })?;
+    let guard = ManifestOverrideGuard;
+    let result = operation();
+    drop(guard);
+    result
+}
+
 pub fn read_manifest(project: &Path) -> Result<Manifest> {
+    let normalized = normalized_project(project);
+    let override_text = MANIFEST_OVERRIDE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|manifest| manifest.project == normalized)
+            .map(|manifest| manifest.text.clone())
+    });
+    if let Some(text) = override_text {
+        return Manifest::parse(&text)
+            .with_context(|| format!("invalid in-memory manifest for {}", project.display()));
+    }
+
     let path = project.join(MANIFEST_FILE);
     let text = fs::read_to_string(&path)
         .with_context(|| format!("no {MANIFEST_FILE} found in {}", project.display()))?;
@@ -161,6 +224,61 @@ pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_override_is_scoped_and_never_written_to_disk() {
+        let project = tempfile::tempdir().unwrap();
+        let text = r#"
+[package]
+org = "manifestless"
+name = "consumer"
+version = "0.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://localhost/manifestless/consumer"
+
+[dependencies]
+"acme/http-kit" = "^1"
+"#;
+
+        with_manifest_override(project.path(), text.to_string(), || {
+            let manifest = read_manifest(project.path())?;
+            assert_eq!(
+                manifest
+                    .dependencies
+                    .get("acme/http-kit")
+                    .map(String::as_str),
+                Some("^1")
+            );
+            assert!(!project.path().join(MANIFEST_FILE).exists());
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(read_manifest(project.path()).is_err());
+        assert!(!project.path().join(MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn nested_manifest_overrides_fail_closed() {
+        let project = tempfile::tempdir().unwrap();
+        let text = r#"
+[package]
+org = "manifestless"
+name = "consumer"
+version = "0.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://localhost/manifestless/consumer"
+"#;
+        let error = with_manifest_override(project.path(), text.to_string(), || {
+            with_manifest_override(project.path(), text.to_string(), || Ok(()))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("already active"));
+    }
 
     #[test]
     fn relative_home_is_resolved_from_the_invocation_directory() {

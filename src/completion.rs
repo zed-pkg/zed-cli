@@ -30,8 +30,30 @@ mod tests {
     #[test]
     fn bash_completion_contains_commands_aliases_and_manifestless_flags() {
         let script = render(Shell::Bash);
-        assert!(script.contains("_zed"), "missing generated completion function");
-        assert!(script.contains("complete"), "missing Bash completion registration");
+        assert!(
+            script.contains("_zed"),
+            "missing generated completion function"
+        );
+        assert!(
+            script.contains("complete"),
+            "missing Bash completion registration"
+        );
+        for command in ["install", "init", "completions", "self-update", "r2g"] {
+            assert!(script.contains(command), "missing command {command:?}");
+        }
+        for option in ["--allow-no-manifest", "--skip-manifest", "--install-mode"] {
+            assert!(script.contains(option), "missing option {option:?}");
+        }
+    }
+
+    #[test]
+    fn zsh_completion_contains_registration_commands_and_manifestless_flags() {
+        let script = render(Shell::Zsh);
+        assert!(
+            script.contains("#compdef zed"),
+            "missing zsh compdef header"
+        );
+        assert!(script.contains("_zed"), "missing zsh completion function");
         for command in ["install", "init", "completions", "self-update", "r2g"] {
             assert!(script.contains(command), "missing command {command:?}");
         }

@@ -6,6 +6,7 @@ pub mod cli;
 pub mod completion;
 pub mod config;
 pub mod flags;
+pub mod manifestless;
 pub mod ops;
 pub mod pack;
 pub mod preflight;

@@ -279,9 +279,10 @@ fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Op
 /// Infer the ecosystem from the files a project keeps at its root. Ordered so
 /// the most specific marker wins when a repo carries several (a Next.js app
 /// with a Dockerfile is still `node`).
-fn detect_target(project: &Path) -> Option<String> {
+pub(crate) fn detect_target(project: &Path) -> Option<String> {
     const MARKERS: &[(&str, &str)] = &[
         ("package.json", "node"),
+        ("tsconfig.json", "node"),
         ("Cargo.toml", "rust"),
         ("go.mod", "go"),
         ("pyproject.toml", "python"),
@@ -298,25 +299,46 @@ fn detect_target(project: &Path) -> Option<String> {
         ("composer.json", "php"),
         ("CMakeLists.txt", "cpp"),
     ];
-    MARKERS
+    if let Some((_, target)) = MARKERS
+        .iter()
+        .find(|(marker, _)| project.join(marker).exists())
+    {
+        return Some((*target).to_string());
+    }
+
+    // Some consumer folders are intentionally pre-manifest (for example,
+    // generated app skeletons). Keep this bounded and shallow so Zed never
+    // recursively classifies an unrelated large checkout.
+    const STRUCTURE_MARKERS: &[(&str, &str)] = &[
+        ("src/main.rs", "rust"),
+        ("src/lib.rs", "rust"),
+        ("src/index.ts", "node"),
+        ("src/main.ts", "node"),
+        ("src/index.js", "node"),
+        ("src/main.js", "node"),
+        ("main.go", "go"),
+        ("cmd/main.go", "go"),
+        ("main.py", "python"),
+        ("app.py", "python"),
+        ("src/main.py", "python"),
+        ("lib/main.dart", "dart"),
+        ("src/main.gleam", "gleam"),
+        ("src/main/java", "java"),
+        ("src/main/kotlin", "java"),
+    ];
+    STRUCTURE_MARKERS
         .iter()
         .find(|(marker, _)| project.join(marker).exists())
         .map(|(_, target)| (*target).to_string())
 }
 
-/// Pick the ecosystem adapter from what the project looks like: Node
-/// projects resolve from node_modules/, JVM projects need a classpath,
-/// Rust/others use zed_modules/ directly.
-fn detect_adapter(project: &Path) -> Adapter {
-    if project.join("package.json").exists() {
-        Adapter::Node
-    } else if project.join("pom.xml").exists()
-        || project.join("build.gradle").exists()
-        || project.join("build.gradle.kts").exists()
-    {
-        Adapter::Java
-    } else {
-        Adapter::None
+/// Pick the ecosystem adapter from the same language inference used for target
+/// slicing so marker-only and structure-only consumer folders agree.
+pub(crate) fn detect_adapter(project: &Path) -> Adapter {
+    match detect_target(project).as_deref() {
+        Some("node") => Adapter::Node,
+        Some("java") => Adapter::Java,
+        _ => Adapter::None,
     }
 }
 
