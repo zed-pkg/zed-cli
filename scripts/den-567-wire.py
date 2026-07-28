@@ -18,6 +18,8 @@ def write(path: str, content: str) -> None:
 
 def replace_once(path: str, old: str, new: str, label: str) -> None:
     content = read(path)
+    if new in content:
+        return
     count = content.count(old)
     if count != 1:
         raise RuntimeError(f"{path}: {label}: expected one target, found {count}")
@@ -224,9 +226,8 @@ with programmable-completion builtins, and loads the Zsh function through
 )
 
 ci = read(".github/workflows/ci.yml")
-if "  shell-completions:" in ci:
-    raise RuntimeError("shell completion CI is already present")
-ci += r'''
+if "  shell-completions:" not in ci:
+    ci += r'''
 
   shell-completions:
     name: Bash and Zsh completion contracts
@@ -292,6 +293,6 @@ ci += r'''
             [[ "${_comps[zed]}" == _zed ]]
           ' _ "$RUNNER_TEMP/_zed" "$RUNNER_TEMP/.zcompdump"
 '''
-write(".github/workflows/ci.yml", ci)
+    write(".github/workflows/ci.yml", ci)
 
 print("DEN-567 completion/startup wiring applied")
