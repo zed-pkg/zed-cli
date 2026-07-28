@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/materialize-den-567.yml'
       - 'scripts/prepare-den-567-materializer.py'
+      - 'scripts/prepare-den-567-hardener.py'
       - 'scripts/harden-den-567-product.py'
 
 permissions:
@@ -76,10 +77,12 @@ jobs:
               > scripts/materialize-den-567.py
             python3 -m py_compile \
               scripts/prepare-den-567-materializer.py \
+              scripts/prepare-den-567-hardener.py \
               scripts/materialize-den-567.py \
               scripts/harden-den-567-product.py
             python3 scripts/prepare-den-567-materializer.py
             python3 scripts/materialize-den-567.py
+            python3 scripts/prepare-den-567-hardener.py
             python3 scripts/harden-den-567-product.py
             python3 -m py_compile tests/manifestless_pty.py
           } 2>&1 | tee "$log"
@@ -132,6 +135,7 @@ jobs:
             scripts/den-567-wire.py \
             scripts/materialize-den-567.py \
             scripts/prepare-den-567-materializer.py \
+            scripts/prepare-den-567-hardener.py \
             scripts/harden-den-567-product.py \
             .den-567-validation.txt
           git config user.name 'github-actions[bot]'
