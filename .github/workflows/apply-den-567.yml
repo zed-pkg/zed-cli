@@ -35,28 +35,42 @@ jobs:
       - name: Apply deterministic patch
         working-directory: zed-cli
         run: python3 scripts/apply_den_567.py
-      - name: Generate lockfile and format
-        working-directory: zed-cli
-        run: |
-          cargo check
-          cargo fmt --all
-      - name: Validate candidate
+      - name: Generate lockfile, format, and capture validation
         working-directory: zed-cli
         shell: bash
         run: |
           set +e
-          cargo clippy --locked --all-targets --message-format=short -- -D warnings > .den-567-validation.txt 2>&1
+          : > .den-567-validation.txt
+          cargo check >> .den-567-validation.txt 2>&1
+          check_status=$?
+          cargo fmt --all >> .den-567-validation.txt 2>&1
+          fmt_status=$?
+          cargo clippy --locked --all-targets --message-format=short -- -D warnings >> .den-567-validation.txt 2>&1
           clippy_status=$?
           cargo test --locked --all-targets >> .den-567-validation.txt 2>&1
           test_status=$?
           cargo build --locked --release >> .den-567-validation.txt 2>&1
           build_status=$?
-          target/release/zed completions bash > "$RUNNER_TEMP/zed.bash" 2>> .den-567-validation.txt
-          completion_status=$?
-          bash -n "$RUNNER_TEMP/zed.bash" >> .den-567-validation.txt 2>&1
-          syntax_status=$?
-          printf '\nclippy_status=%s\ntest_status=%s\nbuild_status=%s\ncompletion_status=%s\nsyntax_status=%s\n' \
-            "$clippy_status" "$test_status" "$build_status" "$completion_status" "$syntax_status" \
+          completion_status=125
+          syntax_status=125
+          registration_status=125
+          if [[ -x target/release/zed ]]; then
+            target/release/zed completions bash > "$RUNNER_TEMP/zed.bash" 2>> .den-567-validation.txt
+            completion_status=$?
+            if [[ "$completion_status" -eq 0 ]]; then
+              bash -n "$RUNNER_TEMP/zed.bash" >> .den-567-validation.txt 2>&1
+              syntax_status=$?
+              bash --noprofile --norc -c '
+                set -euo pipefail
+                source "$1"
+                complete -p zed | grep -F "_zed"
+              ' bash "$RUNNER_TEMP/zed.bash" >> .den-567-validation.txt 2>&1
+              registration_status=$?
+            fi
+          fi
+          printf '\ncheck_status=%s\nfmt_status=%s\nclippy_status=%s\ntest_status=%s\nbuild_status=%s\ncompletion_status=%s\nsyntax_status=%s\nregistration_status=%s\n' \
+            "$check_status" "$fmt_status" "$clippy_status" "$test_status" "$build_status" \
+            "$completion_status" "$syntax_status" "$registration_status" \
             >> .den-567-validation.txt
           exit 0
       - name: Commit candidate and diagnostic
@@ -67,6 +81,6 @@ jobs:
           git add Cargo.lock README.md .cli-flags.toml .github/workflows/ci.yml \
             src scripts/apply_den_567.py .den-567-validation.txt
           if ! git diff --cached --quiet; then
-            git commit -m 'DEN-567: harden manifestless install and completion'
+            git commit -m 'DEN-567: materialize CLI hardening candidate'
             git push origin HEAD:feat/den-567-manifestless-flags-completion
           fi
