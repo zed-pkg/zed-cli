@@ -1,0 +1,62 @@
+name: Apply DEN-564 manifest-free install patch
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - scripts/den-564-apply.py
+      - .github/workflows/den-564-apply.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: >-
+      github.head_ref == 'agent/den-564-install-without-manifest' &&
+      github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          path: zed-cli
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out the sibling interfaces crate
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply the source patch
+        working-directory: zed-cli
+        run: python3 scripts/den-564-apply.py
+
+      - name: Format and validate
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          cargo fmt
+          git diff --check
+          cargo test --all-targets
+
+      - name: Commit the validated implementation
+        working-directory: zed-cli
+        env:
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .
+          git commit -m 'feat(DEN-564): install dependencies without a manifest'
+          git push origin "HEAD:$HEAD_BRANCH"
