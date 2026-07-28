@@ -20,7 +20,6 @@ const CONTRACT: &str = include_str!("../.cli-flags.toml");
 /// existing process environment value, then the declarative contract default.
 pub fn apply_cli_flags() -> Result<()> {
     let argv = parser_argv(std::env::args());
-    let explicit_envs = explicit_env_keys(&argv)?;
     let parsed = parse_embedded(&argv)?;
 
     if !parsed.unknown_options.is_empty() {
@@ -44,8 +43,12 @@ pub fn apply_cli_flags() -> Result<()> {
         );
     }
 
+    let explicit_envs = explicit_env_keys(&argv, &parsed.subcommands)?;
     for (key, value) in parsed.flags {
-        if should_apply_value(std::env::var_os(&key).is_some(), explicit_envs.contains(&key)) {
+        if should_apply_value(
+            std::env::var_os(&key).is_some(),
+            explicit_envs.contains(&key),
+        ) {
             // SAFETY: this function runs exactly once at process startup before
             // clap/configuration creates threads or reads the affected variables.
             unsafe { std::env::set_var(key, value) };
@@ -58,11 +61,10 @@ fn should_apply_value(environment_exists: bool, explicitly_supplied: bool) -> bo
     explicitly_supplied || !environment_exists
 }
 
-fn explicit_env_keys(argv: &[String]) -> Result<BTreeSet<String>> {
+fn explicit_env_keys(argv: &[String], subcommands: &[String]) -> Result<BTreeSet<String>> {
     let contract: toml::Value =
         toml::from_str(CONTRACT).context("parsing embedded flags2env contract")?;
-    let mut aliases = BTreeMap::new();
-    collect_flag_aliases(&contract, &mut aliases)?;
+    let aliases = active_flag_aliases(&contract, subcommands)?;
 
     let mut explicit = BTreeSet::new();
     for token in argv.iter().skip(1) {
@@ -84,40 +86,90 @@ fn explicit_env_keys(argv: &[String]) -> Result<BTreeSet<String>> {
     Ok(explicit)
 }
 
-fn collect_flag_aliases(
-    value: &toml::Value,
-    aliases: &mut BTreeMap<String, String>,
-) -> Result<()> {
-    let Some(table) = value.as_table() else {
-        return Ok(());
-    };
-    if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
-        for (canonical, flag) in flags {
-            let env = flag
-                .get("env")
-                .and_then(toml::Value::as_str)
-                .with_context(|| format!("flag `{canonical}` is missing its environment key"))?;
-            let names = std::iter::once(canonical.replace('_', "-")).chain(
-                flag.get("aliases")
-                    .and_then(toml::Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(toml::Value::as_str)
-                    .map(|alias| alias.trim_start_matches('-').to_string()),
-            );
-            for name in names {
-                if let Some(previous) = aliases.insert(name.clone(), env.to_string())
-                    && previous != env
-                {
-                    bail!(
-                        "flags2env alias `{name}` maps to both `{previous}` and `{env}`"
-                    );
-                }
+/// Build the option-to-environment map for the command path selected by
+/// flags2env. Each deeper scope overlays its parent, matching flags2env's
+/// command-first lookup. Reusing `--force` in `build` and `self-update`, for
+/// example, is legal and must not be treated as a global alias collision.
+fn active_flag_aliases(
+    contract: &toml::Value,
+    subcommands: &[String],
+) -> Result<BTreeMap<String, String>> {
+    let mut scope = contract
+        .as_table()
+        .context("embedded flags2env contract root must be a table")?;
+    let mut aliases = BTreeMap::new();
+    overlay_scope_flags(scope, &mut aliases)?;
+
+    for command in subcommands {
+        scope = find_command_scope(scope, command)?;
+        overlay_scope_flags(scope, &mut aliases)?;
+    }
+    Ok(aliases)
+}
+
+fn find_command_scope<'a>(
+    scope: &'a toml::value::Table,
+    command: &str,
+) -> Result<&'a toml::value::Table> {
+    for keyword in ["commands", "command", "subcommands", "subcommand"] {
+        let Some(commands) = scope.get(keyword).and_then(toml::Value::as_table) else {
+            continue;
+        };
+        if let Some(selected) = commands.get(command).and_then(toml::Value::as_table) {
+            return Ok(selected);
+        }
+        for candidate in commands.values().filter_map(toml::Value::as_table) {
+            let matches_alias = candidate
+                .get("aliases")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_str)
+                .any(|alias| alias == command);
+            if matches_alias {
+                return Ok(candidate);
             }
         }
     }
-    for child in table.values() {
-        collect_flag_aliases(child, aliases)?;
+    bail!("flags2env selected command `{command}` is missing from the embedded contract")
+}
+
+fn overlay_scope_flags(
+    scope: &toml::value::Table,
+    aliases: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    let Some(flags) = scope.get("flags").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+
+    for (canonical, flag) in flags {
+        let env = flag
+            .get("env")
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("flag `{canonical}` is missing its environment key"))?;
+        let is_bool = flag
+            .get("type")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|kind| kind == "bool");
+        let mut names = vec![canonical.replace('_', "-")];
+        names.extend(
+            flag.get("aliases")
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_str)
+                .map(|alias| alias.trim_start_matches('-').to_string()),
+        );
+        if let Some(short) = flag.get("short").and_then(toml::Value::as_str) {
+            names.push(short.trim_start_matches('-').to_string());
+        }
+
+        for name in names {
+            aliases.insert(name.clone(), env.to_string());
+            if is_bool && name.len() > 1 && !name.starts_with("no-") {
+                aliases.insert(format!("no-{name}"), env.to_string());
+            }
+        }
     }
     Ok(())
 }
@@ -190,18 +242,40 @@ mod tests {
     #[test]
     fn explicit_aliases_map_to_the_manifestless_environment_key() {
         for bypass in ["--allow-no-manifest", "--skip-manifest"] {
-            let keys = explicit_env_keys(&[
+            let argv = vec![
                 "zed".to_string(),
                 "install".to_string(),
                 "acme/http-kit@^1".to_string(),
                 bypass.to_string(),
-            ])
-            .unwrap();
+            ];
+            let parsed = parse_embedded(&argv).unwrap();
+            let keys = explicit_env_keys(&argv, &parsed.subcommands).unwrap();
             assert_eq!(
                 keys,
                 BTreeSet::from(["ZED_PKG_ALLOW_NO_MANIFEST".to_string()])
             );
         }
+    }
+
+    #[test]
+    fn scoped_aliases_override_the_same_global_alias() {
+        let argv = vec![
+            "zed".to_string(),
+            "self-update".to_string(),
+            "--force".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).unwrap();
+        let keys = explicit_env_keys(&argv, &parsed.subcommands).unwrap();
+        assert_eq!(keys, BTreeSet::from(["ZED_PKG_UPDATE_FORCE".to_string()]));
+
+        let argv = vec![
+            "zed".to_string(),
+            "build".to_string(),
+            "--force".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).unwrap();
+        let keys = explicit_env_keys(&argv, &parsed.subcommands).unwrap();
+        assert_eq!(keys, BTreeSet::from(["ZED_PKG_FORCE".to_string()]));
     }
 
     #[test]
