@@ -7,12 +7,16 @@ on:
     paths:
       - '.github/workflows/materialize-manifestless-install.yml'
       - 'scripts/materialize-manifestless-install.py'
+      - 'scripts/prepare-manifestless-materializer.py'
+      - 'scripts/harden-manifestless-install.py'
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
     paths:
       - '.github/workflows/materialize-manifestless-install.yml'
       - 'scripts/materialize-manifestless-install.py'
+      - 'scripts/prepare-manifestless-materializer.py'
+      - 'scripts/harden-manifestless-install.py'
 
 permissions:
   contents: write
@@ -27,7 +31,7 @@ jobs:
       github.repository == 'zed-pkg/zed-cli' &&
       (github.event_name == 'push' || github.head_ref == 'agent/manifestless-install')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout writable feature branch
         uses: actions/checkout@v4
@@ -51,9 +55,19 @@ jobs:
         with:
           components: rustfmt,clippy
 
-      - name: Apply product changes
+      - name: Apply reviewed product changes
         working-directory: zed-cli
-        run: python3 scripts/materialize-manifestless-install.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/prepare-manifestless-materializer.py \
+            scripts/materialize-manifestless-install.py \
+            scripts/harden-manifestless-install.py
+          python3 scripts/prepare-manifestless-materializer.py
+          python3 scripts/materialize-manifestless-install.py
+          python3 scripts/harden-manifestless-install.py
+          python3 -m py_compile tests/manifestless_pty.py
 
       - name: Format, test, and lint
         working-directory: zed-cli
@@ -73,7 +87,9 @@ jobs:
           set -euo pipefail
           rm -f \
             .github/workflows/materialize-manifestless-install.yml \
-            scripts/materialize-manifestless-install.py
+            scripts/materialize-manifestless-install.py \
+            scripts/prepare-manifestless-materializer.py \
+            scripts/harden-manifestless-install.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
@@ -82,7 +98,7 @@ jobs:
             echo 'new conflict marker detected' >&2
             exit 1
           fi
-          test -z "$(git diff --cached --name-only | grep -E 'materialize-manifestless-install' || true)"
+          test -z "$(git diff --cached --name-only | grep -E 'materialize-manifestless-install|prepare-manifestless-materializer|harden-manifestless-install' || true)"
           git diff --cached --name-status
           git commit -m 'feat: support manifestless dependency installs'
           git push origin HEAD:agent/manifestless-install
