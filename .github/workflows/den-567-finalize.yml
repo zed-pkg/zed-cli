@@ -1,9 +1,8 @@
 name: Finalize DEN-567 scoped flags fix
 
 on:
-  push:
-    branches:
-      - feat/den-567-manifestless-flags-completion
+  pull_request:
+    branches: [main]
     paths:
       - scripts/den-567-finalize.py
       - .github/workflows/den-567-finalize.yml
@@ -13,14 +12,16 @@ permissions:
 
 jobs:
   finalize:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      github.head_ref == 'feat/den-567-manifestless-flags-completion' &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - name: Check out the feature branch
         uses: actions/checkout@v4
         with:
-          ref: feat/den-567-manifestless-flags-completion
+          ref: ${{ github.head_ref }}
           path: zed-cli
           fetch-depth: 0
           persist-credentials: true
@@ -79,7 +80,7 @@ jobs:
       - name: Commit only the reviewable fix
         working-directory: zed-cli
         env:
-          HEAD_BRANCH: feat/den-567-manifestless-flags-completion
+          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           set -euo pipefail
           rm scripts/den-567-finalize.py .github/workflows/den-567-finalize.yml
