@@ -100,7 +100,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed + native-registry release set derived from `.zpkg.toml` |
-| `zed release preflight` | Validate native manifests, then run fixed credential-free npm/crates.io/pub.dev package preflight adapters |
+| `zed release preflight` | Validate native manifests, then run fixed credential-free npm/crates.io/pub.dev/PyPI package preflight adapters |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
