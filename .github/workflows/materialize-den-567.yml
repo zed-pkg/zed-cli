@@ -1,5 +1,5 @@
 name: Materialize DEN-567 product diff
-# Restores the reviewed base materializer from immutable commit 01e5bc95.
+# Keep this workflow for the validated push; the GitHub app removes it afterward.
 
 on:
   pull_request:
@@ -122,7 +122,7 @@ jobs:
           grep -F -- '--skip-manifest' "${RUNNER_TEMP}/_zed"
           grep -F -- 'completions' "${RUNNER_TEMP}/zed.bash"
 
-      - name: Commit only the validated product diff
+      - name: Commit the validated product diff
         working-directory: zed-cli
         shell: bash
         run: |
@@ -130,7 +130,6 @@ jobs:
           rm -f \
             .github/workflows/apply-den-567.yml \
             .github/workflows/den-567-materialize.yml \
-            .github/workflows/materialize-den-567.yml \
             scripts/apply_den_567.py \
             scripts/den-567-wire.py \
             scripts/materialize-den-567.py \
