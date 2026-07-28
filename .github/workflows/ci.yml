@@ -455,7 +455,7 @@ jobs:
             COMP_CWORD=1
             COMP_LINE="zed "
             COMP_POINT=${#COMP_LINE}
-            _zed
+            _zed zed "" zed
             printf "%s\n" "${COMPREPLY[@]}" | grep -Fx install
           ' bash "$completion"
       - name: Zsh completion parses, registers, and autoloads
