@@ -72,18 +72,24 @@ jobs:
           components: rustfmt,clippy
 
       - name: Apply the consolidated product patch
+        id: apply
         working-directory: zed-cli
         shell: bash
         run: |
-          set -euo pipefail
-          python3 -m py_compile \
-            scripts/prepare-den-567-materializer.py \
-            scripts/materialize-den-567.py \
-            scripts/harden-den-567-product.py
-          python3 scripts/prepare-den-567-materializer.py
-          python3 scripts/materialize-den-567.py
-          python3 scripts/harden-den-567-product.py
-          python3 -m py_compile tests/manifestless_pty.py
+          set -uo pipefail
+          log="${RUNNER_TEMP}/den-567-materialize.log"
+          {
+            set -euo pipefail
+            python3 -m py_compile \
+              scripts/prepare-den-567-materializer.py \
+              scripts/materialize-den-567.py \
+              scripts/harden-den-567-product.py
+            python3 scripts/prepare-den-567-materializer.py
+            python3 scripts/materialize-den-567.py
+            python3 scripts/harden-den-567-product.py
+            python3 -m py_compile tests/manifestless_pty.py
+          } 2>&1 | tee "$log"
+          exit "${PIPESTATUS[0]}"
 
       - name: Synchronize the immutable flags2env lock entry
         working-directory: zed-cli
@@ -146,3 +152,12 @@ jobs:
           git diff --cached --name-status
           git commit -m 'feat(DEN-567): harden manifestless installs and shell completion'
           git push origin HEAD:feat/den-567-manifestless-flags-completion
+
+      - name: Upload bounded materialization diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: den-567-materialize-log
+          path: ${{ runner.temp }}/den-567-materialize.log
+          if-no-files-found: warn
+          retention-days: 1
