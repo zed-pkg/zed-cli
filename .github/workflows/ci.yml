@@ -166,19 +166,17 @@ jobs:
             zed-pkg/install-test \
             zed publish --registry file:///registry --skip-vcs-checks
 
-          for name in redirected interactive negative eof no-network allow alias env frozen; do
+          for name in redirected interactive negative eof no-network allow alias env frozen frozen-restore; do
             root="$RUNNER_TEMP/manifestless-$name"
             mkdir -p "$root/src"
             cp "$RUNNER_TEMP/fixtures/node-app/package.json" "$root/package.json"
             cp "$RUNNER_TEMP/fixtures/node-app/src/main.js" "$root/src/main.js"
-            rm -f "$root/.zpkg.toml" "$root/.zpkg.lock"
           done
 
           nested="$RUNNER_TEMP/manifestless-nested/apps/web"
           mkdir -p "$nested/src"
           cp "$RUNNER_TEMP/fixtures/node-app/package.json" "$nested/package.json"
           cp "$RUNNER_TEMP/fixtures/node-app/src/main.js" "$nested/src/main.js"
-          rm -f "$nested/.zpkg.toml" "$nested/.zpkg.lock"
 
       - name: Redirected yes fails closed before dependency outputs
         shell: bash
@@ -357,9 +355,13 @@ jobs:
             exit 1
           fi
 
-          rm -rf "$root/zed_modules" "$root/node_modules" "$root/.zed"
+          restore_root="$RUNNER_TEMP/manifestless-frozen-restore"
+          cp "$root/.zpkg.lock" "$restore_root/.zpkg.lock"
+          test ! -e "$restore_root/zed_modules"
+          test ! -e "$restore_root/node_modules"
+          test ! -e "$restore_root/.zed"
           docker run --rm \
-            --volume "$root:/work" \
+            --volume "$restore_root:/work" \
             --volume "$RUNNER_TEMP/registry:/registry:ro" \
             --volume "$RUNNER_TEMP/zed-home:/zed-home" \
             --workdir /work \
@@ -368,11 +370,12 @@ jobs:
               --registry file:///registry \
               --home /zed-home/frozen \
               --install-mode copy
-          test ! -e "$root/.zpkg.toml"
-          test -f "$root/.zpkg.lock"
-          test -z "$(find "$root/zed_modules" "$root/node_modules" -type l -print -quit)"
+          test ! -e "$restore_root/.zpkg.toml"
+          test -f "$restore_root/.zpkg.lock"
+          cmp -s "$root/.zpkg.lock" "$restore_root/.zpkg.lock"
+          test -z "$(find "$restore_root/zed_modules" "$restore_root/node_modules" -type l -print -quit)"
           docker run --rm \
-            --volume "$root:/work:ro" \
+            --volume "$restore_root:/work:ro" \
             --workdir /work \
             node:22-bookworm-slim \
             node src/main.js
@@ -437,6 +440,13 @@ jobs:
           grep -F -- "--allow-no-manifest" "$RUNNER_TEMP/install-help.txt"
           grep -F -- "--skip-manifest" "$RUNNER_TEMP/install-help.txt"
           grep -F -- "Proceed without prompting" "$RUNNER_TEMP/install-help.txt"
+          ZED_PKG_ALLOW_NO_MANIFEST=invalid \
+            "$bin" install --allow-no-manifest --help >/dev/null
+          if ZED_PKG_ALLOW_NO_MANIFEST=invalid "$bin" install --help >/dev/null 2>&1
+          then
+            echo "invalid boolean environment value unexpectedly passed startup validation" >&2
+            exit 1
+          fi
       - name: Bash completion parses, registers, and offers real candidates
         shell: bash
         run: |

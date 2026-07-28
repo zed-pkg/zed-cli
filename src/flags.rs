@@ -5,6 +5,7 @@
 //! never depend on a source checkout or a shared library.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
 
 use anyhow::{Context, Result, bail};
@@ -43,8 +44,8 @@ pub fn apply_cli_flags() -> Result<()> {
         );
     }
 
-    normalize_active_boolean_environment(&parsed.subcommands)?;
     let explicit_envs = explicit_env_keys(&argv, &parsed.subcommands)?;
+    normalize_active_boolean_environment(&parsed.subcommands, &explicit_envs)?;
     for (key, value) in parsed.flags {
         if should_apply_value(
             std::env::var_os(&key).is_some(),
@@ -66,28 +67,46 @@ fn should_apply_value(environment_exists: bool, explicitly_supplied: bool) -> bo
 /// shell and deployment configuration commonly use `1`, `0`, `yes`, `no`,
 /// `on`, and `off`. Canonicalize only boolean keys declared in the active
 /// flags2env scopes, before Clap reads them. Invalid values fail closed.
-fn normalize_active_boolean_environment(subcommands: &[String]) -> Result<()> {
+fn normalize_active_boolean_environment(
+    subcommands: &[String],
+    explicit_envs: &BTreeSet<String>,
+) -> Result<()> {
     let contract: toml::Value =
         toml::from_str(CONTRACT).context("parsing embedded flags2env contract")?;
     for env in active_boolean_env_keys(&contract, subcommands)? {
         let Some(raw) = std::env::var_os(&env) else {
             continue;
         };
-        let raw = raw
-            .to_str()
-            .with_context(|| format!("boolean environment variable `{env}` is not valid UTF-8"))?;
-        let normalized = normalize_boolean_value(raw).with_context(|| {
-            format!(
-                "boolean environment variable `{env}` must be one of                  true/false, 1/0, yes/no, or on/off"
-            )
-        })?;
-        if raw != normalized {
+        let Some(normalized) =
+            normalized_environment_boolean(&env, &raw, explicit_envs.contains(&env))?
+        else {
+            continue;
+        };
+        if raw != OsStr::new(normalized) {
             // SAFETY: apply_cli_flags runs once at process startup, before Clap
             // or any worker thread reads or mutates the process environment.
             unsafe { std::env::set_var(env, normalized) };
         }
     }
     Ok(())
+}
+
+fn normalized_environment_boolean(
+    env: &str,
+    raw: &OsStr,
+    explicitly_supplied: bool,
+) -> Result<Option<&'static str>> {
+    if explicitly_supplied {
+        return Ok(None);
+    }
+    let raw = raw
+        .to_str()
+        .with_context(|| format!("boolean environment variable `{env}` is not valid UTF-8"))?;
+    normalize_boolean_value(raw).map(Some).with_context(|| {
+        format!(
+            "boolean environment variable `{env}` must be one of true/false, 1/0, yes/no, or on/off"
+        )
+    })
 }
 
 fn normalize_boolean_value(value: &str) -> Option<&'static str> {
@@ -393,6 +412,21 @@ mod tests {
         assert!(!should_apply_value(true, false));
         assert!(should_apply_value(true, true));
         assert!(should_apply_value(false, true));
+    }
+
+    #[test]
+    fn explicit_cli_boolean_shadows_even_an_invalid_environment_value() {
+        let invalid = OsStr::new("maybe");
+        assert_eq!(
+            normalized_environment_boolean("ZED_PKG_ALLOW_NO_MANIFEST", invalid, true).unwrap(),
+            None
+        );
+        assert!(
+            normalized_environment_boolean("ZED_PKG_ALLOW_NO_MANIFEST", invalid, false)
+                .unwrap_err()
+                .to_string()
+                .contains("true/false")
+        );
     }
 
     #[test]
