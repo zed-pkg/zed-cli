@@ -9,27 +9,19 @@ on:
       - 'scripts/materialize-den-567.py'
       - 'scripts/prepare-den-567-materializer.py'
       - 'scripts/harden-den-567-product.py'
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened]
-    paths:
-      - '.github/workflows/materialize-den-567.yml'
-      - 'scripts/materialize-den-567.py'
-      - 'scripts/prepare-den-567-materializer.py'
-      - 'scripts/harden-den-567-product.py'
 
 permissions:
   contents: write
 
 concurrency:
-  group: den-567-final-product
-  cancel-in-progress: true
+  group: den-567-final-product-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   materialize:
     if: >-
       github.repository == 'zed-pkg/zed-cli' &&
-      (github.event_name == 'push' || github.head_ref == 'feat/den-567-manifestless-flags-completion') &&
+      github.ref_name == 'feat/den-567-manifestless-flags-completion' &&
       github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
