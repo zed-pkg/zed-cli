@@ -34,5 +34,5 @@ tempfile = "3"
 toml = "1"
 walkdir = "2"
 fs2 = "0.4.3"
-flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "450031f54468d4fd054131effb6b5f300d3d1310" }
+flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "9483b92c1fb259f598858fdd2bef66417d87fb2c" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
