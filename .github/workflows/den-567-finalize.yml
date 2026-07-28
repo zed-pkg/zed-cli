@@ -1,0 +1,91 @@
+name: Finalize DEN-567 scoped flags fix
+
+on:
+  push:
+    branches:
+      - feat/den-567-manifestless-flags-completion
+    paths:
+      - scripts/den-567-finalize.py
+      - .github/workflows/den-567-finalize.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/den-567-manifestless-flags-completion
+          path: zed-cli
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out the sibling interfaces crate
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply exact source and workflow edits
+        working-directory: zed-cli
+        run: python3 scripts/den-567-finalize.py
+
+      - name: Format and validate the Rust implementation
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          cargo fmt
+          git diff --check
+          cargo test --all-targets
+          cargo clippy --all-targets -- -D warnings
+
+      - name: Exercise startup, help, and real Bash completion invocation
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed
+          bin="$PWD/target/debug/zed"
+          "$bin" --help >/dev/null
+          "$bin" install --help >/dev/null
+          "$bin" self-update --force --help >/dev/null
+          ZED_PKG_ALLOW_NO_MANIFEST=1 "$bin" install --help >/dev/null
+
+          completion="$RUNNER_TEMP/zed.bash"
+          "$bin" completions bash > "$completion"
+          bash -n "$completion"
+          bash --noprofile --norc -c '
+            set -euo pipefail
+            source "$1"
+            complete -p zed | grep -F _zed
+            COMP_WORDS=(zed "")
+            COMP_CWORD=1
+            COMP_LINE="zed "
+            COMP_POINT=${#COMP_LINE}
+            _zed zed "" zed
+            printf "%s\n" "${COMPREPLY[@]}" | grep -Fx install
+          ' bash "$completion"
+
+      - name: Commit only the reviewable fix
+        working-directory: zed-cli
+        env:
+          HEAD_BRANCH: feat/den-567-manifestless-flags-completion
+        run: |
+          set -euo pipefail
+          rm scripts/den-567-finalize.py .github/workflows/den-567-finalize.yml
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/flags.rs .github/workflows/ci.yml scripts/den-567-finalize.py .github/workflows/den-567-finalize.yml
+          git commit -m 'fix(DEN-567): honor scoped flag precedence and Bash invocation'
+          git push origin "HEAD:$HEAD_BRANCH"
