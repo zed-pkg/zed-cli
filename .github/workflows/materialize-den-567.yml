@@ -123,42 +123,52 @@ jobs:
           grep -F -- 'completions' "${RUNNER_TEMP}/zed.bash"
 
       - name: Commit the validated product diff
+        id: commit_product
         working-directory: zed-cli
         shell: bash
         run: |
-          set -euo pipefail
-          rm -f \
-            .github/workflows/apply-den-567.yml \
-            .github/workflows/den-567-materialize.yml \
-            scripts/apply_den_567.py \
-            scripts/den-567-wire.py \
-            scripts/materialize-den-567.py \
-            scripts/prepare-den-567-materializer.py \
-            scripts/prepare-den-567-hardener.py \
-            scripts/harden-den-567-product.py \
-            .den-567-validation.txt
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git diff --cached --check
-          if git diff --cached --unified=0 | grep -E '^\+(<<<<<<<|=======|>>>>>>>)'; then
-            echo 'new conflict marker detected' >&2
-            exit 1
-          fi
-          unexpected_bootstrap="$({
-            git diff --cached --name-status \
-              | awk '$1 != "D" && $2 != ".github/workflows/materialize-den-567.yml" && $2 ~ /(den-567-(apply|wire|materialize|harden|prepare)|apply_den_567)/ {print}'
-          } || true)"
-          test -z "$unexpected_bootstrap"
-          git diff --cached --name-status
-          git commit -m 'feat(DEN-567): harden manifestless installs and shell completion'
-          git push origin HEAD:feat/den-567-manifestless-flags-completion
+          set -uo pipefail
+          log="${RUNNER_TEMP}/den-567-commit.log"
+          {
+            set -euxo pipefail
+            rm -f \
+              .github/workflows/apply-den-567.yml \
+              .github/workflows/den-567-materialize.yml \
+              scripts/apply_den_567.py \
+              scripts/den-567-wire.py \
+              scripts/materialize-den-567.py \
+              scripts/prepare-den-567-materializer.py \
+              scripts/prepare-den-567-hardener.py \
+              scripts/harden-den-567-product.py \
+              .den-567-validation.txt
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git status --short
+            git add -A
+            git diff --cached --check
+            if git diff --cached --unified=0 | grep -E '^\+(<<<<<<<|=======|>>>>>>>)'; then
+              echo 'new conflict marker detected' >&2
+              exit 1
+            fi
+            unexpected_bootstrap="$({
+              git diff --cached --name-status \
+                | awk '$1 != "D" && $2 != ".github/workflows/materialize-den-567.yml" && $2 ~ /(den-567-(apply|wire|materialize|harden|prepare)|apply_den_567)/ {print}'
+            } || true)"
+            printf 'unexpected_bootstrap=%q\n' "$unexpected_bootstrap"
+            test -z "$unexpected_bootstrap"
+            git diff --cached --name-status
+            git commit -m 'feat(DEN-567): harden manifestless installs and shell completion'
+            git push origin HEAD:feat/den-567-manifestless-flags-completion
+          } 2>&1 | tee "$log"
+          exit "${PIPESTATUS[0]}"
 
       - name: Upload bounded materialization diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: den-567-materialize-log
-          path: ${{ runner.temp }}/den-567-materialize.log
+          path: |
+            ${{ runner.temp }}/den-567-materialize.log
+            ${{ runner.temp }}/den-567-commit.log
           if-no-files-found: warn
           retention-days: 1
