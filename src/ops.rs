@@ -279,9 +279,10 @@ fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Op
 /// Infer the ecosystem from the files a project keeps at its root. Ordered so
 /// the most specific marker wins when a repo carries several (a Next.js app
 /// with a Dockerfile is still `node`).
-fn detect_target(project: &Path) -> Option<String> {
+pub(crate) fn detect_target(project: &Path) -> Option<String> {
     const MARKERS: &[(&str, &str)] = &[
         ("package.json", "node"),
+        ("tsconfig.json", "node"),
         ("Cargo.toml", "rust"),
         ("go.mod", "go"),
         ("pyproject.toml", "python"),
@@ -298,25 +299,46 @@ fn detect_target(project: &Path) -> Option<String> {
         ("composer.json", "php"),
         ("CMakeLists.txt", "cpp"),
     ];
-    MARKERS
+    if let Some((_, target)) = MARKERS
+        .iter()
+        .find(|(marker, _)| project.join(marker).exists())
+    {
+        return Some((*target).to_string());
+    }
+
+    // Some consumer folders are intentionally pre-manifest (for example,
+    // generated app skeletons). Keep this bounded and shallow so Zed never
+    // recursively classifies an unrelated large checkout.
+    const STRUCTURE_MARKERS: &[(&str, &str)] = &[
+        ("src/main.rs", "rust"),
+        ("src/lib.rs", "rust"),
+        ("src/index.ts", "node"),
+        ("src/main.ts", "node"),
+        ("src/index.js", "node"),
+        ("src/main.js", "node"),
+        ("main.go", "go"),
+        ("cmd/main.go", "go"),
+        ("main.py", "python"),
+        ("app.py", "python"),
+        ("src/main.py", "python"),
+        ("lib/main.dart", "dart"),
+        ("src/main.gleam", "gleam"),
+        ("src/main/java", "java"),
+        ("src/main/kotlin", "java"),
+    ];
+    STRUCTURE_MARKERS
         .iter()
         .find(|(marker, _)| project.join(marker).exists())
         .map(|(_, target)| (*target).to_string())
 }
 
-/// Pick the ecosystem adapter from what the project looks like: Node
-/// projects resolve from node_modules/, JVM projects need a classpath,
-/// Rust/others use zed_modules/ directly.
-fn detect_adapter(project: &Path) -> Adapter {
-    if project.join("package.json").exists() {
-        Adapter::Node
-    } else if project.join("pom.xml").exists()
-        || project.join("build.gradle").exists()
-        || project.join("build.gradle.kts").exists()
-    {
-        Adapter::Java
-    } else {
-        Adapter::None
+/// Pick the ecosystem adapter from the same language inference used for target
+/// slicing so marker-only and structure-only consumer folders agree.
+pub(crate) fn detect_adapter(project: &Path) -> Adapter {
+    match detect_target(project).as_deref() {
+        Some("node") => Adapter::Node,
+        Some("java") => Adapter::Java,
+        _ => Adapter::None,
     }
 }
 
@@ -339,6 +361,54 @@ pub fn install(
     allow_build: bool,
     target: Option<&str>,
 ) -> Result<InstallOutcome> {
+    install_with_frozen_policy(
+        project,
+        cfg,
+        frozen,
+        mode,
+        adapter,
+        allow_build,
+        target,
+        true,
+    )
+}
+
+/// Restore every package pinned by an existing lockfile when there is no
+/// persistent consumer manifest. The lock still verifies package identities,
+/// versions, registry metadata, and artifact hashes; only manifest-drift
+/// validation is inapplicable because no manifest exists to compare against.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_frozen_lock_only(
+    project: &Path,
+    cfg: &Config,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+) -> Result<InstallOutcome> {
+    install_with_frozen_policy(
+        project,
+        cfg,
+        true,
+        mode,
+        adapter,
+        allow_build,
+        target,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_with_frozen_policy(
+    project: &Path,
+    cfg: &Config,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+    validate_manifest_requirements: bool,
+) -> Result<InstallOutcome> {
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
     // parallel CI runners) writing the store, refs.json, and lockfile.
@@ -352,7 +422,36 @@ pub fn install(
         adapter,
         allow_build,
         target,
+        validate_manifest_requirements,
     )
+}
+
+fn validate_frozen_manifest_requirements(
+    manifest: &Manifest,
+    lock: &Lockfile,
+    workspace: Option<&WorkspaceInfo>,
+    enforce: bool,
+) -> Result<()> {
+    if !enforce {
+        return Ok(());
+    }
+    for (key, req_str) in &manifest.dependencies {
+        let (org, name) = split_key(key)?;
+        if workspace.is_some_and(|ws| ws.members.contains_key(key)) {
+            continue;
+        }
+        let entry = lock
+            .find(&org, &name)
+            .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
+        let req = Requirement::parse(req_str);
+        if !req.matches(&entry.version) {
+            bail!(
+                "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
+                entry.version
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Install body, called with the store lock already held. Split out so the
@@ -368,6 +467,7 @@ fn install_locked(
     adapter: Adapter,
     allow_build: bool,
     target: Option<&str>,
+    validate_manifest_requirements: bool,
 ) -> Result<InstallOutcome> {
     let manifest = read_manifest(project)?;
     let configured_adapter = manifest
@@ -400,25 +500,12 @@ fn install_locked(
         let text = fs::read_to_string(&lock_path)
             .with_context(|| format!("--frozen requires {LOCKFILE_FILE}"))?;
         let lock = Lockfile::parse(&text)?;
-        for (key, req_str) in &manifest.dependencies {
-            let (org, name) = split_key(key)?;
-            if workspace
-                .as_ref()
-                .is_some_and(|ws| ws.members.contains_key(key))
-            {
-                continue;
-            }
-            let entry = lock
-                .find(&org, &name)
-                .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
-            let req = Requirement::parse(req_str);
-            if !req.matches(&entry.version) {
-                bail!(
-                    "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
-                    entry.version
-                );
-            }
-        }
+        validate_frozen_manifest_requirements(
+            &manifest,
+            &lock,
+            workspace.as_ref(),
+            validate_manifest_requirements,
+        )?;
         for locked in &lock.packages {
             if !is_slug(&locked.org) || !is_slug(&locked.name) {
                 bail!(
@@ -811,6 +898,7 @@ fn build_artifact(
             // Build dependencies are toolchain, not the consumer's language:
             // take them whole rather than slicing them to a target.
             None,
+            true,
         )?;
     }
 
@@ -1529,6 +1617,35 @@ mod tests {
         // must yield a (uselessly huge, but valid) duration, never a panic.
         let age = parse_age(&format!("{}w", u64::MAX)).unwrap();
         assert_eq!(age, Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn lock_only_frozen_restore_skips_only_the_missing_manifest_comparison() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "consumer"
+name = "app"
+version = "0.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://localhost/consumer/app"
+
+[dependencies]
+"acme/http-kit" = "^1"
+"#,
+        )
+        .unwrap();
+        let empty_lock = Lockfile::default();
+
+        let enforced = validate_frozen_manifest_requirements(&manifest, &empty_lock, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(enforced.contains("acme/http-kit"));
+        assert!(
+            validate_frozen_manifest_requirements(&manifest, &empty_lock, None, false,).is_ok()
+        );
     }
 
     #[test]

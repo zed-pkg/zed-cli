@@ -110,6 +110,21 @@ impl ContainerRuntime {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompletionShell {
+    Bash,
+    Zsh,
+}
+
+impl From<CompletionShell> for clap_complete::Shell {
+    fn from(value: CompletionShell) -> Self {
+        match value {
+            CompletionShell::Bash => clap_complete::Shell::Bash,
+            CompletionShell::Zsh => clap_complete::Shell::Zsh,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
     /// Create a .zpkg.toml manifest in the current directory
@@ -123,9 +138,14 @@ pub enum Cmd {
     Add { spec: String },
     /// Remove a dependency
     Remove { spec: String },
-    /// Resolve and install dependencies into zed_modules/
+    /// Resolve and install dependencies into the selected project
     #[command(alias = "i")]
     Install {
+        /// Transient package specs (`org/name[@requirement]`). With no manifest
+        /// these form the in-memory consumer plan; an existing manifest is
+        /// never edited by this command (`zed add` persists dependencies).
+        #[arg(value_name = "PACKAGE")]
+        specs: Vec<String>,
         /// Install exactly what .zpkg.lock pins; fail on any drift
         #[arg(long, env = "ZED_PKG_FROZEN")]
         frozen: bool,
@@ -151,6 +171,18 @@ pub enum Cmd {
         /// omitted = infer from the project
         #[arg(long, env = "ZED_PKG_TARGET")]
         target: Option<String>,
+        /// Proceed without prompting when no .zpkg.toml can be found.
+        #[arg(
+            long,
+            visible_alias = "skip-manifest",
+            env = "ZED_PKG_ALLOW_NO_MANIFEST"
+        )]
+        allow_no_manifest: bool,
+    },
+    /// Generate a completion script from the same typed command model used at runtime
+    Completions {
+        #[arg(value_enum)]
+        shell: CompletionShell,
     },
     /// Run (or warm the build cache for) the [build] steps the locked
     /// dependency graph declares (zed-docs issue #5). Running `zed build` is
@@ -475,6 +507,32 @@ mod tests {
             &["auth", "signout"],
         ] {
             assert_eq!(logout_action(words), "logout", "{words:?}");
+        }
+    }
+
+    #[test]
+    fn install_accepts_specs_and_both_manifestless_bypass_spellings() {
+        for bypass in ["--allow-no-manifest", "--skip-manifest"] {
+            let cli = Cli::try_parse_from(["zed", "install", "acme/http-kit@^1", bypass]).unwrap();
+            match cli.cmd {
+                Cmd::Install {
+                    specs,
+                    allow_no_manifest,
+                    ..
+                } => {
+                    assert_eq!(specs, ["acme/http-kit@^1"]);
+                    assert!(allow_no_manifest);
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn completion_shells_are_typed_positionals() {
+        for shell in ["bash", "zsh"] {
+            let cli = Cli::try_parse_from(["zed", "completions", shell]).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Completions { .. }));
         }
     }
 

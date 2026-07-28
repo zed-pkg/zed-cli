@@ -58,14 +58,20 @@ git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
 zed publish
 
-# consume packages
+# consume packages from a manifest
 zed add acme/http-kit@^1
 zed install
+
+# or install transiently in a folder with no .zpkg.toml
+zed install acme/http-kit@^1            # confirms in an interactive terminal
+zed install acme/http-kit@^1 --skip-manifest  # intentional automation
 zed find http
 ```
 
-Every package is `<org>/<name>`, declared in a `.zpkg.toml` manifest at the
-repo root (TOML only). See `zed init` output for the annotated template.
+Every authored package is `<org>/<name>`, declared in a `.zpkg.toml` manifest
+at the repo root (TOML only). Consumers may also install positional package specs
+through a transient in-memory manifest. See `zed init` output for the annotated
+authoring template.
 
 ## Versioning
 
@@ -95,8 +101,8 @@ registry hosts both on S3/Cloudflare R2.
 | `zed init` | Write a `.zpkg.toml` template |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
-| `zed install` (`zed i`) | Resolve, download once into the store, symlink into `zed_modules/` |
-| `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers) |
+| `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install manifest or transient dependencies |
+| `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers, including manifestless locked reinstalls) |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed + native-registry release set derived from `.zpkg.toml` |
@@ -119,6 +125,54 @@ registry hosts both on S3/Cloudflare R2.
 | `zed gc [--older-than 90d] [--dry-run]` | LRU collection: drop store/build entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
+| `zed completions bash\|zsh` | Generate shell completion from the same Clap model used by the executable |
+
+### Shell completion
+
+```sh
+# Bash for the current shell
+source <(zed completions bash)
+
+# Zsh (persistent user completion)
+mkdir -p ~/.zfunc
+zed completions zsh > ~/.zfunc/_zed
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+```
+
+The generated scripts include aliases, subcommands, and install flags directly
+from the typed parser. GitHub Actions syntax-checks and registers them in real
+Bash and Zsh processes.
+
+### Installing without `.zpkg.toml`
+
+`zed install` accepts transient package specs in an existing repository or
+folder:
+
+```sh
+zed install oresoftware/flags-2-env@^0.1
+```
+
+Zed first searches upward for a Zed manifest. Without one, it looks for the
+nearest native project marker (`package.json`, `Cargo.toml`, `go.mod`,
+`pyproject.toml`, and other supported ecosystems). When invoked at a repository
+shell containing exactly one clear nested app such as `apps/web/package.json`,
+that app becomes the install root. Ambiguous monorepos stay at the requested
+root and use the safe universal `zed_modules/` layout rather than guessing.
+
+A real interactive terminal prints the selected root, inferred target, adapter,
+and dependencies, then accepts only `y` or `yes`. EOF and every other answer
+cancel before files are written. Automation must opt in with
+`--allow-no-manifest`, its visible alias `--skip-manifest`, or
+`ZED_PKG_ALLOW_NO_MANIFEST=1`.
+
+No synthetic `.zpkg.toml` is written. The normal installer still writes
+`.zpkg.lock`, `zed_modules/`, hoisted bins, and supported ecosystem adapter
+outputs. `zed install --frozen --skip-manifest` can reconstruct a no-manifest
+install from an existing lockfile without package operands. In a project that
+already has a manifest, use `zed add` to persist a dependency; positional
+package operands on `zed install` are rejected rather than silently creating a
+non-persistent manifest override.
 
 ### Where dependencies land (`[install].dir`)
 
@@ -198,6 +252,7 @@ actual CLI never drift, so it is always authoritative:
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
+| `--allow-no-manifest` / `--skip-manifest` (install) | `ZED_PKG_ALLOW_NO_MANIFEST` | off; otherwise a real-terminal confirmation is required |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |

@@ -18,6 +18,7 @@ path = "src/lib.rs"
 zed-interfaces = { path = "../zed-interfaces" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
 dirs = "5"
 flate2 = "1"
 globset = "0.4"
@@ -33,5 +34,5 @@ tempfile = "3"
 toml = "1"
 walkdir = "2"
 fs2 = "0.4.3"
-flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "069787b71a9215aa58297216240559eaf3017ca6" }
+flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "9483b92c1fb259f598858fdd2bef66417d87fb2c" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

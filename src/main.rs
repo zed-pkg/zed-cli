@@ -1,7 +1,9 @@
 use clap::Parser;
 use zed_cli::auth;
 use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
+use zed_cli::completion;
 use zed_cli::config::Config;
+use zed_cli::manifestless;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -10,7 +12,10 @@ use zed_cli::store::Store;
 use zed_cli::update;
 
 fn main() {
-    zed_cli::flags::apply_cli_flags();
+    if let Err(error) = zed_cli::flags::apply_cli_flags() {
+        eprintln!("error: {error:#}");
+        std::process::exit(2);
+    }
     let cli = Cli::parse();
     if let Err(error) = run(cli) {
         eprintln!("error: {error:#}");
@@ -26,21 +31,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
+            specs,
             frozen,
             install_mode,
             adapter,
             allow_build,
             target,
-        } => ops::install(
+            allow_no_manifest,
+        } => manifestless::install(
             &cwd,
             &cfg,
+            &specs,
             frozen,
             install_mode,
             adapter,
             allow_build,
             target.as_deref(),
+            allow_no_manifest,
         )
         .map(|_| ()),
+        Cmd::Completions { shell } => {
+            completion::print(shell.into());
+            Ok(())
+        }
         Cmd::Build { force } => ops::build_cmd(&cwd, &cfg, force),
         Cmd::Run { command, args } => match ops::run(&cwd, &command, &args) {
             Ok(code) => std::process::exit(code),
