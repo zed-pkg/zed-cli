@@ -1,5 +1,5 @@
 name: Materialize DEN-567 product diff
-# Keep this workflow for the validated push; the GitHub app removes it afterward.
+# Keep this workflow for the validated product push; the connected GitHub app applies the generated permanent CI afterward.
 
 on:
   pull_request:
@@ -122,7 +122,7 @@ jobs:
           grep -F -- '--skip-manifest' "${RUNNER_TEMP}/_zed"
           grep -F -- 'completions' "${RUNNER_TEMP}/zed.bash"
 
-      - name: Commit the validated product diff
+      - name: Commit the validated non-workflow product diff
         id: commit_product
         working-directory: zed-cli
         shell: bash
@@ -131,9 +131,9 @@ jobs:
           log="${RUNNER_TEMP}/den-567-commit.log"
           {
             set -euxo pipefail
+            cp .github/workflows/ci.yml "${RUNNER_TEMP}/den-567-ci.yml"
+            git checkout HEAD -- .github/workflows/ci.yml
             rm -f \
-              .github/workflows/apply-den-567.yml \
-              .github/workflows/den-567-materialize.yml \
               scripts/apply_den_567.py \
               scripts/den-567-wire.py \
               scripts/materialize-den-567.py \
@@ -153,17 +153,21 @@ jobs:
             fi
             unexpected_bootstrap="$({
               git diff --cached --name-status \
-                | awk '$1 != "D" && $2 != ".github/workflows/materialize-den-567.yml" && $2 ~ /(den-567-(apply|wire|materialize|harden|prepare)|apply_den_567)/ {print}'
+                | awk '$1 != "D" && $2 ~ /(den-567-(apply|wire|materialize|harden|prepare)|apply_den_567)/ {print}'
             } || true)"
             printf 'unexpected_bootstrap=%q\n' "$unexpected_bootstrap"
             test -z "$unexpected_bootstrap"
+            if git diff --cached --name-only | grep -E '^\.github/workflows/'; then
+              echo 'validated product push still contains a workflow change' >&2
+              exit 1
+            fi
             git diff --cached --name-status
             git commit -m 'feat(DEN-567): harden manifestless installs and shell completion'
             git push origin HEAD:feat/den-567-manifestless-flags-completion
           } 2>&1 | tee "$log"
           exit "${PIPESTATUS[0]}"
 
-      - name: Upload bounded materialization diagnostics
+      - name: Upload validated CI and bounded diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -171,5 +175,6 @@ jobs:
           path: |
             ${{ runner.temp }}/den-567-materialize.log
             ${{ runner.temp }}/den-567-commit.log
+            ${{ runner.temp }}/den-567-ci.yml
           if-no-files-found: warn
           retention-days: 1
