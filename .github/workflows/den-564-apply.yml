@@ -3,20 +3,26 @@ name: Apply DEN-564 manifest-free install patch
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened]
     paths:
       - scripts/den-564-apply.py
+      - scripts/den-564-harden.py
       - .github/workflows/den-564-apply.yml
 
 permissions:
   contents: write
+
+concurrency:
+  group: den-564-apply-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   apply:
     if: >-
       github.head_ref == 'agent/den-564-install-without-manifest' &&
       github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Check out the feature branch
         uses: actions/checkout@v4
@@ -25,6 +31,7 @@ jobs:
           path: zed-cli
           fetch-depth: 0
           persist-credentials: true
+          show-progress: false
 
       - name: Check out the sibling interfaces crate
         uses: actions/checkout@v4
@@ -32,31 +39,55 @@ jobs:
           repository: zed-pkg/zed-interfaces
           path: zed-interfaces
           persist-credentials: false
+          show-progress: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt,clippy
 
-      - name: Apply the source patch
+      - name: Apply the reviewed source patch
         working-directory: zed-cli
-        run: python3 scripts/den-564-apply.py
-
-      - name: Format and validate
-        working-directory: zed-cli
+        shell: bash
         run: |
           set -euo pipefail
-          cargo fmt
+          python3 -m py_compile scripts/den-564-apply.py scripts/den-564-harden.py
+          python3 scripts/den-564-apply.py
+          python3 scripts/den-564-harden.py
+          python3 -m py_compile tests/manifestless_pty.py
+
+      - name: Format, test, lint, and check documentation
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
           git diff --check
           cargo test --all-targets
+          cargo test --doc
+          cargo clippy --all-targets -- -D warnings
 
-      - name: Commit the validated implementation
+      - name: Commit the validated product diff
         working-directory: zed-cli
         env:
           HEAD_BRANCH: ${{ github.head_ref }}
+        shell: bash
         run: |
           set -euo pipefail
+          rm -f \
+            .github/workflows/den-564-apply.yml \
+            scripts/den-564-apply.py \
+            scripts/den-564-harden.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add .
+          git add -A
+          git diff --cached --check
+          if git diff --cached --unified=0 | grep -E '^\+(<<<<<<<|=======|>>>>>>>)'; then
+            echo 'new conflict marker detected' >&2
+            exit 1
+          fi
+          test -z "$(git diff --cached --name-only | grep -E 'den-564-(apply|harden)' || true)"
+          git diff --cached --name-status
           git commit -m 'feat(DEN-564): install dependencies without a manifest'
           git push origin "HEAD:$HEAD_BRANCH"
