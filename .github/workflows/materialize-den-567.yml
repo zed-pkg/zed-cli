@@ -1,4 +1,5 @@
 name: Materialize DEN-567 product diff
+# Restores the reviewed base materializer from immutable commit 01e5bc95.
 
 on:
   pull_request:
