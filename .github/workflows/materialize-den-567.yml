@@ -6,7 +6,6 @@ on:
     types: [synchronize, reopened]
     paths:
       - '.github/workflows/materialize-den-567.yml'
-      - 'scripts/materialize-den-567.py'
       - 'scripts/prepare-den-567-materializer.py'
       - 'scripts/harden-den-567-product.py'
 
@@ -72,6 +71,8 @@ jobs:
           log="${RUNNER_TEMP}/den-567-materialize.log"
           {
             set -euo pipefail
+            git show 01e5bc95e39bd5b4885f14c4ddefb04e2ca0d2f4:scripts/materialize-den-567.py \
+              > scripts/materialize-den-567.py
             python3 -m py_compile \
               scripts/prepare-den-567-materializer.py \
               scripts/materialize-den-567.py \
