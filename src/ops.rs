@@ -361,6 +361,54 @@ pub fn install(
     allow_build: bool,
     target: Option<&str>,
 ) -> Result<InstallOutcome> {
+    install_with_frozen_policy(
+        project,
+        cfg,
+        frozen,
+        mode,
+        adapter,
+        allow_build,
+        target,
+        true,
+    )
+}
+
+/// Restore every package pinned by an existing lockfile when there is no
+/// persistent consumer manifest. The lock still verifies package identities,
+/// versions, registry metadata, and artifact hashes; only manifest-drift
+/// validation is inapplicable because no manifest exists to compare against.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_frozen_lock_only(
+    project: &Path,
+    cfg: &Config,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+) -> Result<InstallOutcome> {
+    install_with_frozen_policy(
+        project,
+        cfg,
+        true,
+        mode,
+        adapter,
+        allow_build,
+        target,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_with_frozen_policy(
+    project: &Path,
+    cfg: &Config,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+    validate_manifest_requirements: bool,
+) -> Result<InstallOutcome> {
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
     // parallel CI runners) writing the store, refs.json, and lockfile.
@@ -374,7 +422,36 @@ pub fn install(
         adapter,
         allow_build,
         target,
+        validate_manifest_requirements,
     )
+}
+
+fn validate_frozen_manifest_requirements(
+    manifest: &Manifest,
+    lock: &Lockfile,
+    workspace: Option<&WorkspaceInfo>,
+    enforce: bool,
+) -> Result<()> {
+    if !enforce {
+        return Ok(());
+    }
+    for (key, req_str) in &manifest.dependencies {
+        let (org, name) = split_key(key)?;
+        if workspace.is_some_and(|ws| ws.members.contains_key(key)) {
+            continue;
+        }
+        let entry = lock
+            .find(&org, &name)
+            .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
+        let req = Requirement::parse(req_str);
+        if !req.matches(&entry.version) {
+            bail!(
+                "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
+                entry.version
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Install body, called with the store lock already held. Split out so the
@@ -390,6 +467,7 @@ fn install_locked(
     adapter: Adapter,
     allow_build: bool,
     target: Option<&str>,
+    validate_manifest_requirements: bool,
 ) -> Result<InstallOutcome> {
     let manifest = read_manifest(project)?;
     let configured_adapter = manifest
@@ -422,25 +500,12 @@ fn install_locked(
         let text = fs::read_to_string(&lock_path)
             .with_context(|| format!("--frozen requires {LOCKFILE_FILE}"))?;
         let lock = Lockfile::parse(&text)?;
-        for (key, req_str) in &manifest.dependencies {
-            let (org, name) = split_key(key)?;
-            if workspace
-                .as_ref()
-                .is_some_and(|ws| ws.members.contains_key(key))
-            {
-                continue;
-            }
-            let entry = lock
-                .find(&org, &name)
-                .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
-            let req = Requirement::parse(req_str);
-            if !req.matches(&entry.version) {
-                bail!(
-                    "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
-                    entry.version
-                );
-            }
-        }
+        validate_frozen_manifest_requirements(
+            &manifest,
+            &lock,
+            workspace.as_ref(),
+            validate_manifest_requirements,
+        )?;
         for locked in &lock.packages {
             if !is_slug(&locked.org) || !is_slug(&locked.name) {
                 bail!(
@@ -833,6 +898,7 @@ fn build_artifact(
             // Build dependencies are toolchain, not the consumer's language:
             // take them whole rather than slicing them to a target.
             None,
+            true,
         )?;
     }
 
@@ -1551,6 +1617,35 @@ mod tests {
         // must yield a (uselessly huge, but valid) duration, never a panic.
         let age = parse_age(&format!("{}w", u64::MAX)).unwrap();
         assert_eq!(age, Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn lock_only_frozen_restore_skips_only_the_missing_manifest_comparison() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "consumer"
+name = "app"
+version = "0.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://localhost/consumer/app"
+
+[dependencies]
+"acme/http-kit" = "^1"
+"#,
+        )
+        .unwrap();
+        let empty_lock = Lockfile::default();
+
+        let enforced = validate_frozen_manifest_requirements(&manifest, &empty_lock, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(enforced.contains("acme/http-kit"));
+        assert!(
+            validate_frozen_manifest_requirements(&manifest, &empty_lock, None, false,).is_ok()
+        );
     }
 
     #[test]

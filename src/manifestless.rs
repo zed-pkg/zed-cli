@@ -125,6 +125,7 @@ pub fn install(
     // Consent intentionally precedes registry access. An unversioned package
     // can be shown as “latest compatible release” without contacting a server.
     confirm_manifestless(&plan, allow_no_manifest)?;
+    let lock_only = matches!(&requested, RequestedDependencies::Locked(_));
     let dependencies = match requested {
         RequestedDependencies::Locked(dependencies) => dependencies,
         RequestedDependencies::Specs(specs) => resolve_requested_specs(cfg, &specs)?,
@@ -136,15 +137,26 @@ pub fn install(
         "manifestless install: {MANIFEST_FILE} will not be created; the normal installer will write {LOCKFILE_FILE} and the inferred dependency outputs"
     );
     config::with_manifest_override(&selection.root, manifest_text, || {
-        ops::install(
-            &selection.root,
-            cfg,
-            frozen,
-            mode,
-            adapter,
-            allow_build,
-            inferred_target.as_deref(),
-        )
+        if lock_only {
+            ops::install_frozen_lock_only(
+                &selection.root,
+                cfg,
+                mode,
+                adapter,
+                allow_build,
+                inferred_target.as_deref(),
+            )
+        } else {
+            ops::install(
+                &selection.root,
+                cfg,
+                frozen,
+                mode,
+                adapter,
+                allow_build,
+                inferred_target.as_deref(),
+            )
+        }
     })
 }
 
