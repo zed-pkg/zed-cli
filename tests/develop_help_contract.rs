@@ -83,7 +83,10 @@ fn every_help_spelling_exposes_the_same_develop_boundary() {
 #[test]
 fn root_help_advertises_the_canonical_command_and_alias() {
     let text = assert_success(&zed(&["--help"]));
-    assert!(text.contains("develop"), "root help omitted develop:\n{text}");
+    assert!(
+        text.contains("develop"),
+        "root help omitted develop:\n{text}"
+    );
     assert!(text.contains("dev"), "root help omitted dev alias:\n{text}");
     assert!(text.contains("virtual development"), "{text}");
 }
@@ -92,12 +95,7 @@ fn root_help_advertises_the_canonical_command_and_alias() {
 fn legacy_command_help_is_not_polluted_by_develop_only_flags() {
     let text = assert_success(&zed(&["install", "--help"]));
     assert!(text.contains("install"), "{text}");
-    for develop_only in [
-        "--isolated-home",
-        "--print-env",
-        "--python-venv",
-        "--venv",
-    ] {
+    for develop_only in ["--isolated-home", "--print-env", "--python-venv", "--venv"] {
         assert!(
             !text.contains(develop_only),
             "legacy install help unexpectedly contains {develop_only}:\n{text}"
