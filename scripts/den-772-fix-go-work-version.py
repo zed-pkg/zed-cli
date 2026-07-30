@@ -58,7 +58,7 @@ struct GoDirectiveVersion {
 
 fn parse_go_directive(text: &str) -> Option<(GoDirectiveVersion, String)> {
     for line in text.lines() {
-        let mut fields = line.trim().split_whitespace();
+        let mut fields = line.split_whitespace();
         if fields.next() != Some("go") {
             continue;
         }
@@ -116,13 +116,13 @@ replace_once(
     "src/ops.rs",
     '''                work_paths.sort();
                 work_paths.dedup();
-                let mut doc = String::from("go 1.21\\n\\nuse (\\n");
+                let mut doc = String::from("go 1.21\n\nuse (\n");
                 for path in &work_paths {
 ''',
     '''                work_paths.sort();
                 work_paths.dedup();
                 let version = required_go_work_version(project, paths);
-                let mut doc = format!("go {version}\\n\\nuse (\\n");
+                let mut doc = format!("go {version}\n\nuse (\n");
                 for path in &work_paths {
 ''',
 )
@@ -140,11 +140,11 @@ replace_once(
         let second = project.join("zed_modules/acme/second");
         fs::create_dir_all(&first).unwrap();
         fs::create_dir_all(&second).unwrap();
-        fs::write(project.join("go.mod"), "module example.com/app\\n\\ngo 1.22\\n").unwrap();
-        fs::write(first.join("go.mod"), "module example.com/first\\n\\ngo 1.21\\n").unwrap();
+        fs::write(project.join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
+        fs::write(first.join("go.mod"), "module example.com/first\n\ngo 1.21\n").unwrap();
         fs::write(
             second.join("go.mod"),
-            "module example.com/second\\n\\ngo 1.24.1 // minimum toolchain\\n",
+            "module example.com/second\n\ngo 1.24.1 // minimum toolchain\n",
         )
         .unwrap();
         let roots = BTreeMap::from([(Adapter::Go, vec![first, second])]);
@@ -152,14 +152,14 @@ replace_once(
         write_toolchain_wiring(&project, &roots).unwrap();
 
         let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
-        assert!(document.starts_with("go 1.24.1\\n"), "{document}");
+        assert!(document.starts_with("go 1.24.1\n"), "{document}");
     }
 
     #[test]
     fn malformed_go_directives_do_not_lower_the_safe_default() {
         assert_eq!(required_go_work_version(Path::new("/missing"), &[]), "1.21");
-        assert!(parse_go_directive("module example.com/app\\ngo latest\\n").is_none());
-        assert!(parse_go_directive("module example.com/app\\ngo 1\\n").is_none());
+        assert!(parse_go_directive("module example.com/app\ngo latest\n").is_none());
+        assert!(parse_go_directive("module example.com/app\ngo 1\n").is_none());
     }
 
     #[test]
