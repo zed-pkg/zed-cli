@@ -66,21 +66,11 @@ pub struct DevelopArgs {
     pub shell: Option<PathBuf>,
 
     /// Whether to compose with a nearby `.nix/flake.nix` or `flake.nix`.
-    #[arg(
-        long,
-        value_enum,
-        env = "ZED_DEV_NIX",
-        default_value = "auto"
-    )]
+    #[arg(long, value_enum, env = "ZED_DEV_NIX", default_value = "auto")]
     pub nix: DevNixMode,
 
     /// Development profile; `ai` adds the opt-in AI tool shim directory.
-    #[arg(
-        long,
-        value_enum,
-        env = "ZED_DEV_PROFILE",
-        default_value = "default"
-    )]
+    #[arg(long, value_enum, env = "ZED_DEV_PROFILE", default_value = "default")]
     pub profile: DevProfile,
 
     /// Do not restore packages from `.zpkg.toml` or `.zpkg.lock` first.
@@ -104,12 +94,7 @@ pub struct DevelopArgs {
     pub print_env: bool,
 
     /// Python virtual-environment policy.
-    #[arg(
-        long,
-        value_enum,
-        env = "ZED_DEV_PYTHON_VENV",
-        default_value = "auto"
-    )]
+    #[arg(long, value_enum, env = "ZED_DEV_PYTHON_VENV", default_value = "auto")]
     pub python_venv: PythonVenvMode,
 
     /// Python interpreter used to create the managed virtual environment.
@@ -150,7 +135,10 @@ enum DevelopCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Route {
     Develop,
-    DevelopHelp { help_index: usize, target_index: usize },
+    DevelopHelp {
+        help_index: usize,
+        target_index: usize,
+    },
     RootHelp,
     Existing,
 }
@@ -208,7 +196,9 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
-            error.print().context("printing zed develop argument error")?;
+            error
+                .print()
+                .context("printing zed develop argument error")?;
             return Ok(code);
         }
     };
@@ -249,9 +239,7 @@ pub fn run(requested_root: &Path, cfg: &Config, options: DevelopArgs) -> Result<
         report_ai_profile(&environment, options.isolated_home);
     }
 
-    if options.command.is_none()
-        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
-    {
+    if options.command.is_none() && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
         bail!(
             "`zed develop` needs a real terminal for an interactive shell; use `zed develop -c <command>` for agents and CI"
         );
@@ -261,9 +249,10 @@ pub fn run(requested_root: &Path, cfg: &Config, options: DevelopArgs) -> Result<
 }
 
 fn route(args: &[OsString]) -> Route {
-    let help_requested = args.iter().skip(1).any(|value| {
-        value == OsStr::new("--help") || value == OsStr::new("-h")
-    });
+    let help_requested = args
+        .iter()
+        .skip(1)
+        .any(|value| value == OsStr::new("--help") || value == OsStr::new("-h"));
     let Some((command_index, command)) = first_command(args) else {
         return if help_requested {
             Route::RootHelp
@@ -870,7 +859,11 @@ fn managed_environment(
     insert_value(&mut values, "ZED_DEV", "1");
     insert_value(&mut values, "ZED_DEV_ROOT", dev.as_os_str());
     insert_value(&mut values, "ZED_DEV_PROJECT_ROOT", root.as_os_str());
-    insert_value(&mut values, "ZED_DEV_PROFILE", profile_name(options.profile));
+    insert_value(
+        &mut values,
+        "ZED_DEV_PROFILE",
+        profile_name(options.profile),
+    );
 
     insert_value(&mut values, "CARGO_HOME", dev.join("cargo/home"));
     insert_value(&mut values, "CARGO_TARGET_DIR", dev.join("cargo/target"));
@@ -881,7 +874,11 @@ fn managed_environment(
     insert_value(&mut values, "COREPACK_HOME", dev.join("node/corepack"));
     insert_value(&mut values, "npm_config_cache", dev.join("node/cache/npm"));
     insert_value(&mut values, "npm_config_prefix", dev.join("node/prefix"));
-    insert_value(&mut values, "YARN_CACHE_FOLDER", dev.join("node/cache/yarn"));
+    insert_value(
+        &mut values,
+        "YARN_CACHE_FOLDER",
+        dev.join("node/cache/yarn"),
+    );
     insert_value(&mut values, "PNPM_HOME", dev.join("node/pnpm"));
     insert_value(&mut values, "PIP_CACHE_DIR", dev.join("python/cache/pip"));
     insert_value(&mut values, "UV_CACHE_DIR", dev.join("python/cache/uv"));
@@ -911,7 +908,8 @@ fn managed_environment(
     if pythonpath.is_file() {
         let declared = fs::read_to_string(&pythonpath)
             .with_context(|| format!("reading {}", pythonpath.display()))?;
-        let mut python_paths: Vec<PathBuf> = env::split_paths(OsStr::new(declared.trim())).collect();
+        let mut python_paths: Vec<PathBuf> =
+            env::split_paths(OsStr::new(declared.trim())).collect();
         if let Some(existing) = env::var_os("PYTHONPATH") {
             python_paths.extend(env::split_paths(&existing));
         }
@@ -1110,10 +1108,7 @@ mod tests {
             .collect();
         assert!(matches!(route(&help), Route::DevelopHelp { .. }));
 
-        let root: Vec<OsString> = ["zed", "--help"]
-            .into_iter()
-            .map(OsString::from)
-            .collect();
+        let root: Vec<OsString> = ["zed", "--help"].into_iter().map(OsString::from).collect();
         assert_eq!(route(&root), Route::RootHelp);
     }
 
@@ -1237,7 +1232,11 @@ mod tests {
         let command = augment_root_command(crate::cli::Cli::command());
         let develop = command.find_subcommand("develop").unwrap();
         assert!(develop.get_all_aliases().any(|alias| alias == "dev"));
-        assert!(develop.get_arguments().any(|arg| arg.get_long() == Some("nix")));
+        assert!(
+            develop
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some("nix"))
+        );
     }
 
     #[test]
@@ -1261,7 +1260,10 @@ mod tests {
         let second = temp.path().join("apps/api");
         fs::create_dir_all(&second).unwrap();
         fs::write(second.join("Cargo.toml"), "[package]\n").unwrap();
-        assert_eq!(project_root(temp.path()), fs::canonicalize(temp.path()).unwrap());
+        assert_eq!(
+            project_root(temp.path()),
+            fs::canonicalize(temp.path()).unwrap()
+        );
     }
 
     #[test]
