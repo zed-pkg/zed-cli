@@ -1,0 +1,37 @@
+name: DEN-872 format generated implementation
+
+on:
+  push:
+    branches:
+      - agent/den-872-zed-develop-shell
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-872-format-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  format-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/den-872-zed-develop-shell
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format, remove this bootstrap, and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          rm .github/workflows/den-872-format.yml
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'style(DEN-872): format develop implementation'
+          git push origin HEAD:agent/den-872-zed-develop-shell
