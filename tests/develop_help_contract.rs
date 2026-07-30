@@ -105,6 +105,24 @@ fn global_options_before_develop_help_still_select_the_develop_parser() {
 }
 
 #[test]
+fn develop_help_is_side_effect_free() {
+    let directory = tempfile::tempdir().expect("create help fixture");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zed"));
+    command.current_dir(directory.path());
+    for key in CLEAN_ENV {
+        command.env_remove(key);
+    }
+    command.args(["dev", "--help"]);
+
+    let output = command.output().expect("run develop help");
+    let text = assert_success(&output);
+    assert!(text.contains("package-aware"), "{text}");
+    assert!(!directory.path().join(".zed").exists());
+    assert!(!directory.path().join(".zpkg.toml").exists());
+    assert!(!directory.path().join(".zpkg.lock").exists());
+}
+
+#[test]
 fn legacy_command_help_is_not_polluted_by_develop_only_flags() {
     let text = assert_success(&zed(&["install", "--help"]));
     assert!(text.contains("install"), "{text}");
