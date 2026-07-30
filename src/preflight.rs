@@ -104,6 +104,14 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                         ".zed/native-preflight/pypi",
                     ],
                 ),
+                // Registries whose own tooling can validate a package offline.
+                NativeRegistry::RubyGems => ("gem", vec!["build", "--strict"]),
+                NativeRegistry::MavenCentral => ("mvn", vec!["-B", "-q", "package", "-DskipTests"]),
+                NativeRegistry::NuGet => ("dotnet", vec!["pack", "--nologo"]),
+                // Packagist validates composer.json itself; Go publishes purely
+                // by tag, so `go build` is the only offline signal there is.
+                NativeRegistry::Packagist => ("composer", vec!["validate", "--strict"]),
+                NativeRegistry::GoModules => ("go", vec!["build", "./..."]),
             };
             NativePreflightSpec {
                 target: route.target,

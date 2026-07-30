@@ -191,6 +191,17 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
                     &manifest.package.version,
                 )?;
             }
+            // No in-CLI validator yet. Not silently unchecked, though:
+            // `scripts/check-native-parity.py` reads pom.xml / build.gradle,
+            // *.gemspec, *.csproj, composer.json and go.mod, and CI runs it as a
+            // required gate. Listing these explicitly rather than with a
+            // catch-all so adding a registry variant keeps failing this match
+            // until someone decides which side should cover it.
+            NativeRegistry::MavenCentral
+            | NativeRegistry::RubyGems
+            | NativeRegistry::NuGet
+            | NativeRegistry::Packagist
+            | NativeRegistry::GoModules => {}
         }
     }
     Ok(())
