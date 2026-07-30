@@ -379,20 +379,35 @@ def main() -> int:
         native_name, native_version = reader(native_path)
 
         if native_version is VCS_VERSIONED:
+            # A target may override the repo-global tag template, which is how a
+            # Go module below a subdirectory gets the `<subdir>/vX.Y.Z` tag the
+            # module proxy demands. Honor it before reporting the gap, or the
+            # gate keeps flagging repos that have already declared the fix.
+            target_tag_format = (native_route or {}).get("tag_format")
             if key == "go" and section["dir"].strip("/") not in ("", "."):
                 subdir = section["dir"].strip("/")
-                native_tag_format = (
-                    native_route.get("tag_format") if native_route is not None else None
-                )
-                if native_tag_format:
-                    note = f"tag `{native_tag_format.format(version=version)}`"
+                expected_tag = f"{subdir}/v{version}"
+                if target_tag_format:
+                    produced = target_tag_format.format(version=version)
+                    if produced == expected_tag:
+                        note = f"tag `{produced}`"
+                    else:
+                        note = f"tag `{produced}`"
+                        problems.append(
+                            f"[targets.{target}.native] tag_format produces `{produced}`, but the "
+                            f"module proxy resolves this subdirectory module by `{expected_tag}`"
+                        )
                 else:
-                    expected_tag = f"{subdir}/{tag_format.format(version=version)}"
                     note = f"tag `{expected_tag}`"
                     gaps.append(
                         f"[targets.{target}] is a Go module in `{subdir}/`, so the module proxy "
-                        f"requires the tag `{expected_tag}` — but no native tag format is declared."
+                        f"requires the tag `{expected_tag}` — but [publish].tag_format is repo-global "
+                        f"(`{tag_format}`), so zed can only create "
+                        f"`{tag_format.format(version=version)}`. Declare "
+                        f'[targets.{target}.native] tag_format = "{subdir}/v{{version}}".'
                     )
+            elif target_tag_format:
+                note = f"tag `{target_tag_format.format(version=version)}`"
             else:
                 note = "from VCS tag"
             shown = native_name or native_path.name
