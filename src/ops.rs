@@ -481,10 +481,22 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
             Adapter::Go => {
                 // A go.work `use` block is the only non-invasive way to add
                 // modules to a Go build; editing go.mod `replace` lines would
-                // mean rewriting a file the user owns.
-                let mut doc = String::from("go 1.21\n\nuse (\n\t./\n");
-                for p in &rel {
-                    doc.push_str(&format!("\t./{p}\n"));
+                // mean rewriting a file the user owns. Go resolves every path
+                // relative to the go.work file itself, which lives in `.zed/`,
+                // not relative to the process working directory.
+                let mut work_paths: Vec<String> = std::iter::once(project)
+                    .chain(paths.iter().map(PathBuf::as_path))
+                    .map(|path| {
+                        pathdiff_relative(&zed_dir, path)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .collect();
+                work_paths.sort();
+                work_paths.dedup();
+                let mut doc = String::from("go 1.21\n\nuse (\n");
+                for path in &work_paths {
+                    doc.push_str(&format!("\t{path}\n"));
                 }
                 doc.push_str(")\n");
                 let path = zed_dir.join("go.work");
@@ -2103,6 +2115,26 @@ mod tests {
         // must yield a (uselessly huge, but valid) duration, never a panic.
         let age = parse_age(&format!("{}w", u64::MAX)).unwrap();
         assert_eq!(age, Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn go_workspace_paths_are_relative_to_the_generated_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package).unwrap();
+        let roots = BTreeMap::from([(Adapter::Go, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
+        assert!(document.contains("\t..\n"), "{document}");
+        assert!(
+            document.contains("\t../zed_modules/acme/tool\n"),
+            "{document}"
+        );
+        assert!(!document.contains("\t./\n"), "{document}");
+        assert!(!document.contains("\t./zed_modules"), "{document}");
     }
 
     #[test]
