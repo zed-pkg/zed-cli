@@ -115,6 +115,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
                 url: "https://localhost/zed-local/consumer".to_string(),
             },
             keywords: Vec::new(),
+            // The mock consumer is deliberately language-neutral: r2g drives
+            // the target/ecosystem it is testing through the install flags.
+            language: Default::default(),
+            ecosystem: Default::default(),
         },
         dependencies,
         build_dependencies: BTreeMap::new(),
@@ -160,6 +164,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         Adapter::None,
         true,
         None,
+        // r2g deliberately installs whatever package is under test into a
+        // synthetic consumer that has no toolchain of its own, so the
+        // ecosystem guard has nothing meaningful to check here.
+        true,
     )?;
 
     // Ask the consumer manifest where install materialized the tree rather

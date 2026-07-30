@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -6,6 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use zed_interfaces::language::{Ecosystem, Language, detect_ecosystems};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
     BuildSection, Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
@@ -297,6 +298,14 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
         ("build.gradle.kts", "java"),
         ("Gemfile", "ruby"),
         ("composer.json", "php"),
+        ("Package.swift", "swift"),
+        ("shard.yml", "crystal"),
+        ("dune-project", "ocaml"),
+        ("build.zig.zon", "zig"),
+        ("DESCRIPTION", "r"),
+        // Julia's Project.toml is checked after the more specific markers
+        // above so a repo carrying both is not mistaken for Julia.
+        ("Project.toml", "julia"),
         ("CMakeLists.txt", "cpp"),
     ];
     if let Some((_, target)) = MARKERS
@@ -334,10 +343,20 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
 
 /// Pick the ecosystem adapter from the same language inference used for target
 /// slicing so marker-only and structure-only consumer folders agree.
+///
+/// Deriving from `detect_target` rather than a second marker table is what keeps
+/// the two from drifting: a project that resolves the `golang` slice of a
+/// dependency necessarily gets the Go adapter that wires it.
 pub(crate) fn detect_adapter(project: &Path) -> Adapter {
     match detect_target(project).as_deref() {
         Some("node") => Adapter::Node,
         Some("java") => Adapter::Java,
+        Some("go") => Adapter::Go,
+        Some("python") => Adapter::Python,
+        Some("rust") => Adapter::Rust,
+        Some("dart") => Adapter::Dart,
+        // Every other language installs into zed_modules/ and is described in
+        // .zed/paths.json; only these six have native wiring zed can emit.
         _ => Adapter::None,
     }
 }
@@ -346,9 +365,274 @@ fn named_adapter(value: &str) -> Result<Adapter> {
     match value {
         "node" => Ok(Adapter::Node),
         "java" => Ok(Adapter::Java),
+        "go" => Ok(Adapter::Go),
+        "python" => Ok(Adapter::Python),
+        "rust" => Ok(Adapter::Rust),
+        "dart" => Ok(Adapter::Dart),
         "none" => Ok(Adapter::None),
-        other => bail!("unsupported install adapter `{other}`"),
+        other => bail!(
+            "unsupported install adapter `{other}`; expected one of {}",
+            zed_interfaces::manifest::ADAPTERS.join(", ")
+        ),
     }
+}
+
+#[cfg(test)]
+#[test]
+fn every_manifest_adapter_name_maps_to_an_adapter() {
+    // `ADAPTERS` in zed-interfaces is what validates manifests; this mapping is
+    // what acts on them. If they drift, a manifest passes validation and then
+    // fails at install with "unsupported adapter".
+    for name in zed_interfaces::manifest::ADAPTERS {
+        assert!(
+            named_adapter(name).is_ok(),
+            "manifest accepts adapter `{name}` but the CLI cannot map it"
+        );
+    }
+}
+
+/// Every ecosystem this project's own root files identify. A set, because
+/// polyglot repos are normal: a Rust service with a TypeScript frontend is both
+/// `cargo` and `npm`, and a dependency for either legitimately belongs there.
+///
+/// An unreadable directory yields an empty set, which
+/// [`ecosystem_mismatch`] treats as "cannot verify" rather than "wrong".
+fn project_ecosystems(project: &Path) -> BTreeSet<Ecosystem> {
+    let Ok(entries) = fs::read_dir(project) else {
+        return BTreeSet::new();
+    };
+    let names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    detect_ecosystems(names.iter().map(String::as_str))
+}
+
+/// Names of sibling packages that would suit this project, for a wrong-language
+/// install. Derived locally from the naming convention — `<base>-<language>` —
+/// by swapping the dependency's language suffix for one matching an ecosystem
+/// the project actually has.
+///
+/// These are suggestions, not registry lookups: the message says "try", because
+/// a repo need not publish every language.
+fn sibling_suggestions(dep_name: &str, dep_language: Language, wanted: &BTreeSet<Ecosystem>) -> Vec<String> {
+    let suffix = format!("-{}", dep_language.as_str());
+    let Some(base) = dep_name.strip_suffix(&suffix) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = LANGUAGES_BY_ECOSYSTEM
+        .iter()
+        .filter(|(eco, _)| wanted.contains(eco))
+        .map(|(_, lang)| format!("{base}-{lang}"))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The languages worth suggesting per ecosystem — the ones these client repos
+/// actually publish. Deliberately not every [`Language`]: suggesting `-clojure`
+/// to a Gradle user because Clojure is a JVM language would be noise.
+const LANGUAGES_BY_ECOSYSTEM: &[(Ecosystem, &str)] = &[
+    (Ecosystem::Npm, "nodejs"),
+    (Ecosystem::Jvm, "java"),
+    (Ecosystem::Jvm, "kotlin"),
+    (Ecosystem::Gomod, "golang"),
+    (Ecosystem::Pypi, "python"),
+    (Ecosystem::Cargo, "rust"),
+    (Ecosystem::Pub, "dart"),
+    (Ecosystem::Gem, "ruby"),
+    (Ecosystem::Composer, "php"),
+    (Ecosystem::Nuget, "csharp"),
+    (Ecosystem::Swiftpm, "swift"),
+    (Ecosystem::Hex, "gleam"),
+];
+
+/// Emit the native wiring file for each adapter that needs one.
+///
+/// Go and Python get zero-touch integration: both honor an environment variable
+/// (`GOWORK`, `PYTHONPATH`), so pointing the toolchain at the generated file is
+/// the whole setup. Cargo and pub have **no** such override — nothing outside
+/// `Cargo.toml` / `pubspec.yaml` can add a dependency path — so those two get a
+/// fragment plus the one line to paste. Saying so is better than emitting a
+/// file that silently does nothing.
+fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>>) -> Result<()> {
+    let zed_dir = project.join(".zed");
+    for (adapter, paths) in roots {
+        if paths.is_empty() {
+            continue;
+        }
+        let mut rel: Vec<String> = paths.iter().map(|p| relative_to(project, p)).collect();
+        rel.sort();
+        rel.dedup();
+        fs::create_dir_all(&zed_dir)?;
+        match adapter {
+            Adapter::Go => {
+                // A go.work `use` block is the only non-invasive way to add
+                // modules to a Go build; editing go.mod `replace` lines would
+                // mean rewriting a file the user owns.
+                let mut doc = String::from("go 1.21\n\nuse (\n\t./\n");
+                for p in &rel {
+                    doc.push_str(&format!("\t./{p}\n"));
+                }
+                doc.push_str(")\n");
+                let path = zed_dir.join("go.work");
+                fs::write(&path, doc)?;
+                println!(
+                    "wrote {} ({} module(s)); use: GOWORK=\"$(pwd)/.zed/go.work\" go build ...",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Python => {
+                let path = zed_dir.join("pythonpath");
+                fs::write(&path, format!("{}\n", rel.join(":")))?;
+                println!(
+                    "wrote {} ({} path(s)); use: PYTHONPATH=\"$(cat .zed/pythonpath)\" python ...",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Rust => {
+                let mut doc = String::from(
+                    "# Generated by `zed install`. Cargo has no environment-variable\n\
+                     # path override, so add this to .cargo/config.toml yourself:\n\
+                     #\n\
+                     #   paths = [\"zed_modules/<org>/<name>\", ...]\n\
+                     #\n\
+                     # or copy the block below into it.\n",
+                );
+                doc.push_str("paths = [\n");
+                for p in &rel {
+                    doc.push_str(&format!("    \"{p}\",\n"));
+                }
+                doc.push_str("]\n");
+                let path = zed_dir.join("cargo-paths.toml");
+                fs::write(&path, doc)?;
+                println!(
+                    "wrote {} ({} crate(s)); Cargo needs this merged into .cargo/config.toml manually",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Dart => {
+                let mut doc = String::from(
+                    "# Generated by `zed install`. pub has no environment-variable\n\
+                     # path override; merge these entries under `dependencies:` in\n\
+                     # your pubspec.yaml.\n",
+                );
+                for p in &rel {
+                    let name = Path::new(p)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.clone());
+                    doc.push_str(&format!("{name}:\n  path: {p}\n"));
+                }
+                let path = zed_dir.join("pub-deps.yaml");
+                fs::write(&path, doc)?;
+                println!(
+                    "wrote {} ({} package(s)); pub needs this merged into pubspec.yaml manually",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Auto | Adapter::None | Adapter::Node | Adapter::Java => {}
+        }
+    }
+    Ok(())
+}
+
+/// One installed package, as recorded in `.zed/paths.json`.
+struct WiredPackage {
+    key: String,
+    version: String,
+    language: Language,
+    ecosystem: Ecosystem,
+    path: PathBuf,
+}
+
+/// Write `.zed/paths.json`: every installed package with its language,
+/// ecosystem and project-relative path.
+///
+/// This is the adapter-independent contract. zed federates ~30 ecosystems but
+/// can only ship first-class wiring for a handful, so rather than leave the
+/// rest with nothing, every install emits one machine-readable index any build
+/// system — Makefile, CMake, sbt, a shell script — can read to find what was
+/// installed. Written for *all* adapters, including node and java, so tooling
+/// never has to care which one ran.
+fn write_paths_index(project: &Path, modules_dir: &str, packages: &[WiredPackage]) -> Result<()> {
+    let entries: Vec<serde_json::Value> = packages
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "package": p.key,
+                "version": p.version,
+                "language": p.language.as_str(),
+                "ecosystem": p.ecosystem.as_str(),
+                "path": relative_to(project, &p.path),
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "modules_dir": modules_dir,
+        "packages": entries,
+    });
+    let path = project.join(".zed").join("paths.json");
+    fs::create_dir_all(path.parent().context("paths.json parent")?)?;
+    fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&doc)?))?;
+    Ok(())
+}
+
+/// `path` expressed relative to `project` when it sits underneath it, else
+/// absolute. Keeps the emitted wiring files portable across the symlink/copy
+/// modes and usable from inside a container build.
+fn relative_to(project: &Path, path: &Path) -> String {
+    path.strip_prefix(project)
+        .map(|rel| rel.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+/// The error text for installing a single-language package into a project that
+/// cannot consume it — `None` when the install is fine.
+///
+/// This is the guard that makes per-language packages safe: without it a Node
+/// project can `zed add acme/acme-clients-java` and get a tree of `.java` files
+/// its toolchain will never look at, with no complaint at any point.
+///
+/// Deliberately permissive in two cases, because a false rejection is worse
+/// than a missed catch:
+///   * the dependency claims no ecosystem (`universal`) — nothing to contradict;
+///   * the project has no recognizable ecosystem at all (a fresh dir, a plain
+///     Makefile) — unverifiable, so it is allowed through.
+fn ecosystem_mismatch(
+    dep_key: &str,
+    dep_name: &str,
+    dep_language: Language,
+    dep_ecosystem: Ecosystem,
+    project: &BTreeSet<Ecosystem>,
+) -> Option<String> {
+    if dep_ecosystem.is_default() || project.is_empty() || project.contains(&dep_ecosystem) {
+        return None;
+    }
+    let found: Vec<&str> = project.iter().map(|e| e.as_str()).collect();
+    let mut message = format!(
+        "`{dep_key}` targets the `{dep_ecosystem}` ecosystem, but this project looks like `{}`",
+        found.join("`, `")
+    );
+    let suggestions = sibling_suggestions(dep_name, dep_language, project);
+    if !suggestions.is_empty() {
+        let (org, _) = dep_key.split_once('/').unwrap_or(("", dep_key));
+        let listed: Vec<String> = suggestions
+            .iter()
+            .map(|name| format!("{org}/{name}"))
+            .collect();
+        message.push_str(&format!("\n  try instead: {}", listed.join(" or ")));
+    }
+    message.push_str(
+        "\n  if this is deliberate, re-run with --allow-ecosystem-mismatch \
+         (ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH=1)",
+    );
+    Some(message)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -360,6 +644,7 @@ pub fn install(
     adapter: Adapter,
     allow_build: bool,
     target: Option<&str>,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
     install_with_frozen_policy(
         project,
@@ -370,6 +655,7 @@ pub fn install(
         allow_build,
         target,
         true,
+        allow_ecosystem_mismatch,
     )
 }
 
@@ -385,6 +671,7 @@ pub(crate) fn install_frozen_lock_only(
     adapter: Adapter,
     allow_build: bool,
     target: Option<&str>,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
     install_with_frozen_policy(
         project,
@@ -395,6 +682,7 @@ pub(crate) fn install_frozen_lock_only(
         allow_build,
         target,
         false,
+        allow_ecosystem_mismatch,
     )
 }
 
@@ -408,6 +696,7 @@ fn install_with_frozen_policy(
     allow_build: bool,
     target: Option<&str>,
     validate_manifest_requirements: bool,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
@@ -423,6 +712,7 @@ fn install_with_frozen_policy(
         allow_build,
         target,
         validate_manifest_requirements,
+        allow_ecosystem_mismatch,
     )
 }
 
@@ -468,6 +758,7 @@ fn install_locked(
     allow_build: bool,
     target: Option<&str>,
     validate_manifest_requirements: bool,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
     let manifest = read_manifest(project)?;
     let configured_adapter = manifest
@@ -489,6 +780,8 @@ fn install_locked(
         other => other,
     };
     let resolved_target = resolve_target(project, &manifest, target);
+    // Computed once: the guard consults it per dependency.
+    let project_ecos = project_ecosystems(project);
     let reg = registry_for(&cfg.registry)?;
     let lock_path = project.join(LOCKFILE_FILE);
 
@@ -614,6 +907,11 @@ fn install_locked(
     let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut used_node_adapter = false;
     let mut used_java_adapter = false;
+    // Adapters whose wiring is one project-level file rather than per-package
+    // links: the installed roots each one needs to list.
+    let mut wired_roots: BTreeMap<Adapter, Vec<PathBuf>> = BTreeMap::new();
+    // Every installed package, for the adapter-independent `.zed/paths.json`.
+    let mut wired_packages: Vec<WiredPackage> = Vec::new();
     for vm in resolved.values() {
         let pkg_dir = ensure_artifact(reg.as_ref(), store, vm)?;
         let pkg_manifest = read_manifest(&pkg_dir).ok();
@@ -635,6 +933,22 @@ fn install_locked(
             )?,
             None => pkg_dir.clone(),
         };
+        // A per-language package (e.g. `acme-clients-java`) states the
+        // ecosystem it is for. Refuse to drop it into a project that has no
+        // such toolchain: the files would sit in zed_modules/ unread, and the
+        // consumer would debug a "missing" client that installed "fine".
+        if !allow_ecosystem_mismatch
+            && let Some(pm) = pkg_manifest.as_ref()
+            && let Some(problem) = ecosystem_mismatch(
+                key.as_str(),
+                &vm.name,
+                pm.package.language,
+                pm.package.ecosystem(),
+                &project_ecos,
+            )
+        {
+            bail!("{problem}");
+        }
         // Polyglot dependency: narrow the link source to this consumer's
         // language subtree, so a Python project gets `python/` at its import
         // root instead of a tree with the Node and Go sources beside it.
@@ -700,8 +1014,37 @@ fn install_locked(
                     }
                 }
             }
+            // Go, Python, Rust and Dart need no per-package linking: their
+            // wiring is one project-level file listing the installed roots,
+            // written after the loop. Record the root and move on.
+            Adapter::Go => wired_roots.entry(Adapter::Go).or_default().push(dest.clone()),
+            Adapter::Python => wired_roots
+                .entry(Adapter::Python)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Rust => wired_roots
+                .entry(Adapter::Rust)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Dart => wired_roots
+                .entry(Adapter::Dart)
+                .or_default()
+                .push(dest.clone()),
             Adapter::Auto | Adapter::None => {}
         }
+        wired_packages.push(WiredPackage {
+            key: format!("{}/{}", vm.org, vm.name),
+            version: vm.version.clone(),
+            language: pkg_manifest
+                .as_ref()
+                .map(|pm| pm.package.language)
+                .unwrap_or_default(),
+            ecosystem: pkg_manifest
+                .as_ref()
+                .map(|pm| pm.package.ecosystem())
+                .unwrap_or_default(),
+            path: dest.clone(),
+        });
         installed.push((format!("{}/{}", vm.org, vm.name), vm.version.clone()));
         shas.push(vm.sha256.clone());
     }
@@ -741,6 +1084,8 @@ fn install_locked(
             node_path_file.display()
         );
     }
+    write_toolchain_wiring(project, &wired_roots)?;
+    write_paths_index(project, modules_dir, &wired_packages)?;
 
     let mut lock = Lockfile::default();
     for vm in resolved.values() {
@@ -872,6 +1217,10 @@ fn build_artifact(
                     url: "https://localhost/zed-build/staging".to_string(),
                 },
                 keywords: Vec::new(),
+                // A synthetic staging manifest, not a published package: no
+                // language claim, so nothing ecosystem-gates it.
+                language: Default::default(),
+                ecosystem: Default::default(),
             },
             dependencies: build_deps,
             build_dependencies: BTreeMap::new(),
@@ -898,6 +1247,12 @@ fn build_artifact(
             // Build dependencies are toolchain, not the consumer's language:
             // take them whole rather than slicing them to a target.
             None,
+            // The staging manifest is synthesized from build_deps a few lines
+            // up, so requirement validation is trivially satisfied; keep it on
+            // so a genuinely unsatisfiable build dep still surfaces here.
+            true,
+            // Not ecosystem-gated, for the same reason as the target above: a
+            // Java codegen tool is a legitimate build dep of a Python package.
             true,
         )?;
     }
@@ -1238,12 +1593,86 @@ pub fn gc(cfg: &Config, older_than: &str, dry_run: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 // add / remove
 
+/// Candidate package names to try for `name`, in priority order, when routing a
+/// multi-language repo to the variant this project can build against.
+///
+/// A repo publishing per-language packages has no package at its bare name — a
+/// polyglot `zed publish` emits only `<name>-<language>`. So `zed add
+/// acme/acme-clients` in a Gradle project should reach `acme-clients-java`, and
+/// `zed add acme/acme-clients-node` should reach `-nodejs` when that is the
+/// spelling the author chose. Both are the same operation: append or swap a
+/// language suffix and see what exists.
+///
+/// Returns names *excluding* `name` itself; the caller tries the exact name
+/// first so an existing package always wins over any inference.
+fn language_route_candidates(name: &str, project_language: Option<&str>) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut push = |candidate: String| {
+        if candidate != name && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    // Case 1: the name already ends in a language this project shares — the
+    // author just spelled it differently (`-node` vs `-nodejs`, `-go` vs
+    // `-golang`). Offer every synonym of that language.
+    for (token, language) in KNOWN_LANGUAGE_TOKENS {
+        if let Some(base) = name.strip_suffix(&format!("-{token}")) {
+            for (other, other_language) in KNOWN_LANGUAGE_TOKENS {
+                if other_language == language {
+                    push(format!("{base}-{other}"));
+                }
+            }
+        }
+    }
+
+    // Case 2: a bare repo name plus what this project is. Try the canonical
+    // token first, then its synonyms, so `-nodejs` beats `-js`.
+    if let Some(detected) = project_language
+        && let Some(language) = Language::from_token(detected)
+        && !language.is_default()
+    {
+        push(format!("{name}-{}", language.as_str()));
+        for (token, token_language) in KNOWN_LANGUAGE_TOKENS {
+            if *token_language == language {
+                push(format!("{name}-{token}"));
+            }
+        }
+    }
+    candidates
+}
+
+/// Suffix spellings worth probing, paired with the language they mean. Only the
+/// forms a package author plausibly publishes under — not every alias
+/// [`Language::from_token`] accepts, since each entry costs a registry lookup.
+const KNOWN_LANGUAGE_TOKENS: &[(&str, Language)] = &[
+    ("nodejs", Language::Nodejs),
+    ("node", Language::Nodejs),
+    ("typescript", Language::Nodejs),
+    ("ts", Language::Nodejs),
+    ("js", Language::Nodejs),
+    ("golang", Language::Golang),
+    ("go", Language::Golang),
+    ("python", Language::Python),
+    ("py", Language::Python),
+    ("java", Language::Java),
+    ("kotlin", Language::Kotlin),
+    ("rust", Language::Rust),
+    ("dart", Language::Dart),
+    ("ruby", Language::Ruby),
+    ("php", Language::Php),
+    ("csharp", Language::Csharp),
+    ("dotnet", Language::Csharp),
+    ("swift", Language::Swift),
+    ("gleam", Language::Gleam),
+];
+
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let (rest, req) = match spec.split_once('@') {
         Some((rest, req)) => (rest.to_string(), Some(req.to_string())),
         None => (spec.to_string(), None),
     };
-    let (org, name) = split_key(&rest)?;
+    let (org, mut name) = split_key(&rest)?;
     let req = match req {
         Some(req) => {
             if req.trim().is_empty() {
@@ -1254,7 +1683,48 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         }
         None => {
             let reg = registry_for(&cfg.registry)?;
-            let pkg = reg.get_package(&org, &name)?;
+            // Exact name first: an existing package always beats inference.
+            let pkg = match reg.get_package(&org, &name) {
+                Ok(pkg) => pkg,
+                Err(original) => {
+                    // Nothing published under that name. Route to the language
+                    // variant this project can actually consume, rather than
+                    // making the user work out the suffix themselves.
+                    let detected = detect_target(project);
+                    let candidates = language_route_candidates(&name, detected.as_deref());
+                    let routed = candidates
+                        .iter()
+                        .find_map(|candidate| {
+                            reg.get_package(&org, candidate)
+                                .ok()
+                                .map(|pkg| (candidate.clone(), pkg))
+                        })
+                        .ok_or_else(|| {
+                            if candidates.is_empty() {
+                                original
+                            } else {
+                                anyhow::anyhow!(
+                                    "no package `{org}/{name}`; also tried {} for this project",
+                                    candidates
+                                        .iter()
+                                        .map(|c| format!("`{org}/{c}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )
+                            }
+                        })?;
+                    println!(
+                        "{org}/{name} is not published; using {org}/{} for this project{}",
+                        routed.0,
+                        detected
+                            .as_deref()
+                            .map(|d| format!(" ({d})"))
+                            .unwrap_or_default()
+                    );
+                    name = routed.0;
+                    routed.1
+                }
+            };
             let latest = pkg
                 .latest
                 .with_context(|| format!("{org}/{name} has no published versions"))?;
@@ -1281,6 +1751,7 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         // Re-install after the manifest edit; the target comes from
         // [install].target or project inference, same as a bare `zed install`.
         None,
+        false,
     )?;
     Ok(())
 }
@@ -1311,6 +1782,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         // Re-install after the manifest edit; the target comes from
         // [install].target or project inference, same as a bare `zed install`.
         None,
+        false,
     )?;
     Ok(())
 }
@@ -1666,5 +2138,224 @@ url = "https://localhost/consumer/app"
         for bad in ["noslash", "/name", "org/", "/"] {
             assert!(split_key(bad).is_err(), "`{bad}` must not split");
         }
+    }
+
+    fn ecos(list: &[Ecosystem]) -> BTreeSet<Ecosystem> {
+        list.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_matching_ecosystem_installs_without_complaint() {
+        assert!(
+            ecosystem_mismatch(
+                "acme/acme-clients-java",
+                "acme-clients-java",
+                Language::Java,
+                Ecosystem::Jvm,
+                &ecos(&[Ecosystem::Jvm]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_wrong_language_package_is_refused_and_names_the_right_one() {
+        // The core guard: a Java client in a Node project would sit in
+        // zed_modules/ unread, so this must fail loudly and point at the
+        // sibling that would work.
+        let msg = ecosystem_mismatch(
+            "acme/acme-clients-java",
+            "acme-clients-java",
+            Language::Java,
+            Ecosystem::Jvm,
+            &ecos(&[Ecosystem::Npm]),
+        )
+        .expect("a jvm package in an npm-only project must be refused");
+        assert!(msg.contains("`jvm`"), "{msg}");
+        assert!(msg.contains("`npm`"), "{msg}");
+        assert!(msg.contains("acme/acme-clients-nodejs"), "{msg}");
+        // The escape hatch is discoverable from the error itself.
+        assert!(msg.contains("--allow-ecosystem-mismatch"), "{msg}");
+    }
+
+    #[test]
+    fn a_polyglot_project_accepts_a_package_for_any_of_its_ecosystems() {
+        // A Rust service with a TS frontend legitimately consumes either.
+        let project = ecos(&[Ecosystem::Cargo, Ecosystem::Npm]);
+        for (name, lang, eco) in [
+            ("acme-clients-nodejs", Language::Nodejs, Ecosystem::Npm),
+            ("acme-clients-rust", Language::Rust, Ecosystem::Cargo),
+        ] {
+            assert!(
+                ecosystem_mismatch(&format!("acme/{name}"), name, lang, eco, &project).is_none(),
+                "{name} must install in a cargo+npm project"
+            );
+        }
+        // …but still not a third one it has no toolchain for.
+        assert!(
+            ecosystem_mismatch(
+                "acme/acme-clients-golang",
+                "acme-clients-golang",
+                Language::Golang,
+                Ecosystem::Gomod,
+                &project,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn an_untagged_package_is_never_gated() {
+        // Every package published before language tagging claims no ecosystem;
+        // gating those would break existing installs everywhere.
+        assert!(
+            ecosystem_mismatch(
+                "acme/http-kit",
+                "http-kit",
+                Language::Universal,
+                Ecosystem::Universal,
+                &ecos(&[Ecosystem::Npm]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_recognizable_ecosystem_is_not_gated() {
+        // Unverifiable is not the same as wrong: a fresh directory or a plain
+        // Makefile project must still be able to install anything.
+        assert!(
+            ecosystem_mismatch(
+                "acme/acme-clients-java",
+                "acme-clients-java",
+                Language::Java,
+                Ecosystem::Jvm,
+                &BTreeSet::new(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn jvm_projects_are_offered_both_jvm_language_variants() {
+        let msg = ecosystem_mismatch(
+            "acme/acme-clients-nodejs",
+            "acme-clients-nodejs",
+            Language::Nodejs,
+            Ecosystem::Npm,
+            &ecos(&[Ecosystem::Jvm]),
+        )
+        .expect("npm package in a jvm project must be refused");
+        assert!(msg.contains("acme/acme-clients-java"), "{msg}");
+        assert!(msg.contains("acme/acme-clients-kotlin"), "{msg}");
+    }
+
+    #[test]
+    fn a_package_not_following_the_suffix_convention_still_errors_without_suggestions() {
+        // A single-language package whose name does not end in its language
+        // cannot have siblings guessed, but must still be refused.
+        let msg = ecosystem_mismatch(
+            "acme/jackson-helpers",
+            "jackson-helpers",
+            Language::Java,
+            Ecosystem::Jvm,
+            &ecos(&[Ecosystem::Npm]),
+        )
+        .expect("still a mismatch");
+        assert!(msg.contains("`jvm`"), "{msg}");
+        assert!(!msg.contains("try instead"), "no basis to suggest: {msg}");
+    }
+
+    #[test]
+    fn detect_adapter_recognizes_each_supported_toolchain() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (marker, expected) in [
+            ("package.json", Adapter::Node),
+            ("go.mod", Adapter::Go),
+            ("pyproject.toml", Adapter::Python),
+            ("Cargo.toml", Adapter::Rust),
+            ("pubspec.yaml", Adapter::Dart),
+            ("pom.xml", Adapter::Java),
+        ] {
+            let dir = tmp.path().join(marker.replace('.', "_"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(marker), "").unwrap();
+            assert_eq!(detect_adapter(&dir), expected, "marker {marker}");
+        }
+        // No marker at all must stay `None`, so a fresh project can still fall
+        // through to each dependency's own declared adapter.
+        let empty = tmp.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(detect_adapter(&empty), Adapter::None);
+    }
+
+    #[test]
+    fn project_ecosystems_reads_the_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let found = project_ecosystems(tmp.path());
+        assert!(found.contains(&Ecosystem::Npm));
+        assert!(found.contains(&Ecosystem::Cargo));
+        assert!(!found.contains(&Ecosystem::Jvm));
+    }
+
+    #[test]
+    fn a_bare_repo_name_routes_to_the_project_language() {
+        // `zed add acme/acme-clients` in a Gradle project should reach the Java
+        // package; the canonical token is tried before any synonym.
+        let c = language_route_candidates("acme-clients", Some("java"));
+        assert_eq!(c.first().map(String::as_str), Some("acme-clients-java"));
+
+        let node = language_route_candidates("acme-clients", Some("node"));
+        assert_eq!(node.first().map(String::as_str), Some("acme-clients-nodejs"));
+        assert!(node.contains(&"acme-clients-ts".to_string()));
+
+        let go = language_route_candidates("acme-clients", Some("go"));
+        assert_eq!(go.first().map(String::as_str), Some("acme-clients-golang"));
+    }
+
+    #[test]
+    fn a_misspelled_language_suffix_routes_to_its_synonyms() {
+        // `-node` must reach `-nodejs` and vice versa, so a user who guesses
+        // either spelling lands on whichever the author published.
+        let from_short = language_route_candidates("acme-clients-node", None);
+        assert!(from_short.contains(&"acme-clients-nodejs".to_string()), "{from_short:?}");
+        let from_long = language_route_candidates("acme-clients-nodejs", None);
+        assert!(from_long.contains(&"acme-clients-node".to_string()), "{from_long:?}");
+
+        let go = language_route_candidates("acme-clients-go", None);
+        assert!(go.contains(&"acme-clients-golang".to_string()), "{go:?}");
+    }
+
+    #[test]
+    fn routing_never_suggests_the_name_that_was_asked_for() {
+        // The caller already tried the exact name; repeating it would be a
+        // wasted registry round-trip and a confusing message.
+        for name in ["acme-clients", "acme-clients-java", "acme-clients-nodejs"] {
+            let c = language_route_candidates(name, Some("java"));
+            assert!(!c.contains(&name.to_string()), "{name} in {c:?}");
+        }
+    }
+
+    #[test]
+    fn routing_never_crosses_between_languages() {
+        // A Java suffix must not produce Node candidates: that would install a
+        // different client than the user asked for.
+        let c = language_route_candidates("acme-clients-java", None);
+        for candidate in &c {
+            assert!(
+                !candidate.contains("node") && !candidate.contains("golang"),
+                "java routing produced {candidate}"
+            );
+        }
+        // Java and Kotlin share an ecosystem but are different languages.
+        assert!(!c.contains(&"acme-clients-kotlin".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn a_bare_name_with_no_detectable_project_language_has_nothing_to_route_to() {
+        assert!(language_route_candidates("acme-clients", None).is_empty());
+        assert!(language_route_candidates("http-kit", Some("cobol")).is_empty());
     }
 }

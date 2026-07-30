@@ -38,6 +38,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_build,
             target,
             allow_no_manifest,
+            allow_ecosystem_mismatch,
         } => manifestless::install(
             &cwd,
             &cfg,
@@ -48,6 +49,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_build,
             target.as_deref(),
             allow_no_manifest,
+            allow_ecosystem_mismatch,
         )
         .map(|_| ()),
         Cmd::Completions { shell } => {

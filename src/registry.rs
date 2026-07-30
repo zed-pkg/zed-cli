@@ -168,8 +168,8 @@ impl Registry for FileRegistry {
             repo_url: meta.manifest.package.repository.url.clone(),
             version_scheme: meta.manifest.package.version_scheme,
             latest: None,
-            versions: Vec::new(),
             tags: meta.manifest.package.keywords.clone(),
+            versions: Vec::new(),
         });
         if !pkg.versions.contains(version) {
             pkg.versions.push(version.clone());
@@ -178,6 +178,8 @@ impl Registry for FileRegistry {
         pkg.version_scheme = meta.manifest.package.version_scheme;
         pkg.latest = pkg.versions.first().cloned();
         pkg.description = meta.manifest.package.description.clone();
+        // Keywords are refreshed from the newest publish, the same way the
+        // description is, so discovery reflects the current manifest.
         pkg.tags = meta.manifest.package.keywords.clone();
         fs::write(
             self.package_json(org, name),
