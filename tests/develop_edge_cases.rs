@@ -119,8 +119,7 @@ fn write_executable(path: &Path, content: &str) {
         fs::create_dir_all(parent).expect("create executable parent");
     }
     fs::write(path, content).expect("write executable fixture");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-        .expect("mark executable fixture");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("mark executable fixture");
 }
 
 #[test]
@@ -131,10 +130,7 @@ fn global_options_before_the_alias_still_route_to_develop() {
 
     let output = fixture
         .command()
-        .args([
-            "--registry=https://registry.example.invalid/",
-            "--home",
-        ])
+        .args(["--registry=https://registry.example.invalid/", "--home"])
         .arg(&explicit_home)
         .args([
             "dev",
@@ -211,7 +207,10 @@ fn unknown_inline_option_values_are_not_echoed_back() {
 
     let stderr = assert_failure(&output);
     assert!(stderr.contains("--mystery"), "{stderr}");
-    assert!(!stderr.contains(secret), "secret leaked in diagnostic: {stderr}");
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked in diagnostic: {stderr}"
+    );
 }
 
 #[test]
@@ -222,7 +221,14 @@ fn invalid_boolean_environment_values_fail_closed() {
     let output = fixture
         .command()
         .env("ZED_DEV_NO_INSTALL", "sometimes")
-        .args(["dev", "--nix", "never", "--python-venv", "never", "--print-env"])
+        .args([
+            "dev",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+            "--print-env",
+        ])
         .output()
         .expect("run develop with invalid boolean environment");
 
@@ -325,10 +331,8 @@ fn missing_shell_errors_name_the_selected_executable() {
 
     let stderr = assert_failure(&output);
     assert!(stderr.contains("starting development shell"), "{stderr}");
-    assert!(
-        stderr.contains(&missing.to_string_lossy().into_owned()),
-        "{stderr}"
-    );
+    let missing_display = missing.to_string_lossy();
+    assert!(stderr.contains(missing_display.as_ref()), "{stderr}");
 }
 
 #[test]
@@ -377,8 +381,7 @@ fn project_discovery_ignores_generated_vcs_and_too_deep_directories() {
     ] {
         let directory = fixture.root.join(relative);
         fs::create_dir_all(&directory).expect("create excluded project");
-        fs::write(directory.join("package.json"), "{}\n")
-            .expect("write excluded native manifest");
+        fs::write(directory.join("package.json"), "{}\n").expect("write excluded native manifest");
     }
 
     let environment = fixture.print_env(&[]);
@@ -504,8 +507,10 @@ fn language_adapter_files_are_reflected_in_the_managed_environment() {
     fs::write(metadata.join("go.work"), "go 1.23\n").expect("write Go workspace adapter");
 
     let environment = fixture.print_env(&[]);
-    let python_paths: Vec<PathBuf> =
-        env::split_paths(OsStr::new(environment.get("PYTHONPATH").expect("PYTHONPATH"))).collect();
+    let python_paths: Vec<PathBuf> = env::split_paths(OsStr::new(
+        environment.get("PYTHONPATH").expect("PYTHONPATH"),
+    ))
+    .collect();
     let class_paths: Vec<PathBuf> =
         env::split_paths(OsStr::new(environment.get("CLASSPATH").expect("CLASSPATH"))).collect();
 
@@ -599,10 +604,8 @@ fn required_python_mode_fails_for_an_explicit_missing_interpreter() {
 
     let stderr = assert_failure(&output);
     assert!(stderr.contains("--python-venv required"), "{stderr}");
-    assert!(
-        stderr.contains(&missing.to_string_lossy().into_owned()),
-        "{stderr}"
-    );
+    let missing_display = missing.to_string_lossy();
+    assert!(stderr.contains(missing_display.as_ref()), "{stderr}");
 }
 
 #[test]
@@ -626,7 +629,10 @@ fn malformed_existing_virtual_environments_fail_before_shell_startup() {
         .expect("run malformed venv");
 
     let stderr = assert_failure(&output);
-    assert!(stderr.contains("not a usable Python virtual environment"), "{stderr}");
+    assert!(
+        stderr.contains("not a usable Python virtual environment"),
+        "{stderr}"
+    );
     assert!(stderr.contains(".venv"), "{stderr}");
 }
 
@@ -650,7 +656,10 @@ fn frozen_mode_without_a_zed_manifest_or_lockfile_fails_closed() {
 
     let stderr = assert_failure(&output);
     assert!(stderr.contains("--frozen requires"), "{stderr}");
-    assert!(stderr.contains(".zpkg.toml") || stderr.contains(".zpkg.lock"), "{stderr}");
+    assert!(
+        stderr.contains(".zpkg.toml") || stderr.contains(".zpkg.lock"),
+        "{stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -701,7 +710,10 @@ fn shell_name_controls_the_command_argument_protocol() {
             .collect();
         assert_eq!(
             actual,
-            expected.iter().map(|value| value.to_string()).collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>(),
             "unexpected arguments for {name}"
         );
     }
@@ -713,8 +725,10 @@ fn ai_profile_path_is_opt_in_and_precedes_generic_development_bins() {
     fixture.native_project();
 
     let default_environment = fixture.print_env(&[]);
-    let default_paths: Vec<PathBuf> =
-        env::split_paths(OsStr::new(default_environment.get("PATH").expect("default PATH"))).collect();
+    let default_paths: Vec<PathBuf> = env::split_paths(OsStr::new(
+        default_environment.get("PATH").expect("default PATH"),
+    ))
+    .collect();
     assert!(
         !default_paths.contains(&fixture.root.join(".zed/dev/profiles/ai/bin")),
         "AI profile path must not be enabled by default"
@@ -725,7 +739,10 @@ fn ai_profile_path_is_opt_in_and_precedes_generic_development_bins() {
         env::split_paths(OsStr::new(ai_environment.get("PATH").expect("AI PATH"))).collect();
     let ai = fixture.root.join(".zed/dev/profiles/ai/bin");
     let generic = fixture.root.join(".zed/dev/bin");
-    let ai_index = ai_paths.iter().position(|path| path == &ai).expect("AI path");
+    let ai_index = ai_paths
+        .iter()
+        .position(|path| path == &ai)
+        .expect("AI path");
     let generic_index = ai_paths
         .iter()
         .position(|path| path == &generic)
