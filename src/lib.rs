@@ -5,6 +5,7 @@ pub mod auth;
 pub mod cli;
 pub mod completion;
 pub mod config;
+pub mod dev;
 pub mod flags;
 pub mod manifestless;
 pub mod ops;
