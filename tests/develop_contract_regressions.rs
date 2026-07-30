@@ -75,7 +75,9 @@ fn print_env(root: &Path, extra: &[&str]) -> BTreeMap<String, String> {
         "never",
     ]);
     command.args(extra).arg("--print-env");
-    let output = command.output().expect("print managed development environment");
+    let output = command
+        .output()
+        .expect("print managed development environment");
     assert_success(&output);
     serde_json::from_slice(&output.stdout).expect("parse managed environment JSON")
 }
@@ -194,7 +196,10 @@ fn ai_profile_path_remains_explicitly_opt_in() {
         !default_paths.contains(&ai_bin),
         "AI tooling must not be enabled by default"
     );
-    assert!(!default.contains_key("ZED_DEV_PROFILE"));
+    assert_eq!(
+        default.get("ZED_DEV_PROFILE").map(String::as_str),
+        Some("default")
+    );
 
     let enabled = print_env(project.path(), &["--profile", "ai"]);
     let enabled_paths: Vec<PathBuf> =
