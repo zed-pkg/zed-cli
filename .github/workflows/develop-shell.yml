@@ -340,7 +340,7 @@ jobs:
             }
 
             $cmd = (Get-Command cmd.exe).Source
-            $cmdOutput = & $env:ZED_BIN dev --no-install --nix never --python-venv never --shell $cmd -c 'if not "%ZED_DEV%"=="1" exit /b 42 & echo cmd-ok'
+            $cmdOutput = & $env:ZED_BIN dev --no-install --nix never --python-venv never --shell $cmd -c 'if "%ZED_DEV%"=="1" echo cmd-ok'
             if ($LASTEXITCODE -ne 0) {
               throw "cmd.exe develop shell failed with $LASTEXITCODE"
             }
