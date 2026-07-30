@@ -92,6 +92,19 @@ fn root_help_advertises_the_canonical_command_and_alias() {
 }
 
 #[test]
+fn global_options_before_develop_help_still_select_the_develop_parser() {
+    let text = assert_success(&zed(&[
+        "--registry=https://registry.example.invalid/",
+        "--home=.zed-help-home",
+        "dev",
+        "--help",
+    ]));
+    assert!(text.contains("package-aware"), "{text}");
+    assert!(text.contains("--python-venv"), "{text}");
+    assert!(text.contains("--isolated-home"), "{text}");
+}
+
+#[test]
 fn legacy_command_help_is_not_polluted_by_develop_only_flags() {
     let text = assert_success(&zed(&["install", "--help"]));
     assert!(text.contains("install"), "{text}");
