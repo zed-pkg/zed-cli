@@ -1,0 +1,56 @@
+name: DEN-872 branch bootstrap
+
+on:
+  push:
+    branches:
+      - agent/den-872-zed-develop-shell
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-872-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Generate the feature patch
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d scripts/den-872-bootstrap.py.gz.b64 | gzip -dc > scripts/den-872-bootstrap.py
+          python3 scripts/den-872-bootstrap.py
+          cargo fmt --all
+          git diff --check
+      - name: Validate the generated tree
+        working-directory: zed-cli
+        run: |
+          cargo test --locked
+          cargo test --doc --locked
+          cargo clippy --all-targets --locked -- -D warnings
+      - name: Commit the validated implementation
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'feat(DEN-872): add zed develop virtual environment'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
