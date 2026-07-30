@@ -373,7 +373,7 @@ pub enum ReleaseCmd {
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
     },
-    /// Run fixed, credential-free npm and crates.io package preflight adapters
+    /// Run fixed, credential-free native package preflight adapters
     Preflight,
 }
 

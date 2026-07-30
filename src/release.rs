@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ pub struct ReleasePlan {
     pub source: ReleaseSource,
     pub zed: Vec<ZedReleaseArtifact>,
     pub native: Vec<NativeReleaseArtifact>,
+    pub forge: Vec<ForgeReleaseArtifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -35,6 +36,16 @@ pub struct ZedReleaseArtifact {
 pub struct NativeReleaseArtifact {
     pub target: String,
     pub registry: String,
+    pub package: String,
+    pub version: String,
+    pub dir: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ForgeReleaseArtifact {
+    pub target: String,
+    pub registry: String,
+    pub format: String,
     pub package: String,
     pub version: String,
     pub dir: String,
@@ -141,6 +152,18 @@ pub fn build_plan(manifest: &Manifest) -> ReleasePlan {
             dir: route.dir,
         })
         .collect();
+    let forge = manifest
+        .forge_release_routes()
+        .into_iter()
+        .map(|route| ForgeReleaseArtifact {
+            target: route.target,
+            registry: route.registry.as_str().to_string(),
+            format: route.format.as_str().to_string(),
+            package: route.package,
+            version: version.clone(),
+            dir: route.dir,
+        })
+        .collect();
 
     ReleasePlan {
         release_set: format!("{source_package}@{version}#{vcs_tag}"),
@@ -152,6 +175,7 @@ pub fn build_plan(manifest: &Manifest) -> ReleasePlan {
         },
         zed,
         native,
+        forge,
     }
 }
 
@@ -190,6 +214,41 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
                     &route.package,
                     &manifest.package.version,
                 )?;
+            }
+            NativeRegistry::MavenCentral => {
+                validate_maven_manifest(
+                    &target_root.join("pom.xml"),
+                    &route.target,
+                    &route.package,
+                    &manifest.package.version,
+                )?;
+            }
+            NativeRegistry::RubyGems => {
+                validate_rubygems_manifest(
+                    &target_root,
+                    &route.target,
+                    &route.package,
+                    &manifest.package.version,
+                )?;
+            }
+            NativeRegistry::NuGet => {
+                validate_nuget_manifest(
+                    &target_root,
+                    &route.target,
+                    &route.package,
+                    &manifest.package.version,
+                )?;
+            }
+            NativeRegistry::Packagist => {
+                validate_composer_manifest(
+                    &target_root.join("composer.json"),
+                    &route.target,
+                    &route.package,
+                    &manifest.package.version,
+                )?;
+            }
+            NativeRegistry::GoModules => {
+                validate_go_manifest(&target_root.join("go.mod"), &route.target, &route.package)?;
             }
         }
     }
@@ -404,6 +463,218 @@ fn validate_cargo_manifest(
     Ok(())
 }
 
+fn xml_value(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    Some(text[start..end].trim().to_string())
+}
+
+fn without_xml_block(text: &str, tag: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let Some(start) = text.find(&open) else {
+        return text.to_string();
+    };
+    let Some(relative_end) = text[start + open.len()..].find(&close) else {
+        return text.to_string();
+    };
+    let end = start + open.len() + relative_end + close.len();
+    format!("{}{}", &text[..start], &text[end..])
+}
+
+fn validate_maven_manifest(
+    path: &Path,
+    target: &str,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("native Maven target `{target}` has no {}", path.display()))?;
+    // Parent coordinates describe the build parent, not the artifact being
+    // published. Strip that block before reading the project coordinates.
+    let project = without_xml_block(&text, "parent");
+    let group = xml_value(&project, "groupId")
+        .with_context(|| format!("{} has no project `<groupId>`", path.display()))?;
+    let artifact = xml_value(&project, "artifactId")
+        .with_context(|| format!("{} has no project `<artifactId>`", path.display()))?;
+    let version = xml_value(&project, "version")
+        .with_context(|| format!("{} has no project `<version>`", path.display()))?;
+    let actual = format!("{group}:{artifact}");
+    if actual != expected_name {
+        bail!(
+            "native Maven target `{target}` declares package `{expected_name}`, but {} names `{actual}`",
+            path.display()
+        );
+    }
+    if version != expected_version {
+        bail!(
+            "native Maven target `{target}` must use release-set version `{expected_version}`, but {} uses `{version}`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn find_single_manifest(
+    root: &Path,
+    extension: &str,
+    label: &str,
+    target: &str,
+) -> Result<PathBuf> {
+    let mut paths = fs::read_dir(root)
+        .with_context(|| format!("native {label} target `{target}` has no {}", root.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some(extension))
+        .collect::<Vec<_>>();
+    paths.sort();
+    match paths.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => bail!(
+            "native {label} target `{target}` has no *.{extension} manifest in {}",
+            root.display()
+        ),
+        _ => bail!(
+            "native {label} target `{target}` has multiple *.{extension} manifests in {}; route must be unambiguous",
+            root.display()
+        ),
+    }
+}
+
+fn quoted_assignment(text: &str, field: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or_default().trim();
+        let Some((left, right)) = line.split_once('=') else {
+            continue;
+        };
+        if !left.trim_end().ends_with(field) {
+            continue;
+        }
+        let value = right.trim();
+        if value.len() >= 2
+            && ((value.starts_with('"') && value.ends_with('"'))
+                || (value.starts_with('\'') && value.ends_with('\'')))
+        {
+            return Some(value[1..value.len() - 1].to_string());
+        }
+    }
+    None
+}
+
+fn validate_rubygems_manifest(
+    root: &Path,
+    target: &str,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let path = find_single_manifest(root, "gemspec", "RubyGems", target)?;
+    let text = fs::read_to_string(&path)?;
+    let name = quoted_assignment(&text, ".name")
+        .with_context(|| format!("{} has no literal gem name assignment", path.display()))?;
+    let version = quoted_assignment(&text, ".version")
+        .with_context(|| format!("{} has no literal gem version assignment", path.display()))?;
+    if name != expected_name {
+        bail!(
+            "native RubyGems target `{target}` declares package `{expected_name}`, but {} names `{name}`",
+            path.display()
+        );
+    }
+    if version != expected_version {
+        bail!(
+            "native RubyGems target `{target}` must use release-set version `{expected_version}`, but {} uses `{version}`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_nuget_manifest(
+    root: &Path,
+    target: &str,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let path = find_single_manifest(root, "csproj", "NuGet", target)?;
+    let text = fs::read_to_string(&path)?;
+    let name = xml_value(&text, "PackageId")
+        .or_else(|| xml_value(&text, "AssemblyName"))
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .context("NuGet project has no package identity")?;
+    let version = xml_value(&text, "PackageVersion")
+        .or_else(|| xml_value(&text, "Version"))
+        .with_context(|| format!("{} has no `<Version>`", path.display()))?;
+    if !name.eq_ignore_ascii_case(expected_name) {
+        bail!(
+            "native NuGet target `{target}` declares package `{expected_name}`, but {} names `{name}`",
+            path.display()
+        );
+    }
+    if version != expected_version {
+        bail!(
+            "native NuGet target `{target}` must use release-set version `{expected_version}`, but {} uses `{version}`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_composer_manifest(
+    path: &Path,
+    target: &str,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let text = fs::read_to_string(path).with_context(|| {
+        format!(
+            "native Packagist target `{target}` has no {}",
+            path.display()
+        )
+    })?;
+    let manifest: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("invalid Composer manifest {}", path.display()))?;
+    let name = manifest
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("{} has no string `name`", path.display()))?;
+    if name != expected_name {
+        bail!(
+            "native Packagist target `{target}` declares package `{expected_name}`, but {} names `{name}`",
+            path.display()
+        );
+    }
+    if let Some(version) = manifest.get("version").and_then(serde_json::Value::as_str)
+        && version != expected_version
+    {
+        bail!(
+            "native Packagist target `{target}` must use release-set version `{expected_version}`, but {} uses `{version}`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_go_manifest(path: &Path, target: &str, expected_name: &str) -> Result<()> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("native Go target `{target}` has no {}", path.display()))?;
+    let module = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("module ").map(str::trim))
+        .with_context(|| format!("{} has no `module` directive", path.display()))?;
+    if module != expected_name {
+        bail!(
+            "native Go target `{target}` declares package `{expected_name}`, but {} names `{module}`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 pub fn render_human(plan: &ReleasePlan) -> String {
     let mut output = String::new();
     output.push_str(&format!("release set {}\n", plan.release_set));
@@ -427,6 +698,22 @@ pub fn render_human(plan: &ReleasePlan) -> String {
             output.push_str(&format!(
                 "  - {} {}@{} <- {} [target: {}]\n",
                 artifact.registry,
+                artifact.package,
+                artifact.version,
+                artifact.dir,
+                artifact.target
+            ));
+        }
+    }
+    output.push_str("forge package mirrors:\n");
+    if plan.forge.is_empty() {
+        output.push_str("  - none declared\n");
+    } else {
+        for artifact in &plan.forge {
+            output.push_str(&format!(
+                "  - {} via {} {}@{} <- {} [target: {}]\n",
+                artifact.registry,
+                artifact.format,
                 artifact.package,
                 artifact.version,
                 artifact.dir,
@@ -482,6 +769,7 @@ adapter = "node"
 [targets.nodejs.native]
 registry = "npm"
 package = "@acme/client"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
 
 [targets.dart]
 dir = "clients/dart"
@@ -496,6 +784,7 @@ dir = "clients/python"
 [targets.python.native]
 registry = "pypi"
 package = "Acme.Client"
+forge = ["gitlab-packages"]
 "#,
         )
         .unwrap()
@@ -537,12 +826,30 @@ package = "Acme.Client"
                 ("crates-io", "acme-client"),
             ]
         );
+        assert_eq!(
+            plan.forge
+                .iter()
+                .map(|artifact| (
+                    artifact.registry.as_str(),
+                    artifact.format.as_str(),
+                    artifact.package.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("github-packages", "npm", "@acme/client"),
+                ("gitlab-packages", "npm", "@acme/client"),
+                ("bitbucket-packages", "npm", "@acme/client"),
+                ("gitlab-packages", "pypi", "Acme.Client"),
+            ]
+        );
 
         let json = serde_json::to_string(&plan).unwrap();
         assert!(json.contains("\"release_set\":\"acme/clients@1.2.3#v1.2.3\""));
         let human = render_human(&plan);
         assert!(human.contains("native artifacts:"));
         assert!(human.contains("npm @acme/client@1.2.3"));
+        assert!(human.contains("forge package mirrors:"));
+        assert!(human.contains("github-packages via npm @acme/client@1.2.3"));
     }
 
     #[test]
@@ -735,6 +1042,11 @@ version = "0.4.0"
 
 [package.repository]
 url = "https://github.com/acme/http-kit"
+
+[publish.native]
+registry = "npm"
+package = "@acme/http-kit"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
 "#,
         )
         .unwrap();
@@ -743,7 +1055,121 @@ url = "https://github.com/acme/http-kit"
         assert_eq!(plan.zed.len(), 1);
         assert_eq!(plan.zed[0].target, None);
         assert_eq!(plan.zed[0].package, "acme/http-kit");
-        assert!(plan.native.is_empty());
-        assert!(render_human(&plan).contains("none declared"));
+        assert_eq!(plan.native.len(), 1);
+        assert_eq!(plan.native[0].target, "repository");
+        assert_eq!(plan.native[0].dir, ".");
+        assert_eq!(plan.native[0].registry, "npm");
+        assert_eq!(plan.native[0].package, "@acme/http-kit");
+        assert_eq!(plan.forge.len(), 3);
+        assert!(
+            plan.forge
+                .iter()
+                .all(|artifact| artifact.target == "repository" && artifact.dir == ".")
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("package.json"),
+            r#"{"name":"@acme/http-kit","version":"0.4.0"}"#,
+        )
+        .unwrap();
+        validate_native_manifests(root.path(), &manifest).unwrap();
+    }
+
+    #[test]
+    fn maven_rubygems_nuget_packagist_and_go_manifests_are_validated() {
+        let root = tempfile::tempdir().unwrap();
+        for dir in ["java", "ruby", "csharp", "php", "go"] {
+            fs::create_dir_all(root.path().join(dir)).unwrap();
+        }
+        fs::write(
+            root.path().join("java/pom.xml"),
+            r#"<project>
+  <groupId>com.acme</groupId>
+  <artifactId>client</artifactId>
+  <version>1.2.3</version>
+</project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("ruby/acme-client.gemspec"),
+            r#"Gem::Specification.new do |spec|
+  spec.name = "acme-client"
+  spec.version = "1.2.3"
+end
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("csharp/Acme.Client.csproj"),
+            r#"<Project><PropertyGroup>
+  <PackageId>Acme.Client</PackageId>
+  <Version>1.2.3</Version>
+</PropertyGroup></Project>"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("php/composer.json"),
+            r#"{"name":"acme/client","version":"1.2.3"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("go/go.mod"),
+            "module github.com/acme/client\n\ngo 1.24\n",
+        )
+        .unwrap();
+
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "clients"
+version = "1.2.3"
+
+[package.repository]
+url = "https://github.com/acme/clients"
+
+[targets.java]
+dir = "java"
+[targets.java.native]
+registry = "maven-central"
+package = "com.acme:client"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+
+[targets.ruby]
+dir = "ruby"
+[targets.ruby.native]
+registry = "rubygems"
+package = "acme-client"
+forge = ["github-packages", "gitlab-packages"]
+
+[targets.csharp]
+dir = "csharp"
+[targets.csharp.native]
+registry = "nuget"
+package = "Acme.Client"
+forge = ["github-packages", "gitlab-packages"]
+
+[targets.php]
+dir = "php"
+[targets.php.native]
+registry = "packagist"
+package = "acme/client"
+forge = ["gitlab-packages"]
+
+[targets.golang]
+dir = "go"
+[targets.golang.native]
+registry = "go-modules"
+package = "github.com/acme/client"
+forge = ["gitlab-packages"]
+"#,
+        )
+        .unwrap();
+
+        validate_native_manifests(root.path(), &manifest).unwrap();
+        let plan = build_plan(&manifest);
+        assert_eq!(plan.native.len(), 5);
+        assert_eq!(plan.forge.len(), 9);
     }
 }
