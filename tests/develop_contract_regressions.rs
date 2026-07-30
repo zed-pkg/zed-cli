@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::env;
+use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use tempfile::TempDir;
@@ -60,6 +62,22 @@ fn assert_success(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn print_env(root: &Path, extra: &[&str]) -> BTreeMap<String, String> {
+    let mut command = zed(root);
+    command.args([
+        "dev",
+        "--no-install",
+        "--nix",
+        "never",
+        "--python-venv",
+        "never",
+    ]);
+    command.args(extra).arg("--print-env");
+    let output = command.output().expect("print managed development environment");
+    assert_success(&output);
+    serde_json::from_slice(&output.stdout).expect("parse managed environment JSON")
 }
 
 #[test]
@@ -138,6 +156,61 @@ fn isolated_home_does_not_copy_existing_provider_credentials() {
                 || value.contains("DO_NOT_COPY_CLOUD_TOKEN")
         }),
         "managed environment exposed a provider credential"
+    );
+}
+
+#[test]
+fn project_discovery_ignores_vcs_metadata_directories() {
+    let fixture = tempfile::tempdir().expect("create project-discovery fixture");
+    for relative in [".git/fixture", ".hg/fixture", ".jj/fixture"] {
+        let directory = fixture.path().join(relative);
+        fs::create_dir_all(&directory).expect("create VCS fixture directory");
+        fs::write(directory.join("package.json"), "{}\n")
+            .expect("write ignored package manifest");
+    }
+
+    let managed = print_env(fixture.path(), &[]);
+    let expected_root = fs::canonicalize(fixture.path())
+        .expect("canonicalize fixture root")
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(
+        managed.get("ZED_DEV_PROJECT_ROOT").map(String::as_str),
+        Some(expected_root.as_str())
+    );
+}
+
+#[test]
+fn ai_profile_path_remains_explicitly_opt_in() {
+    let project = project();
+    let root = fs::canonicalize(project.path()).expect("canonicalize project");
+    let ai_bin = root.join(".zed/dev/profiles/ai/bin");
+    let generic_bin = root.join(".zed/dev/bin");
+
+    let default = print_env(project.path(), &[]);
+    let default_paths: Vec<PathBuf> =
+        env::split_paths(OsStr::new(default.get("PATH").expect("default PATH"))).collect();
+    assert!(
+        !default_paths.contains(&ai_bin),
+        "AI tooling must not be enabled by default"
+    );
+    assert!(!default.contains_key("ZED_DEV_PROFILE"));
+
+    let enabled = print_env(project.path(), &["--profile", "ai"]);
+    let enabled_paths: Vec<PathBuf> =
+        env::split_paths(OsStr::new(enabled.get("PATH").expect("AI PATH"))).collect();
+    let ai_index = enabled_paths
+        .iter()
+        .position(|path| path == &ai_bin)
+        .expect("AI profile bin in PATH");
+    let generic_index = enabled_paths
+        .iter()
+        .position(|path| path == &generic_bin)
+        .expect("generic development bin in PATH");
+    assert!(ai_index < generic_index);
+    assert_eq!(
+        enabled.get("ZED_DEV_PROFILE").map(String::as_str),
+        Some("ai")
     );
 }
 
