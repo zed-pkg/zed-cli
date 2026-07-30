@@ -1,0 +1,76 @@
+name: DEN-939 one-shot formatter
+
+on:
+  push:
+    branches:
+      - agent/den-939-develop-test-hardening
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-939-one-shot-formatter
+  cancel-in-progress: false
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply formatter and small Clippy-safe assertion cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/develop_edge_cases.rs")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              '''    let stderr = assert_failure(&output);
+              assert!(stderr.contains("starting development shell"), "{stderr}");
+              assert!(
+                  stderr.contains(&missing.to_string_lossy().into_owned()),
+                  "{stderr}"
+              );
+          ''': '''    let stderr = assert_failure(&output);
+              assert!(stderr.contains("starting development shell"), "{stderr}");
+              let missing_display = missing.to_string_lossy();
+              assert!(stderr.contains(missing_display.as_ref()), "{stderr}");
+          ''',
+              '''    let stderr = assert_failure(&output);
+              assert!(stderr.contains("--python-venv required"), "{stderr}");
+              assert!(
+                  stderr.contains(&missing.to_string_lossy().into_owned()),
+                  "{stderr}"
+              );
+          ''': '''    let stderr = assert_failure(&output);
+              assert!(stderr.contains("--python-venv required"), "{stderr}");
+              let missing_display = missing.to_string_lossy();
+              assert!(stderr.contains(missing_display.as_ref()), "{stderr}");
+          ''',
+          }
+          for before, after in replacements.items():
+              if before not in text:
+                  raise SystemExit(f"expected assertion block not found: {before!r}")
+              text = text.replace(before, after, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+          cargo fmt --all
+          git diff --check
+          git rm .github/workflows/den-939-format.yml
+      - name: Commit formatted tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/develop_edge_cases.rs
+          git commit -m 'style(DEN-939): format develop edge-case tests'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
