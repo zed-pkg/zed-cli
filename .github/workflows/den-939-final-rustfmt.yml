@@ -1,0 +1,48 @@
+name: DEN-939 final rustfmt
+
+on:
+  push:
+    branches:
+      - agent/den-939-develop-edge-tests
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-939-final-rustfmt
+  cancel-in-progress: false
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+          fetch-depth: 0
+          ref: agent/den-939-develop-edge-tests
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply the pinned formatter to consolidated tests
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --check
+          if git diff --quiet; then
+            echo 'No formatting changes required.'
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/develop_contract_regressions.rs tests/develop_shell_edge_cases.rs
+          git commit -m 'style(dev): format consolidated DEN-939 tests'
+          git push origin HEAD:agent/den-939-develop-edge-tests
