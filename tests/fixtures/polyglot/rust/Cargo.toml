@@ -1,0 +1,9 @@
+[package]
+name = "zed-poly-fixture"
+version = "0.2.0"
+edition = "2021"
+description = "Polyglot publish fixture (rust slice)"
+license = "MIT"
+repository = "https://github.com/zed-pkg/zed-cli"
+
+[dependencies]
