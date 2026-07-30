@@ -105,8 +105,8 @@ registry hosts both on S3/Cloudflare R2.
 | `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers, including manifestless locked reinstalls) |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
-| `zed release plan [--json]` | Print the credential-free Zed + native-registry release set derived from `.zpkg.toml` |
-| `zed release preflight` | Validate native manifests, then run fixed credential-free npm/crates.io/pub.dev/PyPI package preflight adapters |
+| `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
+| `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
@@ -143,6 +143,42 @@ autoload -Uz compinit && compinit
 The generated scripts include aliases, subcommands, and install flags directly
 from the typed parser. GitHub Actions syntax-checks and registers them in real
 Bash and Zsh processes.
+
+### Native and forge package releases
+
+A polyglot target can name its canonical ecosystem registry and optional
+copies in package registries operated by GitHub, GitLab, or Bitbucket:
+
+```toml
+[targets.nodejs]
+dir = "clients/typescript"
+
+[targets.nodejs.native]
+registry = "npm"
+package = "@acme/client"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+```
+
+A single-language repository uses `[publish.native]` with the same `registry`,
+`package`, and `forge` fields; its native package-manager manifest is read from
+the repository root.
+
+Tag-resolved packages can add a native `tag_format`. Go modules below a
+subdirectory must use the module-directory prefix, such as
+`tag_format = "clients/go/v{version}"`, while the coordinated Zed release can
+continue using the repository tag `v{version}`.
+
+`zed release plan --json` emits one coordinated release set containing the
+Zed artifacts, canonical native packages, and forge mirrors. It does not read
+credentials or upload. `zed release preflight` verifies the native package
+identity/version and runs the ecosystem's packaging command without publishing.
+
+The manifest rejects unsupported combinations before CI reaches credentials:
+GitHub Packages accepts npm, Maven, RubyGems, and NuGet routes; GitLab also
+accepts PyPI, Packagist/Composer, and Go module routes; Bitbucket Packages
+accepts npm and Maven routes. Cargo and pub.dev remain canonical-native plus
+Zed destinations because those forges do not expose matching registry
+protocols.
 
 ### Installing without `.zpkg.toml`
 
