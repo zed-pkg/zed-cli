@@ -408,6 +408,13 @@ def main() -> int:
             {
                 "target": target,
                 "dir": section["dir"],
+                # The packed artifact for this slice. A native dry-run must run
+                # against what `zed pack` emits, not against the source subtree:
+                # packing strips dev files, hoists the repo's LICENSE into every
+                # slice, and substitutes the derived single-target manifest. Run
+                # it on the source tree and pub.dev rejects the package for a
+                # missing LICENSE that the shipped artifact actually has.
+                "artifact": f"{org}-{zed_name}-{version}.tar.gz",
                 "registry": registry,
                 "ecosystem": key,
                 "native": shown,
