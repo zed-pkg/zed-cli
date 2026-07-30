@@ -4,22 +4,26 @@ on:
   push:
     branches:
       - agent/den-939-develop-test-hardening
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
 
 concurrency:
-  group: den-939-canonical-path-patch
+  group: den-939-canonical-path-patch-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 jobs:
   patch:
     runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ github.ref_name }}
+          ref: ${{ env.TARGET_BRANCH }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -85,4 +89,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add tests/develop_edge_cases.rs
           git commit -m 'test(DEN-939): canonicalize filesystem path assertions'
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${TARGET_BRANCH}"
