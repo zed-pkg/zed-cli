@@ -1,0 +1,179 @@
+name: develop-shell
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Bash, Zsh, Python venv, and PTY smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817952eaebfc04bb6442eba55e
+          path: zed-interfaces
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install shell and Python fixtures
+        run: sudo apt-get update && sudo apt-get install -y zsh python3-venv
+      - name: Build the real CLI
+        working-directory: zed-cli
+        run: cargo build --locked
+      - name: Exercise package-aware development shells
+        shell: bash
+        env:
+          ZED_BIN: ${{ github.workspace }}/zed-cli/target/debug/zed
+          ZED_PKG_HOME: ${{ runner.temp }}/zed-home
+        run: |
+          set -euo pipefail
+
+          "$ZED_BIN" develop --help > "$RUNNER_TEMP/develop.help"
+          "$ZED_BIN" dev --help > "$RUNNER_TEMP/dev.help"
+          for help in "$RUNNER_TEMP/develop.help" "$RUNNER_TEMP/dev.help"; do
+            grep -q -- '--python-venv' "$help"
+            grep -q -- '--isolated-home' "$help"
+            grep -q -- '-c, --command' "$help"
+          done
+
+          manifest="$RUNNER_TEMP/manifest-project"
+          mkdir -p "$manifest"
+          cd "$manifest"
+          "$ZED_BIN" init --org ci --name manifest-project
+          "$ZED_BIN" dev \
+            --nix never \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c 'test "$ZED_DEV" = 1; test "$ZED_DEV_PROJECT_ROOT" = "$PWD"; test "$CARGO_HOME" = "$PWD/.zed/dev/cargo/home"; printf bash-ok' \
+            | grep -q bash-ok
+
+          manifestless="$RUNNER_TEMP/manifestless-project"
+          mkdir -p "$manifestless"
+          printf '%s\n' '{}' > "$manifestless/package.json"
+          cd "$manifestless"
+          "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --python-venv never \
+            --shell "$(command -v zsh)" \
+            -c 'test "$ZED_DEV" = 1; test "$ZED_DEV_PROJECT_ROOT" = "$PWD"; printf zsh-ok' \
+            | grep -q zsh-ok
+
+          ZED_DEV_COMMAND='test "$ZED_DEV" = 1; printf env-ok' \
+          ZED_DEV_SHELL="$(command -v bash)" \
+          ZED_DEV_NIX=never \
+          ZED_DEV_NO_INSTALL=yes \
+          ZED_DEV_PYTHON_VENV=never \
+          "$ZED_BIN" dev | grep -q env-ok
+
+          mkdir -p .zed/dev/profiles/ai/bin
+          cat > .zed/dev/profiles/ai/bin/codex <<'EOF'
+          #!/usr/bin/env sh
+          printf stub-codex
+          EOF
+          chmod +x .zed/dev/profiles/ai/bin/codex
+          "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --python-venv never \
+            --profile ai \
+            --shell "$(command -v bash)" \
+            -c 'codex' \
+            | grep -q stub-codex
+
+          python_project="$RUNNER_TEMP/python-project"
+          mkdir -p "$python_project"
+          printf '%s\n' '[project]' 'name = "ci-python"' 'version = "0.0.0"' > "$python_project/pyproject.toml"
+          cd "$python_project"
+          "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --python-venv required \
+            --shell "$(command -v bash)" \
+            -c 'test -n "$VIRTUAL_ENV"; test "$VIRTUAL_ENV" = "$PWD/.zed/dev/python/venv"; python -c "import sys; assert sys.prefix == sys.base_prefix or sys.prefix.endswith(\"/.zed/dev/python/venv\")"'
+
+          printed="$RUNNER_TEMP/managed-env.json"
+          INHERITED_SECRET=must-not-leak "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --python-venv never \
+            --print-env > "$printed"
+          python3 - "$printed" <<'PY'
+          import json
+          import sys
+
+          data = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert data["ZED_DEV"] == "1"
+          assert "INHERITED_SECRET" not in data
+          assert "must-not-leak" not in data.values()
+          PY
+
+          nix_project="$RUNNER_TEMP/nix-project"
+          mkdir -p "$nix_project/.nix"
+          printf '%s\n' '{}' > "$nix_project/.nix/flake.nix"
+          printf '%s\n' '{}' > "$nix_project/package.json"
+          cd "$nix_project"
+          IN_NIX_SHELL=impure "$ZED_BIN" dev \
+            --no-install \
+            --nix required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c 'test "$IN_NIX_SHELL" = impure; printf nix-ok' \
+            | grep -q nix-ok
+
+          python3 - "$ZED_BIN" "$RUNNER_TEMP/pty-project" <<'PY'
+          import os
+          import pty
+          import select
+          import sys
+
+          binary, project = sys.argv[1:]
+          os.makedirs(project, exist_ok=True)
+          with open(os.path.join(project, "package.json"), "w", encoding="utf-8") as handle:
+              handle.write("{}\n")
+
+          pid, fd = pty.fork()
+          if pid == 0:
+              os.chdir(project)
+              os.execve(
+                  binary,
+                  [
+                      binary,
+                      "dev",
+                      "--no-install",
+                      "--nix",
+                      "never",
+                      "--python-venv",
+                      "never",
+                      "--shell",
+                      "/bin/sh",
+                  ],
+                  os.environ.copy(),
+              )
+
+          os.write(fd, b"printf pty-ok\\nexit\\n")
+          output = bytearray()
+          while True:
+              ready, _, _ = select.select([fd], [], [], 10)
+              if not ready:
+                  raise SystemExit("interactive zed dev shell timed out")
+              try:
+                  chunk = os.read(fd, 4096)
+              except OSError:
+                  break
+              if not chunk:
+                  break
+              output.extend(chunk)
+          _, status = os.waitpid(pid, 0)
+          if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
+              raise SystemExit(f"interactive shell failed: {status}: {output!r}")
+          if b"pty-ok" not in output:
+              raise SystemExit(f"interactive shell output missing marker: {output!r}")
+          PY
