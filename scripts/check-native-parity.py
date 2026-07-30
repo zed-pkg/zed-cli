@@ -263,6 +263,19 @@ def find_native(target_dir: Path):
     return None
 
 
+def native_publish_disabled(path: Path, key: str) -> bool:
+    """Return whether a native manifest explicitly opts out of its registry."""
+    if key != "dart":
+        return False
+    return bool(
+        re.search(
+            r"""^publish_to:\s*(?:none|["']none["'])(?:\s*#.*)?$""",
+            path.read_text(),
+            re.MULTILINE,
+        )
+    )
+
+
 def main() -> int:
     argv = sys.argv[1:]
     strict = "--strict" in argv
@@ -363,6 +376,12 @@ def main() -> int:
         else:
             note = "ok"
             shown = f"{native_name or native_path.name}@{native_version}"
+
+        if native_publish_disabled(native_path, key):
+            rows.append(
+                (target, zed_coords, "—", shown, f"{note}; publish_to: none")
+            )
+            continue
 
         rows.append((target, zed_coords, registry, shown, note))
         matrix.append(
