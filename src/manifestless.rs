@@ -84,6 +84,7 @@ pub fn install(
     allow_build: bool,
     target: Option<&str>,
     allow_no_manifest: bool,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
     let selection = select_project(requested_root);
 
@@ -101,6 +102,7 @@ pub fn install(
             adapter,
             allow_build,
             target,
+            allow_ecosystem_mismatch,
         );
     }
 
@@ -145,6 +147,7 @@ pub fn install(
                 adapter,
                 allow_build,
                 inferred_target.as_deref(),
+                allow_ecosystem_mismatch,
             )
         } else {
             ops::install(
@@ -155,6 +158,7 @@ pub fn install(
                 adapter,
                 allow_build,
                 inferred_target.as_deref(),
+                allow_ecosystem_mismatch,
             )
         }
     })
@@ -310,6 +314,10 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
                 url: format!("https://localhost/zed-manifestless/{name}"),
             },
             keywords: Vec::new(),
+            // A synthesized manifest for a project that has none: no language
+            // claim of its own, so nothing here is ecosystem-gated.
+            language: Default::default(),
+            ecosystem: Default::default(),
         },
         workspace: None,
         dependencies,
@@ -421,6 +429,10 @@ fn adapter_label(adapter: Adapter) -> &'static str {
         Adapter::None => "none (universal zed_modules; package-declared adapters may still apply)",
         Adapter::Node => "node (also node_modules/@<org>/<name>)",
         Adapter::Java => "java (also .zed/classpath for installed jars)",
+        Adapter::Go => "go (also .zed/go.work; use GOWORK=)",
+        Adapter::Python => "python (also .zed/pythonpath; use PYTHONPATH=)",
+        Adapter::Rust => "rust (also .zed/cargo-paths.toml to merge into .cargo/config.toml)",
+        Adapter::Dart => "dart (also .zed/pub-deps.yaml to merge into pubspec.yaml)",
     }
 }
 

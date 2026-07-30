@@ -348,6 +348,16 @@ def main() -> int:
             problems.append(f"[targets.{target}] dir `{section['dir']}` does not exist")
             continue
 
+        # The whole-repository target is zpkg.tech-only by rule, not by accident:
+        # `Manifest::validate` rejects a native route on `dir = "."` outright.
+        # Without this, a repo that keeps its own tooling manifest at the root
+        # (a workspace package.json, say) gets that manifest mistaken for the
+        # repository target's identity, and the native dry-run then tries to
+        # publish the entire repo to npm.
+        if section["dir"].strip("/") in ("", "."):
+            rows.append((target, zed_coords, "—", "—", "zed only (whole repository)"))
+            continue
+
         found = find_native(target_dir)
         if found is None:
             # Not drift: plenty of languages (shell, matlab) have no registry.
