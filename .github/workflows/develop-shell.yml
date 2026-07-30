@@ -197,7 +197,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Patch platform-neutral path assertions and clean helpers
+      - name: Patch platform-neutral path assertions
         shell: bash
         run: |
           set -euo pipefail
@@ -271,30 +271,15 @@ jobs:
           if counts != expected:
               raise SystemExit(f"unexpected canonicalization counts: {counts}, expected {expected}")
           test_path.write_text("\n".join(output) + "\n", encoding="utf-8")
-
-          workflow = Path(".github/workflows/develop-shell.yml")
-          workflow_text = workflow.read_text(encoding="utf-8")
-          marker = "\n  den_939_canonicalize:\n"
-          if marker not in workflow_text:
-              raise SystemExit("temporary canonicalization job marker is missing")
-          workflow_text = workflow_text.split(marker, 1)[0] + "\n"
-          workflow_text = workflow_text.replace(
-              "permissions:\n  contents: write",
-              "permissions:\n  contents: read",
-              1,
-          )
-          workflow.write_text(workflow_text, encoding="utf-8")
           PY
           cargo fmt --all
           git diff --check
-          rm -f .github/workflows/den-939-canonical-paths.yml
-      - name: Commit the canonical assertions
+      - name: Commit the platform-neutral assertions
         shell: bash
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add tests/develop_edge_cases.rs .github/workflows/develop-shell.yml
-          git add -u .github/workflows/den-939-canonical-paths.yml || true
+          git add tests/develop_edge_cases.rs
           git commit -m 'test(DEN-939): canonicalize filesystem path assertions'
           git push origin "HEAD:${TARGET_BRANCH}"
