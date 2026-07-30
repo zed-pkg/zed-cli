@@ -1,0 +1,87 @@
+schema_version = 1
+procedure_version = 1
+repository = "zed-pkg/zed-cli"
+
+[policy]
+claim_classes = ["typechecked-specification", "randomized-exploration", "bounded-exhaustive-verification", "implementation-replay", "differential-replay", "unbounded-proof"]
+required_evidence = ["method", "bounds", "assumptions", "model-hash", "implementation-revision", "fixture-revisions", "tool-versions"]
+counterexample = "Retain and minimize graph, manifest, lockfile, registry/VCS responses, filesystem schedule, and expected/actual state; classify and add a Rust regression."
+change_trigger = "Review this inventory with resolver, lock, store, install, build, pack, publish, auth, GC, or update semantic changes."
+
+[[machine]]
+id = "manifestless-install-intent"
+risk = "high"
+status = "planned"
+backend = "quint+itf-rust-replay"
+owner = "zed-install"
+source_paths = ["src/manifestless.rs", "src/ops.rs", "src/config.rs"]
+safety = [
+  "without a manifest, writes occur only after explicit interactive yes/confirmation or an explicit automation opt-in",
+  "EOF, no, or ambiguous input cancels before project files are written",
+  "root and adapter inference do not escape the requested repository tree",
+  "ambiguous monorepos use the safe universal layout rather than guessing a nested app",
+  "manifestless install does not synthesize a persistent .zpkg.toml",
+  "frozen manifestless reinstall uses only the existing lock identity",
+]
+liveness = ["given an unambiguous project or explicit adapter, accepted intent, and available dependencies, installation eventually completes or returns an explicit error"]
+faults = ["no TTY", "EOF", "ambiguous monorepo", "one nested app", "existing lock without manifest", "crash before lock write"]
+bounds = ["two nested apps", "three project-marker types", "two dependencies", "finite confirmation outcomes"]
+review_triggers = ["root discovery", "adapter inference", "interactive confirmation", "allow-no-manifest flag", "frozen reinstall", "manifest write"]
+
+[[machine]]
+id = "resolve-lock-store-install"
+risk = "critical"
+status = "planned"
+backend = "quint+property-tests+itf-rust-replay"
+owner = "zed-resolver-store"
+source_paths = ["src/ops.rs", "src/store.rs", "src/config.rs", "src/registry.rs"]
+safety = [
+  "one lock entry identifies one exact version, artifact hash, source revision, and provenance anchor",
+  "only a verified complete artifact becomes visible in the immutable store",
+  "concurrent installers cannot publish a partial or hash-mismatched store entry",
+  "project links refer only to verified store or workspace-member content",
+  "dependency cycles and unsatisfied ranges fail explicitly rather than producing a partial lock",
+  "frozen install never resolves a different version from the lockfile",
+]
+liveness = ["for a finite satisfiable graph with terminating registry and filesystem operations, resolution and install eventually complete"]
+faults = ["download truncated", "hash mismatch", "rename crash", "two installers", "dependency cycle", "registry response lost", "workspace member disappears"]
+bounds = ["four packages", "two versions each", "semver/calver/opaque", "two concurrent installers", "finite crash points"]
+review_triggers = ["range algebra", "resolver choice", "lock schema", "content hash", "store atomicity", "project link", "workspace resolution"]
+
+[[machine]]
+id = "pack-publish-provenance"
+risk = "critical"
+status = "planned"
+backend = "quint+determinism-tests+itf-rust-replay"
+owner = "zed-release"
+source_paths = ["src/pack.rs", "src/release.rs", "src/vcs.rs", "src/registry.rs"]
+safety = [
+  "published version is built from a clean tree whose required tag points at the exact HEAD commit",
+  "deterministic packaging of identical inputs yields the same artifact hash",
+  "pruned content and dependency trees cannot leak into the artifact contrary to policy",
+  "ambiguous upload retry cannot create a different artifact for an existing immutable version",
+  "yank changes discoverability without mutating existing lockfile identity",
+]
+liveness = ["with stable inputs, valid provenance, and available registry/VCS fixtures, publish eventually acknowledges one artifact or returns an explicit failure"]
+faults = ["dirty tree", "tag on wrong commit", "upload accepted response lost", "registry conflict", "archive ordering", "yank retry"]
+bounds = ["two commits", "two tags", "two upload attempts", "finite archive tree", "one version identity"]
+review_triggers = ["pack filter", "archive determinism", "tag format", "clean-tree check", "upload identity", "publish retry", "yank"]
+
+[[machine]]
+id = "credential-and-self-update-lifecycle"
+risk = "high"
+status = "planned"
+backend = "quint+itf-rust-replay"
+owner = "zed-auth-update"
+source_paths = ["src/auth.rs", "src/update.rs", "src/config.rs"]
+safety = [
+  "refresh rotation never leaves a newly persisted access token paired with the wrong refresh generation",
+  "logout removes or revokes the intended credential without exposing it in logs",
+  "failed refresh preserves a coherent prior credential or explicit signed-out state",
+  "self-update verifies the intended release artifact before atomic binary replacement",
+  "a failed replacement leaves a runnable prior binary or explicit recoverable state",
+]
+liveness = ["with valid refresh credentials or an available verified release, the requested auth/update operation eventually reaches a coherent terminal state"]
+faults = ["refresh response lost", "credential write crash", "logout revocation failure", "update hash mismatch", "binary replacement crash", "release response redirect"]
+bounds = ["two credential generations", "two update versions", "finite file-replacement stages"]
+review_triggers = ["token generation", "credential persistence", "logout", "redaction", "release selection", "artifact verification", "binary replacement"]
