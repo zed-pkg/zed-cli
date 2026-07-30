@@ -263,17 +263,26 @@ def find_native(target_dir: Path):
     return None
 
 
-def native_publish_disabled(path: Path, key: str) -> bool:
-    """Return whether a native manifest explicitly opts out of its registry."""
-    if key != "dart":
-        return False
-    return bool(
-        re.search(
-            r"""^publish_to:\s*(?:none|["']none["'])(?:\s*#.*)?$""",
-            path.read_text(),
-            re.MULTILINE,
-        )
-    )
+def native_publish_opt_out(path: Path, key: str) -> str | None:
+    """Return the native manifest policy that disables this registry."""
+    if key == "dart" and re.search(
+        r"""^publish_to:\s*(?:none|["']none["'])(?:\s*#.*)?$""",
+        path.read_text(),
+        re.MULTILINE,
+    ):
+        return "publish_to: none"
+
+    if key == "cargo":
+        publish = tomllib.loads(path.read_text()).get("package", {}).get("publish", True)
+        if publish is False:
+            return "publish = false"
+        if isinstance(publish, list) and "crates-io" not in publish:
+            return "publish excludes crates.io"
+
+    if key == "npm" and json.loads(path.read_text()).get("private") is True:
+        return "private: true"
+
+    return None
 
 
 def main() -> int:
@@ -387,9 +396,10 @@ def main() -> int:
             note = "ok"
             shown = f"{native_name or native_path.name}@{native_version}"
 
-        if native_publish_disabled(native_path, key):
+        publish_opt_out = native_publish_opt_out(native_path, key)
+        if publish_opt_out is not None:
             rows.append(
-                (target, zed_coords, "—", shown, f"{note}; publish_to: none")
+                (target, zed_coords, "—", shown, f"{note}; {publish_opt_out}")
             )
             continue
 
