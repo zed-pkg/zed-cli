@@ -360,11 +360,12 @@ jobs:
             $managed = $jsonText | ConvertFrom-Json
             $root = (Resolve-Path '.').Path
             $expectedHome = Join-Path $root '.zed\dev\home'
-            if ($managed.HOME -ne $expectedHome) {
-              throw "HOME mismatch: $($managed.HOME) != $expectedHome"
+            $acceptedHomes = @($expectedHome, "\\?\$expectedHome")
+            if ($managed.HOME -notin $acceptedHomes) {
+              throw "HOME mismatch: $($managed.HOME) not in $($acceptedHomes -join ', ')"
             }
-            if ($managed.USERPROFILE -ne $expectedHome) {
-              throw "USERPROFILE mismatch: $($managed.USERPROFILE) != $expectedHome"
+            if ($managed.USERPROFILE -notin $acceptedHomes) {
+              throw "USERPROFILE mismatch: $($managed.USERPROFILE) not in $($acceptedHomes -join ', ')"
             }
           }
           finally {
