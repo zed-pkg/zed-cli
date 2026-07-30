@@ -3,53 +3,16 @@
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+OPS = Path(__file__).resolve().parents[1] / "src" / "ops.rs"
+content = OPS.read_text(encoding="utf-8")
 
+anchor = "/// Emit the native wiring file for each adapter that needs one."
+if content.count(anchor) != 1:
+    raise RuntimeError("expected one toolchain-wiring anchor")
+if "struct GoDirectiveVersion" in content:
+    raise RuntimeError("Go directive version support is already present")
 
-def replace_once(path: str, old: str, new: str) -> None:
-    target = ROOT / path
-    content = target.read_text(encoding="utf-8")
-    count = content.count(old)
-    if count != 1:
-        raise RuntimeError(f"{path}: expected one replacement target, found {count}")
-    target.write_text(content.replace(old, new, 1), encoding="utf-8")
-
-
-replace_once(
-    "src/ops.rs",
-    '''const LANGUAGES_BY_ECOSYSTEM: &[(Ecosystem, &str)] = &[
-    (Ecosystem::Npm, "nodejs"),
-    (Ecosystem::Jvm, "java"),
-    (Ecosystem::Jvm, "kotlin"),
-    (Ecosystem::Gomod, "golang"),
-    (Ecosystem::Pypi, "python"),
-    (Ecosystem::Cargo, "rust"),
-    (Ecosystem::Pub, "dart"),
-    (Ecosystem::Gem, "ruby"),
-    (Ecosystem::Composer, "php"),
-    (Ecosystem::Nuget, "csharp"),
-    (Ecosystem::Swiftpm, "swift"),
-    (Ecosystem::Hex, "gleam"),
-];
-
-/// Emit the native wiring file for each adapter that needs one.
-''',
-    '''const LANGUAGES_BY_ECOSYSTEM: &[(Ecosystem, &str)] = &[
-    (Ecosystem::Npm, "nodejs"),
-    (Ecosystem::Jvm, "java"),
-    (Ecosystem::Jvm, "kotlin"),
-    (Ecosystem::Gomod, "golang"),
-    (Ecosystem::Pypi, "python"),
-    (Ecosystem::Cargo, "rust"),
-    (Ecosystem::Pub, "dart"),
-    (Ecosystem::Gem, "ruby"),
-    (Ecosystem::Composer, "php"),
-    (Ecosystem::Nuget, "csharp"),
-    (Ecosystem::Swiftpm, "swift"),
-    (Ecosystem::Hex, "gleam"),
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+version_support = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct GoDirectiveVersion {
     major: u64,
     minor: u64,
@@ -108,31 +71,29 @@ fn required_go_work_version(project: &Path, paths: &[PathBuf]) -> String {
     selected.1
 }
 
-/// Emit the native wiring file for each adapter that needs one.
-''',
-)
+'''
+content = content.replace(anchor, version_support + anchor, 1)
 
-replace_once(
-    "src/ops.rs",
-    '''                work_paths.sort();
-                work_paths.dedup();
-                let mut doc = String::from("go 1.21\n\nuse (\n");
-                for path in &work_paths {
-''',
-    '''                work_paths.sort();
-                work_paths.dedup();
-                let version = required_go_work_version(project, paths);
-                let mut doc = format!("go {version}\n\nuse (\n");
-                for path in &work_paths {
-''',
+backslash = chr(92)
+old_doc = (
+    '                let mut doc = String::from("go 1.21'
+    f'{backslash}n{backslash}nuse ({backslash}n");'
 )
+new_doc = (
+    '                let version = required_go_work_version(project, paths);\n'
+    '                let mut doc = format!("go {version}'
+    f'{backslash}n{backslash}nuse ({backslash}n");'
+)
+if content.count(old_doc) != 1:
+    raise RuntimeError(f"expected one hardcoded go.work version, found {content.count(old_doc)}")
+content = content.replace(old_doc, new_doc, 1)
 
-replace_once(
-    "src/ops.rs",
-    '''    #[test]
+test_anchor = '''    #[test]
     fn lock_only_frozen_restore_skips_only_the_missing_manifest_comparison() {
-''',
-    '''    #[test]
+'''
+if content.count(test_anchor) != 1:
+    raise RuntimeError("expected one frozen-lock test anchor")
+version_tests = '''    #[test]
     fn go_workspace_uses_the_highest_module_go_directive() {
         let temp = tempfile::tempdir().unwrap();
         let project = temp.path().join("consumer");
@@ -140,11 +101,28 @@ replace_once(
         let second = project.join("zed_modules/acme/second");
         fs::create_dir_all(&first).unwrap();
         fs::create_dir_all(&second).unwrap();
-        fs::write(project.join("go.mod"), "module example.com/app\n\ngo 1.22\n").unwrap();
-        fs::write(first.join("go.mod"), "module example.com/first\n\ngo 1.21\n").unwrap();
+        fs::write(
+            project.join("go.mod"),
+            r#"module example.com/app
+
+go 1.22
+"#,
+        )
+        .unwrap();
+        fs::write(
+            first.join("go.mod"),
+            r#"module example.com/first
+
+go 1.21
+"#,
+        )
+        .unwrap();
         fs::write(
             second.join("go.mod"),
-            "module example.com/second\n\ngo 1.24.1 // minimum toolchain\n",
+            r#"module example.com/second
+
+go 1.24.1 // minimum toolchain
+"#,
         )
         .unwrap();
         let roots = BTreeMap::from([(Adapter::Go, vec![first, second])]);
@@ -152,19 +130,17 @@ replace_once(
         write_toolchain_wiring(&project, &roots).unwrap();
 
         let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
-        assert!(document.starts_with("go 1.24.1\n"), "{document}");
+        assert_eq!(document.lines().next(), Some("go 1.24.1"), "{document}");
     }
 
     #[test]
     fn malformed_go_directives_do_not_lower_the_safe_default() {
         assert_eq!(required_go_work_version(Path::new("/missing"), &[]), "1.21");
-        assert!(parse_go_directive("module example.com/app\ngo latest\n").is_none());
-        assert!(parse_go_directive("module example.com/app\ngo 1\n").is_none());
+        assert!(parse_go_directive("module example.com/app go latest").is_none());
+        assert!(parse_go_directive("go 1").is_none());
     }
 
-    #[test]
-    fn lock_only_frozen_restore_skips_only_the_missing_manifest_comparison() {
-''',
-)
-
+'''
+content = content.replace(test_anchor, version_tests + test_anchor, 1)
+OPS.write_text(content, encoding="utf-8")
 print("DEN-772 Go workspace version fixed")
