@@ -54,7 +54,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             dry_run,
             allow_dirty,
             skip_vcs_checks,
-        } => ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks),
+            registries,
+            publish_target,
+        } => {
+            let registries = registries.into_iter().map(Into::into).collect::<Vec<_>>();
+            ops::publish(
+                &cwd,
+                &cfg,
+                dry_run,
+                allow_dirty,
+                skip_vcs_checks,
+                &registries,
+                publish_target.as_deref(),
+            )
+        }
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
         Cmd::R2g {
             docker,
