@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   smoke:
-    name: Bash, Zsh, Python venv, and PTY smoke
+    name: Bash, Zsh, Fish, Python venv, and PTY smoke
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,10 @@ jobs:
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
       - name: Install shell and Python fixtures
-        run: sudo apt-get update && sudo apt-get install -y zsh python3-venv
+        run: sudo apt-get update && sudo apt-get install -y fish zsh python3-venv
+      - name: Run focused regression suite
+        working-directory: zed-cli
+        run: cargo test --locked --test develop_edge_cases
       - name: Build the real CLI
         working-directory: zed-cli
         run: cargo build --locked
@@ -65,6 +68,14 @@ jobs:
             --shell "$(command -v zsh)" \
             -c 'test "$ZED_DEV" = 1; test "$ZED_DEV_PROJECT_ROOT" = "$PWD"; printf zsh-ok' \
             | grep -q zsh-ok
+
+          "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --python-venv never \
+            --shell "$(command -v fish)" \
+            -c 'test "$ZED_DEV" = 1; test "$ZED_DEV_PROJECT_ROOT" = "$PWD"; printf fish-ok' \
+            | grep -q fish-ok
 
           ZED_DEV_COMMAND='test "$ZED_DEV" = 1; printf env-ok' \
           ZED_DEV_SHELL="$(command -v bash)" \
