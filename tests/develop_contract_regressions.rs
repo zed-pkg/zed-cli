@@ -154,8 +154,7 @@ fn isolated_home_does_not_copy_existing_provider_credentials() {
     );
     assert!(
         !managed.values().any(|value| {
-            value.contains("DO_NOT_COPY_CODEX_TOKEN")
-                || value.contains("DO_NOT_COPY_CLOUD_TOKEN")
+            value.contains("DO_NOT_COPY_CODEX_TOKEN") || value.contains("DO_NOT_COPY_CLOUD_TOKEN")
         }),
         "managed environment exposed a provider credential"
     );
@@ -167,8 +166,7 @@ fn project_discovery_ignores_vcs_metadata_directories() {
     for relative in [".git/fixture", ".hg/fixture", ".jj/fixture"] {
         let directory = fixture.path().join(relative);
         fs::create_dir_all(&directory).expect("create VCS fixture directory");
-        fs::write(directory.join("package.json"), "{}\n")
-            .expect("write ignored package manifest");
+        fs::write(directory.join("package.json"), "{}\n").expect("write ignored package manifest");
     }
 
     let managed = print_env(fixture.path(), &[]);
@@ -237,7 +235,10 @@ fn root_version_and_legacy_help_remain_separate_from_develop_flags() {
             .expect("render legacy install help");
         assert_success(&output);
         let text = combined(&output);
-        assert!(text.contains("install"), "legacy help omitted install: {text}");
+        assert!(
+            text.contains("install"),
+            "legacy help omitted install: {text}"
+        );
         for develop_only in ["--isolated-home", "--print-env", "--python-venv", "--venv"] {
             assert!(
                 !text.contains(develop_only),
