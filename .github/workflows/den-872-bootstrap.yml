@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d scripts/den-872-bootstrap.py.gz.b64 | gzip -dc > scripts/den-872-bootstrap.py
+          tr '_-' '/+' < scripts/den-872-bootstrap.py.gz.b64 | base64 -d | gzip -dc > scripts/den-872-bootstrap.py
           python3 scripts/den-872-bootstrap.py
           cargo fmt --all
           git diff --check
