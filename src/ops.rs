@@ -277,10 +277,17 @@ fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Op
     detect_target(project)
 }
 
-/// Infer the ecosystem from the files a project keeps at its root. Ordered so
-/// the most specific marker wins when a repo carries several (a Next.js app
-/// with a Dockerfile is still `node`).
+/// Infer the ecosystem from the files a project keeps at its root. A native
+/// package-manager manifest is authoritative; source-layout inference is only a
+/// fallback for intentionally pre-manifest project skeletons.
 pub(crate) fn detect_target(project: &Path) -> Option<String> {
+    detect_native_manifest_target(project).or_else(|| detect_structure_target(project))
+}
+
+/// Detect only authoritative native manifests. Manifestless root selection uses
+/// this separately so a nearer `main.go` or `src/main.rs` cannot outrank the
+/// actual `go.mod` or `Cargo.toml` that owns the project.
+pub(crate) fn detect_native_manifest_target(project: &Path) -> Option<String> {
     const MARKERS: &[(&str, &str)] = &[
         ("package.json", "node"),
         ("tsconfig.json", "node"),
@@ -308,16 +315,16 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
         ("Project.toml", "julia"),
         ("CMakeLists.txt", "cpp"),
     ];
-    if let Some((_, target)) = MARKERS
+    MARKERS
         .iter()
         .find(|(marker, _)| project.join(marker).exists())
-    {
-        return Some((*target).to_string());
-    }
+        .map(|(_, target)| (*target).to_string())
+}
 
-    // Some consumer folders are intentionally pre-manifest (for example,
-    // generated app skeletons). Keep this bounded and shallow so Zed never
-    // recursively classifies an unrelated large checkout.
+/// Detect bounded source layouts for projects that intentionally do not yet
+/// have their ecosystem manifest. This is weaker evidence than a native
+/// manifest and must never move an install below an authoritative ancestor.
+pub(crate) fn detect_structure_target(project: &Path) -> Option<String> {
     const STRUCTURE_MARKERS: &[(&str, &str)] = &[
         ("src/main.rs", "rust"),
         ("src/lib.rs", "rust"),
@@ -452,6 +459,134 @@ const LANGUAGES_BY_ECOSYSTEM: &[(Ecosystem, &str)] = &[
     (Ecosystem::Hex, "gleam"),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct GoDirectiveVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parse_go_directive(text: &str) -> Option<(GoDirectiveVersion, String)> {
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("go") {
+            continue;
+        }
+        let token = fields.next()?;
+        let mut parts = token.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+        if parts.next().is_some() {
+            return None;
+        }
+        return Some((
+            GoDirectiveVersion {
+                major,
+                minor,
+                patch,
+            },
+            token.to_string(),
+        ));
+    }
+    None
+}
+
+/// A go.work file must declare a Go version at least as new as every module it
+/// includes. Start from Zed's compatibility floor and select the highest
+/// numeric `go` directive from the consumer and installed package modules.
+fn required_go_work_version(project: &Path, paths: &[PathBuf]) -> String {
+    let mut selected = (
+        GoDirectiveVersion {
+            major: 1,
+            minor: 21,
+            patch: 0,
+        },
+        "1.21".to_string(),
+    );
+    for root in std::iter::once(project).chain(paths.iter().map(PathBuf::as_path)) {
+        let Ok(document) = fs::read_to_string(root.join("go.mod")) else {
+            continue;
+        };
+        let Some(candidate) = parse_go_directive(&document) else {
+            continue;
+        };
+        if candidate.0 > selected.0 {
+            selected = candidate;
+        }
+    }
+    selected.1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoPatchEntry {
+    package: String,
+    config_path: String,
+}
+
+fn cargo_package_name(root: &Path) -> Result<Option<String>> {
+    let manifest_path = root.join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let document = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let document: toml::Value = toml::from_str(&document)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let Some(package) = document.get("package") else {
+        return Ok(None);
+    };
+    let package = package
+        .as_table()
+        .with_context(|| format!("{}: [package] must be a table", manifest_path.display()))?;
+    let name = package
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("{}: [package].name is required", manifest_path.display()))?;
+    if name.trim().is_empty() {
+        bail!(
+            "{}: [package].name must not be empty",
+            manifest_path.display()
+        );
+    }
+    Ok(Some(name.to_string()))
+}
+
+fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
+    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+    for path in paths {
+        let Some(package) = cargo_package_name(path)? else {
+            eprintln!(
+                "warning: {} has no root [package].name; emitting a Cargo paths override without a crates.io patch entry",
+                path.display()
+            );
+            continue;
+        };
+        let config_path = relative_to(project, path);
+        if let Some(existing) = entries.get(&package)
+            && existing != &config_path
+        {
+            bail!(
+                "installed Rust crates `{}` and `{}` both declare package name `{package}`; Cargo cannot patch one crate name to two paths",
+                existing,
+                config_path
+            );
+        }
+        entries.insert(package, config_path);
+    }
+    Ok(entries
+        .into_iter()
+        .map(|(package, config_path)| CargoPatchEntry {
+            package,
+            config_path,
+        })
+        .collect())
+}
+
+fn toml_basic_string(value: &str) -> Result<String> {
+    serde_json::to_string(value).context("quoting a generated Cargo configuration string")
+}
+
 /// Emit the native wiring file for each adapter that needs one.
 ///
 /// Go and Python get zero-touch integration: both honor an environment variable
@@ -474,10 +609,23 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
             Adapter::Go => {
                 // A go.work `use` block is the only non-invasive way to add
                 // modules to a Go build; editing go.mod `replace` lines would
-                // mean rewriting a file the user owns.
-                let mut doc = String::from("go 1.21\n\nuse (\n\t./\n");
-                for p in &rel {
-                    doc.push_str(&format!("\t./{p}\n"));
+                // mean rewriting a file the user owns. Go resolves every path
+                // relative to the go.work file itself, which lives in `.zed/`,
+                // not relative to the process working directory.
+                let mut work_paths: Vec<String> = std::iter::once(project)
+                    .chain(paths.iter().map(PathBuf::as_path))
+                    .map(|path| {
+                        pathdiff_relative(&zed_dir, path)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .collect();
+                work_paths.sort();
+                work_paths.dedup();
+                let version = required_go_work_version(project, paths);
+                let mut doc = format!("go {version}\n\nuse (\n");
+                for path in &work_paths {
+                    doc.push_str(&format!("\t{path}\n"));
                 }
                 doc.push_str(")\n");
                 let path = zed_dir.join("go.work");
@@ -498,25 +646,46 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                 );
             }
             Adapter::Rust => {
+                // Cargo's `paths` override can replace a package that already
+                // participates in resolution, but it cannot introduce an
+                // unpublished crate by itself. Pair it with config-level
+                // `[patch.crates-io]` entries so a normal version dependency can
+                // resolve to the installed Zed crate without touching the
+                // consumer's Cargo.toml.
+                let mut config_paths: Vec<String> = paths
+                    .iter()
+                    .map(|path| relative_to(project, path))
+                    .collect();
+                config_paths.sort();
+                config_paths.dedup();
+                let patches = cargo_patch_entries(project, paths)?;
+
                 let mut doc = String::from(
-                    "# Generated by `zed install`. Cargo has no environment-variable\n\
-                     # path override, so add this to .cargo/config.toml yourself:\n\
-                     #\n\
-                     #   paths = [\"zed_modules/<org>/<name>\", ...]\n\
-                     #\n\
-                     # or copy the block below into it.\n",
+                    "# Generated by `zed install` for this project root.\n\
+                     # Copy or merge this fragment into .cargo/config.toml.\n\
+                     # The consumer's Cargo.toml remains unchanged.\n",
                 );
                 doc.push_str("paths = [\n");
-                for p in &rel {
-                    doc.push_str(&format!("    \"{p}\",\n"));
+                for path in &config_paths {
+                    doc.push_str(&format!("    {},\n", toml_basic_string(path)?));
                 }
                 doc.push_str("]\n");
+                if !patches.is_empty() {
+                    doc.push_str("\n[patch.crates-io]\n");
+                    for patch in &patches {
+                        doc.push_str(&format!(
+                            "{} = {{ path = {} }}\n",
+                            toml_basic_string(&patch.package)?,
+                            toml_basic_string(&patch.config_path)?,
+                        ));
+                    }
+                }
                 let path = zed_dir.join("cargo-paths.toml");
                 fs::write(&path, doc)?;
                 println!(
-                    "wrote {} ({} crate(s)); Cargo needs this merged into .cargo/config.toml manually",
+                    "wrote {} ({} crate(s)); copy or merge into .cargo/config.toml",
                     path.display(),
-                    rel.len()
+                    config_paths.len()
                 );
             }
             Adapter::Dart => {
@@ -2096,6 +2265,128 @@ mod tests {
         // must yield a (uselessly huge, but valid) duration, never a panic.
         let age = parse_age(&format!("{}w", u64::MAX)).unwrap();
         assert_eq!(age, Duration::from_secs(u64::MAX));
+    }
+
+    #[test]
+    fn go_workspace_paths_are_relative_to_the_generated_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package).unwrap();
+        let roots = BTreeMap::from([(Adapter::Go, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
+        assert!(document.contains("\t..\n"), "{document}");
+        assert!(
+            document.contains("\t../zed_modules/acme/tool\n"),
+            "{document}"
+        );
+        assert!(!document.contains("\t./\n"), "{document}");
+        assert!(!document.contains("\t./zed_modules"), "{document}");
+    }
+
+    #[test]
+    fn go_workspace_uses_the_highest_module_go_directive() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let first = project.join("zed_modules/acme/first");
+        let second = project.join("zed_modules/acme/second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(
+            project.join("go.mod"),
+            r#"module example.com/app
+
+go 1.22
+"#,
+        )
+        .unwrap();
+        fs::write(
+            first.join("go.mod"),
+            r#"module example.com/first
+
+go 1.21
+"#,
+        )
+        .unwrap();
+        fs::write(
+            second.join("go.mod"),
+            r#"module example.com/second
+
+go 1.24.1 // minimum toolchain
+"#,
+        )
+        .unwrap();
+        let roots = BTreeMap::from([(Adapter::Go, vec![first, second])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
+        assert_eq!(document.lines().next(), Some("go 1.24.1"), "{document}");
+    }
+
+    #[test]
+    fn malformed_go_directives_do_not_lower_the_safe_default() {
+        assert_eq!(required_go_work_version(Path::new("/missing"), &[]), "1.21");
+        assert!(parse_go_directive("module example.com/app go latest").is_none());
+        assert!(parse_go_directive("go 1").is_none());
+    }
+
+    #[test]
+    fn rust_cargo_config_introduces_an_unpublished_crate_by_package_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "tool-crate"
+version = "1.2.3"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&generated).unwrap();
+        assert_eq!(parsed["paths"][0].as_str(), Some("zed_modules/acme/tool"));
+        assert_eq!(
+            parsed["patch"]["crates-io"]["tool-crate"]["path"].as_str(),
+            Some("zed_modules/acme/tool")
+        );
+        assert!(generated.contains("merge this fragment into .cargo/config.toml"));
+    }
+
+    #[test]
+    fn rust_cargo_config_rejects_two_paths_for_one_crate_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let first = project.join("zed_modules/acme/first");
+        let second = project.join("zed_modules/acme/second");
+        for package in [&first, &second] {
+            fs::create_dir_all(package).unwrap();
+            fs::write(
+                package.join("Cargo.toml"),
+                r#"[package]
+name = "duplicate-crate"
+version = "1.0.0"
+"#,
+            )
+            .unwrap();
+        }
+        let roots = BTreeMap::from([(Adapter::Rust, vec![first, second])]);
+
+        let error = write_toolchain_wiring(&project, &roots)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate-crate"), "{error}");
+        assert!(error.contains("two paths"), "{error}");
     }
 
     #[test]
