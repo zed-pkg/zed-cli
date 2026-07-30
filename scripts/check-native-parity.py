@@ -26,7 +26,11 @@ manifest at all: they are versioned purely by VCS tag. Those are reported as
 repo-global `[publish].tag_format` cannot express — that is reported as a gap.
 
 Usage:
-    scripts/check-native-parity.py [REPO_ROOT] [--strict] [--json]
+    scripts/check-native-parity.py [REPO_ROOT] [--strict] [--json] [--declared-only]
+
+`--declared-only` limits native dry-run output to targets carrying an explicit
+`[targets.<name>.native]` route. Targets without a route remain Zed packages;
+CI must not infer an upload merely because a native manifest exists.
 """
 
 from __future__ import annotations
@@ -289,6 +293,7 @@ def main() -> int:
     argv = sys.argv[1:]
     strict = "--strict" in argv
     emit_json = "--json" in argv
+    declared_only = "--declared-only" in argv
     positional = [a for a in argv if not a.startswith("-")]
     root = Path(positional[0] if positional else ".").resolve()
 
@@ -358,6 +363,11 @@ def main() -> int:
             rows.append((target, zed_coords, "—", "—", "zed only (whole repository)"))
             continue
 
+        native_route = section.get("native")
+        if declared_only and native_route is None:
+            rows.append((target, zed_coords, "—", "—", "zed only (no native route)"))
+            continue
+
         found = find_native(target_dir)
         if found is None:
             # Not drift: plenty of languages (shell, matlab) have no registry.
@@ -371,14 +381,18 @@ def main() -> int:
         if native_version is VCS_VERSIONED:
             if key == "go" and section["dir"].strip("/") not in ("", "."):
                 subdir = section["dir"].strip("/")
-                expected_tag = f"{subdir}/{tag_format.format(version=version)}"
-                note = f"tag `{expected_tag}`"
-                gaps.append(
-                    f"[targets.{target}] is a Go module in `{subdir}/`, so the module proxy "
-                    f"requires the tag `{expected_tag}` — but [publish].tag_format is repo-global "
-                    f"(`{tag_format}`), so zed can only create `{tag_format.format(version=version)}`. "
-                    f"Per-target tag formats are needed to publish this slice to the Go proxy."
+                native_tag_format = (
+                    native_route.get("tag_format") if native_route is not None else None
                 )
+                if native_tag_format:
+                    note = f"tag `{native_tag_format.format(version=version)}`"
+                else:
+                    expected_tag = f"{subdir}/{tag_format.format(version=version)}"
+                    note = f"tag `{expected_tag}`"
+                    gaps.append(
+                        f"[targets.{target}] is a Go module in `{subdir}/`, so the module proxy "
+                        f"requires the tag `{expected_tag}` — but no native tag format is declared."
+                    )
             else:
                 note = "from VCS tag"
             shown = native_name or native_path.name
