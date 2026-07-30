@@ -399,6 +399,7 @@ dir = "go"
 [targets.golang.native]
 registry = "go-modules"
 package = "github.com/acme/client"
+tag_format = "go/v{version}"
 "#,
         )
         .unwrap();

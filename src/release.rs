@@ -38,6 +38,7 @@ pub struct NativeReleaseArtifact {
     pub registry: String,
     pub package: String,
     pub version: String,
+    pub vcs_tag: String,
     pub dir: String,
 }
 
@@ -48,6 +49,7 @@ pub struct ForgeReleaseArtifact {
     pub format: String,
     pub package: String,
     pub version: String,
+    pub vcs_tag: String,
     pub dir: String,
 }
 
@@ -149,6 +151,7 @@ pub fn build_plan(manifest: &Manifest) -> ReleasePlan {
             registry: route.registry.as_str().to_string(),
             package: route.package,
             version: version.clone(),
+            vcs_tag: route.vcs_tag,
             dir: route.dir,
         })
         .collect();
@@ -161,6 +164,7 @@ pub fn build_plan(manifest: &Manifest) -> ReleasePlan {
             format: route.format.as_str().to_string(),
             package: route.package,
             version: version.clone(),
+            vcs_tag: route.vcs_tag,
             dir: route.dir,
         })
         .collect();
@@ -696,12 +700,13 @@ pub fn render_human(plan: &ReleasePlan) -> String {
     } else {
         for artifact in &plan.native {
             output.push_str(&format!(
-                "  - {} {}@{} <- {} [target: {}]\n",
+                "  - {} {}@{} <- {} [target: {}, tag: {}]\n",
                 artifact.registry,
                 artifact.package,
                 artifact.version,
                 artifact.dir,
-                artifact.target
+                artifact.target,
+                artifact.vcs_tag
             ));
         }
     }
@@ -711,13 +716,14 @@ pub fn render_human(plan: &ReleasePlan) -> String {
     } else {
         for artifact in &plan.forge {
             output.push_str(&format!(
-                "  - {} via {} {}@{} <- {} [target: {}]\n",
+                "  - {} via {} {}@{} <- {} [target: {}, tag: {}]\n",
                 artifact.registry,
                 artifact.format,
                 artifact.package,
                 artifact.version,
                 artifact.dir,
-                artifact.target
+                artifact.target,
+                artifact.vcs_tag
             ));
         }
     }
@@ -1162,6 +1168,7 @@ dir = "go"
 [targets.golang.native]
 registry = "go-modules"
 package = "github.com/acme/client"
+tag_format = "go/v{version}"
 forge = ["gitlab-packages"]
 "#,
         )
@@ -1171,5 +1178,13 @@ forge = ["gitlab-packages"]
         let plan = build_plan(&manifest);
         assert_eq!(plan.native.len(), 5);
         assert_eq!(plan.forge.len(), 9);
+        assert_eq!(
+            plan.native
+                .iter()
+                .find(|artifact| artifact.target == "golang")
+                .unwrap()
+                .vcs_tag,
+            "go/v1.2.3"
+        );
     }
 }

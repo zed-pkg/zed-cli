@@ -163,6 +163,11 @@ A single-language repository uses `[publish.native]` with the same `registry`,
 `package`, and `forge` fields; its native package-manager manifest is read from
 the repository root.
 
+Tag-resolved packages can add a native `tag_format`. Go modules below a
+subdirectory must use the module-directory prefix, such as
+`tag_format = "clients/go/v{version}"`, while the coordinated Zed release can
+continue using the repository tag `v{version}`.
+
 `zed release plan --json` emits one coordinated release set containing the
 Zed artifacts, canonical native packages, and forge mirrors. It does not read
 credentials or upload. `zed release preflight` verifies the native package
