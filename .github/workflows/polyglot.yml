@@ -164,13 +164,13 @@ jobs:
             --skip-vcs-checks
 
           for target in nodejs python golang rust ruby; do
-            if [ ! -d "$RUNNER_TEMP/registry/zed-pkg/poly-fixture-${target}" ]; then
+            if [ ! -d "$RUNNER_TEMP/registry/packages/zed-pkg/poly-fixture-${target}" ]; then
               echo "::error::poly-fixture-${target} is not in the registry"
               exit 1
             fi
           done
           echo "five packages, one version, one commit:"
-          ls -1 "$RUNNER_TEMP/registry/zed-pkg"
+          ls -1 "$RUNNER_TEMP/registry/packages/zed-pkg"
 
       - name: Republish is idempotent for byte-identical targets
         run: |
