@@ -128,13 +128,21 @@ jobs:
             -c 'test "$IN_NIX_SHELL" = impure; printf nix-ok' \
             | grep -q nix-ok
 
-          python3 - "$ZED_BIN" "$RUNNER_TEMP/pty-project" <<'PY'
+          pty_shell="$RUNNER_TEMP/pty-shell"
+          cat > "$pty_shell" <<'SH'
+          #!/bin/sh
+          set -eu
+          test -t 0
+          test -t 1
+          SH
+          chmod +x "$pty_shell"
+
+          python3 - "$ZED_BIN" "$RUNNER_TEMP/pty-project" "$pty_shell" <<'PY'
           import os
           import pty
-          import select
           import sys
 
-          binary, project = sys.argv[1:]
+          binary, project, shell = sys.argv[1:]
           os.makedirs(project, exist_ok=True)
           with open(os.path.join(project, "package.json"), "w", encoding="utf-8") as handle:
               handle.write("{}\n")
@@ -153,27 +161,13 @@ jobs:
                       "--python-venv",
                       "never",
                       "--shell",
-                      "/bin/sh",
+                      shell,
                   ],
                   os.environ.copy(),
               )
 
-          os.write(fd, b"printf pty-ok\\nexit\\n")
-          output = bytearray()
-          while True:
-              ready, _, _ = select.select([fd], [], [], 10)
-              if not ready:
-                  raise SystemExit("interactive zed dev shell timed out")
-              try:
-                  chunk = os.read(fd, 4096)
-              except OSError:
-                  break
-              if not chunk:
-                  break
-              output.extend(chunk)
           _, status = os.waitpid(pid, 0)
+          os.close(fd)
           if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0:
-              raise SystemExit(f"interactive shell failed: {status}: {output!r}")
-          if b"pty-ok" not in output:
-              raise SystemExit(f"interactive shell output missing marker: {output!r}")
+              raise SystemExit(f"interactive PTY shell failed: {status}")
           PY
