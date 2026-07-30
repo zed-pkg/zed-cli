@@ -277,10 +277,17 @@ fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Op
     detect_target(project)
 }
 
-/// Infer the ecosystem from the files a project keeps at its root. Ordered so
-/// the most specific marker wins when a repo carries several (a Next.js app
-/// with a Dockerfile is still `node`).
+/// Infer the ecosystem from the files a project keeps at its root. A native
+/// package-manager manifest is authoritative; source-layout inference is only a
+/// fallback for intentionally pre-manifest project skeletons.
 pub(crate) fn detect_target(project: &Path) -> Option<String> {
+    detect_native_manifest_target(project).or_else(|| detect_structure_target(project))
+}
+
+/// Detect only authoritative native manifests. Manifestless root selection uses
+/// this separately so a nearer `main.go` or `src/main.rs` cannot outrank the
+/// actual `go.mod` or `Cargo.toml` that owns the project.
+pub(crate) fn detect_native_manifest_target(project: &Path) -> Option<String> {
     const MARKERS: &[(&str, &str)] = &[
         ("package.json", "node"),
         ("tsconfig.json", "node"),
@@ -308,16 +315,16 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
         ("Project.toml", "julia"),
         ("CMakeLists.txt", "cpp"),
     ];
-    if let Some((_, target)) = MARKERS
+    MARKERS
         .iter()
         .find(|(marker, _)| project.join(marker).exists())
-    {
-        return Some((*target).to_string());
-    }
+        .map(|(_, target)| (*target).to_string())
+}
 
-    // Some consumer folders are intentionally pre-manifest (for example,
-    // generated app skeletons). Keep this bounded and shallow so Zed never
-    // recursively classifies an unrelated large checkout.
+/// Detect bounded source layouts for projects that intentionally do not yet
+/// have their ecosystem manifest. This is weaker evidence than a native
+/// manifest and must never move an install below an authoritative ancestor.
+pub(crate) fn detect_structure_target(project: &Path) -> Option<String> {
     const STRUCTURE_MARKERS: &[(&str, &str)] = &[
         ("src/main.rs", "rust"),
         ("src/lib.rs", "rust"),
