@@ -120,9 +120,10 @@ fn isolated_home_does_not_copy_existing_provider_credentials() {
     let expected_home = fs::canonicalize(project.path())
         .expect("canonicalize project")
         .join(".zed/dev/home");
+    let expected_home_string = expected_home.to_string_lossy().into_owned();
     assert_eq!(
         managed.get("HOME").map(String::as_str),
-        Some(expected_home.to_string_lossy().as_ref())
+        Some(expected_home_string.as_str())
     );
     assert!(expected_home.is_dir());
     assert!(!expected_home.join(".codex/credentials.json").exists());
