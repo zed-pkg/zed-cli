@@ -297,20 +297,15 @@ def main() -> int:
     rows: list[tuple[str, str, str, str, str]] = []
     matrix: list[dict[str, str]] = []
 
-    # A target rooted at the repo root (or at an ancestor of another target)
-    # swallows every other language, which defeats the point of slicing — and
-    # `zed pack` rejects it outright, because the slice would contain the
-    # repository's own .zpkg.toml. Catch it here with a message that explains
-    # the fix, rather than at pack time.
+    # `dir = "."` is the sanctioned whole-repository target (doc 18): it ships
+    # every language as one artifact alongside the isolated slices, and
+    # `zed pack` exempts it from the nested-manifest guard by design. Every
+    # OTHER target must be an isolated root — a language target that contains
+    # another language target would put the inner language's bytes in the
+    # outer artifact, which is exactly what doc 17 exists to prevent.
     declared = {t: targets[t]["dir"].strip("/") for t in targets}
     for target, dir_ in declared.items():
         if dir_ in ("", "."):
-            problems.append(
-                f"[targets.{target}] has dir `{targets[target]['dir']}`, the repository root. "
-                f"`zed pack` refuses this (the slice would contain the repo's own .zpkg.toml), "
-                f"so no target in this manifest can be packed. There is no way to express "
-                f"\"also publish the whole repo as one package\" via [targets]; remove it."
-            )
             continue
         for other, other_dir in declared.items():
             if other != target and other_dir not in ("", ".") and (
