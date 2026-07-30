@@ -2356,7 +2356,11 @@ fn one_repo_publishes_one_isolated_package_per_language() {
         .collect();
     assert_eq!(
         names,
-        vec!["acme-clients-golang", "acme-clients-java", "acme-clients-nodejs"],
+        vec![
+            "acme-clients-golang",
+            "acme-clients-java",
+            "acme-clients-nodejs"
+        ],
         "packages are named <repo>-<language>"
     );
 
@@ -2367,16 +2371,28 @@ fn one_repo_publishes_one_isolated_package_per_language() {
             "acme-clients-java" => {
                 assert!(joined.contains("Client.java"), "{joined}");
                 // The decisive assertion: no other language's source rides along.
-                assert!(!joined.contains("index.ts"), "java artifact leaked ts: {joined}");
-                assert!(!joined.contains("client.go"), "java artifact leaked go: {joined}");
+                assert!(
+                    !joined.contains("index.ts"),
+                    "java artifact leaked ts: {joined}"
+                );
+                assert!(
+                    !joined.contains("client.go"),
+                    "java artifact leaked go: {joined}"
+                );
             }
             "acme-clients-nodejs" => {
                 assert!(joined.contains("index.ts"), "{joined}");
-                assert!(!joined.contains("Client.java"), "node artifact leaked java: {joined}");
+                assert!(
+                    !joined.contains("Client.java"),
+                    "node artifact leaked java: {joined}"
+                );
             }
             "acme-clients-golang" => {
                 assert!(joined.contains("client.go"), "{joined}");
-                assert!(!joined.contains("index.ts"), "go artifact leaked ts: {joined}");
+                assert!(
+                    !joined.contains("index.ts"),
+                    "go artifact leaked ts: {joined}"
+                );
             }
             other => panic!("unexpected package {other}"),
         }
@@ -2507,7 +2523,10 @@ fn the_matching_language_package_installs_and_wires_its_toolchain() {
         .join(MODULES_DIR)
         .join("acme")
         .join("acme-clients-golang");
-    assert!(installed.join("client.go").exists(), "go source must be present");
+    assert!(
+        installed.join("client.go").exists(),
+        "go source must be present"
+    );
     assert!(!installed.join("index.ts").exists(), "no ts source");
 
     // Go wiring: a go.work the toolchain can be pointed at.

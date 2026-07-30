@@ -415,7 +415,11 @@ fn project_ecosystems(project: &Path) -> BTreeSet<Ecosystem> {
 ///
 /// These are suggestions, not registry lookups: the message says "try", because
 /// a repo need not publish every language.
-fn sibling_suggestions(dep_name: &str, dep_language: Language, wanted: &BTreeSet<Ecosystem>) -> Vec<String> {
+fn sibling_suggestions(
+    dep_name: &str,
+    dep_language: Language,
+    wanted: &BTreeSet<Ecosystem>,
+) -> Vec<String> {
     let suffix = format!("-{}", dep_language.as_str());
     let Some(base) = dep_name.strip_suffix(&suffix) else {
         return Vec::new();
@@ -1017,7 +1021,10 @@ fn install_locked(
             // Go, Python, Rust and Dart need no per-package linking: their
             // wiring is one project-level file listing the installed roots,
             // written after the loop. Record the root and move on.
-            Adapter::Go => wired_roots.entry(Adapter::Go).or_default().push(dest.clone()),
+            Adapter::Go => wired_roots
+                .entry(Adapter::Go)
+                .or_default()
+                .push(dest.clone()),
             Adapter::Python => wired_roots
                 .entry(Adapter::Python)
                 .or_default()
@@ -2308,7 +2315,10 @@ url = "https://localhost/consumer/app"
         assert_eq!(c.first().map(String::as_str), Some("acme-clients-java"));
 
         let node = language_route_candidates("acme-clients", Some("node"));
-        assert_eq!(node.first().map(String::as_str), Some("acme-clients-nodejs"));
+        assert_eq!(
+            node.first().map(String::as_str),
+            Some("acme-clients-nodejs")
+        );
         assert!(node.contains(&"acme-clients-ts".to_string()));
 
         let go = language_route_candidates("acme-clients", Some("go"));
@@ -2320,9 +2330,15 @@ url = "https://localhost/consumer/app"
         // `-node` must reach `-nodejs` and vice versa, so a user who guesses
         // either spelling lands on whichever the author published.
         let from_short = language_route_candidates("acme-clients-node", None);
-        assert!(from_short.contains(&"acme-clients-nodejs".to_string()), "{from_short:?}");
+        assert!(
+            from_short.contains(&"acme-clients-nodejs".to_string()),
+            "{from_short:?}"
+        );
         let from_long = language_route_candidates("acme-clients-nodejs", None);
-        assert!(from_long.contains(&"acme-clients-node".to_string()), "{from_long:?}");
+        assert!(
+            from_long.contains(&"acme-clients-node".to_string()),
+            "{from_long:?}"
+        );
 
         let go = language_route_candidates("acme-clients-go", None);
         assert!(go.contains(&"acme-clients-golang".to_string()), "{go:?}");
