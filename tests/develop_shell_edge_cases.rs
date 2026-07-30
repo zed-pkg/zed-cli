@@ -262,7 +262,10 @@ fn flags2env_unknown_inline_values_are_redacted() {
     assert_eq!(output.status.code(), Some(1));
     let message = stderr(&output);
     assert!(message.contains("--not-a-real-option=<redacted>"));
-    assert!(!message.contains(secret), "secret leaked in stderr: {message}");
+    assert!(
+        !message.contains(secret),
+        "secret leaked in stderr: {message}"
+    );
 }
 
 #[cfg(unix)]
@@ -290,7 +293,14 @@ fn project_root_discovery_honors_nearest_exclusions_depth_and_ambiguity() {
 
     let unique = clean_command(fixture.path())
         .env("ZED_TEST_CAPTURE", &capture)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+        ])
         .arg("--shell")
         .arg(&shell)
         .args(["-c", "ignored"])
@@ -305,12 +315,22 @@ fn project_root_discovery_honors_nearest_exclusions_depth_and_ambiguity() {
 
     let api = fixture.path().join("libs/api");
     fs::create_dir_all(&api).expect("create second project");
-    fs::write(api.join("Cargo.toml"), "[package]\nname = \"api\"\nversion = \"0.0.0\"\n")
-        .expect("write Cargo.toml");
+    fs::write(
+        api.join("Cargo.toml"),
+        "[package]\nname = \"api\"\nversion = \"0.0.0\"\n",
+    )
+    .expect("write Cargo.toml");
 
     let ambiguous = clean_command(fixture.path())
         .env("ZED_TEST_CAPTURE", &capture)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+        ])
         .arg("--shell")
         .arg(&shell)
         .args(["-c", "ignored"])
@@ -320,13 +340,25 @@ fn project_root_discovery_honors_nearest_exclusions_depth_and_ambiguity() {
     let ambiguous_capture = fs::read_to_string(&capture).expect("read ambiguous capture");
     assert_eq!(
         capture_value(&ambiguous_capture, "cwd"),
-        Some(fs::canonicalize(fixture.path()).unwrap().display().to_string())
+        Some(
+            fs::canonicalize(fixture.path())
+                .unwrap()
+                .display()
+                .to_string()
+        )
     );
 
     fs::write(fixture.path().join("package.json"), "{}\n").expect("write root package.json");
     let nearest = clean_command(&web.join("src"))
         .env("ZED_TEST_CAPTURE", &capture)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+        ])
         .arg("--shell")
         .arg(&shell)
         .args(["-c", "ignored"])
@@ -398,7 +430,12 @@ exit 23
         .output()
         .expect("run fake Nix reentry");
 
-    assert_eq!(output.status.code(), Some(23), "stderr: {}", stderr(&output));
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "stderr: {}",
+        stderr(&output)
+    );
     let arguments: Vec<String> = fs::read_to_string(&args_log)
         .expect("read Nix argv")
         .lines()
@@ -414,8 +451,16 @@ exit 23
     assert_eq!(arguments[4], "develop");
     assert!(arguments.windows(2).any(|pair| pair == ["--nix", "never"]));
     assert!(arguments.windows(2).any(|pair| pair == ["--profile", "ai"]));
-    assert!(arguments.iter().any(|argument| argument == "--isolated-home"));
-    assert!(arguments.windows(2).any(|pair| pair == ["-c", "ignored command"]));
+    assert!(
+        arguments
+            .iter()
+            .any(|argument| argument == "--isolated-home")
+    );
+    assert!(
+        arguments
+            .windows(2)
+            .any(|pair| pair == ["-c", "ignored command"])
+    );
     assert!(
         !arguments.iter().any(|argument| argument.contains(token)),
         "token leaked into Nix argv: {arguments:?}"
@@ -505,7 +550,14 @@ fn python_venv_modes_cover_relative_absolute_skip_and_invalid_paths() {
     let relative = clean_command(&relative_project)
         .env("ZED_TEST_CAPTURE", &relative_capture)
         .env("ZED_TEST_PYTHON_ARGS", &relative_args)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "required"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "required",
+        ])
         .arg("--python")
         .arg(&python)
         .args(["--venv", "custom/venv"])
@@ -548,7 +600,14 @@ fn python_venv_modes_cover_relative_absolute_skip_and_invalid_paths() {
     let absolute = clean_command(&absolute_project)
         .env("ZED_TEST_CAPTURE", &absolute_capture)
         .env("ZED_TEST_PYTHON_ARGS", &absolute_args)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "required"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "required",
+        ])
         .arg("--python")
         .arg(&python)
         .arg("--venv")
@@ -571,14 +630,24 @@ fn python_venv_modes_cover_relative_absolute_skip_and_invalid_paths() {
     let skip_marker = fixture.path().join("skip-python-args.txt");
     let skipped = clean_command(&non_python)
         .env("ZED_TEST_PYTHON_ARGS", &skip_marker)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "auto"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "auto",
+        ])
         .arg("--python")
         .arg(&python)
         .arg("--print-env")
         .output()
         .expect("skip Python venv for Node project");
     assert_success(&skipped);
-    assert!(!skip_marker.exists(), "Python was invoked for a non-Python project");
+    assert!(
+        !skip_marker.exists(),
+        "Python was invoked for a non-Python project"
+    );
     let skipped_env: BTreeMap<String, String> = serde_json::from_slice(&skipped.stdout).unwrap();
     assert!(!skipped_env.contains_key("VIRTUAL_ENV"));
 
@@ -605,7 +674,14 @@ fn python_venv_modes_cover_relative_absolute_skip_and_invalid_paths() {
     assert!(stderr(&invalid).contains("not a usable Python virtual environment"));
 
     let missing = clean_command(&invalid_project)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "required"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "required",
+        ])
         .arg("--python")
         .arg(fixture.path().join("definitely-missing-python"))
         .args(["--venv", "another-venv", "--print-env"])
@@ -628,17 +704,22 @@ fn print_env_proves_path_order_adapters_directories_and_isolated_home() {
     let existing_class = root.join("java-existing.jar");
     fs::write(
         root.join(".zed/pythonpath"),
-        env::join_paths(&python_paths).unwrap().to_string_lossy().as_bytes(),
+        env::join_paths(&python_paths)
+            .unwrap()
+            .to_string_lossy()
+            .as_bytes(),
     )
     .expect("write pythonpath adapter");
     fs::write(
         root.join(".zed/classpath"),
-        env::join_paths(&class_paths).unwrap().to_string_lossy().as_bytes(),
+        env::join_paths(&class_paths)
+            .unwrap()
+            .to_string_lossy()
+            .as_bytes(),
     )
     .expect("write classpath adapter");
     fs::write(root.join(".zed/go.work"), "go 1.23\n").expect("write go.work adapter");
-    fs::write(root.join(".zed/cargo-paths.toml"), "paths = []\n")
-        .expect("write cargo adapter");
+    fs::write(root.join(".zed/cargo-paths.toml"), "paths = []\n").expect("write cargo adapter");
 
     let inherited_path = env::join_paths([
         root.join("node_modules/.bin"),
@@ -669,9 +750,16 @@ fn print_env_proves_path_order_adapters_directories_and_isolated_home() {
 
     let managed: BTreeMap<String, String> = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(managed.get("ZED_DEV").map(String::as_str), Some("1"));
-    assert_eq!(managed.get("ZED_DEV_PROFILE").map(String::as_str), Some("ai"));
+    assert_eq!(
+        managed.get("ZED_DEV_PROFILE").map(String::as_str),
+        Some("ai")
+    );
     assert!(!managed.contains_key("INHERITED_SECRET"));
-    assert!(!managed.values().any(|value| value == "must-not-be-serialized"));
+    assert!(
+        !managed
+            .values()
+            .any(|value| value == "must-not-be-serialized")
+    );
 
     let paths: Vec<PathBuf> = env::split_paths(OsStr::new(managed.get("PATH").unwrap())).collect();
     let expected_prefix = [
@@ -701,7 +789,10 @@ fn print_env_proves_path_order_adapters_directories_and_isolated_home() {
         1
     );
 
-    assert_eq!(managed["HOME"], root.join(".zed/dev/home").display().to_string());
+    assert_eq!(
+        managed["HOME"],
+        root.join(".zed/dev/home").display().to_string()
+    );
     assert_eq!(
         managed["XDG_CONFIG_HOME"],
         root.join(".zed/dev/xdg/config").display().to_string()
@@ -710,20 +801,31 @@ fn print_env_proves_path_order_adapters_directories_and_isolated_home() {
         managed["XDG_DATA_HOME"],
         root.join(".zed/dev/xdg/data").display().to_string()
     );
-    assert_eq!(managed["GOWORK"], root.join(".zed/go.work").display().to_string());
+    assert_eq!(
+        managed["GOWORK"],
+        root.join(".zed/go.work").display().to_string()
+    );
     assert_eq!(managed["PYTHONNOUSERSITE"], "1");
 
     let actual_python: Vec<PathBuf> =
         env::split_paths(OsStr::new(managed.get("PYTHONPATH").unwrap())).collect();
     assert_eq!(
         actual_python,
-        vec![python_paths[0].clone(), python_paths[1].clone(), existing_python]
+        vec![
+            python_paths[0].clone(),
+            python_paths[1].clone(),
+            existing_python
+        ]
     );
     let actual_class: Vec<PathBuf> =
         env::split_paths(OsStr::new(managed.get("CLASSPATH").unwrap())).collect();
     assert_eq!(
         actual_class,
-        vec![class_paths[0].clone(), class_paths[1].clone(), existing_class]
+        vec![
+            class_paths[0].clone(),
+            class_paths[1].clone(),
+            existing_class
+        ]
     );
 
     assert_eq!(
@@ -741,7 +843,10 @@ fn print_env_proves_path_order_adapters_directories_and_isolated_home() {
         ".zed/dev/profiles/ai/bin",
         ".zed/dev/xdg/state",
     ] {
-        assert!(root.join(directory).is_dir(), "missing managed directory {directory}");
+        assert!(
+            root.join(directory).is_dir(),
+            "missing managed directory {directory}"
+        );
     }
 }
 
@@ -764,7 +869,14 @@ fn shell_dispatch_covers_posix_fish_powershell_cmd_and_generic_shells() {
         capture_shell(&shell);
         let output = clean_command(project.path())
             .env("ZED_TEST_CAPTURE", &capture)
-            .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+            .args([
+                "dev",
+                "--no-install",
+                "--nix",
+                "never",
+                "--python-venv",
+                "never",
+            ])
             .arg("--shell")
             .arg(&shell)
             .args(["-c", script])
@@ -787,7 +899,14 @@ fn child_exit_missing_shell_no_tty_and_dotenv_boundaries_fail_safely() {
     let child_exit = clean_command(project.path())
         .env("ZED_TEST_CAPTURE", &capture)
         .env("ZED_TEST_EXIT_CODE", "37")
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+        ])
         .arg("--shell")
         .arg(&shell)
         .args(["-c", "ignored"])
@@ -797,7 +916,14 @@ fn child_exit_missing_shell_no_tty_and_dotenv_boundaries_fail_safely() {
 
     let missing_path = project.path().join("definitely-missing-shell");
     let missing = clean_command(project.path())
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+        ])
         .arg("--shell")
         .arg(&missing_path)
         .args(["-c", "ignored"])
@@ -811,7 +937,14 @@ fn child_exit_missing_shell_no_tty_and_dotenv_boundaries_fail_safely() {
     fs::remove_file(&capture).ok();
     let no_tty = clean_command(project.path())
         .env("ZED_TEST_CAPTURE", &capture)
-        .args(["dev", "--no-install", "--nix", "never", "--python-venv", "never"])
+        .args([
+            "dev",
+            "--no-install",
+            "--nix",
+            "never",
+            "--python-venv",
+            "never",
+        ])
         .arg("--shell")
         .arg(&shell)
         .output()
@@ -820,8 +953,11 @@ fn child_exit_missing_shell_no_tty_and_dotenv_boundaries_fail_safely() {
     assert!(stderr(&no_tty).contains("needs a real terminal"));
     assert!(!capture.exists(), "shell spawned despite the no-TTY guard");
 
-    fs::write(project.path().join(".env"), "ZED_TEST_DOTENV_SECRET=from-dotenv\n")
-        .expect("write .env");
+    fs::write(
+        project.path().join(".env"),
+        "ZED_TEST_DOTENV_SECRET=from-dotenv\n",
+    )
+    .expect("write .env");
     fs::write(
         project.path().join(".envrc"),
         "export ZED_TEST_DOTENV_SECRET=from-envrc\n",
