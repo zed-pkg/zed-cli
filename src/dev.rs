@@ -1255,7 +1255,7 @@ mod tests {
         let app = temp.path().join("apps/web");
         fs::create_dir_all(&app).unwrap();
         fs::write(app.join("package.json"), "{}").unwrap();
-        assert_eq!(project_root(temp.path()), app);
+        assert_eq!(project_root(temp.path()), fs::canonicalize(app).unwrap());
 
         let second = temp.path().join("apps/api");
         fs::create_dir_all(&second).unwrap();
