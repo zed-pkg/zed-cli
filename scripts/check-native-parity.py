@@ -26,7 +26,11 @@ manifest at all: they are versioned purely by VCS tag. Those are reported as
 repo-global `[publish].tag_format` cannot express — that is reported as a gap.
 
 Usage:
-    scripts/check-native-parity.py [REPO_ROOT] [--strict] [--json]
+    scripts/check-native-parity.py [REPO_ROOT] [--strict] [--json] [--declared-only]
+
+`--declared-only` limits native dry-run output to targets carrying an explicit
+`[targets.<name>.native]` route. Targets without a route remain Zed packages;
+CI must not infer an upload merely because a native manifest exists.
 """
 
 from __future__ import annotations
@@ -289,6 +293,7 @@ def main() -> int:
     argv = sys.argv[1:]
     strict = "--strict" in argv
     emit_json = "--json" in argv
+    declared_only = "--declared-only" in argv
     positional = [a for a in argv if not a.startswith("-")]
     root = Path(positional[0] if positional else ".").resolve()
 
@@ -358,6 +363,11 @@ def main() -> int:
             rows.append((target, zed_coords, "—", "—", "zed only (whole repository)"))
             continue
 
+        native_route = section.get("native")
+        if declared_only and native_route is None:
+            rows.append((target, zed_coords, "—", "—", "zed only (no native route)"))
+            continue
+
         found = find_native(target_dir)
         if found is None:
             # Not drift: plenty of languages (shell, matlab) have no registry.
@@ -373,7 +383,7 @@ def main() -> int:
             # Go module below a subdirectory gets the `<subdir>/vX.Y.Z` tag the
             # module proxy demands. Honor it before reporting the gap, or the
             # gate keeps flagging repos that have already declared the fix.
-            target_tag_format = (section.get("native") or {}).get("tag_format")
+            target_tag_format = (native_route or {}).get("tag_format")
             if key == "go" and section["dir"].strip("/") not in ("", "."):
                 subdir = section["dir"].strip("/")
                 expected_tag = f"{subdir}/v{version}"
