@@ -1,0 +1,112 @@
+name: DEN-1194 Docker recovery proof
+
+on:
+  push:
+    branches:
+      - ci/den-1194-docker-recovery
+
+permissions:
+  contents: read
+
+jobs:
+  docker-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - name: Build the exact PR Docker fixture
+        run: |
+          docker build \
+            --file zed-cli/.github/docker/install-test.Dockerfile \
+            --tag zed-pkg/den-1194-test \
+            .
+          test "$(id -u)" -eq 1001
+          test "$(id -g)" -eq 1001
+          docker run --rm zed-pkg/den-1194-test sh -euc '
+            test "$(id -u)" -eq 1001
+            test "$(id -g)" -eq 1001
+            test "$HOME" = /home/zed-test
+          '
+
+      - name: Prepare registry, store, and consumer fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R zed-cli/tests/fixtures/docker-install "$RUNNER_TEMP/fixtures"
+          mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/zed-home"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-lib:/package" \
+            --volume "$RUNNER_TEMP/registry:/registry" \
+            --workdir /package \
+            zed-pkg/den-1194-test \
+            zed publish --registry file:///registry --skip-vcs-checks
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/den-1194-test \
+            zed install \
+              --frozen \
+              --registry file:///registry \
+              --home /zed-home \
+              --install-mode copy
+
+      - name: Prove host/container lock ownership and interrupted recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(stat -c '%u:%g' "$RUNNER_TEMP/zed-home")" = "$(id -u):$(id -g)"
+          test "$(stat -c '%u:%g' "$RUNNER_TEMP/zed-home/locks")" = "$(id -u):$(id -g)"
+          test "$(stat -c '%u:%g' "$RUNNER_TEMP/zed-home/locks/install.lock")" = "$(id -u):$(id -g)"
+
+          container="$(docker create zed-pkg/den-1194-test)"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/usr/local/bin/zed" "$RUNNER_TEMP/zed"
+          chmod +x "$RUNNER_TEMP/zed"
+          app="$RUNNER_TEMP/fixtures/node-app"
+
+          if printf 'yes\n' | (
+            cd "$app"
+            "$RUNNER_TEMP/zed" --interactive --home "$RUNNER_TEMP/zed-home" uninstall
+          ); then
+            echo "redirected stdin unexpectedly satisfied --interactive" >&2
+            exit 1
+          fi
+          test -d "$app/.vendor/.zed/zed-pkg/docker-node-lib"
+          test ! -e "$app/.zpkg-staging"
+
+          (
+            cd "$app"
+            python3 "$GITHUB_WORKSPACE/zed-cli/tests/interactive_pty.py" kill-after=2 -- \
+              "$RUNNER_TEMP/zed" --interactive \
+                --registry "file://$RUNNER_TEMP/registry" \
+                --home "$RUNNER_TEMP/zed-home" \
+                install --frozen --install-mode copy
+          )
+          test -d "$app/.zpkg-staging"
+
+          (
+            cd "$app"
+            "$RUNNER_TEMP/zed" \
+              --registry "file://$RUNNER_TEMP/registry" \
+              --home "$RUNNER_TEMP/zed-home" \
+              install --frozen --install-mode copy
+            python3 "$GITHUB_WORKSPACE/zed-cli/tests/interactive_pty.py" yes -- \
+              "$RUNNER_TEMP/zed" --interactive \
+                --registry "file://$RUNNER_TEMP/registry" \
+                --home "$RUNNER_TEMP/zed-home" \
+                install --frozen --install-mode copy
+            node src/main.js
+          )
+          test ! -e "$app/.zpkg-staging"
