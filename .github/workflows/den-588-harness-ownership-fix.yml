@@ -1,0 +1,92 @@
+name: DEN-588 one-shot harness ownership fix
+
+on:
+  push:
+    branches:
+      - agent/den-588-copy-mode-oci-contract
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-588-harness-ownership-fix
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: zed-cli
+          fetch-depth: 0
+          ref: agent/den-588-copy-mode-oci-contract
+      - name: Transfer copied-tree ownership and finish immutable examples
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/copy-mode-oci.yml')
+          source = workflow.read_text(encoding='utf-8')
+          old = '''          cmp "$RUNNER_TEMP/copy-before.json" "$RUNNER_TEMP/copy-after.json"
+
+          python3 zed-cli/tests/copy_mode_contract.py assert-copy \\
+'''
+          new = '''          cmp "$RUNNER_TEMP/copy-before.json" "$RUNNER_TEMP/copy-after.json"
+
+          # Docker wrote the copied tree as root. Transfer only the consumer
+          # output to the host consumer before deliberately mutating it; the
+          # content-addressed store and build cache remain root-owned inputs.
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/copy-app"
+
+          python3 zed-cli/tests/copy_mode_contract.py assert-copy \\
+'''
+          if source.count(old) != 1:
+              raise SystemExit('expected exactly one copy mutation boundary')
+          workflow.write_text(source.replace(old, new), encoding='utf-8')
+
+          dockerfile = Path('.github/docker/copy-mode-contract.Dockerfile')
+          source = dockerfile.read_text(encoding='utf-8')
+          old = 'RUN cargo build --release --locked --bin zed\n'
+          new = 'RUN cargo +1.90.0 build --release --locked --bin zed\n'
+          if source.count(old) != 1:
+              raise SystemExit('expected exactly one unpinned cargo build command')
+          dockerfile.write_text(source.replace(old, new), encoding='utf-8')
+
+          docs = Path('docs/install-modes.md')
+          source = docs.read_text(encoding='utf-8')
+          old = '''FROM debian:bookworm-slim AS dependencies
+          WORKDIR /app
+          COPY .zpkg.toml .zpkg.lock ./
+          COPY --from=zed-cli /usr/local/bin/zed /usr/local/bin/zed
+          RUN --mount=type=cache,target=/root/.zed-pkg \\
+              zed install --frozen --install-mode copy
+'''
+          new = '''FROM debian:bookworm-slim AS dependencies
+          WORKDIR /app
+          # Place a release-built Zed binary at tools/zed in the build context.
+          COPY --chmod=0755 tools/zed /usr/local/bin/zed
+          COPY .zpkg.toml .zpkg.lock ./
+          RUN --mount=type=cache,target=/root/.zed-pkg \\
+              zed install --frozen --install-mode copy
+'''
+          if source.count(old) != 1:
+              raise SystemExit('expected exactly one container recipe to make self-contained')
+          docs.write_text(source.replace(old, new), encoding='utf-8')
+          PY
+
+          python3 -m py_compile tests/copy_mode_contract.py
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            .github/workflows/copy-mode-oci.yml \
+            .github/docker/copy-mode-contract.Dockerfile \
+            docs/install-modes.md
+          git commit -m 'test(DEN-588): transfer copied output to its consumer'
+          git push origin HEAD:agent/den-588-copy-mode-oci-contract
