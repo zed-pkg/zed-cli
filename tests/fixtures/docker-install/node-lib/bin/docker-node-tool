@@ -1,0 +1,3 @@
+#!/bin/sh
+set -eu
+printf 'docker-node-tool-ok\n'
