@@ -8,3 +8,10 @@ license = "MIT"
 [package.repository]
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
+
+[bin]
+docker-node-tool = "bin/docker-node-tool"
+
+[build]
+command = "mkdir -p generated && printf 'generated-copy-output\\n' > generated/output.txt"
+outputs = ["bin", "generated", "package.json", "src"]
