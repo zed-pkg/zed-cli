@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "repository": "zed-pkg/zed-cli",
+  "procedure": "docs/FORMAL_REVIEW_PROCEDURE.md",
+  "obligations": [
+    {
+      "id": "ZED_FROZEN",
+      "kind": "safety",
+      "statement": "A frozen install either materializes exactly the lockfile graph or fails before mutating the install tree.",
+      "trigger_paths": [
+        "src/**",
+        "tests/**"
+      ],
+      "model": "formal/review-procedure/model.py",
+      "evidence": [
+        "bounded package lifecycle model",
+        "frozen-install transaction tests"
+      ],
+      "commands": [
+        "python3 formal/review-procedure/model.py",
+        "cargo test --all-targets --locked"
+      ],
+      "assumptions": [
+        "filesystem commit/rename operations are atomic at the modeled boundary"
+      ],
+      "bounded": true
+    },
+    {
+      "id": "ZED_STORE",
+      "kind": "safety",
+      "statement": "One content digest cannot name two distinct byte sequences in the immutable package store.",
+      "trigger_paths": [
+        "src/**"
+      ],
+      "model": "formal/review-procedure/model.py",
+      "evidence": [
+        "bounded package lifecycle model",
+        "digest and store immutability tests"
+      ],
+      "commands": [
+        "python3 formal/review-procedure/model.py",
+        "cargo test --all-targets --locked"
+      ],
+      "assumptions": [
+        "the selected digest is collision resistant"
+      ],
+      "bounded": true
+    },
+    {
+      "id": "ZED_PUBLISH",
+      "kind": "safety",
+      "statement": "Publishing is admitted only for a clean tree whose required version tag points at the exact source commit.",
+      "trigger_paths": [
+        "src/**"
+      ],
+      "model": "formal/review-procedure/model.py",
+      "evidence": [
+        "bounded package lifecycle model",
+        "dirty-tree and mismatched-tag tests"
+      ],
+      "commands": [
+        "python3 formal/review-procedure/model.py",
+        "cargo test --all-targets --locked"
+      ],
+      "assumptions": [
+        "the VCS host reports authenticated tag and commit identities"
+      ],
+      "bounded": true
+    },
+    {
+      "id": "ZED_ALIAS",
+      "kind": "refinement",
+      "statement": "Every documented command alias normalizes to the canonical subcommand before flags, environment, and behavior are resolved.",
+      "trigger_paths": [
+        "src/**",
+        ".cli-flags.toml"
+      ],
+      "model": null,
+      "evidence": [
+        "alias equivalence tests",
+        "flags-2-env audit"
+      ],
+      "commands": [
+        "python3 formal/review-procedure/check.py",
+        "cargo test --all-targets --locked"
+      ],
+      "assumptions": [
+        "shell tokenization occurs before CLI parsing"
+      ],
+      "bounded": false
+    },
+    {
+      "id": "ZED_ARTIFACT",
+      "kind": "refinement",
+      "statement": "Identical source, manifest, lockfile, platform, and pinned toolchain inputs produce byte-identical package artifacts.",
+      "trigger_paths": [
+        "src/**",
+        "tests/**"
+      ],
+      "model": null,
+      "evidence": [
+        "pack-twice comparison",
+        "roundtrip extraction tests"
+      ],
+      "commands": [
+        "python3 formal/review-procedure/check.py",
+        "cargo test --all-targets --locked"
+      ],
+      "assumptions": [
+        "timestamps, ordering, ownership, and compression parameters are normalized"
+      ],
+      "bounded": false
+    }
+  ]
+}
