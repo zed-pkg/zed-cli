@@ -149,18 +149,6 @@ type = "bool"
 default = "false"
 help = "Skip publish provenance checks."
 
-[flags.publish_to]
-env = "ZED_PKG_PUBLISH_TO"
-aliases = ["to"]
-type = "string"
-help = "Declared registry families to publish to."
-
-[flags.publish_target]
-env = "ZED_PKG_PUBLISH_TARGET"
-aliases = ["publish-target"]
-type = "string"
-help = "One polyglot target to publish."
-
 [flags.undo]
 env = "ZED_PKG_YANK_UNDO"
 aliases = ["undo"]

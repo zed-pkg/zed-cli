@@ -471,7 +471,8 @@ fn isolated_home_is_empty_and_project_local_instead_of_copying_credentials() {
     assert_success(&output);
     let environment: BTreeMap<String, String> =
         serde_json::from_slice(&output.stdout).expect("parse managed environment");
-    let isolated = fixture.root.join(".zed/dev/home");
+    let isolated =
+        fs::canonicalize(fixture.root.join(".zed/dev/home")).expect("canonicalize isolated HOME");
     let isolated_string = isolated.to_string_lossy().into_owned();
     assert_eq!(
         environment.get("HOME").map(String::as_str),
@@ -516,7 +517,10 @@ fn language_adapter_files_are_reflected_in_the_managed_environment() {
 
     assert_eq!(python_paths, vec![python_a, python_b]);
     assert_eq!(class_paths, vec![class_a, class_b]);
-    let go_work = metadata.join("go.work").to_string_lossy().into_owned();
+    let go_work = fs::canonicalize(metadata.join("go.work"))
+        .expect("canonicalize Go workspace adapter")
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         environment.get("GOWORK").map(String::as_str),
         Some(go_work.as_str())
@@ -571,7 +575,8 @@ fn custom_python_interpreters_can_create_relative_managed_venvs() {
     assert_success(&output);
     let environment: BTreeMap<String, String> =
         serde_json::from_slice(&output.stdout).expect("parse managed environment");
-    let expected = fixture.root.join(".custom/python");
+    let expected = fs::canonicalize(fixture.root.join(".custom/python"))
+        .expect("canonicalize custom Python venv");
     let expected_string = expected.to_string_lossy().into_owned();
     assert_eq!(
         environment.get("VIRTUAL_ENV").map(String::as_str),
@@ -729,16 +734,18 @@ fn ai_profile_path_is_opt_in_and_precedes_generic_development_bins() {
         default_environment.get("PATH").expect("default PATH"),
     ))
     .collect();
+    let ai = fs::canonicalize(fixture.root.join(".zed/dev/profiles/ai/bin"))
+        .expect("canonicalize AI profile path");
     assert!(
-        !default_paths.contains(&fixture.root.join(".zed/dev/profiles/ai/bin")),
+        !default_paths.contains(&ai),
         "AI profile path must not be enabled by default"
     );
 
     let ai_environment = fixture.print_env(&["--profile", "ai"]);
     let ai_paths: Vec<PathBuf> =
         env::split_paths(OsStr::new(ai_environment.get("PATH").expect("AI PATH"))).collect();
-    let ai = fixture.root.join(".zed/dev/profiles/ai/bin");
-    let generic = fixture.root.join(".zed/dev/bin");
+    let generic = fs::canonicalize(fixture.root.join(".zed/dev/bin"))
+        .expect("canonicalize generic development bin path");
     let ai_index = ai_paths
         .iter()
         .position(|path| path == &ai)
