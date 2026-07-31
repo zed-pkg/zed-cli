@@ -430,8 +430,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "9483b92c1fb259f598858fdd2bef66417d87fb2c"' Cargo.toml
-          grep -F '9483b92c1fb259f598858fdd2bef66417d87fb2c' Cargo.lock
+          grep -F 'rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7"' Cargo.toml
+          grep -F '2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7' Cargo.lock
           cargo build --locked --bin zed
       - name: Terminal help exposes the synchronized install contract
         shell: bash
