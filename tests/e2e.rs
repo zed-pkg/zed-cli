@@ -349,6 +349,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
