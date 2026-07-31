@@ -547,6 +547,7 @@ fn node_adapter_links_into_node_modules() {
         Adapter::Node,
         false,
         None,
+        false,
     )
     .unwrap();
     assert!(node_link.join("index.js").exists());
