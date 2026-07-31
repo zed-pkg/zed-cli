@@ -35,8 +35,9 @@ Select copy mode explicitly at the dependency-install layer:
 ```dockerfile
 FROM debian:bookworm-slim AS dependencies
 WORKDIR /app
+# Place a release-built Zed binary at tools/zed in the build context.
+COPY --chmod=0755 tools/zed /usr/local/bin/zed
 COPY .zpkg.toml .zpkg.lock ./
-COPY --from=zed-cli /usr/local/bin/zed /usr/local/bin/zed
 RUN --mount=type=cache,target=/root/.zed-pkg \
     zed install --frozen --install-mode copy
 
