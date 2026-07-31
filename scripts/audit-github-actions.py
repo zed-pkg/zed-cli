@@ -4,7 +4,9 @@
 Legacy workflows are admitted only when their exact Git blob SHA matches the
 reviewed baseline. Any new or changed workflow must satisfy the hardened policy.
 Narrow job-level write grants require an explicit, path-and-job-specific policy
-entry; top-level write grants are always rejected.
+entry; top-level write grants are always rejected. Permission mappings must use
+canonical, unquoted block syntax so alternate YAML spellings cannot bypass the
+text-level policy audit.
 """
 
 from __future__ import annotations
@@ -21,7 +23,12 @@ FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):(?:\s*#.*)?$")
 USES_RE = re.compile(r"\buses:\s*([^\s#]+)")
-PERMISSION_WRITE_RE = re.compile(r"^      ([A-Za-z0-9_-]+):\s*write\s*(?:#.*)?$")
+TOP_LEVEL_PERMISSION_RE = re.compile(
+    r"^  ([A-Za-z0-9_-]+):\s*(read|write|none)\s*(?:#.*)?$"
+)
+JOB_PERMISSION_RE = re.compile(
+    r"^      ([A-Za-z0-9_-]+):\s*(read|write|none)\s*(?:#.*)?$"
+)
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -68,21 +75,88 @@ def workflow_jobs(lines: list[str]) -> list[tuple[str, list[str]]]:
     return jobs
 
 
-def job_permission_writes(job_lines: list[str]) -> set[str]:
+def audit_top_level_permissions(path: str, lines: list[str]) -> list[str]:
+    findings: list[str] = []
+    permissions = top_level_section(lines, "permissions")
+    if permissions is None:
+        if any(re.match(r"^permissions:\s*\S", line) for line in lines):
+            findings.append(
+                f"{path}: top-level permissions must use a canonical block mapping; "
+                "inline maps, aliases, quoted values, and read-all/write-all are prohibited"
+            )
+        else:
+            findings.append(f"{path}: top-level permissions block is required")
+        return findings
+
+    observed: dict[str, str] = {}
+    for line in permissions:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        match = TOP_LEVEL_PERMISSION_RE.fullmatch(line)
+        if not match:
+            findings.append(
+                f"{path}: top-level permissions must use unquoted 'scope: read|none' entries; "
+                "inline maps, aliases, quoted values, and read-all/write-all are prohibited"
+            )
+            continue
+        permission, access = match.groups()
+        if permission in observed:
+            findings.append(f"{path}: duplicate top-level permission entry: {permission}")
+        observed[permission] = access
+        if access == "write":
+            findings.append(f"{path}: top-level write permissions are prohibited")
+
+    if observed.get("contents") != "read":
+        findings.append(f"{path}: permissions must include contents: read")
+    return findings
+
+
+def audit_job_permissions(
+    path: str,
+    job_name: str,
+    job_lines: list[str],
+) -> tuple[set[str], list[str]]:
     writes: set[str] = set()
-    in_permissions = False
-    for line in job_lines:
-        if line.rstrip() == "    permissions:":
-            in_permissions = True
+    findings: list[str] = []
+    permission_blocks = 0
+
+    for index, line in enumerate(job_lines):
+        if not line.startswith("    permissions:"):
             continue
-        if in_permissions and line.strip() and len(line) - len(line.lstrip(" ")) <= 4:
-            in_permissions = False
-        if not in_permissions:
+        permission_blocks += 1
+        if line.rstrip() != "    permissions:":
+            findings.append(
+                f"{path}: job {job_name!r} permissions must use a canonical block mapping; "
+                "inline maps, aliases, quoted values, and read-all/write-all are prohibited"
+            )
             continue
-        match = PERMISSION_WRITE_RE.match(line)
-        if match:
-            writes.add(match.group(1))
-    return writes
+
+        observed: set[str] = set()
+        for candidate in job_lines[index + 1 :]:
+            indentation = len(candidate) - len(candidate.lstrip(" "))
+            if candidate.strip() and indentation <= 4:
+                break
+            if not candidate.strip() or candidate.lstrip().startswith("#"):
+                continue
+            match = JOB_PERMISSION_RE.fullmatch(candidate)
+            if not match:
+                findings.append(
+                    f"{path}: job {job_name!r} permissions must use unquoted "
+                    "'scope: read|write|none' entries"
+                )
+                continue
+            permission, access = match.groups()
+            if permission in observed:
+                findings.append(
+                    f"{path}: job {job_name!r} has duplicate permission entry: {permission}"
+                )
+            observed.add(permission)
+            if access == "write":
+                writes.add(permission)
+
+    if permission_blocks > 1:
+        findings.append(f"{path}: job {job_name!r} declares multiple permissions blocks")
+    return writes, findings
 
 
 def action_reference_finding(path: str, reference: str) -> str | None:
@@ -137,15 +211,7 @@ def audit_workflow_text(
     if re.search(r"(?m)^\s*pull_request_target\s*:", text):
         findings.append(f"{path}: pull_request_target is prohibited")
 
-    permissions = top_level_section(lines, "permissions")
-    if permissions is None:
-        findings.append(f"{path}: top-level permissions block is required")
-    else:
-        permission_text = "\n".join(permissions)
-        if not re.search(r"(?m)^  contents:\s*read\s*(?:#.*)?$", permission_text):
-            findings.append(f"{path}: permissions must include contents: read")
-        if re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*write\s*(?:#.*)?$", permission_text):
-            findings.append(f"{path}: top-level write permissions are prohibited")
+    findings.extend(audit_top_level_permissions(path, lines))
 
     concurrency = top_level_section(lines, "concurrency")
     if concurrency is None:
@@ -165,7 +231,8 @@ def audit_workflow_text(
         if not reusable_job and not has_timeout:
             findings.append(f"{path}: job {job_name!r} must set timeout-minutes")
 
-        writes = job_permission_writes(job_lines)
+        writes, permission_findings = audit_job_permissions(path, job_name, job_lines)
+        findings.extend(permission_findings)
         allowed_writes = allowed.get(job_name, set())
         for permission in sorted(writes):
             if permission not in allowed_writes:
