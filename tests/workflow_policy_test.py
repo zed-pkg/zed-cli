@@ -100,6 +100,19 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         self.assertTrue(any("top-level write permissions" in finding for finding in findings))
 
+    def test_top_level_inline_permission_map_fails_closed(self) -> None:
+        workflow = good_workflow().replace(
+            "permissions:\n  contents: read",
+            "permissions: {contents: write}",
+        )
+        findings = workflow_policy.audit_workflow_text("inline-top.yml", workflow)
+        self.assertTrue(any("canonical block mapping" in finding for finding in findings))
+
+    def test_top_level_quoted_write_fails_closed(self) -> None:
+        workflow = good_workflow().replace("contents: read", 'contents: "write"')
+        findings = workflow_policy.audit_workflow_text("quoted-top.yml", workflow)
+        self.assertTrue(any("unquoted" in finding for finding in findings))
+
     def test_job_write_requires_exact_allowance(self) -> None:
         workflow = privileged_release_workflow()
         findings = workflow_policy.audit_workflow_text("release.yml", workflow)
@@ -113,6 +126,38 @@ class WorkflowPolicyTests(unittest.TestCase):
                 {"release": {"contents"}},
             ),
         )
+
+    def test_job_write_all_fails_closed(self) -> None:
+        workflow = privileged_release_workflow().replace(
+            "    permissions:\n      contents: write",
+            "    permissions: write-all",
+        )
+        findings = workflow_policy.audit_workflow_text("write-all.yml", workflow)
+        self.assertTrue(any("canonical block mapping" in finding for finding in findings))
+
+    def test_job_inline_write_map_fails_closed(self) -> None:
+        workflow = privileged_release_workflow().replace(
+            "    permissions:\n      contents: write",
+            "    permissions: {contents: write}",
+        )
+        findings = workflow_policy.audit_workflow_text("inline-job.yml", workflow)
+        self.assertTrue(any("canonical block mapping" in finding for finding in findings))
+
+    def test_job_quoted_write_fails_closed(self) -> None:
+        workflow = privileged_release_workflow().replace(
+            "      contents: write",
+            '      contents: "write"',
+        )
+        findings = workflow_policy.audit_workflow_text("quoted-job.yml", workflow)
+        self.assertTrue(any("unquoted" in finding for finding in findings))
+
+    def test_job_permission_alias_fails_closed(self) -> None:
+        workflow = privileged_release_workflow().replace(
+            "    permissions:\n      contents: write",
+            "    permissions: *release_permissions",
+        )
+        findings = workflow_policy.audit_workflow_text("alias-job.yml", workflow)
+        self.assertTrue(any("canonical block mapping" in finding for finding in findings))
 
     def test_stale_job_write_allowance_fails(self) -> None:
         findings = workflow_policy.audit_workflow_text(
