@@ -390,6 +390,7 @@ fn normalize_boolean_environment() -> Result<()> {
         "ZED_DEV_NO_INSTALL",
         "ZED_PKG_FROZEN",
         "ZED_PKG_ALLOW_BUILD",
+        "ZED_PKG_INTERACTIVE",
         "ZED_DEV_ISOLATED_HOME",
         "ZED_DEV_PRINT_ENV",
     ];

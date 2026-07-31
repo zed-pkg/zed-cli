@@ -349,6 +349,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
@@ -546,6 +547,7 @@ fn node_adapter_links_into_node_modules() {
         Adapter::Node,
         false,
         None,
+        false,
     )
     .unwrap();
     assert!(node_link.join("index.js").exists());
