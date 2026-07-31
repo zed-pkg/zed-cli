@@ -284,6 +284,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(outcome.installed.len(), 2, "direct + transitive");
@@ -321,6 +322,7 @@ fn publish_install_roundtrip_with_transitive_deps() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
@@ -393,6 +395,7 @@ fn copy_mode_is_container_safe() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -465,6 +468,7 @@ fn circular_deps_terminate_and_install_both() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -518,6 +522,7 @@ fn node_adapter_links_into_node_modules() {
         Adapter::Node,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -590,6 +595,7 @@ fn adapter_auto_is_context_aware_node_and_java() {
         Adapter::Auto,
         false,
         None,
+        false,
     )
     .unwrap();
     assert!(
@@ -617,6 +623,7 @@ fn adapter_auto_is_context_aware_node_and_java() {
         Adapter::Auto,
         false,
         None,
+        false,
     )
     .unwrap();
     let classpath = fs::read_to_string(java_consumer.join(".zed/classpath")).unwrap();
@@ -699,6 +706,7 @@ fn version_conflicts_fail_loudly() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap_err();
     assert!(
@@ -815,6 +823,7 @@ fn concurrent_installs_share_the_store_safely() {
                 Adapter::None,
                 false,
                 None,
+                false,
             )
             .unwrap();
             assert!(
@@ -893,6 +902,7 @@ fn zip_artifacts_pack_deterministically_and_install() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme/zipped");
@@ -950,6 +960,7 @@ fn calendar_versions_resolve() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1026,6 +1037,7 @@ fn calver_versions_resolve_by_semver_range() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -1072,6 +1084,7 @@ fn opaque_versions_require_exact_match() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -1100,6 +1113,7 @@ fn opaque_versions_require_exact_match() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap_err();
     assert!(
@@ -1148,6 +1162,7 @@ fn store_prune_removes_unreferenced_entries() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -1207,6 +1222,7 @@ fn bins_are_hoisted_and_runnable() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -1265,6 +1281,7 @@ fn workspace_members_link_from_source() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -1329,6 +1346,7 @@ fn build_hooks_stage_build_and_cache() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme").join("native");
@@ -1343,6 +1361,7 @@ fn build_hooks_stage_build_and_cache() {
         Adapter::None,
         true,
         None,
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -1419,6 +1438,7 @@ fn build_overrides_replace_broken_commands() {
         Adapter::None,
         true,
         None,
+        false,
     )
     .unwrap();
     let dest = consumer.join(MODULES_DIR).join("acme").join("broken-build");
@@ -1467,6 +1487,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1494,6 +1515,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1517,6 +1539,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap_err();
     assert!(err.to_string().contains("yanked"), "unexpected: {err:#}");
@@ -1530,6 +1553,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(pinned.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1548,6 +1572,7 @@ fn yanked_versions_skip_ranges_but_allow_pins() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
     let lock = Lockfile::parse(&fs::read_to_string(ranged.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1593,6 +1618,7 @@ fn gc_collects_unreferenced_entries() {
             Adapter::None,
             false,
             None,
+            false,
         )
         .unwrap();
     }
@@ -1660,6 +1686,7 @@ fn malicious_registry_responses_are_rejected() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap_err();
     assert!(
@@ -1678,6 +1705,7 @@ fn malicious_registry_responses_are_rejected() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap_err();
     assert!(
@@ -1804,6 +1832,7 @@ fn hoisted_bins_are_container_safe_in_copy_mode() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -1857,6 +1886,7 @@ fn gc_reclaims_entries_older_than_threshold() {
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -1952,6 +1982,7 @@ members = ["packages/*", "apps/*"]
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -2055,6 +2086,7 @@ fn build_step_compiles_and_is_cached() {
         Adapter::None,
         true,
         None,
+        false,
     )
     .unwrap();
 
@@ -2079,6 +2111,7 @@ fn build_step_compiles_and_is_cached() {
         Adapter::None,
         true,
         None,
+        false,
     )
     .unwrap();
     assert!(module.join("built.txt").exists());
@@ -2137,6 +2170,7 @@ command = '''echo overridden > overridden.txt'''
         Adapter::None,
         true,
         None,
+        false,
     )
     .unwrap();
 
@@ -2198,6 +2232,7 @@ dir = ".vendor/.zed"
         Adapter::None,
         false,
         None,
+        false,
     )
     .unwrap();
 
@@ -2283,5 +2318,327 @@ dir = ".vendor/.zed"
     assert!(
         !entries.iter().any(|e| e.contains(".vendor")),
         "relocated install dir leaked into the artifact: {entries:?}"
+    );
+}
+
+// --- per-language packages: publish by language, install by language --------
+
+/// A repository that ships the same client for several languages, declaring one
+/// target per language subtree. Publishing fans this out to one package per
+/// language, each named `<name>-<target>`.
+const POLYGLOT_CLIENTS: &str = r#"[package]
+org = "acme"
+name = "acme-clients"
+version = "1.1.2"
+description = "Acme API clients"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/acme-clients"
+
+[targets.nodejs]
+dir = "clients/ts"
+
+[targets.java]
+dir = "clients/java"
+
+[targets.golang]
+dir = "clients/go"
+"#;
+
+/// Publish every per-language package a polyglot repo fans out to, returning
+/// `(published name, sha256)` pairs.
+fn publish_polyglot(registry: &FileRegistry, project: &Path) -> Vec<(String, String)> {
+    let manifest =
+        Manifest::parse(&fs::read_to_string(project.join(MANIFEST_FILE)).unwrap()).unwrap();
+    let packed = pack::pack_all(project, &manifest, None).unwrap();
+    let mut out = Vec::new();
+    for target in &packed {
+        let meta =
+            ops::build_publish_meta(&target.manifest, &target.packed, Some("deadbeef".into()));
+        registry.publish(&meta, &target.packed.path, None).unwrap();
+        out.push((
+            target.manifest.package.name.clone(),
+            target.packed.sha256.clone(),
+        ));
+    }
+    out
+}
+
+fn polyglot_clients_repo(root: &Path) -> PathBuf {
+    let dir = root.join("acme-clients");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(MANIFEST_FILE), POLYGLOT_CLIENTS).unwrap();
+    write_files(
+        &dir,
+        &[
+            ("clients/ts/index.ts", "export const client = 1;\n"),
+            ("clients/ts/package.json", "{\"name\":\"acme-clients\"}\n"),
+            ("clients/java/Client.java", "class Client {}\n"),
+            ("clients/java/pom.xml", "<project/>\n"),
+            ("clients/go/client.go", "package client\n"),
+            ("clients/go/go.mod", "module acme/clients\n"),
+            ("LICENSE", "MIT\n"),
+        ],
+    );
+    dir
+}
+
+#[test]
+fn one_repo_publishes_one_isolated_package_per_language() {
+    // The premise of the whole design: a Java consumer must download Java bytes
+    // only. Each artifact is re-rooted at its own language subtree and carries
+    // none of the others.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let repo = polyglot_clients_repo(tmp.path());
+
+    let manifest = Manifest::parse(POLYGLOT_CLIENTS).unwrap();
+    let packed = pack::pack_all(&repo, &manifest, None).unwrap();
+    assert_eq!(packed.len(), 3, "one artifact per declared target");
+
+    let names: Vec<&str> = packed
+        .iter()
+        .map(|p| p.manifest.package.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "acme-clients-golang",
+            "acme-clients-java",
+            "acme-clients-nodejs"
+        ],
+        "packages are named <repo>-<language>"
+    );
+
+    for target in &packed {
+        let entries = archive_entries(&target.packed.path);
+        let joined = entries.join("\n");
+        match target.manifest.package.name.as_str() {
+            "acme-clients-java" => {
+                assert!(joined.contains("Client.java"), "{joined}");
+                // The decisive assertion: no other language's source rides along.
+                assert!(
+                    !joined.contains("index.ts"),
+                    "java artifact leaked ts: {joined}"
+                );
+                assert!(
+                    !joined.contains("client.go"),
+                    "java artifact leaked go: {joined}"
+                );
+            }
+            "acme-clients-nodejs" => {
+                assert!(joined.contains("index.ts"), "{joined}");
+                assert!(
+                    !joined.contains("Client.java"),
+                    "node artifact leaked java: {joined}"
+                );
+            }
+            "acme-clients-golang" => {
+                assert!(joined.contains("client.go"), "{joined}");
+                assert!(
+                    !joined.contains("index.ts"),
+                    "go artifact leaked ts: {joined}"
+                );
+            }
+            other => panic!("unexpected package {other}"),
+        }
+    }
+    // And every one of them is publishable and self-describing.
+    let published = publish_polyglot(&registry, &repo);
+    assert_eq!(published.len(), 3);
+}
+
+#[test]
+fn each_published_language_package_declares_its_ecosystem() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = polyglot_clients_repo(tmp.path());
+    let manifest = Manifest::parse(POLYGLOT_CLIENTS).unwrap();
+    let packed = pack::pack_all(&repo, &manifest, None).unwrap();
+
+    for target in &packed {
+        let pkg = &target.manifest.package;
+        let expected = match pkg.name.as_str() {
+            "acme-clients-java" => "jvm",
+            "acme-clients-nodejs" => "npm",
+            "acme-clients-golang" => "gomod",
+            other => panic!("unexpected {other}"),
+        };
+        assert_eq!(
+            pkg.ecosystem().as_str(),
+            expected,
+            "{} must declare its ecosystem so consumers can be guarded",
+            pkg.name
+        );
+    }
+}
+
+#[test]
+fn a_wrong_language_package_is_refused_in_a_real_project() {
+    // The headline requirement: installing the Java client into a Node project
+    // must fail, naming the package that would have worked — not quietly drop
+    // unusable files into zed_modules/.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let repo = polyglot_clients_repo(tmp.path());
+    publish_polyglot(&registry, &repo);
+
+    // A Node consumer, identified by its package.json.
+    let consumer = tmp.path().join("node-app");
+    fs::create_dir_all(&consumer).unwrap();
+    fs::write(consumer.join("package.json"), "{\"name\":\"app\"}\n").unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/acme-clients-java".to_string(), "^1.1.2".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml("acme", "node-app", "0.1.0", &deps, None),
+    )
+    .unwrap();
+
+    let cfg = test_config(tmp.path(), &registry_dir);
+    let err = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Auto,
+        false,
+        None,
+        false,
+    )
+    .expect_err("a jvm package must not install into a node project");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("jvm"), "{msg}");
+    assert!(msg.contains("npm"), "{msg}");
+    assert!(
+        msg.contains("acme/acme-clients-nodejs"),
+        "the error must name the package that would work: {msg}"
+    );
+
+    // The escape hatch works, for the rare deliberate case.
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Auto,
+        false,
+        None,
+        true,
+    )
+    .expect("--allow-ecosystem-mismatch must override the guard");
+}
+
+#[test]
+fn the_matching_language_package_installs_and_wires_its_toolchain() {
+    // The other half: the right package installs cleanly and leaves behind the
+    // wiring its ecosystem needs.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let repo = polyglot_clients_repo(tmp.path());
+    publish_polyglot(&registry, &repo);
+
+    let consumer = tmp.path().join("go-app");
+    fs::create_dir_all(&consumer).unwrap();
+    fs::write(consumer.join("go.mod"), "module app\n").unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/acme-clients-golang".to_string(), "^1.1.2".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml("acme", "go-app", "0.1.0", &deps, None),
+    )
+    .unwrap();
+
+    let cfg = test_config(tmp.path(), &registry_dir);
+    let outcome = ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Auto,
+        false,
+        None,
+        false,
+    )
+    .expect("the golang package belongs in a go project");
+    assert_eq!(outcome.installed.len(), 1);
+
+    // Only the Go source landed.
+    let installed = consumer
+        .join(MODULES_DIR)
+        .join("acme")
+        .join("acme-clients-golang");
+    assert!(
+        installed.join("client.go").exists(),
+        "go source must be present"
+    );
+    assert!(!installed.join("index.ts").exists(), "no ts source");
+
+    // Go wiring: a go.work the toolchain can be pointed at.
+    let go_work = consumer.join(".zed").join("go.work");
+    assert!(go_work.exists(), "a go project must get .zed/go.work");
+    let work = fs::read_to_string(&go_work).unwrap();
+    assert!(work.contains("acme-clients-golang"), "{work}");
+
+    // And the adapter-independent index every build system can read.
+    let index = fs::read_to_string(consumer.join(".zed").join("paths.json")).unwrap();
+    assert!(index.contains("acme/acme-clients-golang"), "{index}");
+    assert!(index.contains("\"ecosystem\": \"gomod\""), "{index}");
+    assert!(index.contains("\"language\": \"golang\""), "{index}");
+}
+
+#[test]
+fn a_node_project_resolves_a_nodejs_target_despite_the_spelling_difference() {
+    // Project inference yields `node`; this repo spells its target `nodejs`.
+    // Without synonym resolution the install would fail despite the package
+    // shipping exactly what the consumer needs.
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+
+    // A single polyglot package (not fanned out), installed with slicing.
+    let repo = polyglot_clients_repo(tmp.path());
+    let manifest = Manifest::parse(POLYGLOT_CLIENTS).unwrap();
+    let packed = pack::pack(&repo, &manifest, None).unwrap();
+    let meta = ops::build_publish_meta(&manifest, &packed, Some("deadbeef".into()));
+    registry.publish(&meta, &packed.path, None).unwrap();
+
+    let consumer = tmp.path().join("node-app");
+    fs::create_dir_all(&consumer).unwrap();
+    fs::write(consumer.join("package.json"), "{\"name\":\"app\"}\n").unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/acme-clients".to_string(), "^1.1.2".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml("acme", "node-app", "0.1.0", &deps, None),
+    )
+    .unwrap();
+
+    let cfg = test_config(tmp.path(), &registry_dir);
+    ops::install(
+        &consumer,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::Auto,
+        false,
+        // No explicit target: inference must find `nodejs` from `node`.
+        None,
+        false,
+    )
+    .expect("a node project must resolve the `nodejs` target");
+
+    let installed = consumer.join(MODULES_DIR).join("acme").join("acme-clients");
+    assert!(
+        installed.join("index.ts").exists(),
+        "the ts subtree must be at the install root"
+    );
+    assert!(
+        !installed.join("Client.java").exists(),
+        "the java subtree must not be materialized"
     );
 }

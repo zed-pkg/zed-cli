@@ -10,7 +10,9 @@
 //! `publish.smoke_test` against the installed copy — optionally inside a
 //! fresh OCI container so the artifact is proven in a clean, host-independent
 //! environment (fresh `$HOME`, distro libraries, no host toolchain leaking
-//! in). If it passes here, it will pass for your users.
+//! in). If the configured registry is `file://`, r2g first snapshots it into
+//! the throwaway registry so declared dependencies can resolve without ever
+//! mutating the caller's registry. If it passes here, it will pass for your users.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -85,7 +87,13 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     let home_dir = workspace.join("home");
     println!("r2g: workspace {}", workspace.display());
 
-    // 2. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
+    // 2. An explicitly configured file:// registry is a dependency input, not
+    //    the output registry. Snapshot it into the private workspace so r2g
+    //    can test packages that depend on other unpublished fixtures while
+    //    preserving the same no-shared-state guarantee as an empty registry.
+    snapshot_configured_file_registry(&cfg.registry, &registry_dir)?;
+
+    // 3. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
     interactive::confirm(
         cfg.interactive,
         &format!("r2g step 1/5: pack {} into {}", full, workspace.display()),
@@ -98,7 +106,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         packed.excluded_count
     );
 
-    // 3. Publish it to a throwaway file:// registry.
+    // 4. Publish it to the throwaway file:// registry.
     let meta = build_publish_meta(&manifest, &packed, None);
     let file_registry = FileRegistry::new(registry_dir.clone());
     interactive::confirm(
@@ -107,7 +115,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     )?;
     file_registry.publish(&meta, &packed.path, None)?;
 
-    // 4. Synthesize a mock consumer that depends on exactly this version.
+    // 5. Synthesize a mock consumer that depends on exactly this version.
     let mut dependencies = BTreeMap::new();
     dependencies.insert(full.clone(), format!("={}", manifest.package.version));
     let consumer_manifest = Manifest {
@@ -124,6 +132,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
                 url: "https://localhost/zed-local/consumer".to_string(),
             },
             keywords: Vec::new(),
+            // The mock consumer is deliberately language-neutral: r2g drives
+            // the target/ecosystem it is testing through the install flags.
+            language: Default::default(),
+            ecosystem: Default::default(),
         },
         dependencies,
         build_dependencies: BTreeMap::new(),
@@ -142,7 +154,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     fs::create_dir_all(&consumer_dir)?;
     write_manifest(&consumer_dir, &consumer_manifest)?;
 
-    // 5. Install it the way a consumer would, from the throwaway registry into
+    // 6. Install it the way a consumer would, from the throwaway registry into
     //    a throwaway store. Container mode uses copy install so the installed
     //    files are self-contained (no store symlinks) and can be bind-mounted
     //    into the container — the same guarantee `--install-mode copy` gives
@@ -185,6 +197,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         Adapter::None,
         true,
         None,
+        // r2g deliberately installs whatever package is under test into a
+        // synthetic consumer that has no toolchain of its own, so the
+        // ecosystem guard has nothing meaningful to check here.
+        true,
     )?;
 
     // Ask the consumer manifest where install materialized the tree rather
@@ -207,7 +223,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         }
     );
 
-    // 6. Run the smoke test — on the host, or inside a fresh container.
+    // 7. Run the smoke test — on the host, or inside a fresh container.
     let smoke = manifest.publish.smoke_test.clone();
     interactive::confirm(
         cfg.interactive,
@@ -232,7 +248,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         run_on_host(&consumer_dir, &target, smoke.as_deref())?;
     }
 
-    // 7. Leave the workspace for inspection (r2g-style) unless asked to clean.
+    // 8. Leave the workspace for inspection (r2g-style) unless asked to clean.
     if opts.clean {
         interactive::confirm(
             cfg.interactive,
@@ -244,6 +260,106 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
             "r2g: workspace left at {} (pass --clean to remove it)",
             workspace.display()
         );
+    }
+    Ok(())
+}
+
+/// Copy a configured file:// registry into r2g's private registry before the
+/// package under test is published. The source is treated as an immutable input:
+/// no hard links or symlinks are retained, so later writes stay inside r2g.
+fn snapshot_configured_file_registry(configured_registry: &str, destination: &Path) -> Result<()> {
+    let Some(source) = configured_registry.strip_prefix("file://") else {
+        return Ok(());
+    };
+    let source = PathBuf::from(source);
+    if !source.exists() {
+        return Ok(());
+    }
+    if !source.is_dir() {
+        bail!(
+            "configured file registry {} is not a directory",
+            source.display()
+        );
+    }
+
+    let source = fs::canonicalize(&source)
+        .with_context(|| format!("resolving file registry {}", source.display()))?;
+    let destination = resolve_path_allow_missing(destination)?;
+
+    if destination == source || destination.starts_with(&source) || source.starts_with(&destination)
+    {
+        bail!(
+            "r2g registry destination {} must be separate from configured registry {}",
+            destination.display(),
+            source.display()
+        );
+    }
+
+    copy_registry_tree(&source, &destination)?;
+    println!(
+        "r2g: seeded dependency registry snapshot from {}",
+        source.display()
+    );
+    Ok(())
+}
+
+fn resolve_path_allow_missing(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut cursor = absolute.as_path();
+    let mut missing = Vec::new();
+    while !cursor.exists() {
+        missing.push(
+            cursor
+                .file_name()
+                .context("path has no existing ancestor")?
+                .to_os_string(),
+        );
+        cursor = cursor.parent().context("path has no existing ancestor")?;
+    }
+    let mut resolved = fs::canonicalize(cursor)
+        .with_context(|| format!("resolving path ancestor {}", cursor.display()))?;
+    for component in missing.iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
+}
+
+fn copy_registry_tree(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("creating registry snapshot {}", destination.display()))?;
+    for entry in fs::read_dir(source)
+        .with_context(|| format!("reading registry directory {}", source.display()))?
+    {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            bail!(
+                "refusing symbolic link {} in configured file registry",
+                entry_path.display()
+            );
+        }
+        if file_type.is_dir() {
+            copy_registry_tree(&entry_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&entry_path, &destination_path).with_context(|| {
+                format!(
+                    "copying registry file {} to {}",
+                    entry_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        } else {
+            bail!(
+                "unsupported entry {} in configured file registry",
+                entry_path.display()
+            );
+        }
     }
     Ok(())
 }
@@ -403,6 +519,83 @@ mod tests {
     use zed_interfaces::paths::MODULES_DIR;
 
     use super::*;
+
+    #[test]
+    fn configured_file_registry_is_snapshotted_without_mutating_source() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source-registry");
+        let package = source.join("packages/acme/widget/package.json");
+        let artifact = source.join("artifacts/abc.tar.gz");
+        fs::create_dir_all(package.parent().context("package parent")?)?;
+        fs::create_dir_all(artifact.parent().context("artifact parent")?)?;
+        fs::write(&package, br#"{"latest":"1.0.0"}"#)?;
+        fs::write(&artifact, b"artifact-bytes")?;
+
+        let destination = temp.path().join("workspace/r2g/registry");
+        snapshot_configured_file_registry(&format!("file://{}", source.display()), &destination)?;
+
+        assert_eq!(
+            fs::read(destination.join("packages/acme/widget/package.json"))?,
+            br#"{"latest":"1.0.0"}"#
+        );
+        assert_eq!(
+            fs::read(destination.join("artifacts/abc.tar.gz"))?,
+            b"artifact-bytes"
+        );
+
+        fs::write(
+            destination.join("packages/acme/widget/package.json"),
+            b"changed only in snapshot",
+        )?;
+        assert_eq!(fs::read(package)?, br#"{"latest":"1.0.0"}"#);
+        Ok(())
+    }
+
+    #[test]
+    fn non_file_registry_does_not_create_a_snapshot() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let destination = temp.path().join("registry");
+        snapshot_configured_file_registry("https://registry.example.test", &destination)?;
+        assert!(!destination.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_file_registry_rejects_symbolic_links() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source-registry");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&source)?;
+        fs::write(&outside, b"do not copy")?;
+        symlink(&outside, source.join("escape"))?;
+
+        let destination = temp.path().join("workspace/registry");
+        let error = snapshot_configured_file_registry(
+            &format!("file://{}", source.display()),
+            &destination,
+        )
+        .expect_err("registry symlink should be rejected");
+        assert!(error.to_string().contains("symbolic link"));
+        Ok(())
+    }
+
+    #[test]
+    fn configured_registry_cannot_contain_the_r2g_destination() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source-registry");
+        fs::create_dir_all(&source)?;
+        let destination = source.join("nested/registry");
+        let error = snapshot_configured_file_registry(
+            &format!("file://{}", source.display()),
+            &destination,
+        )
+        .expect_err("nested destination should be rejected");
+        assert!(error.to_string().contains("must be separate"));
+        Ok(())
+    }
 
     #[test]
     fn container_args_mount_workdir_and_target() {

@@ -35,5 +35,5 @@ toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 fs2 = "0.4.3"
-flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "9483b92c1fb259f598858fdd2bef66417d87fb2c" }
+flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

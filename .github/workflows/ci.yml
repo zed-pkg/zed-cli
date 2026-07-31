@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,6 +63,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
       - name: Build a container with the zed CLI
         run: |
@@ -434,6 +436,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
       - name: Build the real CLI container
         run: |
@@ -705,6 +708,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Zsh
@@ -714,8 +718,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "9483b92c1fb259f598858fdd2bef66417d87fb2c"' Cargo.toml
-          grep -F '9483b92c1fb259f598858fdd2bef66417d87fb2c' Cargo.lock
+          grep -F 'rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7"' Cargo.toml
+          grep -F '2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7' Cargo.lock
           cargo build --locked --bin zed
       - name: Terminal help exposes the synchronized install contract
         shell: bash

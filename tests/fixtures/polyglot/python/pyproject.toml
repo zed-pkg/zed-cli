@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zed-poly-fixture"
+version = "0.2.0"
+description = "Polyglot publish fixture (python slice)"
+license = "MIT"
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = ["zed_poly"]

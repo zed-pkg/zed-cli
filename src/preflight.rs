@@ -26,6 +26,15 @@ const CREDENTIAL_ENV_VARS: &[&str] = &[
     "PYPI_TOKEN",
     "PIP_INDEX_URL",
     "PIP_EXTRA_INDEX_URL",
+    "MAVEN_USERNAME",
+    "MAVEN_PASSWORD",
+    "GEM_HOST_API_KEY",
+    "NUGET_API_KEY",
+    "COMPOSER_AUTH",
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "CI_JOB_TOKEN",
+    "BITBUCKET_PACKAGES_TOKEN",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,15 +56,21 @@ pub struct ProcessRunner;
 
 impl CommandRunner for ProcessRunner {
     fn run(&self, spec: &NativePreflightSpec) -> Result<Output> {
-        if spec.registry == NativeRegistry::PyPi {
-            let output = spec.cwd.join(".zed/native-preflight/pypi");
+        if matches!(
+            spec.registry,
+            NativeRegistry::PyPi | NativeRegistry::RubyGems | NativeRegistry::NuGet
+        ) {
+            let output = spec
+                .cwd
+                .join(".zed/native-preflight")
+                .join(spec.registry.as_str());
             if output.exists() {
                 fs::remove_dir_all(&output).with_context(|| {
-                    format!("remove stale PyPI preflight output {}", output.display())
+                    format!("remove stale native preflight output {}", output.display())
                 })?;
             }
             fs::create_dir_all(&output)
-                .with_context(|| format!("create PyPI preflight output {}", output.display()))?;
+                .with_context(|| format!("create native preflight output {}", output.display()))?;
         }
         let mut command = Command::new(&spec.program);
         command
@@ -82,11 +97,29 @@ fn python_program() -> &'static str {
     if cfg!(windows) { "python" } else { "python3" }
 }
 
+fn gemspec_filename(root: &Path, package: &str) -> String {
+    fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().and_then(|value| value.to_str()) == Some("gemspec"))
+        .and_then(|path| {
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| format!("{package}.gemspec"))
+}
+
 pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSpec> {
     manifest
         .native_release_routes()
         .into_iter()
         .map(|route| {
+            let target_root = project.join(&route.dir);
+            let gemspec = gemspec_filename(&target_root, &route.package);
             let (program, args) = match route.registry {
                 NativeRegistry::Npm => (
                     "npm",
@@ -104,12 +137,35 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                         ".zed/native-preflight/pypi",
                     ],
                 ),
+                NativeRegistry::MavenCentral => {
+                    ("mvn", vec!["--batch-mode", "-DskipTests", "package"])
+                }
+                NativeRegistry::RubyGems => (
+                    "gem",
+                    vec![
+                        "build",
+                        "--strict",
+                        "--output",
+                        ".zed/native-preflight/rubygems/package.gem",
+                        // RubyGems convention; manifest validation runs first
+                        // and provides a precise error if the target differs.
+                        gemspec.as_str(),
+                    ],
+                ),
+                NativeRegistry::NuGet => (
+                    "dotnet",
+                    vec!["pack", "--output", ".zed/native-preflight/nuget"],
+                ),
+                NativeRegistry::Packagist => {
+                    ("composer", vec!["validate", "--strict", "--no-interaction"])
+                }
+                NativeRegistry::GoModules => ("go", vec!["list", "./..."]),
             };
             NativePreflightSpec {
                 target: route.target,
                 registry: route.registry,
                 package: route.package,
-                cwd: project.join(route.dir),
+                cwd: target_root,
                 program: program.to_string(),
                 args: args.into_iter().map(str::to_string).collect(),
             }
@@ -301,5 +357,107 @@ package = "Acme.Client"
         let error = execute_specs(&runner, &specs).unwrap_err().to_string();
         assert!(error.contains("crates-io preflight failed"));
         assert!(error.contains("synthetic failure"));
+    }
+
+    #[test]
+    fn extended_registry_adapters_are_fixed_and_credential_free() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "clients"
+version = "1.2.3"
+[package.repository]
+url = "https://github.com/acme/clients"
+
+[targets.java]
+dir = "java"
+[targets.java.native]
+registry = "maven-central"
+package = "com.acme:client"
+
+[targets.ruby]
+dir = "ruby"
+[targets.ruby.native]
+registry = "rubygems"
+package = "acme-client"
+
+[targets.csharp]
+dir = "csharp"
+[targets.csharp.native]
+registry = "nuget"
+package = "Acme.Client"
+
+[targets.php]
+dir = "php"
+[targets.php.native]
+registry = "packagist"
+package = "acme/client"
+
+[targets.golang]
+dir = "go"
+[targets.golang.native]
+registry = "go-modules"
+package = "github.com/acme/client"
+tag_format = "go/v{version}"
+"#,
+        )
+        .unwrap();
+        let specs = build_specs(Path::new("/repo"), &manifest);
+        assert_eq!(
+            specs
+                .iter()
+                .map(|spec| (spec.target.as_str(), spec.program.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("csharp", "dotnet"),
+                ("golang", "go"),
+                ("java", "mvn"),
+                ("php", "composer"),
+                ("ruby", "gem"),
+            ]
+        );
+        assert_eq!(
+            specs.last().unwrap().args,
+            [
+                "build",
+                "--strict",
+                "--output",
+                ".zed/native-preflight/rubygems/package.gem",
+                "acme-client.gemspec",
+            ]
+        );
+    }
+
+    #[test]
+    fn rubygems_preflight_uses_the_manifest_filename_not_the_package_name() {
+        let root = tempfile::tempdir().unwrap();
+        let ruby = root.path().join("ruby");
+        fs::create_dir_all(&ruby).unwrap();
+        fs::write(
+            ruby.join("client.gemspec"),
+            "# validated before preflight\n",
+        )
+        .unwrap();
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "client"
+version = "1.2.3"
+[package.repository]
+url = "https://github.com/acme/client"
+
+[targets.ruby]
+dir = "ruby"
+[targets.ruby.native]
+registry = "rubygems"
+package = "acme-client"
+"#,
+        )
+        .unwrap();
+
+        let specs = build_specs(root.path(), &manifest);
+        assert_eq!(specs[0].args.last().unwrap(), "client.gemspec");
     }
 }

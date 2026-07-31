@@ -336,10 +336,11 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "flags2env"
 version = "0.1.0"
-source = "git+https://github.com/ORESoftware/flags-2-env.git?rev=9483b92c1fb259f598858fdd2bef66417d87fb2c#9483b92c1fb259f598858fdd2bef66417d87fb2c"
+source = "git+https://github.com/ORESoftware/flags-2-env.git?rev=2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7#2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7"
 dependencies = [
  "cc",
  "libloading",
+ "serde",
  "serde_json",
 ]
 
