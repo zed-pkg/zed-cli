@@ -42,6 +42,7 @@ jobs:
           set -euo pipefail
           grep -Eq '^FROM [^ ]+@sha256:[0-9a-f]{64}' zed-cli/.github/docker/copy-mode-contract.Dockerfile
           grep -Eq '^FROM [^ ]+@sha256:[0-9a-f]{64}' zed-cli/tests/fixtures/docker-install/copy-runtime.Dockerfile
+          grep -Fq 'cargo +1.90.0 build' zed-cli/.github/docker/copy-mode-contract.Dockerfile
           python3 -m py_compile zed-cli/tests/copy_mode_contract.py
 
       - name: Build the pinned Zed contract image
@@ -141,6 +142,11 @@ jobs:
             > "$RUNNER_TEMP/copy-after.json"
           cmp "$RUNNER_TEMP/copy-before.json" "$RUNNER_TEMP/copy-after.json"
 
+          # Docker wrote the copied tree as root. Transfer only the consumer
+          # output to the host consumer before deliberately mutating it; the
+          # content-addressed store and build cache remain root-owned inputs.
+          sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/copy-app"
+
           python3 zed-cli/tests/copy_mode_contract.py assert-copy \
             --project "$RUNNER_TEMP/copy-app" \
             --zed-home "$RUNNER_TEMP/zed-home-copy" \
@@ -239,6 +245,7 @@ jobs:
           test -d "$installed"
           test ! -L "$installed"
           cmp "$member/payload.txt" "$installed/payload.txt"
+          sudo chown -R "$(id -u):$(id -g)" "$app"
           printf 'consumer mutation\n' >> "$installed/payload.txt"
           test "$(cat "$member/payload.txt")" = workspace-source
           rm -rf "$member"
