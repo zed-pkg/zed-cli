@@ -48,6 +48,13 @@ aliases = ["supabase-key"]
 type = "string"
 help = "Supabase publishable/anon key."
 
+[flags.interactive]
+env = "ZED_PKG_INTERACTIVE"
+aliases = ["interactive"]
+type = "bool"
+default = "false"
+help = "Confirm each mutating lifecycle step in a real terminal."
+
 [commands.develop]
 aliases = ["dev"]
 help = "Enter a package-aware, cross-language virtual development environment."
