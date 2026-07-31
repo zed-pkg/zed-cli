@@ -9,10 +9,10 @@ import json
 import os
 import stat
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, NoReturn
 
 
-def fail(message: str) -> "NoReturn":
+def fail(message: str) -> NoReturn:
     raise AssertionError(message)
 
 
@@ -54,6 +54,13 @@ def file_digest(path: Path) -> str:
 def assert_same_bytes(left: Path, right: Path) -> None:
     if left.read_bytes() != right.read_bytes():
         fail(f"file contents differ: {left} != {right}")
+
+
+def assert_same_mode(left: Path, right: Path) -> None:
+    left_mode = stat.S_IMODE(left.stat().st_mode)
+    right_mode = stat.S_IMODE(right.stat().st_mode)
+    if left_mode != right_mode:
+        fail(f"file modes differ: {left}={oct(left_mode)} != {right}={oct(right_mode)}")
 
 
 def assert_distinct_inode(source: Path, destination: Path) -> None:
@@ -158,6 +165,8 @@ def assert_copy_contract(project: Path, zed_home: Path) -> dict[str, str]:
     assert_same_bytes(store_bin, adapter_bin)
     assert_same_bytes(build_output, package_output)
     assert_same_bytes(build_output, adapter_output)
+    assert_same_mode(store_bin, package_bin)
+    assert_same_mode(store_bin, adapter_bin)
 
     for source, destination in [
         (store_source, package_source),
@@ -170,8 +179,7 @@ def assert_copy_contract(project: Path, zed_home: Path) -> dict[str, str]:
     ]:
         assert_distinct_inode(source, destination)
 
-    for executable in [package_bin, adapter_bin, hoisted]:
-        assert_executable(executable)
+    assert_executable(hoisted)
 
     immutable_store_source = store_source.read_bytes()
     independent_adapter_source = adapter_source.read_bytes()
