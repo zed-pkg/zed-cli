@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - ci/den-1194-docker-recovery
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
