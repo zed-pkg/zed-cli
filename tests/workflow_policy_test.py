@@ -13,6 +13,10 @@ workflow_policy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(workflow_policy)
 
 PINNED_CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+PINNED_REUSABLE = (
+    "zed-pkg/zed-monorepo/.github/workflows/agents-policy-reusable.yml"
+    "@fb2417b1a976459e3de740f788916d3d91d3669e"
+)
 
 
 def good_workflow(extra: str = "") -> str:
@@ -41,6 +45,39 @@ jobs:
 {extra}"""
 
 
+def privileged_release_workflow() -> str:
+    return f"""name: release fixture
+
+on:
+  push:
+    tags: [\"v*\"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{{{ github.ref }}}}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: {PINNED_CHECKOUT}
+        with:
+          persist-credentials: false
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - run: echo release
+"""
+
+
 class WorkflowPolicyTests(unittest.TestCase):
     def test_hardened_workflow_passes(self) -> None:
         self.assertEqual([], workflow_policy.audit_workflow_text("good.yml", good_workflow()))
@@ -57,11 +94,33 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         self.assertTrue(any("persist-credentials: false" in finding for finding in findings))
 
-    def test_write_permissions_fail(self) -> None:
+    def test_top_level_write_permissions_fail(self) -> None:
         findings = workflow_policy.audit_workflow_text(
             "write.yml", good_workflow().replace("contents: read", "contents: write")
         )
-        self.assertTrue(any("write permission is prohibited" in finding for finding in findings))
+        self.assertTrue(any("top-level write permissions" in finding for finding in findings))
+
+    def test_job_write_requires_exact_allowance(self) -> None:
+        workflow = privileged_release_workflow()
+        findings = workflow_policy.audit_workflow_text("release.yml", workflow)
+        self.assertTrue(any("unapproved contents: write" in finding for finding in findings))
+
+        self.assertEqual(
+            [],
+            workflow_policy.audit_workflow_text(
+                "release.yml",
+                workflow,
+                {"release": {"contents"}},
+            ),
+        )
+
+    def test_stale_job_write_allowance_fails(self) -> None:
+        findings = workflow_policy.audit_workflow_text(
+            "good.yml",
+            good_workflow(),
+            {"release": {"contents"}},
+        )
+        self.assertTrue(any("stale privilege allowance" in finding for finding in findings))
 
     def test_pull_request_target_fails(self) -> None:
         findings = workflow_policy.audit_workflow_text(
@@ -69,11 +128,30 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         self.assertTrue(any("pull_request_target is prohibited" in finding for finding in findings))
 
-    def test_every_job_requires_a_timeout(self) -> None:
+    def test_every_normal_job_requires_a_timeout(self) -> None:
         findings = workflow_policy.audit_workflow_text(
             "timeout.yml", good_workflow().replace("    timeout-minutes: 10\n", "")
         )
         self.assertTrue(any("must set timeout-minutes" in finding for finding in findings))
+
+    def test_reusable_workflow_job_does_not_accept_timeout(self) -> None:
+        workflow = f"""name: reusable fixture
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reusable-${{{{ github.ref }}}}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    uses: {PINNED_REUSABLE}
+"""
+        self.assertEqual([], workflow_policy.audit_workflow_text("reusable.yml", workflow))
 
     def test_mutable_docker_action_fails(self) -> None:
         workflow = good_workflow(
@@ -97,6 +175,7 @@ class WorkflowPolicyTests(unittest.TestCase):
                         "legacy_workflow_blobs": {
                             ".github/workflows/legacy.yml": workflow_policy.git_blob_sha(legacy.read_bytes())
                         },
+                        "allowed_job_write_permissions": {},
                     }
                 ),
                 encoding="utf-8",
