@@ -6,7 +6,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   smoke:
@@ -27,6 +27,9 @@ jobs:
       - name: Build the real CLI
         working-directory: zed-cli
         run: cargo build --locked
+      - name: Run focused regression suite
+        working-directory: zed-cli
+        run: cargo test --locked --test develop_edge_cases --test develop_help_contract
       - name: Exercise package-aware development shells
         shell: bash
         env:
