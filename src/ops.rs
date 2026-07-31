@@ -239,6 +239,28 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the requested mode once, before any project output is written.
+/// Windows cannot create Zed's Unix store-backed directory links reliably;
+/// report that platform decision and use the portable ownership model.
+fn effective_install_mode(mode: InstallMode) -> InstallMode {
+    #[cfg(unix)]
+    {
+        mode
+    }
+    #[cfg(not(unix))]
+    {
+        match mode {
+            InstallMode::Symlink => {
+                eprintln!(
+                    "warning: symlink install mode is unavailable on this platform; using copy mode"
+                );
+                InstallMode::Copy
+            }
+            InstallMode::Copy => InstallMode::Copy,
+        }
+    }
+}
+
 fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
     fs::create_dir_all(dest.parent().context("dest has parent")?)?;
     replace_dest(dest)?;
@@ -247,7 +269,7 @@ fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
             #[cfg(unix)]
             std::os::unix::fs::symlink(src, dest)?;
             #[cfg(not(unix))]
-            copy_dir(src, dest)?;
+            bail!("symlink install mode was not normalized before materialization");
         }
         InstallMode::Copy => copy_dir(src, dest)?,
     }
@@ -933,6 +955,7 @@ fn install_locked(
     validate_manifest_requirements: bool,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    let mode = effective_install_mode(mode);
     let manifest = read_manifest(project)?;
     let configured_adapter = manifest
         .install
@@ -1227,7 +1250,10 @@ fn install_locked(
     for (key, member_dir) in &workspace_links {
         let (org, name) = split_key(key)?;
         let dest = modules.join(&org).join(&name);
-        link_or_copy(member_dir, &dest, InstallMode::Symlink)?;
+        // Workspace dependencies obey the same ownership decision as registry
+        // packages. Copy mode must remain self-contained after the member source
+        // directory leaves the Docker/OCI build context.
+        link_or_copy(member_dir, &dest, mode)?;
         if let Ok(member_manifest) = read_manifest(member_dir) {
             for (bin_name, rel_target) in &member_manifest.bin {
                 bins.insert(bin_name.clone(), dest.join(rel_target));
@@ -1564,10 +1590,14 @@ pub fn build_cmd(project: &Path, cfg: &Config, force: bool) -> Result<()> {
 
 /// Hoist package-declared executables into `zed_modules/.bin/<name>` so
 /// `zed run` and PATH-prepending wrappers find them without polluting the OS
-/// PATH. Symlink installs get relative symlinks (they survive moving the
-/// project); copy installs get real file copies so container image layers
-/// stay self-contained.
-fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, mode: InstallMode) -> Result<()> {
+/// PATH.
+///
+/// Hoisted bins are deliberately project-owned copies in both install modes.
+/// In symlink mode the package target may resolve into the immutable global
+/// store; chmod'ing that target would mutate the shared store inode for every
+/// consumer. Copying the usually-small executable and setting permissions on
+/// the destination preserves the store while retaining runnable bins.
+fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, _mode: InstallMode) -> Result<()> {
     if bins.is_empty() {
         return Ok(());
     }
@@ -1581,38 +1611,15 @@ fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, mode: InstallMod
             );
             continue;
         }
+        let destination = bin_dir.join(name);
+        replace_dest(&destination)?;
+        fs::copy(target, &destination)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = fs::metadata(target)?;
-            let mut permissions = metadata.permissions();
-            if permissions.mode() & 0o111 == 0 {
-                permissions.set_mode(0o755);
-                let _ = fs::set_permissions(target, permissions);
-            }
-        }
-        let link = bin_dir.join(name);
-        replace_dest(&link)?;
-        match mode {
-            InstallMode::Symlink => {
-                #[cfg(unix)]
-                {
-                    let rel = pathdiff_relative(&bin_dir, target);
-                    std::os::unix::fs::symlink(&rel, &link)?;
-                }
-                #[cfg(not(unix))]
-                fs::copy(target, &link).map(|_| ())?;
-            }
-            InstallMode::Copy => {
-                fs::copy(target, &link)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&link)?.permissions();
-                    perms.set_mode(perms.mode() | 0o755);
-                    fs::set_permissions(&link, perms)?;
-                }
-            }
+            let mut permissions = fs::metadata(&destination)?.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            fs::set_permissions(&destination, permissions)?;
         }
     }
     Ok(())

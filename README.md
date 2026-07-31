@@ -18,8 +18,9 @@ Why it exists:
 - **Provenance by tags.** Publishing requires a VCS tag matching the version
   (`v{version}` by default) pointing at the exact published commit; the tag
   and commit are pinned in `.zpkg.lock`.
-- **Container-first.** A copy install mode and cache-mount patterns designed
-  for OCI images and multi-stage Docker builds.
+- **Container-first.** The documented [copy install ownership contract](docs/install-modes.md)
+  materializes independent package, adapter, build-output, and hoisted-bin files
+  for Docker build contexts, OCI layers, and read-only runtimes.
 
 ## Install
 
