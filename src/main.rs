@@ -3,6 +3,7 @@ use zed_cli::auth;
 use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::completion;
 use zed_cli::config::Config;
+use zed_cli::dev;
 use zed_cli::manifestless;
 use zed_cli::ops;
 use zed_cli::preflight;
@@ -12,6 +13,18 @@ use zed_cli::store::Store;
 use zed_cli::update;
 
 fn main() {
+    let args = std::env::args_os().collect();
+    if let Some(result) = dev::dispatch(args) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Err(error) = zed_cli::flags::apply_cli_flags() {
         eprintln!("error: {error:#}");
         std::process::exit(2);
@@ -39,6 +52,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_build,
             target,
             allow_no_manifest,
+            allow_ecosystem_mismatch,
         } => manifestless::install(
             &cwd,
             &cfg,
@@ -49,6 +63,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_build,
             target.as_deref(),
             allow_no_manifest,
+            allow_ecosystem_mismatch,
         )
         .map(|_| ()),
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),

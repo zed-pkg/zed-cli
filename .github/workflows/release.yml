@@ -40,6 +40,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
         with:

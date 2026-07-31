@@ -1,0 +1,110 @@
+name: manifestless polyglot installs
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/manifestless-polyglot.yml"
+      - "tests/manifestless-polyglot-e2e.sh"
+      - "tests/fixtures/polyglot/**"
+      - "src/manifestless.rs"
+      - "src/ops.rs"
+      - "src/config.rs"
+      - "src/cli.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/manifestless-polyglot.yml"
+      - "tests/manifestless-polyglot-e2e.sh"
+      - "tests/fixtures/polyglot/**"
+      - "src/manifestless.rs"
+      - "src/ops.rs"
+      - "src/config.rs"
+      - "src/cli.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-layouts:
+    name: Node, Python, Go, Rust, and Ruby layouts
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@v4
+        with:
+          path: zed-cli
+          persist-credentials: false
+
+      - name: Check out the matching interface contract
+        uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: 07d01604461d00e237c7d86ad3855464167574ec
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: rui314/setup-mold@v1
+        with:
+          make-default: true
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zed-cli
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+
+      - name: Build the exact zed executable under test
+        working-directory: zed-cli
+        run: cargo build --locked --bin zed
+
+      - name: Check the E2E harness syntax
+        working-directory: zed-cli
+        run: bash -n tests/manifestless-polyglot-e2e.sh
+
+      - name: Exercise automatic roots, adapters, frozen restores, and store locking
+        working-directory: zed-cli
+        env:
+          ZED_MANIFESTLESS_E2E_ROOT: ${{ runner.temp }}/manifestless-polyglot
+          ZED_MANIFESTLESS_E2E_KEEP: "1"
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tests/manifestless-polyglot-e2e.sh "$PWD/target/debug/zed" \
+            2>&1 | tee "$RUNNER_TEMP/manifestless-polyglot.log"
+
+      - name: Upload bounded failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifestless-polyglot-diagnostics
+          path: |
+            ${{ runner.temp }}/manifestless-polyglot.log
+            ${{ runner.temp }}/manifestless-polyglot/parallel-*.log
+          if-no-files-found: warn
+          retention-days: 1

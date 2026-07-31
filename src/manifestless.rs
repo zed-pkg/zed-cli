@@ -84,6 +84,7 @@ pub fn install(
     allow_build: bool,
     target: Option<&str>,
     allow_no_manifest: bool,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
     let selection = select_project(requested_root);
 
@@ -101,6 +102,7 @@ pub fn install(
             adapter,
             allow_build,
             target,
+            allow_ecosystem_mismatch,
         );
     }
 
@@ -145,6 +147,7 @@ pub fn install(
                 adapter,
                 allow_build,
                 inferred_target.as_deref(),
+                allow_ecosystem_mismatch,
             )
         } else {
             ops::install(
@@ -155,6 +158,7 @@ pub fn install(
                 adapter,
                 allow_build,
                 inferred_target.as_deref(),
+                allow_ecosystem_mismatch,
             )
         }
     })
@@ -310,6 +314,10 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
                 url: format!("https://localhost/zed-manifestless/{name}"),
             },
             keywords: Vec::new(),
+            // A synthesized manifest for a project that has none: no language
+            // claim of its own, so nothing here is ecosystem-gated.
+            language: Default::default(),
+            ecosystem: Default::default(),
         },
         workspace: None,
         dependencies,
@@ -354,6 +362,12 @@ fn select_project(requested: &Path) -> ProjectSelection {
             has_manifest: false,
         };
     }
+    if let Some(root) = structure_ancestor(requested) {
+        return ProjectSelection {
+            root,
+            has_manifest: false,
+        };
+    }
     ProjectSelection {
         root: unique_nested_project(requested).unwrap_or_else(|| requested.to_path_buf()),
         has_manifest: false,
@@ -374,7 +388,7 @@ fn manifest_ancestor(start: &Path) -> Option<PathBuf> {
 fn native_or_lock_ancestor(start: &Path) -> Option<PathBuf> {
     let mut current = Some(start);
     while let Some(dir) = current {
-        if dir.join(LOCKFILE_FILE).is_file() || ops::detect_target(dir).is_some() {
+        if dir.join(LOCKFILE_FILE).is_file() || ops::detect_native_manifest_target(dir).is_some() {
             return Some(dir.to_path_buf());
         }
         current = dir.parent();
@@ -382,25 +396,47 @@ fn native_or_lock_ancestor(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Select a nested project only when there is exactly one plausible native
-/// root. Multiple candidates are a monorepo; staying at the requested root is
-/// safer than silently choosing between sibling applications.
-fn unique_nested_project(start: &Path) -> Option<PathBuf> {
+fn structure_ancestor(start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if ops::detect_structure_target(dir).is_some() {
+            return Some(dir.to_path_buf());
+        }
+        current = dir.parent();
+    }
+    None
+}
+
+fn nested_candidates(start: &Path, matches: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = WalkDir::new(start)
         .min_depth(1)
         .max_depth(4)
         .into_iter()
         .filter_entry(should_descend)
         .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_dir())
-        .filter(|entry| {
-            entry.path().join(LOCKFILE_FILE).is_file() || ops::detect_target(entry.path()).is_some()
-        })
+        .filter(|entry| entry.file_type().is_dir() && matches(entry.path()))
         .map(|entry| entry.into_path())
         .collect();
     candidates.sort();
     candidates.dedup();
-    (candidates.len() == 1).then(|| candidates.remove(0))
+    candidates
+}
+
+/// Select a nested project only when there is exactly one plausible native
+/// root. Authoritative native manifests absorb weaker source-layout candidates
+/// below them; unrelated sibling candidates still make the repository
+/// ambiguous, so Zed safely stays at the requested root.
+fn unique_nested_project(start: &Path) -> Option<PathBuf> {
+    let mut authoritative = nested_candidates(start, |path| {
+        path.join(LOCKFILE_FILE).is_file() || ops::detect_native_manifest_target(path).is_some()
+    });
+    let mut heuristic =
+        nested_candidates(start, |path| ops::detect_structure_target(path).is_some());
+    heuristic.retain(|candidate| !authoritative.iter().any(|root| candidate.starts_with(root)));
+    authoritative.extend(heuristic);
+    authoritative.sort();
+    authoritative.dedup();
+    (authoritative.len() == 1).then(|| authoritative.remove(0))
 }
 
 fn should_descend(entry: &DirEntry) -> bool {
@@ -421,6 +457,10 @@ fn adapter_label(adapter: Adapter) -> &'static str {
         Adapter::None => "none (universal zed_modules; package-declared adapters may still apply)",
         Adapter::Node => "node (also node_modules/@<org>/<name>)",
         Adapter::Java => "java (also .zed/classpath for installed jars)",
+        Adapter::Go => "go (also .zed/go.work; use GOWORK=)",
+        Adapter::Python => "python (also .zed/pythonpath; use PYTHONPATH=)",
+        Adapter::Rust => "rust (also .zed/cargo-paths.toml to merge into .cargo/config.toml)",
+        Adapter::Dart => "dart (also .zed/pub-deps.yaml to merge into pubspec.yaml)",
     }
 }
 
@@ -642,6 +682,78 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::write(temp.path().join("apps/web/package.json"), "{}").unwrap();
         assert_eq!(select_project(&source).root, temp.path().join("apps/web"));
+    }
+
+    #[test]
+    fn native_manifest_ancestor_beats_a_nearer_structure_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("services/api");
+        let invocation = project.join("cmd/app/deep");
+        fs::create_dir_all(&invocation).unwrap();
+        fs::write(
+            project.join("go.mod"),
+            "module example.com/api
+",
+        )
+        .unwrap();
+        fs::write(
+            project.join("cmd/app/main.go"),
+            "package main
+",
+        )
+        .unwrap();
+
+        assert_eq!(select_project(&invocation).root, project);
+    }
+
+    #[test]
+    fn one_nested_manifest_absorbs_its_structure_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("services/api");
+        fs::create_dir_all(project.join("cmd/app")).unwrap();
+        fs::write(
+            project.join("go.mod"),
+            "module example.com/api
+",
+        )
+        .unwrap();
+        fs::write(
+            project.join("cmd/app/main.go"),
+            "package main
+",
+        )
+        .unwrap();
+
+        assert_eq!(select_project(temp.path()).root, project);
+    }
+
+    #[test]
+    fn unrelated_structure_sibling_keeps_nested_selection_ambiguous() {
+        let temp = tempfile::tempdir().unwrap();
+        let api = temp.path().join("services/api");
+        let web = temp.path().join("apps/web");
+        fs::create_dir_all(api.join("cmd/app")).unwrap();
+        fs::create_dir_all(web.join("src")).unwrap();
+        fs::write(
+            api.join("go.mod"),
+            "module example.com/api
+",
+        )
+        .unwrap();
+        fs::write(
+            api.join("cmd/app/main.go"),
+            "package main
+",
+        )
+        .unwrap();
+        fs::write(
+            web.join("src/main.ts"),
+            "console.log('web')
+",
+        )
+        .unwrap();
+
+        assert_eq!(select_project(temp.path()).root, temp.path());
     }
 
     #[test]

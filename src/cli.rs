@@ -63,7 +63,7 @@ pub struct Globals {
 /// language's toolchain expects, per the "structural translation" goal:
 /// the same artifact lands where Node, the JVM, or plain zed_modules/
 /// consumers respectively look for it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum Adapter {
     /// Detect from the project: package.json -> node, pom.xml/build.gradle
     /// -> java, otherwise none
@@ -75,6 +75,18 @@ pub enum Adapter {
     /// Additionally write .zed/classpath listing installed .jar paths for
     /// javac/java -cp and build-tool integration
     Java,
+    /// Additionally write .zed/go.work so the Go toolchain sees installed
+    /// modules; use with GOWORK="$(pwd)/.zed/go.work"
+    Go,
+    /// Additionally write .zed/pythonpath; use with
+    /// PYTHONPATH="$(cat .zed/pythonpath)"
+    Python,
+    /// Additionally write .zed/cargo-paths.toml, a `paths = [...]` fragment to
+    /// include from .cargo/config.toml (Cargo has no env-var path override)
+    Rust,
+    /// Additionally write .zed/pub-deps.yaml, path dependencies to merge into
+    /// pubspec.yaml (pub has no env-var path override)
+    Dart,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -183,6 +195,12 @@ pub enum Cmd {
             env = "ZED_PKG_ALLOW_NO_MANIFEST"
         )]
         allow_no_manifest: bool,
+        /// Install single-language packages whose ecosystem this project does
+        /// not have (e.g. a -java client into a Node project). Off by default:
+        /// the wrong-language package is invisible to the toolchain, so the
+        /// mismatch is almost always a mistake worth failing on
+        #[arg(long, env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH")]
+        allow_ecosystem_mismatch: bool,
     },
     /// Remove installed dependency trees while retaining .zpkg.toml and
     /// .zpkg.lock so `zed install --frozen` can restore them exactly.
@@ -369,7 +387,7 @@ pub enum ReleaseCmd {
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
     },
-    /// Run fixed, credential-free npm and crates.io package preflight adapters
+    /// Run fixed, credential-free native package preflight adapters
     Preflight,
 }
 
