@@ -11,3 +11,10 @@ url = "https://github.com/zed-pkg/zed-cli"
 
 [publish]
 smoke_test = "node -e 'const p=require(process.env.ZED_PKG_TEST_TARGET);if(p.containerGreeting()!==\"hello from @zed-pkg/docker-node-lib\")process.exit(1)'"
+
+[bin]
+docker-node-tool = "bin/docker-node-tool"
+
+[build]
+command = "mkdir -p generated && printf 'generated-copy-output\\n' > generated/output.txt"
+outputs = ["bin", "generated", "package.json", "src"]
