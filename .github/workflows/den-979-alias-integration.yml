@@ -1,0 +1,73 @@
+name: DEN-979 zed dev alias integration
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  finalize-tested-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/den-979-zed-dev-alias-integration
+          path: zed-cli
+          fetch-depth: 0
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - name: Detect whether the temporary revision transformer remains
+        id: state
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          if [ -f scripts/den-979-pin-flags2env.py ]; then
+            echo 'run=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'run=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pin the tested flags2env alias revision
+        if: steps.state.outputs.run == 'true'
+        working-directory: zed-cli
+        run: python3 scripts/den-979-pin-flags2env.py
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.state.outputs.run == 'true'
+        with:
+          components: rustfmt, clippy
+
+      - name: Format and validate the focused alias contract
+        if: steps.state.outputs.run == 'true'
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --check
+          cargo test --locked --test develop_alias_contract --test develop_help_contract
+          cargo clippy --locked --test develop_alias_contract -- -D warnings
+
+      - name: Publish the tested dependency pin and regression contract
+        if: steps.state.outputs.run == 'true'
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          rm scripts/den-979-pin-flags2env.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'test(DEN-979): pin canonical zed dev alias behavior'
+          git push origin HEAD:agent/den-979-zed-dev-alias-integration
