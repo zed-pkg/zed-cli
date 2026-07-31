@@ -1,0 +1,64 @@
+name: DEN-1194 finalize startup and CI isolation fix
+
+on:
+  push:
+    branches:
+      - fix/den-1194-startup-and-ci-isolation
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-and-publish:
+    if: ${{ !startsWith(github.event.head_commit.message, 'fix(DEN-1194):') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/den-1194-startup-and-ci-isolation
+          path: zed-cli
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zed-cli
+
+      - name: Apply the reviewed transformations
+        working-directory: zed-cli
+        run: python3 scripts/den-1194-apply.py
+
+      - name: Validate startup semantics and the complete Rust surface
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --check
+          cargo test --locked --test startup_environment_contract \
+            --test develop_alias_contract --test develop_help_contract
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Publish only the tested source and workflow fixes
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          rm scripts/den-1194-apply.py .github/workflows/den-1194-finalize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(DEN-1194): validate root-help env and isolate host locks'
+          git push origin HEAD:fix/den-1194-startup-and-ci-isolation
