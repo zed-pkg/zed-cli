@@ -3,6 +3,8 @@
 
 Legacy workflows are admitted only when their exact Git blob SHA matches the
 reviewed baseline. Any new or changed workflow must satisfy the hardened policy.
+Narrow job-level write grants require an explicit, path-and-job-specific policy
+entry; top-level write grants are always rejected.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):(?:\s*#.*)?$")
 USES_RE = re.compile(r"\buses:\s*([^\s#]+)")
+PERMISSION_WRITE_RE = re.compile(r"^      ([A-Za-z0-9_-]+):\s*write\s*(?:#.*)?$")
 
 
 def git_blob_sha(data: bytes) -> str:
@@ -65,6 +68,23 @@ def workflow_jobs(lines: list[str]) -> list[tuple[str, list[str]]]:
     return jobs
 
 
+def job_permission_writes(job_lines: list[str]) -> set[str]:
+    writes: set[str] = set()
+    in_permissions = False
+    for line in job_lines:
+        if line.rstrip() == "    permissions:":
+            in_permissions = True
+            continue
+        if in_permissions and line.strip() and len(line) - len(line.lstrip(" ")) <= 4:
+            in_permissions = False
+        if not in_permissions:
+            continue
+        match = PERMISSION_WRITE_RE.match(line)
+        if match:
+            writes.add(match.group(1))
+    return writes
+
+
 def action_reference_finding(path: str, reference: str) -> str | None:
     if reference.startswith("./"):
         return None
@@ -104,9 +124,15 @@ def audit_checkout_credentials(path: str, lines: list[str]) -> list[str]:
     return findings
 
 
-def audit_workflow_text(path: str, text: str) -> list[str]:
+def audit_workflow_text(
+    path: str,
+    text: str,
+    allowed_job_write_permissions: dict[str, set[str]] | None = None,
+) -> list[str]:
     findings: list[str] = []
     lines = text.splitlines()
+    allowed = allowed_job_write_permissions or {}
+    observed_allowed: dict[str, set[str]] = {job: set() for job in allowed}
 
     if re.search(r"(?m)^\s*pull_request_target\s*:", text):
         findings.append(f"{path}: pull_request_target is prohibited")
@@ -118,9 +144,8 @@ def audit_workflow_text(path: str, text: str) -> list[str]:
         permission_text = "\n".join(permissions)
         if not re.search(r"(?m)^  contents:\s*read\s*(?:#.*)?$", permission_text):
             findings.append(f"{path}: permissions must include contents: read")
-        for line_number, line in enumerate(lines, 1):
-            if re.search(r":\s*write\s*(?:#.*)?$", line):
-                findings.append(f"{path}:{line_number}: write permission is prohibited: {line.strip()}")
+        if re.search(r"(?m)^  [A-Za-z0-9_-]+:\s*write\s*(?:#.*)?$", permission_text):
+            findings.append(f"{path}: top-level write permissions are prohibited")
 
     concurrency = top_level_section(lines, "concurrency")
     if concurrency is None:
@@ -132,8 +157,29 @@ def audit_workflow_text(path: str, text: str) -> list[str]:
     if not jobs:
         findings.append(f"{path}: workflow must declare at least one job")
     for job_name, job_lines in jobs:
-        if not any(re.match(r"^    timeout-minutes:\s*[1-9][0-9]*\s*(?:#.*)?$", line) for line in job_lines):
+        reusable_job = any(re.match(r"^    uses:\s*\S+", line) for line in job_lines)
+        has_timeout = any(
+            re.match(r"^    timeout-minutes:\s*[1-9][0-9]*\s*(?:#.*)?$", line)
+            for line in job_lines
+        )
+        if not reusable_job and not has_timeout:
             findings.append(f"{path}: job {job_name!r} must set timeout-minutes")
+
+        writes = job_permission_writes(job_lines)
+        allowed_writes = allowed.get(job_name, set())
+        for permission in sorted(writes):
+            if permission not in allowed_writes:
+                findings.append(
+                    f"{path}: job {job_name!r} has unapproved {permission}: write permission"
+                )
+            else:
+                observed_allowed.setdefault(job_name, set()).add(permission)
+
+    for job_name, permissions_for_job in sorted(allowed.items()):
+        for permission in sorted(permissions_for_job - observed_allowed.get(job_name, set())):
+            findings.append(
+                f"{path}: stale privilege allowance for job {job_name!r}: {permission}: write"
+            )
 
     for line_number, line in enumerate(lines, 1):
         if line.lstrip().startswith("#"):
@@ -154,21 +200,37 @@ def iter_workflows(root: Path) -> Iterable[Path]:
     yield from sorted((*workflow_dir.glob("*.yml"), *workflow_dir.glob("*.yaml")))
 
 
-def load_baseline(path: Path) -> dict[str, str]:
+def load_policy(path: Path) -> tuple[dict[str, str], dict[str, dict[str, set[str]]]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("version") != 1:
         raise ValueError("workflow security baseline version must be 1")
+
     entries = payload.get("legacy_workflow_blobs")
     if not isinstance(entries, dict):
         raise ValueError("legacy_workflow_blobs must be an object")
     for workflow, blob_sha in entries.items():
         if not isinstance(workflow, str) or not isinstance(blob_sha, str) or not FULL_SHA_RE.fullmatch(blob_sha):
             raise ValueError(f"invalid workflow baseline entry: {workflow!r}: {blob_sha!r}")
-    return entries
+
+    raw_allowed = payload.get("allowed_job_write_permissions", {})
+    if not isinstance(raw_allowed, dict):
+        raise ValueError("allowed_job_write_permissions must be an object")
+    allowed: dict[str, dict[str, set[str]]] = {}
+    for workflow, jobs in raw_allowed.items():
+        if not isinstance(workflow, str) or not isinstance(jobs, dict):
+            raise ValueError(f"invalid privileged workflow entry: {workflow!r}")
+        allowed[workflow] = {}
+        for job, permissions in jobs.items():
+            if not isinstance(job, str) or not isinstance(permissions, list) or not permissions:
+                raise ValueError(f"invalid privileged job entry: {workflow!r}: {job!r}")
+            if any(not isinstance(permission, str) or not permission for permission in permissions):
+                raise ValueError(f"invalid permission list: {workflow!r}: {job!r}")
+            allowed[workflow][job] = set(permissions)
+    return entries, allowed
 
 
 def audit_repository(root: Path, baseline_path: Path) -> list[str]:
-    baseline = load_baseline(baseline_path)
+    baseline, allowed_writes = load_policy(baseline_path)
     findings: list[str] = []
     seen: set[str] = set()
 
@@ -181,7 +243,11 @@ def audit_repository(root: Path, baseline_path: Path) -> list[str]:
             print(f"legacy workflow unchanged and baseline-locked: {relative} ({current_blob})")
             continue
 
-        workflow_findings = audit_workflow_text(relative, data.decode("utf-8"))
+        workflow_findings = audit_workflow_text(
+            relative,
+            data.decode("utf-8"),
+            allowed_writes.get(relative),
+        )
         if workflow_findings:
             if relative in baseline:
                 workflow_findings.insert(
@@ -194,6 +260,8 @@ def audit_repository(root: Path, baseline_path: Path) -> list[str]:
 
     for relative in sorted(set(baseline) - seen):
         findings.append(f"{relative}: stale baseline entry; workflow no longer exists")
+    for relative in sorted(set(allowed_writes) - seen):
+        findings.append(f"{relative}: stale privileged-workflow policy entry")
     return findings
 
 
