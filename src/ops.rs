@@ -2183,29 +2183,9 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     {
         bail!("{org}/{name} is not a dependency");
     }
-<<<<<<< HEAD
     interactive::confirm(
         cfg.interactive,
         &format!("remove {org}/{name} from {MANIFEST_FILE} and reinstall"),
-=======
-    write_manifest(project, &manifest)?;
-    // Unlink from wherever install put it ([install].dir, default zed_modules),
-    // otherwise a relocated tree keeps a stale copy of a removed dependency.
-    let dest = project.join(manifest.modules_dir()).join(&org).join(&name);
-    replace_dest(&dest)?;
-    println!("removed {org}/{name}");
-    install(
-        project,
-        cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-        false,
-        // Re-install after the manifest edit; the target comes from
-        // [install].target or project inference, same as a bare `zed install`.
-        None,
-        false,
->>>>>>> origin/main
     )?;
     let manifest_text = manifest.to_toml_string()?;
     crate::config::with_manifest_override(project, manifest_text, || {
