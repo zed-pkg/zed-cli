@@ -246,9 +246,7 @@ fn snapshot_configured_file_registry(configured_registry: &str, destination: &Pa
         .with_context(|| format!("resolving file registry {}", source.display()))?;
     let destination = resolve_path_allow_missing(destination)?;
 
-    if destination == source
-        || destination.starts_with(&source)
-        || source.starts_with(&destination)
+    if destination == source || destination.starts_with(&source) || source.starts_with(&destination)
     {
         bail!(
             "r2g registry destination {} must be separate from configured registry {}",
@@ -280,9 +278,7 @@ fn resolve_path_allow_missing(path: &Path) -> Result<PathBuf> {
                 .context("path has no existing ancestor")?
                 .to_os_string(),
         );
-        cursor = cursor
-            .parent()
-            .context("path has no existing ancestor")?;
+        cursor = cursor.parent().context("path has no existing ancestor")?;
     }
     let mut resolved = fs::canonicalize(cursor)
         .with_context(|| format!("resolving path ancestor {}", cursor.display()))?;
@@ -496,10 +492,7 @@ mod tests {
         fs::write(&artifact, b"artifact-bytes")?;
 
         let destination = temp.path().join("workspace/r2g/registry");
-        snapshot_configured_file_registry(
-            &format!("file://{}", source.display()),
-            &destination,
-        )?;
+        snapshot_configured_file_registry(&format!("file://{}", source.display()), &destination)?;
 
         assert_eq!(
             fs::read(destination.join("packages/acme/widget/package.json"))?,
