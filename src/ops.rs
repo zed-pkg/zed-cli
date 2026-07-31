@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -18,9 +18,11 @@ use zed_interfaces::version::{self, Requirement};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
+use crate::interactive;
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, human_size, require_sha256};
+use crate::transaction::ProjectTransaction;
 use crate::vcs::verify_publish_provenance;
 
 pub fn split_key(key: &str) -> Result<(String, String)> {
@@ -53,7 +55,12 @@ fn validate_version_metadata(vm: &VersionMetadata) -> Result<()> {
 // ---------------------------------------------------------------------------
 // init
 
-pub fn init(dir: &Path, org: Option<String>, name: Option<String>) -> Result<()> {
+pub fn init(
+    dir: &Path,
+    org: Option<String>,
+    name: Option<String>,
+    interactive_mode: bool,
+) -> Result<()> {
     let manifest_path = dir.join(MANIFEST_FILE);
     if manifest_path.exists() {
         bail!("{MANIFEST_FILE} already exists in {}", dir.display());
@@ -64,6 +71,13 @@ pub fn init(dir: &Path, org: Option<String>, name: Option<String>) -> Result<()>
             .unwrap_or_else(|| "my-package".to_string())
     });
     let org = org.unwrap_or_else(|| "your-org".to_string());
+    interactive::confirm(
+        interactive_mode,
+        &format!(
+            "create {MANIFEST_FILE} for {org}/{name} in {}",
+            dir.display()
+        ),
+    )?;
     let repo_url = Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(dir)
@@ -105,14 +119,25 @@ exclude = []
     fs::write(&manifest_path, template)?;
 
     let gitignore = dir.join(".gitignore");
-    let ignore_lines = format!("{MODULES_DIR}/\n.zed/\n");
+    let ignore_lines = [
+        format!("{MODULES_DIR}/"),
+        ".zed/".to_string(),
+        format!("{}/", crate::transaction::STAGING_DIR),
+    ];
     if gitignore.exists() {
-        let current = fs::read_to_string(&gitignore)?;
-        if !current.contains(MODULES_DIR) {
-            fs::write(&gitignore, format!("{current}\n{ignore_lines}"))?;
+        let mut current = fs::read_to_string(&gitignore)?;
+        for ignore in &ignore_lines {
+            if !current.lines().any(|line| line.trim() == ignore) {
+                if !current.is_empty() && !current.ends_with('\n') {
+                    current.push('\n');
+                }
+                current.push_str(ignore);
+                current.push('\n');
+            }
         }
+        fs::write(&gitignore, current)?;
     } else {
-        fs::write(&gitignore, ignore_lines)?;
+        fs::write(&gitignore, ignore_lines.join("\n") + "\n")?;
     }
     println!("wrote {MANIFEST_FILE} for {org}/{name}");
     Ok(())
@@ -608,6 +633,39 @@ fn install_locked(
 
     let modules_dir = manifest.modules_dir();
     let modules = project.join(modules_dir);
+    let previous_lock = fs::read_to_string(&lock_path)
+        .ok()
+        .and_then(|text| Lockfile::parse(&text).ok())
+        .unwrap_or_default();
+    let had_node_adapter = project.join(".zed").join("node_path").is_file();
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "materialize {} resolved package(s) in {}",
+            resolved.len() + workspace_links.len(),
+            modules.display()
+        ),
+    )?;
+    let mut transaction = ProjectTransaction::begin(project)?;
+    eprintln!(
+        "transaction {}: staging install rollback data",
+        transaction.id()
+    );
+    transaction.backup(&modules)?;
+    transaction.backup(&lock_path)?;
+    transaction.backup(&project.join(".zed").join("node_path"))?;
+    transaction.backup(&project.join(".zed").join("classpath"))?;
+    if had_node_adapter {
+        for locked in &previous_lock.packages {
+            transaction.backup(
+                &project
+                    .join("node_modules")
+                    .join(format!("@{}", locked.org))
+                    .join(&locked.name),
+            )?;
+        }
+    }
+
     let mut installed = Vec::new();
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
@@ -615,6 +673,10 @@ fn install_locked(
     let mut used_node_adapter = false;
     let mut used_java_adapter = false;
     for vm in resolved.values() {
+        interactive::confirm(
+            cfg.interactive,
+            &format!("install {}/{}@{}", vm.org, vm.name, vm.version),
+        )?;
         let pkg_dir = ensure_artifact(reg.as_ref(), store, vm)?;
         let pkg_manifest = read_manifest(&pkg_dir).ok();
         // A [build] step (the package's own, or the consumer's override)
@@ -684,6 +746,7 @@ fn install_locked(
                     .join("node_modules")
                     .join(format!("@{}", vm.org))
                     .join(&vm.name);
+                transaction.backup(&node_dest)?;
                 link_or_copy(&link_src, &node_dest, mode)?;
             }
             Adapter::Java => {
@@ -706,6 +769,7 @@ fn install_locked(
         shas.push(vm.sha256.clone());
     }
     for (key, member_dir) in &workspace_links {
+        interactive::confirm(cfg.interactive, &format!("link workspace package {key}"))?;
         let (org, name) = split_key(key)?;
         let dest = modules.join(&org).join(&name);
         link_or_copy(member_dir, &dest, InstallMode::Symlink)?;
@@ -756,8 +820,16 @@ fn install_locked(
             source: cfg.registry.clone(),
         });
     }
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "write {LOCKFILE_FILE}, update project references, and commit transaction {}",
+            transaction.id()
+        ),
+    )?;
     fs::write(&lock_path, lock.to_toml_string()?)?;
     store.record_project(project, shas)?;
+    transaction.commit()?;
 
     for (name, version) in &installed {
         println!("installed {name}@{version}");
@@ -784,6 +856,165 @@ fn install_locked(
         }
     );
     Ok(InstallOutcome { installed })
+}
+
+/// Remove materialized dependencies without changing the manifest or lock.
+///
+/// Keeping `.zpkg.lock` is intentional: `zed install --frozen` is the exact
+/// inverse and proves uninstall/reinstall reproducibility. Every project-tree
+/// mutation is covered by a UUID-v4 transaction.
+pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
+    let lock_path = project.join(LOCKFILE_FILE);
+    let text = fs::read_to_string(&lock_path)
+        .with_context(|| format!("zed uninstall requires {LOCKFILE_FILE}"))?;
+    let lock = Lockfile::parse(&text).with_context(|| format!("invalid {LOCKFILE_FILE}"))?;
+    if lock.packages.is_empty() {
+        println!("nothing to uninstall");
+        return Ok(());
+    }
+
+    let mut targets = BTreeSet::new();
+    if specs.is_empty() {
+        targets.extend(lock.packages.iter().map(LockedPackage::full_name));
+    } else {
+        for spec in specs {
+            if spec.contains('@') {
+                bail!("uninstall accepts package identities without versions (expected org/name)");
+            }
+            let (org, name) = split_key(spec)?;
+            let key = format!("{org}/{name}");
+            if lock.find(&org, &name).is_none() {
+                bail!("{key} is not pinned by {LOCKFILE_FILE}");
+            }
+            targets.insert(key);
+        }
+    }
+
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "uninstall {} package(s) from {} while retaining {LOCKFILE_FILE}",
+            targets.len(),
+            project.display()
+        ),
+    )?;
+
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let manifest = read_manifest(project).ok();
+    let modules_dir = manifest
+        .as_ref()
+        .map(|manifest| manifest.modules_dir().to_string())
+        .unwrap_or_else(|| MODULES_DIR.to_string());
+    let modules = project.join(&modules_dir);
+    let had_node_adapter = project.join(".zed").join("node_path").is_file();
+    let had_java_adapter = project.join(".zed").join("classpath").is_file();
+    let uninstall_all = targets.len() == lock.packages.len();
+
+    let mut transaction = ProjectTransaction::begin(project)?;
+    eprintln!(
+        "transaction {}: staging uninstall rollback data",
+        transaction.id()
+    );
+    if uninstall_all {
+        transaction.backup(&modules)?;
+    } else {
+        transaction.backup(&modules.join(BIN_DIR))?;
+    }
+    if had_java_adapter {
+        transaction.backup(&project.join(".zed").join("classpath"))?;
+    }
+    if uninstall_all && had_node_adapter {
+        transaction.backup(&project.join(".zed").join("node_path"))?;
+    }
+
+    for key in &targets {
+        interactive::confirm(cfg.interactive, &format!("unmaterialize {key}"))?;
+        let (org, name) = split_key(key)?;
+        if !uninstall_all {
+            transaction.backup(&modules.join(&org).join(&name))?;
+        }
+        if had_node_adapter {
+            transaction.backup(
+                &project
+                    .join("node_modules")
+                    .join(format!("@{org}"))
+                    .join(&name),
+            )?;
+        }
+    }
+
+    let remaining: Vec<&LockedPackage> = lock
+        .packages
+        .iter()
+        .filter(|package| !targets.contains(&package.full_name()))
+        .collect();
+    if !uninstall_all {
+        let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut mode = InstallMode::Copy;
+        let mut jars = Vec::new();
+        for package in &remaining {
+            let installed = modules.join(&package.org).join(&package.name);
+            if fs::symlink_metadata(&installed)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                mode = InstallMode::Symlink;
+            }
+            if let Ok(package_manifest) = read_manifest(&installed) {
+                for (name, target) in package_manifest.bin {
+                    bins.insert(name, installed.join(target));
+                }
+            }
+            if had_java_adapter && installed.exists() {
+                for entry in walkdir::WalkDir::new(&installed)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|entry| entry.ok())
+                {
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "jar")
+                    {
+                        jars.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        hoist_bins(&modules, &bins, mode)?;
+        if had_java_adapter && !jars.is_empty() {
+            jars.sort();
+            let classpath = project.join(".zed").join("classpath");
+            fs::create_dir_all(classpath.parent().context("classpath parent")?)?;
+            fs::write(classpath, jars.join(":") + "\n")?;
+        }
+    }
+
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "record {} remaining installed package(s) and commit transaction {}",
+            remaining.len(),
+            transaction.id()
+        ),
+    )?;
+    store.record_project(
+        project,
+        remaining
+            .iter()
+            .map(|package| package.sha256.clone())
+            .collect(),
+    )?;
+    transaction.commit()?;
+
+    for key in &targets {
+        println!("uninstalled {key}");
+    }
+    println!(
+        "{} package(s) remain materialized; {LOCKFILE_FILE} retained for frozen reinstall",
+        remaining.len()
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1269,19 +1500,30 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     manifest
         .dependencies
         .insert(format!("{org}/{name}"), req.clone());
-    write_manifest(project, &manifest)?;
-    println!("added {org}/{name} = \"{req}\"");
-    install(
-        project,
-        cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-        false,
-        // Re-install after the manifest edit; the target comes from
-        // [install].target or project inference, same as a bare `zed install`.
-        None,
+    interactive::confirm(
+        cfg.interactive,
+        &format!("add {org}/{name} = \"{req}\" to {MANIFEST_FILE}"),
     )?;
+    let manifest_text = manifest.to_toml_string()?;
+    // Install against the proposed manifest in memory. The persistent
+    // manifest changes only after the transactional install succeeds.
+    crate::config::with_manifest_override(project, manifest_text, || {
+        install(
+            project,
+            cfg,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+            None,
+        )
+        .map(|_| ())
+    })?;
+    let mut manifest_transaction = ProjectTransaction::begin(project)?;
+    manifest_transaction.backup(&project.join(MANIFEST_FILE))?;
+    write_manifest(project, &manifest)?;
+    manifest_transaction.commit()?;
+    println!("added {org}/{name} = \"{req}\"");
     Ok(())
 }
 
@@ -1295,23 +1537,28 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     {
         bail!("{org}/{name} is not a dependency");
     }
-    write_manifest(project, &manifest)?;
-    // Unlink from wherever install put it ([install].dir, default zed_modules),
-    // otherwise a relocated tree keeps a stale copy of a removed dependency.
-    let dest = project.join(manifest.modules_dir()).join(&org).join(&name);
-    replace_dest(&dest)?;
-    println!("removed {org}/{name}");
-    install(
-        project,
-        cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-        false,
-        // Re-install after the manifest edit; the target comes from
-        // [install].target or project inference, same as a bare `zed install`.
-        None,
+    interactive::confirm(
+        cfg.interactive,
+        &format!("remove {org}/{name} from {MANIFEST_FILE} and reinstall"),
     )?;
+    let manifest_text = manifest.to_toml_string()?;
+    crate::config::with_manifest_override(project, manifest_text, || {
+        install(
+            project,
+            cfg,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+            None,
+        )
+        .map(|_| ())
+    })?;
+    let mut manifest_transaction = ProjectTransaction::begin(project)?;
+    manifest_transaction.backup(&project.join(MANIFEST_FILE))?;
+    write_manifest(project, &manifest)?;
+    manifest_transaction.commit()?;
+    println!("removed {org}/{name}");
     Ok(())
 }
 
@@ -1420,6 +1667,13 @@ pub fn publish(
                 meta.sha256
             );
         }
+        interactive::confirm(
+            cfg.interactive,
+            &format!(
+                "publish {}/{}@{} (sha256 {}) to {}",
+                identity.org, identity.name, identity.version, meta.sha256, cfg.registry
+            ),
+        )?;
         let response = reg.publish(&meta, &package.packed.path, token.as_deref())?;
         println!(
             "published {}/{}@{} to {}",

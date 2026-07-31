@@ -8,3 +8,6 @@ license = "MIT"
 [package.repository]
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
+
+[publish]
+smoke_test = "node -e 'const p=require(process.env.ZED_PKG_TEST_TARGET);if(p.containerGreeting()!==\"hello from @zed-pkg/docker-node-lib\")process.exit(1)'"

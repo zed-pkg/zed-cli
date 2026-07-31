@@ -61,11 +61,18 @@ zed publish
 # consume packages from a manifest
 zed add acme/http-kit@^1
 zed install
+zed uninstall                          # remove files; keep the exact lock
+zed install --frozen                   # restore the same artifacts
 
 # or install transiently in a folder with no .zpkg.toml
 zed install acme/http-kit@^1            # confirms in an interactive terminal
 zed install acme/http-kit@^1 --skip-manifest  # intentional automation
 zed find http
+
+# opt into a confirmation at every mutating lifecycle step
+zed install --interactive
+zed r2g --docker --interactive
+zed publish --interactive
 ```
 
 Every authored package is `<org>/<name>`, declared in a `.zpkg.toml` manifest
@@ -103,6 +110,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed remove <org>/<name>` | Remove a dependency |
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install manifest or transient dependencies |
 | `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers, including manifestless locked reinstalls) |
+| `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed + native-registry release set derived from `.zpkg.toml` |
@@ -187,9 +195,26 @@ adapter = "node"         # optional; omitted = auto-detect (or --adapter)
 ```
 
 Every command that touches the tree honors this: `zed install` writes it,
-`zed run` finds hoisted bins in `<dir>/.bin/`, `zed remove` unlinks from it,
+`zed uninstall` removes all or selected materialized packages, `zed run`
+finds hoisted bins in `<dir>/.bin/`, `zed remove` updates the manifest,
 and `zed pack`/`zed publish` always exclude it — a relocated dependency tree
 is never published (see `a_relocated_install_dir_is_never_published`).
+
+### Interactive transactions and recovery
+
+`--interactive` is a global opt-in flag (`ZED_PKG_INTERACTIVE=1`) declared in
+the same `.cli-flags.toml` contract audited by flags-2-env. Mutating lifecycle
+commands put confirmations immediately before the steps they own: package
+materialization, lock/ref updates, each publish upload, and each r2g phase.
+A declined answer, EOF, or redirected stdin fails closed.
+
+Install and uninstall protect project-tree changes with durable UUID-v4
+transactions under `.zpkg-staging/<uuid>/`. Replaced paths are renamed into
+the staging area before mutation. Normal errors restore them immediately; a
+hard exit leaves the transaction metadata in place, and the next Zed
+lifecycle invocation recovers it before starting new work. Successful
+transactions remove their staging directory, and packing always excludes
+`.zpkg-staging/**`.
 
 ### Monorepo workspaces
 
@@ -248,6 +273,7 @@ actual CLI never drift, so it is always authoritative:
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
 | `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
 | `--supabase-key` | `ZED_PKG_SUPABASE_KEY` | optional public publishable/anon key |
+| `--interactive` | `ZED_PKG_INTERACTIVE` | off; confirm each mutating lifecycle step in a real terminal |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
@@ -336,9 +362,10 @@ consumer would:
    pointing at the installed package.
 
 The whole workspace lives under your home directory at
-`~/.zed-pkg/r2g/<org>-<name>/` (registry + consumer + store), wiped fresh each
-run and left behind for inspection (pass `--clean`, or set `--r2g-root` to
-relocate it). `zed test-local` is a backwards-compatible alias.
+`~/.zed-pkg/r2g/<org>-<name>-<uuid-v4>/` (registry + consumer + store). Unique
+run directories prevent stale or concurrent state from masking a failure and
+are left behind for inspection (pass `--clean`, or set `--r2g-root` to
+relocate them). `zed test-local` is a backwards-compatible alias.
 
 ```sh
 zed r2g                       # roundtrip on the host
@@ -411,6 +438,9 @@ Artifacts arrive over the network, so the client treats them as untrusted:
   be https (or loopback/http only when the registry itself is http).
 - **No install-time code execution.** Installing a dependency never runs its
   scripts; `[build]` steps run only with explicit `--allow-build`.
+- **Recoverable project mutations.** Install and uninstall stage old paths in
+  UUID-v4 transaction directories and restore interrupted work before the
+  next lifecycle operation.
 - **Tokens at 0600 from creation**, with no write-then-chmod window.
 
 ## Development

@@ -52,6 +52,11 @@ pub struct Globals {
         hide_env_values = true
     )]
     pub supabase_key: Option<String>,
+
+    /// Confirm every mutating lifecycle step in a real terminal. A declined
+    /// prompt, EOF, or redirected stdin fails closed before that step.
+    #[arg(long, global = true, env = "ZED_PKG_INTERACTIVE")]
+    pub interactive: bool,
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -178,6 +183,15 @@ pub enum Cmd {
             env = "ZED_PKG_ALLOW_NO_MANIFEST"
         )]
         allow_no_manifest: bool,
+    },
+    /// Remove installed dependency trees while retaining .zpkg.toml and
+    /// .zpkg.lock so `zed install --frozen` can restore them exactly.
+    #[command(alias = "un")]
+    Uninstall {
+        /// Packages to unmaterialize (`org/name`). Omit to uninstall all
+        /// packages currently pinned by the lockfile.
+        #[arg(value_name = "PACKAGE")]
+        specs: Vec<String>,
     },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {

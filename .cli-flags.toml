@@ -60,6 +60,13 @@ aliases = ["name"]
 type = "string"
 help = "Package or display name, depending on command."
 
+[flags.interactive]
+env = "ZED_PKG_INTERACTIVE"
+aliases = ["interactive"]
+type = "bool"
+default = "false"
+help = "Confirm each mutating lifecycle step in a real terminal."
+
 [flags.frozen]
 env = "ZED_PKG_FROZEN"
 aliases = ["frozen"]
@@ -240,6 +247,10 @@ help = "Remove a dependency."
 [commands.install]
 aliases = ["i"]
 help = "Install dependencies."
+
+[commands.uninstall]
+aliases = ["un"]
+help = "Remove materialized dependencies while retaining the lockfile."
 
 [commands.completions]
 help = "Generate Bash or Zsh completion from the typed CLI model."

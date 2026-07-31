@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use uuid::Uuid;
 use zed_interfaces::manifest::{
     Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
 };
@@ -27,6 +28,7 @@ use zed_interfaces::version::VersionScheme;
 
 use crate::cli::{Adapter, ContainerRuntime, InstallMode};
 use crate::config::{Config, read_manifest, write_manifest};
+use crate::interactive;
 use crate::ops::{build_publish_meta, install};
 use crate::pack;
 use crate::registry::{FileRegistry, Registry};
@@ -67,24 +69,27 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     let manifest = read_manifest(project)?;
     let full = manifest.full_name();
 
-    // 1. A throwaway workspace under the user's home directory (r2g-style),
-    //    wiped fresh each run so nothing from a previous run can mask a bug.
+    // 1. A throwaway UUID-v4 workspace under the user's home directory
+    //    (r2g-style). A unique run root prevents stale state and makes
+    //    concurrent host/container checks independent without deleting
+    //    another run's diagnostics.
     let root = opts.root.clone().unwrap_or_else(|| cfg.home.join("r2g"));
     let workspace = root.join(format!(
-        "{}-{}",
-        manifest.package.org, manifest.package.name
+        "{}-{}-{}",
+        manifest.package.org,
+        manifest.package.name,
+        Uuid::new_v4()
     ));
-    if workspace.exists() {
-        fs::remove_dir_all(&workspace)
-            .with_context(|| format!("clearing previous r2g workspace {}", workspace.display()))?;
-    }
     let registry_dir = workspace.join("registry");
     let consumer_dir = workspace.join("consumer");
     let home_dir = workspace.join("home");
-    fs::create_dir_all(&consumer_dir)?;
     println!("r2g: workspace {}", workspace.display());
 
     // 2. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
+    interactive::confirm(
+        cfg.interactive,
+        &format!("r2g step 1/5: pack {} into {}", full, workspace.display()),
+    )?;
     let packed = pack::pack(project, &manifest, Some(&workspace.join("pack")))?;
     println!(
         "r2g: packed {} ({} files, {} excluded by publish rules)",
@@ -96,6 +101,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     // 3. Publish it to a throwaway file:// registry.
     let meta = build_publish_meta(&manifest, &packed, None);
     let file_registry = FileRegistry::new(registry_dir.clone());
+    interactive::confirm(
+        cfg.interactive,
+        &format!("r2g step 2/5: publish {full} to the throwaway file registry"),
+    )?;
     file_registry.publish(&meta, &packed.path, None)?;
 
     // 4. Synthesize a mock consumer that depends on exactly this version.
@@ -126,6 +135,11 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         install: Default::default(),
         targets: Default::default(),
     };
+    interactive::confirm(
+        cfg.interactive,
+        &format!("r2g step 3/5: create a fresh mock consumer of {full}"),
+    )?;
+    fs::create_dir_all(&consumer_dir)?;
     write_manifest(&consumer_dir, &consumer_manifest)?;
 
     // 5. Install it the way a consumer would, from the throwaway registry into
@@ -145,6 +159,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         auth_url: cfg.auth_url.clone(),
         supabase_url: cfg.supabase_url.clone(),
         supabase_key: cfg.supabase_key.clone(),
+        interactive: cfg.interactive,
     };
     // The author is roundtripping their own package, so running its [build]
     // step is consented — that's part of "as close to a real install as
@@ -152,6 +167,16 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     // No target: the mock consumer is language-agnostic, so a polyglot package
     // roundtrips as its whole tree. `zed r2g --target <t>` could narrow this
     // once there is a reason to test one slice in isolation.
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "r2g step 4/5: install {full} into the mock consumer ({})",
+            match mode {
+                InstallMode::Symlink => "host symlink mode",
+                InstallMode::Copy => "OCI-safe copy mode",
+            }
+        ),
+    )?;
     install(
         &consumer_dir,
         &test_cfg,
@@ -184,6 +209,17 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
 
     // 6. Run the smoke test — on the host, or inside a fresh container.
     let smoke = manifest.publish.smoke_test.clone();
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "r2g step 5/5: run the smoke test {}",
+            if opts.docker {
+                "inside a fresh OCI container"
+            } else {
+                "on the host"
+            }
+        ),
+    )?;
     if opts.docker {
         run_in_container(
             opts,
@@ -198,7 +234,11 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
 
     // 7. Leave the workspace for inspection (r2g-style) unless asked to clean.
     if opts.clean {
-        let _ = fs::remove_dir_all(&workspace);
+        interactive::confirm(
+            cfg.interactive,
+            &format!("remove successful r2g workspace {}", workspace.display()),
+        )?;
+        fs::remove_dir_all(&workspace)?;
     } else {
         println!(
             "r2g: workspace left at {} (pass --clean to remove it)",

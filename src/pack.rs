@@ -198,6 +198,9 @@ pub fn pack_format(
     if !modules_dir.is_empty() {
         extra.push(format!("{modules_dir}/**"));
     }
+    // Interrupted lifecycle operations retain UUID-v4 rollback data here.
+    // It is local recovery state and must never enter a published artifact.
+    extra.push(format!("{}{}", crate::transaction::STAGING_DIR, "/**"));
     let ignore_file = project.join(IGNORE_FILE);
     if ignore_file.exists() {
         for line in fs::read_to_string(&ignore_file)?.lines() {

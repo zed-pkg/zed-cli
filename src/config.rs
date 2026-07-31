@@ -18,6 +18,7 @@ pub struct Config {
     pub auth_url: String,
     pub supabase_url: Option<String>,
     pub supabase_key: Option<String>,
+    pub interactive: bool,
 }
 
 impl Config {
@@ -63,6 +64,7 @@ impl Config {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
+            interactive: globals.interactive,
         })
     }
 
@@ -289,6 +291,7 @@ url = "https://localhost/manifestless/consumer"
             auth_url: None,
             supabase_url: None,
             supabase_key: None,
+            interactive: false,
         };
         let cfg = Config::from_globals(&globals).unwrap();
 
@@ -367,6 +370,7 @@ url = "https://localhost/manifestless/consumer"
             auth_url: "https://reg.example.com/shared-auth".to_string(),
             supabase_url: None,
             supabase_key: None,
+            interactive: false,
         };
         assert_eq!(
             explicit.resolve_token().unwrap().as_deref(),
@@ -389,6 +393,7 @@ url = "https://localhost/manifestless/consumer"
             auth_url: "https://elsewhere.example.com/shared-auth".to_string(),
             supabase_url: None,
             supabase_key: None,
+            interactive: false,
         };
         assert_eq!(unknown_registry.resolve_token().unwrap(), None);
     }
@@ -404,6 +409,7 @@ url = "https://localhost/manifestless/consumer"
             auth_url: "https://reg.example.com/shared-auth".to_string(),
             supabase_url: None,
             supabase_key: None,
+            interactive: false,
         };
         // A corrupt file must degrade to "no saved token", not a panic/err.
         assert_eq!(cfg.resolve_token().unwrap(), None);

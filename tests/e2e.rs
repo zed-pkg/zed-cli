@@ -104,6 +104,7 @@ fn test_config(tmp: &Path, registry_dir: &Path) -> Config {
         auth_url: "http://127.0.0.1:8120".to_string(),
         supabase_url: None,
         supabase_key: None,
+        interactive: false,
     }
 }
 
@@ -323,6 +324,33 @@ fn publish_install_roundtrip_with_transitive_deps() {
     )
     .unwrap();
     assert!(demo_link.join("src/lib.txt").exists());
+
+    // Uninstall is the lock-preserving inverse. A selected package can be
+    // unmaterialized independently, and a full uninstall removes the tree
+    // without destroying the exact frozen-reinstall recipe.
+    ops::uninstall(&consumer, &cfg, &["acme/demo".to_string()]).unwrap();
+    assert!(!demo_link.exists());
+    assert!(base_link.join("src/base.txt").exists());
+    assert_eq!(
+        fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap(),
+        lock.to_toml_string().unwrap()
+    );
+
+    ops::uninstall(&consumer, &cfg, &[]).unwrap();
+    assert!(!consumer.join(MODULES_DIR).exists());
+    assert!(consumer.join(LOCKFILE_FILE).is_file());
+    ops::install(
+        &consumer,
+        &cfg,
+        true,
+        InstallMode::Symlink,
+        Adapter::None,
+        false,
+        None,
+    )
+    .unwrap();
+    assert!(demo_link.join("src/lib.txt").exists());
+    assert!(base_link.join("src/base.txt").exists());
 }
 
 #[test]
@@ -495,6 +523,26 @@ fn node_adapter_links_into_node_modules() {
 
     let node_link = consumer.join("node_modules").join("@acme").join("nodelib");
     assert!(node_link.join("package.json").exists());
+    assert!(node_link.join("index.js").exists());
+
+    let lock_before = fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap();
+    ops::uninstall(&consumer, &cfg, &[]).unwrap();
+    assert!(!node_link.exists());
+    assert!(!consumer.join(MODULES_DIR).exists());
+    assert_eq!(
+        fs::read_to_string(consumer.join(LOCKFILE_FILE)).unwrap(),
+        lock_before
+    );
+    ops::install(
+        &consumer,
+        &cfg,
+        true,
+        InstallMode::Symlink,
+        Adapter::Node,
+        false,
+        None,
+    )
+    .unwrap();
     assert!(node_link.join("index.js").exists());
 }
 
@@ -757,6 +805,7 @@ fn concurrent_installs_share_the_store_safely() {
                 auth_url: "http://127.0.0.1:8120".to_string(),
                 supabase_url: None,
                 supabase_key: None,
+                interactive: false,
             };
             ops::install(
                 &consumer,

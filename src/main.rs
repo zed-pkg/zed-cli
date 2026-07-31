@@ -26,8 +26,9 @@ fn main() {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
     let cwd = std::env::current_dir()?;
+    zed_cli::transaction::recover_pending(&cwd)?;
     match cli.cmd {
-        Cmd::Init { org, name } => ops::init(&cwd, org, name),
+        Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
@@ -50,6 +51,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
         )
         .map(|_| ()),
+        Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

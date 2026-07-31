@@ -924,6 +924,7 @@ mod tests {
             auth_url: "https://registry.example.com/shared-auth".into(),
             supabase_url: None,
             supabase_key: None,
+            interactive: false,
         }
     }
 
