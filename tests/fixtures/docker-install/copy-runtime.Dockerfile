@@ -5,7 +5,6 @@ WORKDIR /app
 COPY --chown=node:node . .
 
 RUN test -z "$(find .vendor/.zed node_modules/@zed-pkg -type l -print -quit)" \
-    && test -x .vendor/.zed/zed-pkg/docker-node-lib/bin/docker-node-tool \
     && test -x .vendor/.zed/.bin/docker-node-tool \
     && test -f .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt \
     && test -f node_modules/@zed-pkg/docker-node-lib/generated/output.txt
