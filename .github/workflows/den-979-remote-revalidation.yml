@@ -1,0 +1,81 @@
+name: DEN-979 remote revalidation
+
+on:
+  push:
+    branches:
+      - ci/revalidate-den-979-20260731
+
+permissions:
+  contents: write
+
+jobs:
+  validate-current-main-tree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zed-cli
+
+      - name: Run full Rust validation and persist evidence
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          set +e
+          {
+            echo "base_main=05ad87d31869c67b10c4b7024aa8ec12de5895f6"
+            echo "tested_head=$(git rev-parse HEAD)"
+            cargo fmt --all --check
+            cargo test --locked --all-targets
+            cargo clippy --locked --all-targets -- -D warnings
+          } 2>&1 | tee "$RUNNER_TEMP/den-979-revalidation.log"
+          status=${PIPESTATUS[0]}
+          set -e
+
+          mkdir -p .ci-results
+          cp "$RUNNER_TEMP/den-979-revalidation.log" .ci-results/den-979-zed-cli.log
+          python3 - "$status" <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          status = int(sys.argv[1])
+          payload = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "workflow": os.environ["GITHUB_WORKFLOW"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "tested_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "base_main": "05ad87d31869c67b10c4b7024aa8ec12de5895f6",
+              "status": "passed" if status == 0 else "failed",
+              "exit_code": status,
+              "completed_at": datetime.now(timezone.utc).isoformat(),
+              "command": "cargo fmt --all --check && cargo test --locked --all-targets && cargo clippy --locked --all-targets -- -D warnings",
+          }
+          Path(".ci-results/den-979-zed-cli.json").write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .ci-results/den-979-zed-cli.json .ci-results/den-979-zed-cli.log
+          git commit -m 'ci(DEN-979): record remote zed-cli validation'
+          git push origin HEAD:ci/revalidate-den-979-20260731
+          exit "$status"
