@@ -113,6 +113,29 @@ pub enum ContainerRuntime {
     Podman,
 }
 
+/// Registry families selectable by `zed publish --to`. These mirror the
+/// manifest's stable wire values while keeping clap out of zed-interfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PublishRegistryArg {
+    Zed,
+    Native,
+    GithubPackages,
+    GitlabPackages,
+    BitbucketPackages,
+}
+
+impl From<PublishRegistryArg> for zed_interfaces::publish::PublishRegistry {
+    fn from(value: PublishRegistryArg) -> Self {
+        match value {
+            PublishRegistryArg::Zed => Self::Zed,
+            PublishRegistryArg::Native => Self::Native,
+            PublishRegistryArg::GithubPackages => Self::GithubPackages,
+            PublishRegistryArg::GitlabPackages => Self::GitlabPackages,
+            PublishRegistryArg::BitbucketPackages => Self::BitbucketPackages,
+        }
+    }
+}
+
 impl ContainerRuntime {
     pub fn program(self) -> &'static str {
         match self {
@@ -255,6 +278,18 @@ pub enum Cmd {
         /// zed cannot verify yet)
         #[arg(long, env = "ZED_PKG_SKIP_VCS_CHECKS")]
         skip_vcs_checks: bool,
+        /// Publish only to these declared registry families. Repeat the flag
+        /// or use a comma-separated value. Omitted = every declared registry.
+        #[arg(
+            long = "to",
+            value_enum,
+            value_delimiter = ',',
+            env = "ZED_PKG_PUBLISH_TO"
+        )]
+        registries: Vec<PublishRegistryArg>,
+        /// Publish only one target from a polyglot package.
+        #[arg(long, env = "ZED_PKG_PUBLISH_TARGET")]
+        publish_target: Option<String>,
     },
     /// Mark a published version as yanked: hidden from fresh resolution,
     /// still downloadable for existing lockfiles. --undo restores it.

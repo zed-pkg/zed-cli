@@ -13,6 +13,7 @@ use zed_interfaces::manifest::{
     is_slug,
 };
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, current_platform};
+use zed_interfaces::publish::PublishRegistry;
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
 use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::{self, Requirement};
@@ -20,6 +21,7 @@ use zed_interfaces::version::{self, Requirement};
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::pack::{self, PackResult};
+use crate::publish::{destination_label, selected_registries};
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, human_size, require_sha256};
 use crate::vcs::verify_publish_provenance;
@@ -2013,8 +2015,30 @@ pub fn publish(
     dry_run: bool,
     allow_dirty: bool,
     skip_vcs_checks: bool,
+    requested_registries: &[PublishRegistry],
+    requested_target: Option<&str>,
 ) -> Result<()> {
     let manifest = read_manifest(project)?;
+    if let Some(target) = requested_target {
+        if !manifest.is_polyglot() {
+            bail!(
+                "--publish-target `{target}` was provided, but {} is not a polyglot package",
+                manifest.full_name()
+            );
+        }
+        if !manifest.targets.contains_key(target) {
+            bail!(
+                "package {} has no target `{target}` (available: {})",
+                manifest.full_name(),
+                manifest
+                    .targets
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
     let tag = manifest.vcs_tag();
     let vcs = manifest.package.repository.vcs;
 
@@ -2025,26 +2049,71 @@ pub fn publish(
         Some(verify_publish_provenance(vcs, project, &tag, allow_dirty)?)
     };
 
-    let packages = pack_cmd(project, None)?;
+    let mut packages = pack_cmd(project, None)?;
+    if let Some(target) = requested_target {
+        packages.retain(|package| package.target.as_deref() == Some(target));
+    }
+
+    let mut plan = Vec::new();
+    for (index, package) in packages.iter().enumerate() {
+        for registry in selected_registries(&package.manifest, requested_registries)? {
+            plan.push((index, registry));
+        }
+    }
 
     if dry_run {
-        for package in &packages {
+        for (index, registry) in &plan {
+            let package = &packages[*index];
             let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
+            let format = package.manifest.publish.format.as_deref().unwrap_or("zpkg");
             println!(
-                "dry run: would publish {}@{} (tag {}, sha256 {}) to {}",
+                "dry run: would publish {}@{} (target {}, format {}, tag {}, sha256 {}) to {} [{}]",
                 package.manifest.full_name(),
                 package.manifest.package.version,
+                package.target.as_deref().unwrap_or("repository"),
+                format,
                 meta.vcs_tag,
                 meta.sha256,
-                cfg.registry
+                destination_label(&package.manifest, *registry, &cfg.registry),
+                registry,
             );
         }
         return Ok(());
     }
 
-    let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token()?;
-    for package in &packages {
+    let external = plan
+        .iter()
+        .filter_map(|(_, registry)| (*registry != PublishRegistry::Zed).then_some(*registry))
+        .collect::<std::collections::BTreeSet<_>>();
+    if !external.is_empty() {
+        bail!(
+            "live publishing adapters for {} are not enabled yet; use --dry-run to verify the full plan or --to zed to publish only Zed artifacts",
+            external
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    for (index, registry) in plan {
+        debug_assert_eq!(registry, PublishRegistry::Zed);
+        let package = &packages[index];
+        let endpoint = package
+            .manifest
+            .publish_registry_url(PublishRegistry::Zed)
+            .unwrap_or(&cfg.registry)
+            .trim_end_matches('/');
+        let reg = registry_for(endpoint)?;
+        let token = if endpoint == cfg.registry {
+            cfg.resolve_token()?
+        } else if cfg.token.is_some() {
+            cfg.token.clone()
+        } else {
+            Credentials::load(&cfg.home)
+                .ok()
+                .and_then(|credentials| credentials.token_for(endpoint))
+        };
         let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
         let identity = &package.manifest.package;
         // Multi-package releases cannot be a single HTTP transaction. Make
@@ -2071,7 +2140,7 @@ pub fn publish(
         let response = reg.publish(&meta, &package.packed.path, token.as_deref())?;
         println!(
             "published {}/{}@{} to {}",
-            response.org, response.name, response.version, cfg.registry
+            response.org, response.name, response.version, endpoint
         );
     }
     Ok(())
