@@ -1,0 +1,382 @@
+name: copy-mode OCI contract
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copy-mode-oci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CONTRACT_IMAGE: zed-pkg/copy-mode-contract:den-588
+  RUNTIME_IMAGE: zed-pkg/copy-runtime:den-588
+  NODE_IMAGE: node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+
+jobs:
+  linux-contract:
+    name: independent copies across Docker and OCI boundaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out zed-cli at the reviewed commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: zed-cli
+          persist-credentials: false
+      - name: Check out the pinned interface contract
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - name: Verify immutable workflow inputs and assertion syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Eq '^FROM [^ ]+@sha256:[0-9a-f]{64}' zed-cli/.github/docker/copy-mode-contract.Dockerfile
+          grep -Eq '^FROM [^ ]+@sha256:[0-9a-f]{64}' zed-cli/tests/fixtures/docker-install/copy-runtime.Dockerfile
+          python3 -m py_compile zed-cli/tests/copy_mode_contract.py
+
+      - name: Build the pinned Zed contract image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --file zed-cli/.github/docker/copy-mode-contract.Dockerfile \
+            --tag "$CONTRACT_IMAGE" \
+            .
+
+      - name: Publish the container fixture to a hermetic registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R zed-cli/tests/fixtures/docker-install/node-lib "$RUNNER_TEMP/node-lib"
+          cp -R zed-cli/tests/fixtures/docker-install/node-app "$RUNNER_TEMP/symlink-app"
+          cp -R zed-cli/tests/fixtures/docker-install/node-app "$RUNNER_TEMP/copy-app"
+          mkdir -p \
+            "$RUNNER_TEMP/registry" \
+            "$RUNNER_TEMP/zed-home-symlink" \
+            "$RUNNER_TEMP/zed-home-copy"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/node-lib:/package" \
+            --volume "$RUNNER_TEMP/registry:/registry" \
+            --workdir /package \
+            "$CONTRACT_IMAGE" \
+            zed publish --registry file:///registry --skip-vcs-checks
+
+      - name: Prove symlink mode remains store-backed without mutating the store bin
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$RUNNER_TEMP/symlink-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home-symlink:/zed-home" \
+            --workdir /work \
+            "$CONTRACT_IMAGE" \
+            sh -euc '
+              zed install \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode symlink
+              test -L .vendor/.zed/zed-pkg/docker-node-lib
+              test -L node_modules/@zed-pkg/docker-node-lib
+              test -f .vendor/.zed/.bin/docker-node-tool
+              test ! -L .vendor/.zed/.bin/docker-node-tool
+              test -x .vendor/.zed/.bin/docker-node-tool
+              store_bin="$(find /zed-home/store/v1 -path "*/pkg/bin/docker-node-tool" -print -quit)"
+              test -n "$store_bin"
+              test "$(stat -c %a "$store_bin")" = 644
+              node src/main.js
+              .vendor/.zed/.bin/docker-node-tool
+            '
+
+          if docker run --rm \
+            --volume "$RUNNER_TEMP/symlink-app:/work:ro" \
+            --workdir /work \
+            "$NODE_IMAGE" \
+            node src/main.js
+          then
+            echo 'store-backed package links unexpectedly crossed an unmounted boundary' >&2
+            exit 1
+          fi
+
+      - name: Prove deterministic copy restoration, independent inodes, and build outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_copy() {
+            docker run --rm \
+              --volume "$RUNNER_TEMP/copy-app:/work" \
+              --volume "$RUNNER_TEMP/registry:/registry:ro" \
+              --volume "$RUNNER_TEMP/zed-home-copy:/zed-home" \
+              --workdir /work \
+              "$CONTRACT_IMAGE" \
+              zed install \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode copy \
+                --allow-build \
+                "$@"
+          }
+
+          install_copy | tee "$RUNNER_TEMP/copy-install.out"
+          grep -q 'copied for container-safe layers' "$RUNNER_TEMP/copy-install.out"
+
+          python3 zed-cli/tests/copy_mode_contract.py snapshot \
+            --project "$RUNNER_TEMP/copy-app" \
+            > "$RUNNER_TEMP/copy-before.json"
+
+          install_copy --frozen
+
+          python3 zed-cli/tests/copy_mode_contract.py snapshot \
+            --project "$RUNNER_TEMP/copy-app" \
+            > "$RUNNER_TEMP/copy-after.json"
+          cmp "$RUNNER_TEMP/copy-before.json" "$RUNNER_TEMP/copy-after.json"
+
+          python3 zed-cli/tests/copy_mode_contract.py assert-copy \
+            --project "$RUNNER_TEMP/copy-app" \
+            --zed-home "$RUNNER_TEMP/zed-home-copy" \
+            | tee "$RUNNER_TEMP/copy-ownership.json"
+
+          docker run --rm \
+            --volume "$RUNNER_TEMP/copy-app:/work:ro" \
+            --workdir /work \
+            "$NODE_IMAGE" \
+            sh -euc '
+              node src/main.js
+              .vendor/.zed/.bin/docker-node-tool
+              grep -q generated-copy-output .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt
+            '
+
+      - name: Remove the store and build cache before crossing the image boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf "$RUNNER_TEMP/zed-home-copy"
+          test ! -e "$RUNNER_TEMP/zed-home-copy"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/copy-app:/work:ro" \
+            --workdir /work \
+            "$NODE_IMAGE" \
+            sh -euc '
+              node src/main.js
+              .vendor/.zed/.bin/docker-node-tool
+              test -r .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt
+            '
+
+      - name: Prove workspace members honor copy mode instead of retaining live source links
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/workspace"
+          app="$root/apps/app"
+          member="$root/packages/workspace-lib"
+          mkdir -p "$app" "$member"
+
+          cat > "$root/.zpkg.toml" <<'TOML'
+          [package]
+          org = "zed-pkg"
+          name = "workspace-root"
+          version = "0.1.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg/zed-cli"
+
+          [workspace]
+          members = ["apps/*", "packages/*"]
+          TOML
+
+          cat > "$app/.zpkg.toml" <<'TOML'
+          [package]
+          org = "zed-pkg"
+          name = "workspace-app"
+          version = "0.1.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg/zed-cli"
+
+          [dependencies]
+          "zed-pkg/workspace-lib" = "^0.1.0"
+          TOML
+
+          cat > "$member/.zpkg.toml" <<'TOML'
+          [package]
+          org = "zed-pkg"
+          name = "workspace-lib"
+          version = "0.1.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg/zed-cli"
+          TOML
+          printf 'workspace-source\n' > "$member/payload.txt"
+
+          docker run --rm \
+            --volume "$root:/workspace" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --workdir /workspace/apps/app \
+            "$CONTRACT_IMAGE" \
+            zed install \
+              --registry file:///registry \
+              --home /tmp/zed-home \
+              --install-mode copy \
+              --adapter none
+
+          installed="$app/zed_modules/zed-pkg/workspace-lib"
+          test -d "$installed"
+          test ! -L "$installed"
+          cmp "$member/payload.txt" "$installed/payload.txt"
+          printf 'consumer mutation\n' >> "$installed/payload.txt"
+          test "$(cat "$member/payload.txt")" = workspace-source
+          rm -rf "$member"
+          grep -q 'consumer mutation' "$installed/payload.txt"
+
+      - name: Build from the copied context, export/import OCI, and run read-only as non-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --pull=false \
+            --network=none \
+            --file "$GITHUB_WORKSPACE/zed-cli/tests/fixtures/docker-install/copy-runtime.Dockerfile" \
+            --tag "$RUNTIME_IMAGE" \
+            "$RUNNER_TEMP/copy-app"
+
+          before="$(docker image inspect --format '{{.Id}}' "$RUNTIME_IMAGE")"
+          docker save --output "$RUNNER_TEMP/copy-runtime.tar" "$RUNTIME_IMAGE"
+          docker image rm "$RUNTIME_IMAGE"
+          docker load --input "$RUNNER_TEMP/copy-runtime.tar"
+          after="$(docker image inspect --format '{{.Id}}' "$RUNTIME_IMAGE")"
+          test "$before" = "$after"
+
+          docker run --rm \
+            --read-only \
+            --network none \
+            --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+            "$RUNTIME_IMAGE" \
+            | tee "$RUNNER_TEMP/runtime.out"
+          grep -q 'hello from @zed-pkg/docker-node-lib' "$RUNNER_TEMP/runtime.out"
+          grep -q 'docker-node-tool-ok' "$RUNNER_TEMP/runtime.out"
+
+  windows-effective-mode:
+    name: explicit non-Unix symlink fallback
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Check out zed-cli at the reviewed commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: zed-cli
+          persist-credentials: false
+      - name: Check out the pinned interface contract
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+      - name: Build with a version-pinned Rust toolchain
+        shell: pwsh
+        working-directory: zed-cli
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal
+          cargo +1.90.0 build --locked --bin zed
+      - name: Request symlink mode and verify the reported effective copy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'workspace'
+          $app = Join-Path $root 'apps\app'
+          $member = Join-Path $root 'packages\workspace-lib'
+          New-Item -ItemType Directory -Force -Path $app, $member | Out-Null
+
+          @'
+          [package]
+          org = "zed-pkg"
+          name = "workspace-root"
+          version = "0.1.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg/zed-cli"
+
+          [workspace]
+          members = ["apps/*", "packages/*"]
+          '@ | Set-Content -Path (Join-Path $root '.zpkg.toml')
+
+          @'
+          [package]
+          org = "zed-pkg"
+          name = "workspace-app"
+          version = "0.1.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg/zed-cli"
+
+          [dependencies]
+          "zed-pkg/workspace-lib" = "^0.1.0"
+          '@ | Set-Content -Path (Join-Path $app '.zpkg.toml')
+
+          @'
+          [package]
+          org = "zed-pkg"
+          name = "workspace-lib"
+          version = "0.1.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg/zed-cli"
+          '@ | Set-Content -Path (Join-Path $member '.zpkg.toml')
+          Set-Content -Path (Join-Path $member 'payload.txt') -Value 'workspace-source'
+
+          $zed = Join-Path $env:GITHUB_WORKSPACE 'zed-cli\target\debug\zed.exe'
+          Push-Location $app
+          try {
+            $output = (& $zed install --home (Join-Path $env:RUNNER_TEMP 'zed-home') --install-mode symlink --adapter none 2>&1) -join "`n"
+            if ($LASTEXITCODE -ne 0) {
+              throw "zed install failed with $LASTEXITCODE`n$output"
+            }
+          }
+          finally {
+            Pop-Location
+          }
+
+          if ($output -notmatch 'symlink install mode is unavailable on this platform; using copy mode') {
+            throw "missing explicit mode fallback:`n$output"
+          }
+          if ($output -notmatch 'copied for container-safe layers') {
+            throw "final summary did not report the effective copy mode:`n$output"
+          }
+
+          $installed = Join-Path $app 'zed_modules\zed-pkg\workspace-lib'
+          $item = Get-Item -LiteralPath $installed
+          if ($item.LinkType) {
+            throw "workspace destination is still a link: $($item.LinkType)"
+          }
+          $sourceBefore = Get-Content -Raw (Join-Path $member 'payload.txt')
+          Add-Content -Path (Join-Path $installed 'payload.txt') -Value 'consumer mutation'
+          $sourceAfter = Get-Content -Raw (Join-Path $member 'payload.txt')
+          if ($sourceAfter -ne $sourceBefore) {
+            throw 'mutating the Windows copy changed the workspace source'
+          }
+          Remove-Item -Recurse -Force $member
+          if (-not (Test-Path (Join-Path $installed 'payload.txt'))) {
+            throw 'copied workspace member disappeared with its source'
+          }
