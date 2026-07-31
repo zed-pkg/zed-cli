@@ -5,13 +5,35 @@
 //! never depend on a source checkout or a shared library.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 
 use anyhow::{Context, Result, bail};
 use flags2env::{BundledFlags2Env, StructuredParse};
 
 const CONTRACT: &str = include_str!("../.cli-flags.toml");
+
+/// Validate inherited global booleans before any modular route can short-circuit.
+///
+/// Root help is rendered by the modular `develop` router, before the legacy
+/// command parser runs. This preflight keeps malformed deployment environment
+/// values fail-closed even for `zed --help`, while preserving explicit CLI
+/// precedence (`--interactive` may intentionally replace a malformed inherited
+/// `ZED_PKG_INTERACTIVE`). The full flags2env audit and parse still run for
+/// established commands in [`apply_cli_flags`].
+pub fn normalize_global_boolean_environment(args: &[OsString]) -> Result<()> {
+    let argv = args
+        .iter()
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .context("flags2env requires UTF-8 command-line arguments")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let explicit_envs = explicit_env_keys(&argv, &[])?;
+    normalize_active_boolean_environment(&[], &explicit_envs)
+}
 
 /// Audit and apply the embedded flags2env contract.
 ///

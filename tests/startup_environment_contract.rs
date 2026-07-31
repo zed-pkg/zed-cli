@@ -20,7 +20,10 @@ fn invalid_global_boolean_fails_before_modular_root_help() {
             && stderr.contains("true/false"),
         "unexpected stderr: {stderr}"
     );
-    assert!(output.stdout.is_empty(), "help must not print after failure");
+    assert!(
+        output.stdout.is_empty(),
+        "help must not print after failure"
+    );
 }
 
 #[test]
@@ -32,7 +35,10 @@ fn explicit_global_boolean_overrides_a_malformed_inherited_value() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("--interactive"), "unexpected help: {stdout}");
+    assert!(
+        stdout.contains("--interactive"),
+        "unexpected help: {stdout}"
+    );
 }
 
 #[test]

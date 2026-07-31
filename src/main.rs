@@ -13,7 +13,11 @@ use zed_cli::store::Store;
 use zed_cli::update;
 
 fn main() {
-    let args = std::env::args_os().collect();
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if let Err(error) = zed_cli::flags::normalize_global_boolean_environment(&args) {
+        eprintln!("error: {error:#}");
+        std::process::exit(2);
+    }
     if let Some(result) = dev::dispatch(args) {
         match result {
             Ok(0) => return,
