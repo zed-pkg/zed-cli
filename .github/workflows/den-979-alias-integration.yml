@@ -55,6 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt --all
+          cargo update -p flags2env
           git diff --check
           cargo test --locked --test develop_alias_contract --test develop_help_contract
           cargo clippy --locked --test develop_alias_contract -- -D warnings
