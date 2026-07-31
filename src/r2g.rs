@@ -87,13 +87,6 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     let home_dir = workspace.join("home");
     println!("r2g: workspace {}", workspace.display());
 
-<<<<<<< HEAD
-    // 2. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
-    interactive::confirm(
-        cfg.interactive,
-        &format!("r2g step 1/5: pack {} into {}", full, workspace.display()),
-    )?;
-=======
     // 2. An explicitly configured file:// registry is a dependency input, not
     //    the output registry. Snapshot it into the private workspace so r2g
     //    can test packages that depend on other unpublished fixtures while
@@ -101,7 +94,10 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     snapshot_configured_file_registry(&cfg.registry, &registry_dir)?;
 
     // 3. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
->>>>>>> origin/main
+    interactive::confirm(
+        cfg.interactive,
+        &format!("r2g step 1/5: pack {} into {}", full, workspace.display()),
+    )?;
     let packed = pack::pack(project, &manifest, Some(&workspace.join("pack")))?;
     println!(
         "r2g: packed {} ({} files, {} excluded by publish rules)",
