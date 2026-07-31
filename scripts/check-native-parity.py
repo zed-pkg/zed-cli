@@ -427,7 +427,8 @@ def main() -> int:
         publish_opt_out = native_publish_opt_out(native_path, key)
         if publish_opt_out is not None:
             rows.append(
-                (target, zed_coords, "—", shown, f"{note}; {publish_opt_out}")            )
+                (target, zed_coords, "—", shown, f"{note}; {publish_opt_out}")
+            )
             continue
 
         rows.append((target, zed_coords, registry, shown, note))
