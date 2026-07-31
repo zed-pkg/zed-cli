@@ -1,0 +1,11 @@
+{
+  "repository": "zed-pkg/zed-cli",
+  "workflow": "DEN-979 remote revalidation",
+  "run_id": "30635840515",
+  "tested_commit": "588a344bbb7b38389fdd431af22e3227ef488596",
+  "base_main": "05ad87d31869c67b10c4b7024aa8ec12de5895f6",
+  "status": "passed",
+  "exit_code": 0,
+  "completed_at": "2026-07-31T13:48:07.248698+00:00",
+  "command": "cargo fmt --all --check && cargo test --locked --all-targets && cargo clippy --locked --all-targets -- -D warnings"
+}
