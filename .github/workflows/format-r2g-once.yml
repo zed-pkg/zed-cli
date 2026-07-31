@@ -1,0 +1,46 @@
+name: format r2g once
+
+on:
+  push:
+    branches:
+      - agent/r2g-stateless-dependency-snapshot
+
+permissions:
+  contents: write
+
+concurrency:
+  group: format-r2g-once
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out the implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/r2g-stateless-dependency-snapshot
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Format only the R2G module
+        run: |
+          set -euo pipefail
+          rustup component add rustfmt
+          rustfmt --edition 2024 src/r2g.rs
+          changed="$(git diff --name-only)"
+          test "$changed" = "src/r2g.rs" || test -z "$changed"
+
+      - name: Commit a formatting correction when needed
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- src/r2g.rs; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/r2g.rs
+          git commit -m "style(r2g): apply rustfmt"
+          git push origin HEAD:agent/r2g-stateless-dependency-snapshot
