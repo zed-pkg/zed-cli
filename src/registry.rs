@@ -170,6 +170,7 @@ impl Registry for FileRegistry {
             latest: None,
             tags: meta.manifest.package.keywords.clone(),
             versions: Vec::new(),
+            tags: meta.manifest.package.keywords.clone(),
         });
         if !pkg.versions.contains(version) {
             pkg.versions.push(version.clone());
