@@ -2210,6 +2210,10 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     manifest_transaction.backup(&project.join(MANIFEST_FILE))?;
     write_manifest(project, &manifest)?;
     manifest_transaction.commit()?;
+    // Unlink from wherever install put it ([install].dir, default zed_modules),
+    // otherwise a relocated tree keeps a stale copy of a removed dependency.
+    let dest = project.join(manifest.modules_dir()).join(&org).join(&name);
+    replace_dest(&dest)?;
     println!("removed {org}/{name}");
     Ok(())
 }
