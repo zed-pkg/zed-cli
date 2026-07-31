@@ -54,15 +54,30 @@ jobs:
           cargo test --locked --all-targets
           cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Publish only the tested source and workflow fixes
+      - name: Stage the tested CI workflow for connector publication
         shell: bash
         working-directory: zed-cli
         run: |
           set -euo pipefail
-          rm scripts/den-1194-apply.py scripts/den-1194-trigger.txt \
-            .github/workflows/den-1194-finalize.yml
+          mkdir -p "$RUNNER_TEMP/den-1194-ci"
+          cp .github/workflows/ci.yml "$RUNNER_TEMP/den-1194-ci/ci.yml"
+
+      - name: Upload the exact tested CI workflow
+        uses: actions/upload-artifact@v4
+        with:
+          name: den-1194-tested-ci-workflow
+          path: ${{ runner.temp }}/den-1194-ci/ci.yml
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Publish the tested source without workflow-scope escalation
+        shell: bash
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          git checkout -- .github/workflows/ci.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'fix(DEN-1194): validate root-help env and isolate host locks'
+          git add src/main.rs src/flags.rs tests/startup_environment_contract.rs
+          git commit -m 'fix(DEN-1194): validate root-help env before routing'
           git push origin HEAD:fix/den-1194-startup-and-ci-isolation
