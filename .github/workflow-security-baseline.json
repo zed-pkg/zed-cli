@@ -6,5 +6,10 @@
     ".github/workflows/manifestless-polyglot.yml": "973eb84e54ab155b9b6a09cb21d88bb1fb2be3ae",
     ".github/workflows/polyglot.yml": "c94b7196f897159dcebbc6690fe2ed802b8dfc67"
   },
-  "policy": "Legacy workflow blobs are frozen exactly. Any changed or newly added workflow must satisfy scripts/audit-github-actions.py before it can merge. Remove a baseline entry after that workflow is fully hardened."
+  "allowed_job_write_permissions": {
+    ".github/workflows/release.yml": {
+      "release": ["contents"]
+    }
+  },
+  "policy": "Legacy workflow blobs are frozen exactly. Any changed or newly added workflow must satisfy scripts/audit-github-actions.py before it can merge. Write permissions are forbidden globally and allowed only for the exact workflow/job/permission tuples listed above. Remove legacy entries after those workflows are fully hardened."
 }
