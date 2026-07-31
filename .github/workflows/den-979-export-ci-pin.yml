@@ -1,0 +1,37 @@
+name: DEN-979 export updated CI parser pin
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/den-979-zed-dev-alias-integration
+
+      - name: Update and verify the immutable parser pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          old='9483b92c1fb259f598858fdd2bef66417d87fb2c'
+          new='2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7'
+          test "$(grep -o "$old" .github/workflows/ci.yml | wc -l)" -eq 2
+          sed -i "s/$old/$new/g" .github/workflows/ci.yml
+          test "$(grep -o "$new" .github/workflows/ci.yml | wc -l)" -eq 2
+
+      - name: Upload the exact updated workflow
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: den-979-ci-pin
+          path: .github/workflows/ci.yml
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
