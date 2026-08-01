@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feat/den-1301-release-plan-html
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
