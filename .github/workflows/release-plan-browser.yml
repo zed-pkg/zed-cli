@@ -1,0 +1,89 @@
+name: Release-plan browser report
+
+on:
+  pull_request:
+    paths:
+      - ".cli-flags.toml"
+      - ".github/workflows/release-plan-browser.yml"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/release.rs"
+      - "tests/browser/release-plan/**"
+      - "tests/fixtures/release-plan-browser/**"
+      - "tests/release_plan_html.rs"
+  push:
+    paths:
+      - ".cli-flags.toml"
+      - ".github/workflows/release-plan-browser.yml"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/release.rs"
+      - "tests/browser/release-plan/**"
+      - "tests/fixtures/release-plan-browser/**"
+      - "tests/release_plan_html.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-plan-browser-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: zed-cli
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+
+      - name: Build the exact zed binary under test
+        working-directory: zed-cli
+        run: cargo build --locked --bin zed
+
+      - name: Install browser-test dependencies
+        working-directory: zed-cli/tests/browser/release-plan
+        run: npm install --no-audit --no-fund
+
+      - name: Install pinned Chromium runtime
+        working-directory: zed-cli/tests/browser/release-plan
+        run: npx playwright install --with-deps chromium
+
+      - name: Exercise offline, accessible, responsive release reports
+        working-directory: zed-cli/tests/browser/release-plan
+        env:
+          ZED_BIN: ${{ github.workspace }}/zed-cli/target/debug/zed
+        run: npm test
+
+      - name: Upload generated browser-test lock for review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: den-1301-generated
+          path: zed-cli/tests/browser/release-plan/package-lock.json
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Upload browser failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-plan-browser-failure
+          path: |
+            zed-cli/tests/browser/release-plan/playwright-report
+            zed-cli/tests/browser/release-plan/test-results
+          if-no-files-found: warn
+          retention-days: 7
