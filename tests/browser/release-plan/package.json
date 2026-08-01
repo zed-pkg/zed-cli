@@ -1,0 +1,11 @@
+{
+  "name": "zed-release-plan-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test --config playwright.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.0"
+  }
+}
