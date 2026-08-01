@@ -1,0 +1,23 @@
+[package]
+org = "acme"
+name = "browser-release"
+version = "2.4.0"
+
+[package.repository]
+url = "https://github.com/acme/browser-release"
+
+[targets.nodejs]
+dir = "clients/node"
+adapter = "node"
+
+[targets.nodejs.native]
+registry = "npm"
+package = "@acme/browser-release"
+forge = ["github-packages"]
+
+[targets.rust]
+dir = "clients/rust"
+
+[targets.rust.native]
+registry = "crates-io"
+package = "acme-browser-release"
