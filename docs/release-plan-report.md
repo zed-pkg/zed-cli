@@ -16,16 +16,18 @@ zed release plan --json | \
   node scripts/render-release-plan-html.mjs --output build/release-plan.html
 ```
 
-Open `build/release-plan.html` directly from disk. The report includes source provenance, exact Zed/native/forge counts, artifact tables, empty states, and client-side filtering.
+Open `build/release-plan.html` directly from disk. The report includes source provenance, exact Zed/native/forge counts, artifact tables, empty states, and client-side filtering. Press `Escape` while the filter is focused to clear it and restore the complete plan.
 
 ## Security properties
 
 - All plan-derived values are HTML-escaped before insertion into text or attributes.
 - The file contains no remote scripts, styles, fonts, images, analytics, or network calls.
 - Inline style and filter code are authorized by exact SHA-256 Content Security Policy hashes; broad `unsafe-inline` execution is not used.
-- The renderer validates the expected `ReleasePlan` shape and fails closed on missing or malformed fields.
+- The renderer validates the expected `ReleasePlan` shape and fails closed on missing or malformed fields and missing command-option values.
+- Reports are staged in a same-directory private temporary file and atomically renamed into place.
+- An existing symbolic-link output is refused rather than followed, so the renderer cannot overwrite the link target.
 - The report is read-only. It does not load credentials, contact registries, or publish artifacts.
 
 ## Validation
 
-`tests/release_plan_report_test.mjs` checks determinism, schema validation, hostile-value escaping, counts, empty states, and CSP construction. `tests/browser/test_release_plan_report.py` generates a real plan through the Rust CLI and verifies the rendered artifact in Chromium, including filtering, keyboard focus, narrow layout, console/page errors, and external network requests.
+`tests/release_plan_report_test.mjs` checks determinism, schema validation, hostile-value escaping, counts, empty states, CSP construction, strict argument handling, atomic replacement, and symbolic-link refusal. `tests/browser/test_release_plan_report.py` generates a real plan through the Rust CLI and verifies the rendered artifact in Chromium, including filtering, Escape reset, keyboard focus, narrow layout, console/page errors, and external network requests.
