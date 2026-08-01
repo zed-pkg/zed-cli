@@ -1,0 +1,67 @@
+name: DEN-1301 finalize release-plan HTML
+
+on:
+  push:
+    branches:
+      - feat/den-1301-release-plan-html
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1301-finalize-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-test-publish:
+    if: ${{ !startsWith(github.event.head_commit.message, 'feat(DEN-1301): render') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/den-1301-release-plan-html
+          path: zed-cli
+          fetch-depth: 0
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Apply the reviewed source transformations
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          python3 scripts/den-1301-apply.py
+          python3 scripts/den-1301-postprocess.py
+
+      - name: Validate CLI, HTML security, and the complete Rust surface
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --check
+          cargo test --locked --test release_plan_html
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Publish only the tested source changes
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .cli-flags.toml src/cli.rs src/main.rs src/release.rs tests/release_plan_html.rs
+          git diff --cached --quiet && { echo 'no source changes produced' >&2; exit 1; }
+          git commit -m 'feat(DEN-1301): render secure offline release-plan HTML'
+          git push origin HEAD:feat/den-1301-release-plan-html
