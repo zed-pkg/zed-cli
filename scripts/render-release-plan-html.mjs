@@ -11,7 +11,7 @@ body{margin:0;background:Canvas;color:CanvasText}
 main{width:min(88rem,100%);margin:0 auto;padding:clamp(1rem,4vw,3rem)}
 header,.panel{border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:.9rem;padding:clamp(1rem,3vw,1.5rem);margin-block:1rem}
 .eyebrow{margin:0;font-size:.78rem;font-weight:750;letter-spacing:.09em;text-transform:uppercase}
-h1,h2{line-height:1.2}
+h1,h2{line-height:1.2;overflow-wrap:anywhere}
 .provenance{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.7rem;margin:1rem 0 0;padding:0;list-style:none}
 .provenance li,.metric{border:1px solid color-mix(in srgb,CanvasText 18%,transparent);border-radius:.65rem;padding:.75rem;background:color-mix(in srgb,Canvas 96%,CanvasText 4%)}
 .provenance strong,.metric strong{display:block;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase}
@@ -25,7 +25,7 @@ table{width:100%;border-collapse:collapse;min-width:44rem}
 th,td{text-align:left;vertical-align:top;padding:.7rem;border-bottom:1px solid color-mix(in srgb,CanvasText 14%,transparent)}
 th{font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;background:color-mix(in srgb,Canvas 92%,CanvasText 8%)}
 tbody tr:last-child td{border-bottom:0}
-code{overflow-wrap:anywhere}
+code{overflow-wrap:anywhere;word-break:break-word}
 [hidden]{display:none!important}
 .empty{text-align:center;font-style:italic}
 footer{padding:1rem 0;font-size:.9rem}
@@ -217,7 +217,6 @@ export function renderReleasePlan(input) {
     "img-src data:",
     "base-uri 'none'",
     "form-action 'none'",
-    "frame-ancestors 'none'",
   ].join("; ");
 
   return `<!doctype html>
