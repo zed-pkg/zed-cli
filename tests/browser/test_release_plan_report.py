@@ -62,7 +62,10 @@ def main() -> None:
                 == "native"
             )
 
-            filter_input.fill("")
+            filter_input.press("Escape")
+            assert filter_input.input_value() == ""
+            assert page.locator("tbody tr[data-search]:visible").count() == 7
+            assert page.get_by_role("status").inner_text() == "Showing all 7 artifacts."
             filter_input.focus()
             assert page.evaluate("document.activeElement.id") == "artifact-filter"
 
