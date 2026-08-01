@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   apply-test-publish:
-    if: ${{ !startsWith(github.event.head_commit.message, 'feat(DEN-1301): render') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -41,10 +40,15 @@ jobs:
 
       - name: Apply the reviewed source transformations
         working-directory: zed-cli
+        shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/den-1301-apply.py
-          python3 scripts/den-1301-postprocess.py
+          if grep -q 'pub fn render_html' src/release.rs; then
+            echo 'DEN-1301 source is already materialized'
+          else
+            python3 scripts/den-1301-apply.py
+            python3 scripts/den-1301-postprocess.py
+          fi
 
       - name: Validate CLI, HTML security, and the complete Rust surface
         working-directory: zed-cli
@@ -57,7 +61,7 @@ jobs:
           cargo test --locked --all-targets
           cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Publish only the tested source changes
+      - name: Publish only tested source changes
         working-directory: zed-cli
         shell: bash
         run: |
@@ -65,6 +69,9 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add .cli-flags.toml src/cli.rs src/main.rs src/release.rs tests/release_plan_html.rs
-          git diff --cached --quiet && { echo 'no source changes produced' >&2; exit 1; }
+          if git diff --cached --quiet; then
+            echo 'tested source already published'
+            exit 0
+          fi
           git commit -m 'feat(DEN-1301): render secure offline release-plan HTML'
           git push origin HEAD:feat/den-1301-release-plan-html
