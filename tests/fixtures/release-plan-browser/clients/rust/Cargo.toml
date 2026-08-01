@@ -1,0 +1,5 @@
+[package]
+name = "acme-browser-release"
+version = "2.4.0"
+edition = "2024"
+publish = ["crates-io"]
