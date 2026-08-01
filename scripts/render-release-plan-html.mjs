@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
@@ -51,6 +52,13 @@ const SCRIPT = `
       : "Showing all " + rows.length + " artifacts.";
   };
   input.addEventListener("input", apply);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && input.value) {
+      input.value = "";
+      apply();
+      event.preventDefault();
+    }
+  });
   apply();
 })();
 `;
@@ -284,14 +292,23 @@ ${tableSection({
 </html>`;
 }
 
-function parseArguments(argv) {
+function optionValue(argv, index, option) {
+  if (index + 1 >= argv.length) {
+    throw new Error(`${option} requires a value`);
+  }
+  return argv[index + 1];
+}
+
+export function parseArguments(argv) {
   const result = { input: "-", output: null };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--input") {
-      result.input = argv[++index];
+      result.input = optionValue(argv, index, argument);
+      index += 1;
     } else if (argument === "--output") {
-      result.output = argv[++index];
+      result.output = optionValue(argv, index, argument);
+      index += 1;
     } else if (argument === "--help" || argument === "-h") {
       return { help: true };
     } else {
@@ -302,6 +319,54 @@ function parseArguments(argv) {
     throw new Error("--output is required");
   }
   return result;
+}
+
+async function metadataOrNull(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function writeReleasePlanReport(outputPath, html) {
+  assertString(outputPath, "output path");
+  assertString(html, "release report HTML");
+
+  const destination = resolve(outputPath);
+  const existing = await metadataOrNull(destination);
+  if (existing?.isSymbolicLink()) {
+    throw new Error(`refusing to write release report through symbolic link: ${destination}`);
+  }
+  if (existing?.isDirectory()) {
+    throw new Error(`release report output is a directory: ${destination}`);
+  }
+
+  const parent = dirname(destination);
+  await mkdir(parent, { recursive: true });
+  const temporary = resolve(
+    parent,
+    `.${basename(destination)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle;
+  try {
+    handle = await open(temporary, "wx", 0o600);
+    await handle.writeFile(html, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+
+    const beforePublish = await metadataOrNull(destination);
+    if (beforePublish?.isSymbolicLink()) {
+      throw new Error(`refusing to replace symbolic-link release report: ${destination}`);
+    }
+    await rename(temporary, destination);
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+  return destination;
 }
 
 async function readInput(path) {
@@ -328,8 +393,8 @@ async function main() {
   } catch (error) {
     throw new SyntaxError(`release plan input is not valid JSON: ${error.message}`);
   }
-  await writeFile(args.output, renderReleasePlan(plan), { encoding: "utf8", flag: "w" });
-  process.stdout.write(`wrote offline release report to ${args.output}\n`);
+  const output = await writeReleasePlanReport(args.output, renderReleasePlan(plan));
+  process.stdout.write(`wrote offline release report to ${output}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
