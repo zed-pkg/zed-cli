@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   escapeHtml,
+  parseArguments,
   renderReleasePlan,
   validateReleasePlan,
+  writeReleasePlanReport,
 } from "../scripts/render-release-plan-html.mjs";
 
 const fixture = {
@@ -86,3 +91,47 @@ test("schema validation fails closed", () => {
   delete missing.source.repository;
   assert.throws(() => validateReleasePlan(missing), /source\.repository/);
 });
+
+test("option parsing rejects missing values before filesystem access", () => {
+  assert.throws(() => parseArguments(["--input"]), /--input requires a value/);
+  assert.throws(() => parseArguments(["--output"]), /--output requires a value/);
+  assert.throws(() => parseArguments(["--wat"]), /unknown argument: --wat/);
+  assert.deepEqual(parseArguments(["--input", "-", "--output", "report.html"]), {
+    input: "-",
+    output: "report.html",
+  });
+});
+
+test("report publication creates parents and atomically replaces a regular file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zed-release-report-"));
+  try {
+    const output = join(root, "nested", "release-plan.html");
+    await writeReleasePlanReport(output, "first");
+    assert.equal(await readFile(output, "utf8"), "first");
+    await writeReleasePlanReport(output, "second");
+    assert.equal(await readFile(output, "utf8"), "second");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test(
+  "report publication refuses an existing symbolic-link output",
+  { skip: process.platform === "win32" },
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), "zed-release-report-link-"));
+    try {
+      const protectedFile = join(root, "protected.txt");
+      const output = join(root, "release-plan.html");
+      await writeFile(protectedFile, "do not replace", "utf8");
+      await symlink(protectedFile, output);
+      await assert.rejects(
+        writeReleasePlanReport(output, "hostile overwrite"),
+        /symbolic link/,
+      );
+      assert.equal(await readFile(protectedFile, "utf8"), "do not replace");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
