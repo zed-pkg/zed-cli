@@ -1,0 +1,6 @@
+{
+  "name": "@acme/browser-report",
+  "version": "1.2.3",
+  "private": false,
+  "type": "module"
+}

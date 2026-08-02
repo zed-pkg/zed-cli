@@ -1,0 +1,31 @@
+[package]
+org = "acme"
+name = "browser-report"
+version = "1.2.3"
+description = "Browser release report fixture"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/browser-report"
+
+[publish]
+tag_format = "v{version}"
+
+[targets.nodejs]
+dir = "clients/node"
+name = "browser-report-nodejs"
+adapter = "node"
+
+[targets.nodejs.native]
+registry = "npm"
+package = "@acme/browser-report"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+
+[targets.rust]
+dir = "clients/rust"
+name = "browser-report-rust"
+
+[targets.rust.native]
+registry = "crates-io"
+package = "acme-browser-report"
