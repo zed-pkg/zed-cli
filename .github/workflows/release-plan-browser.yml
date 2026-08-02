@@ -6,7 +6,9 @@ on:
       - ".github/workflows/release-plan-browser.yml"
       - "scripts/render-release-plan-html.mjs"
       - "tests/release_plan_report_test.mjs"
+      - "tests/release_plan_accessibility_test.mjs"
       - "tests/browser/test_release_plan_report.py"
+      - "tests/browser/test_release_plan_cross_browser.py"
       - "tests/fixtures/release-report/**"
       - "docs/release-plan-report.md"
       - "src/release.rs"
@@ -20,7 +22,9 @@ on:
       - ".github/workflows/release-plan-browser.yml"
       - "scripts/render-release-plan-html.mjs"
       - "tests/release_plan_report_test.mjs"
+      - "tests/release_plan_accessibility_test.mjs"
       - "tests/browser/test_release_plan_report.py"
+      - "tests/browser/test_release_plan_cross_browser.py"
       - "tests/fixtures/release-report/**"
       - "docs/release-plan-report.md"
       - "src/release.rs"
@@ -38,10 +42,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  chromium:
-    name: Generate and review release plan in Chromium
+  browser:
+    name: Generate and review in ${{ matrix.browser }}
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        browser: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -67,9 +76,12 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Test the fail-closed renderer
+      - name: Test the fail-closed renderer and accessibility structure
         working-directory: zed-cli
-        run: node --test tests/release_plan_report_test.mjs
+        run: >-
+          node --test
+          tests/release_plan_report_test.mjs
+          tests/release_plan_accessibility_test.mjs
 
       - name: Build the locked Rust CLI
         working-directory: zed-cli
@@ -94,31 +106,33 @@ jobs:
           --input build/release-plan.json
           --output build/release-plan.html
 
-      - name: Install pinned Playwright Chromium
+      - name: Install pinned Playwright ${{ matrix.browser }}
         working-directory: zed-cli
         run: |
           set -euo pipefail
           python -m venv .venv-release-browser
           .venv-release-browser/bin/python -m pip install --disable-pip-version-check --no-cache-dir playwright==1.55.0
-          .venv-release-browser/bin/python -m playwright install --with-deps chromium
+          .venv-release-browser/bin/python -m playwright install --with-deps "${{ matrix.browser }}"
 
-      - name: Exercise the generated report in Chromium
+      - name: Exercise accessibility print and no-JavaScript contracts
         working-directory: zed-cli
-        run: .venv-release-browser/bin/python tests/browser/test_release_plan_report.py
+        env:
+          PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
+        run: .venv-release-browser/bin/python tests/browser/test_release_plan_cross_browser.py
 
       - name: Upload the reviewed offline report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: zed-release-plan-report
+          name: zed-release-plan-report-${{ matrix.browser }}
           path: zed-cli/build/release-plan.html
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload browser diagnostics
+      - name: Upload ${{ matrix.browser }} browser diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: zed-release-plan-browser-diagnostics
+          name: zed-release-plan-${{ matrix.browser }}-diagnostics
           path: zed-cli/build/release-plan-browser-results
           if-no-files-found: ignore
           retention-days: 7
