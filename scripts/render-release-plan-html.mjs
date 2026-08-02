@@ -9,6 +9,10 @@ const STYLE = `
 :root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.5}
 *{box-sizing:border-box}
 body{margin:0;background:Canvas;color:CanvasText}
+.skip-link{position:absolute;left:.75rem;top:.75rem;z-index:10;padding:.6rem .8rem;background:Canvas;color:CanvasText;border:2px solid CanvasText;border-radius:.4rem;transform:translateY(-200%)}
+.skip-link:focus{transform:translateY(0)}
+.visually-hidden{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.no-js .filter-controls{display:none}
 main{width:min(88rem,100%);margin:0 auto;padding:clamp(1rem,4vw,3rem)}
 header,.panel{border:1px solid color-mix(in srgb,CanvasText 22%,transparent);border-radius:.9rem;padding:clamp(1rem,3vw,1.5rem);margin-block:1rem}
 .eyebrow{margin:0;font-size:.78rem;font-weight:750;letter-spacing:.09em;text-transform:uppercase}
@@ -19,10 +23,12 @@ h1,h2{line-height:1.2;overflow-wrap:anywhere}
 .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}
 .metric span{font-size:clamp(1.6rem,5vw,2.5rem);font-weight:800}
 label{display:block;font-weight:700;margin-bottom:.4rem}
+.filter-help{margin:.35rem 0 .65rem}
 input{width:100%;min-height:2.75rem;padding:.65rem .75rem;border:1px solid color-mix(in srgb,CanvasText 28%,transparent);border-radius:.55rem;background:Canvas;color:CanvasText;font:inherit}
 input:focus-visible,a:focus-visible{outline:.2rem solid Highlight;outline-offset:.15rem}
 .table-wrap{overflow-x:auto;border:1px solid color-mix(in srgb,CanvasText 20%,transparent);border-radius:.65rem}
 table{width:100%;border-collapse:collapse;min-width:44rem}
+caption{text-align:left;font-weight:700;padding:.7rem}
 th,td{text-align:left;vertical-align:top;padding:.7rem;border-bottom:1px solid color-mix(in srgb,CanvasText 14%,transparent)}
 th{font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;background:color-mix(in srgb,Canvas 92%,CanvasText 8%)}
 tbody tr:last-child td{border-bottom:0}
@@ -31,14 +37,35 @@ code{overflow-wrap:anywhere;word-break:break-word}
 .empty{text-align:center;font-style:italic}
 footer{padding:1rem 0;font-size:.9rem}
 @media(max-width:42rem){.metrics{grid-template-columns:1fr}.panel,header{border-radius:.65rem}table{min-width:36rem}}
+@media(forced-colors:active){header,.panel,.provenance li,.metric,.table-wrap,input{border-color:CanvasText}.provenance li,.metric,th{background:Canvas}}
+@page{margin:12mm}
+@media print{
+  :root{color-scheme:light}
+  body{background:#fff;color:#000;font-size:10pt}
+  main{width:100%;padding:0}
+  .skip-link,.filter-controls,noscript{display:none!important}
+  header,.panel{border:0;border-radius:0;padding:0;margin:0 0 1rem}
+  .provenance{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .provenance li,.metric{background:#fff;border:1px solid #000}
+  .table-wrap{overflow:visible;border:0}
+  table{min-width:0;font-size:8.5pt}
+  caption{padding:.3rem 0}
+  thead{display:table-header-group}
+  tr,.provenance li,.metric{break-inside:avoid}
+  [hidden]{display:table-row!important}
+  th{background:#fff;color:#000}
+  footer{border-top:1px solid #000;margin-top:1rem}
+}
 `;
 
 const SCRIPT = `
 (() => {
   "use strict";
+  document.documentElement.classList.remove("no-js");
   const input = document.querySelector("#artifact-filter");
   const status = document.querySelector("#filter-status");
   const rows = [...document.querySelectorAll("tbody tr[data-search]")];
+  input.disabled = false;
   const apply = () => {
     const query = input.value.trim().toLocaleLowerCase();
     let visible = 0;
@@ -167,6 +194,7 @@ function tableSection({ id, title, description, headers, rows, empty }) {
 <h2 id="${id}-heading">${escapeHtml(title)}</h2>
 <p>${escapeHtml(description)}</p>
 <div class="table-wrap"><table data-kind-table="${escapeHtml(id)}">
+<caption class="visually-hidden">${escapeHtml(title)}. ${escapeHtml(description)}</caption>
 <thead><tr>${headers.map((header) => `<th scope="col">${escapeHtml(header)}</th>`).join("")}</tr></thead>
 <tbody>${body}</tbody>
 </table></div>
@@ -228,7 +256,7 @@ export function renderReleasePlan(input) {
   ].join("; ");
 
   return `<!doctype html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -237,7 +265,8 @@ export function renderReleasePlan(input) {
 <style>${STYLE}</style>
 </head>
 <body>
-<main>
+<a class="skip-link" href="#release-report">Skip to release report</a>
+<main id="release-report" tabindex="-1">
 <header>
 <p class="eyebrow">Credential-free release review</p>
 <h1>${escapeHtml(plan.release_set)}</h1>
@@ -257,10 +286,14 @@ export function renderReleasePlan(input) {
 <div class="metric" data-count-kind="forge"><strong>Forge mirrors</strong><span>${counts.forge}</span></div>
 </div>
 <p><strong data-total-count>${total}</strong> total planned artifacts and mirrors.</p>
+<div class="filter-controls">
 <label for="artifact-filter">Filter artifacts</label>
-<input id="artifact-filter" type="search" autocomplete="off" placeholder="Search target, registry, package, tag, or directory">
+<p id="filter-help" class="filter-help">Search target, registry, package, tag, or directory. Press Escape to clear.</p>
+<input id="artifact-filter" type="search" autocomplete="off" disabled aria-describedby="filter-help filter-status" placeholder="Search artifacts">
 <p id="filter-status" role="status" aria-live="polite">Showing all ${total} artifacts.</p>
+</div>
 </section>
+<noscript><p class="panel">JavaScript is disabled; all release artifacts remain visible.</p></noscript>
 ${tableSection({
   id: "zed",
   title: "Zed artifacts",
