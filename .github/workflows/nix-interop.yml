@@ -47,10 +47,26 @@ jobs:
       - name: Install pinned Nix
         uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3
         with:
-          nix_path: nixpkgs=channel:nixos-unstable
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = false
+
+      - name: Load the locked Nixpkgs input
+        shell: bash
+        run: |
+          set -euo pipefail
+          nixpkgs_path="$(
+            nix eval --raw ./nix#lib.nixpkgsPath --no-update-lock-file
+          )"
+          case "$nixpkgs_path" in
+            /nix/store/*) ;;
+            *)
+              echo "locked Nixpkgs input did not resolve to the Nix store: $nixpkgs_path" >&2
+              exit 1
+              ;;
+          esac
+          test -d "$nixpkgs_path"
+          printf 'NIX_PATH=nixpkgs=%s\n' "$nixpkgs_path" >> "$GITHUB_ENV"
 
       - name: Build the exact Zed CLI under test
         run: cargo build --release --locked --bin zed
@@ -104,7 +120,11 @@ jobs:
           printf 'ZED_CONSUMER_WORK=%s\n' "$consumer" >> "$GITHUB_ENV"
 
       - name: Evaluate the standalone flake library
-        run: nix flake check ./nix --no-build --print-build-logs
+        run: >-
+          nix flake check ./nix
+          --no-build
+          --no-update-lock-file
+          --print-build-logs
 
       - name: Bootstrap and verify the recursive fixed output
         shell: bash
@@ -147,8 +167,8 @@ jobs:
           deps_a="$(build_deps zed-nix-a --argstr hash "$output_hash")"
           deps_b="$(build_deps zed-nix-b --argstr hash "$output_hash")"
 
-          hash_a="$(nix hash path "$deps_a")"
-          hash_b="$(nix hash path "$deps_b")"
+          hash_a="$(nix hash path --type sha256 --sri "$deps_a")"
+          hash_b="$(nix hash path --type sha256 --sri "$deps_b")"
           test "$hash_a" = "$hash_b"
           test "$hash_a" = "$output_hash"
 
