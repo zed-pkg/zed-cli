@@ -83,8 +83,8 @@ jobs:
             ! grep -q "$old" Cargo.lock
             ! grep -q "$old" .github/workflows/frozen-lock-integrity.yml
           done
-          cargo check --locked --bin zed
-          bash tests/frozen-lock-integrity-e2e.sh
+          cargo build --locked --bin zed
+          bash tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed"
 
       - name: Remove the one-shot workflow and commit the deterministic retarget
         run: |
