@@ -112,6 +112,8 @@ registry hosts both on S3/Cloudflare R2.
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install manifest or transient dependencies |
 | `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers, including manifestless locked reinstalls) |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
+| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
+| `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |

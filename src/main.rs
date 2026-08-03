@@ -1,9 +1,10 @@
 use clap::Parser;
 use zed_cli::auth;
-use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
+use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, EnvCmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
+use zed_cli::environment;
 use zed_cli::manifestless;
 use zed_cli::ops;
 use zed_cli::preflight;
@@ -86,6 +87,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => ops::gc(&cfg, &older_than, dry_run),
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
+        Cmd::Env { cmd } => match cmd {
+            EnvCmd::Import {
+                manager: _,
+                config,
+                lock,
+                frozen,
+                json,
+            } => {
+                let imported =
+                    environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                environment::print_import(&imported, json)
+            }
+            EnvCmd::Verify {
+                manager: _,
+                config,
+                lock,
+                frozen,
+                json,
+            } => {
+                let imported =
+                    environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                environment::print_verification(&imported, json)
+            }
+        },
         Cmd::Release { cmd } => match cmd {
             ReleaseCmd::Plan { json } => release::plan(&cwd, json),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),

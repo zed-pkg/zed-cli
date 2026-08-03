@@ -61,13 +61,12 @@ pub fn import_mise(
         .with_context(|| format!("{} is not UTF-8", config_path.display()))?;
     let config_relative = project_relative_path(&root, &config_path)?;
 
-    let configured = if config_path.file_name().and_then(|name| name.to_str())
-        == Some(".tool-versions")
-    {
-        parse_tool_versions(config_text, &config_relative)?
-    } else {
-        parse_mise_toml(config_text, &config_relative)?
-    };
+    let configured =
+        if config_path.file_name().and_then(|name| name.to_str()) == Some(".tool-versions") {
+            parse_tool_versions(config_text, &config_relative)?
+        } else {
+            parse_mise_toml(config_text, &config_relative)?
+        };
 
     let lock_path = resolve_lock_path(&root, &config_path, lock)?;
     if frozen && lock_path.is_none() {
@@ -78,8 +77,8 @@ pub fn import_mise(
 
     let (locked, lock_bytes, lock_relative) = match lock_path {
         Some(path) => {
-            let bytes = fs::read(&path)
-                .with_context(|| format!("failed to read {}", path.display()))?;
+            let bytes =
+                fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             let text = std::str::from_utf8(&bytes)
                 .with_context(|| format!("{} is not UTF-8", path.display()))?;
             let relative = project_relative_path(&root, &path)?;
@@ -108,7 +107,11 @@ pub fn import_mise(
             .or(configured_tool.backend);
         let provider = backend
             .as_deref()
-            .and_then(|value| value.split_once(':').map(|(provider, _)| provider.to_string()))
+            .and_then(|value| {
+                value
+                    .split_once(':')
+                    .map(|(provider, _)| provider.to_string())
+            })
             .or(configured_tool.provider);
         let mut platforms = configured_tool.platforms;
         let mut checksums = Vec::new();
@@ -169,7 +172,10 @@ pub fn print_import(imported: &ImportedMiseEnvironment, json: bool) -> Result<()
     println!("config: {}", imported.config_path);
     println!(
         "lock: {}",
-        imported.lock_path.as_deref().unwrap_or("<none; authoring mode>")
+        imported
+            .lock_path
+            .as_deref()
+            .unwrap_or("<none; authoring mode>")
     );
     println!("tools: {}", imported.plan.tools.len());
     println!("environment-plan-sha256: {}", imported.digest);
@@ -252,7 +258,10 @@ fn resolve_project_file(root: &Path, requested: &Path, kind: &str) -> Result<Pat
         root.join(requested)
     };
     if !candidate.is_file() {
-        bail!("{kind} does not exist or is not a file: {}", candidate.display());
+        bail!(
+            "{kind} does not exist or is not a file: {}",
+            candidate.display()
+        );
     }
     let canonical = candidate
         .canonicalize()
@@ -355,9 +364,7 @@ fn parse_configured_tool(name: &str, value: &toml::Value, path: &str) -> Result<
             let version = table
                 .get("version")
                 .and_then(toml::Value::as_str)
-                .with_context(|| {
-                    format!("`tools.{name}.version` in `{path}` must be a string")
-                })?
+                .with_context(|| format!("`tools.{name}.version` in `{path}` must be a string"))?
                 .to_string();
             let platforms = parse_os_constraint(table.get("os"), name, path)?;
             (version, platforms)
@@ -436,8 +443,8 @@ fn parse_tool_versions(input: &str, path: &str) -> Result<BTreeMap<String, Confi
 }
 
 fn parse_mise_lock(input: &str, path: &str) -> Result<BTreeMap<String, LockedTool>> {
-    let value: toml::Value = toml::from_str(input)
-        .with_context(|| format!("failed to parse mise lockfile `{path}`"))?;
+    let value: toml::Value =
+        toml::from_str(input).with_context(|| format!("failed to parse mise lockfile `{path}`"))?;
     let root = value
         .as_table()
         .with_context(|| format!("mise lockfile `{path}` must be a TOML table"))?;
@@ -479,7 +486,10 @@ fn parse_locked_tool(name: &str, value: &toml::Value, path: &str) -> Result<Lock
         .as_table()
         .with_context(|| format!("lock entry `tools.{name}` in `{path}` must be a table"))?;
     for key in table.keys() {
-        if !matches!(key.as_str(), "version" | "backend" | "options" | "platforms") {
+        if !matches!(
+            key.as_str(),
+            "version" | "backend" | "options" | "platforms"
+        ) {
             bail!("unsupported lock field `tools.{name}.{key}` in `{path}`");
         }
     }
@@ -686,14 +696,22 @@ checksum = "{}"
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
         let error = import_mise(temp.path(), None, None, true).unwrap_err();
-        assert!(error.to_string().contains("requires a project-local lockfile"));
+        assert!(
+            error
+                .to_string()
+                .contains("requires a project-local lockfile")
+        );
     }
 
     #[test]
     fn discovery_refuses_ambiguous_project_configs() {
         let temp = tempfile::tempdir().unwrap();
         fs::write(temp.path().join("mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
-        fs::write(temp.path().join(".mise.toml"), "[tools]\npython = \"3.12\"\n").unwrap();
+        fs::write(
+            temp.path().join(".mise.toml"),
+            "[tools]\npython = \"3.12\"\n",
+        )
+        .unwrap();
         let error = import_mise(temp.path(), None, None, false).unwrap_err();
         assert!(error.to_string().contains("multiple project-local"));
     }
