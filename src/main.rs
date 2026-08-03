@@ -1,10 +1,12 @@
 use clap::Parser;
 use zed_cli::auth;
 use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
+use zed_cli::cli_oci::OciCmd;
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
 use zed_cli::manifestless;
+use zed_cli::oci;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -89,6 +91,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Release { cmd } => match cmd {
             ReleaseCmd::Plan { json } => release::plan(&cwd, json),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
+        },
+        Cmd::Oci { cmd } => match cmd {
+            OciCmd::Plan {
+                destination,
+                target,
+                json,
+            } => oci::plan(&cwd, &destination, target.as_deref(), json),
         },
         Cmd::Publish {
             dry_run,
