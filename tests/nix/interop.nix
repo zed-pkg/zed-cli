@@ -1,7 +1,7 @@
 { pkgs ? import <nixpkgs> { }
 , zedBinary
 , consumerSrc
-, registrySrc
+, registryStore
 , hash ? pkgs.lib.fakeHash
 , name ? "zed-nix-deps"
 , mode ? "deps"
@@ -9,6 +9,12 @@
 
 let
   bridge = pkgs.callPackage ../../nix/zed-package.nix { };
+
+  # The workflow has already registered this immutable directory with
+  # `nix store add-path`. Re-introduce that exact store identity rather than
+  # treating it as an arbitrary source path that Nix may copy under a new
+  # identity; `.zpkg.lock` records the original file:// store URL byte-for-byte.
+  registryInput = builtins.storePath registryStore;
 
   # The workflow builds the exact branch binary first, then imports it as an
   # immutable Nix path. This keeps the interop test focused on zed-pkg's
@@ -45,7 +51,7 @@ let
     version = "1.0.0";
     src = consumerSrc;
     inherit zed hash;
-    registryPath = registrySrc;
+    registryPath = registryInput;
     adapter = "node";
   };
 
@@ -65,6 +71,7 @@ let
       node src/main.js
       test -f .vendor/.zed/zed-pkg/docker-node-lib/package.json
       test -f node_modules/@zed-pkg/docker-node-lib/package.json
+      test ! -e .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt
       runHook postCheck
     '';
 
