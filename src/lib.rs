@@ -10,6 +10,7 @@ pub mod fetch;
 pub mod flags;
 pub mod interactive;
 pub mod manifestless;
+pub mod nix_export_plan;
 pub mod ops;
 pub mod pack;
 pub mod preflight;
@@ -20,5 +21,3 @@ pub mod store;
 pub mod transaction;
 pub mod update;
 pub mod vcs;
-
-pub mod tool_versions;
