@@ -51,6 +51,25 @@ and dependency materialization. Unix installations therefore continue to use
 store-backed symlinks by default; explicit copy mode and the non-Unix fallback
 remain self-contained copies.
 
+## Frozen and workspace compatibility
+
+Recursive acquisition is composed with the strict frozen-lock boundary. A
+frozen install may verify artifacts, repair deleted links, reconstruct workspace
+projections, and refresh generated adapter wiring, but it preserves the caller's
+committed lockfile bytes exactly. It does not rewrite comments, provenance, or
+fields introduced by a newer CLI.
+
+Workspace packages still enter the ordinary adapter and transaction lifecycle
+through the `ops_entry` dispatcher. This keeps direct and transitive workspace
+links, copy mode, uninstall cleanup, and post-uninstall frozen restoration on
+the same fail-closed path as registry packages.
+
+The recursive install modules coexist with the resolver-only frozen fetch path,
+Nix fixed-output bundle generation, canonical export planning, and standalone
+pure flake rendering. Those export surfaces consume the same validated lock and
+content identities; they do not bypass recursive integrity checks or per-hash
+locking.
+
 ## Validation
 
 The unit suite races the recursive and transactional acquisition paths against
