@@ -361,7 +361,9 @@ fn parse_line(raw: &str, line_number: usize) -> Result<ToolVersionsLine, ToolVer
     }
 
     for version in &versions {
-        let column = raw.find(version).map_or(tool_column + tool.len() + 1, |index| index + 1);
+        let column = raw
+            .find(version)
+            .map_or(tool_column + tool.len() + 1, |index| index + 1);
         validate_token(version, "version token", line_number, column)?;
     }
 
@@ -436,7 +438,8 @@ mod tests {
 
     #[test]
     fn hash_inside_token_is_not_an_inline_comment() {
-        let document = ToolVersionsDocument::parse("tool ref:feature#anchor # real comment\n").unwrap();
+        let document =
+            ToolVersionsDocument::parse("tool ref:feature#anchor # real comment\n").unwrap();
         let entry = document.entries().next().unwrap();
         assert_eq!(entry.versions, ["ref:feature#anchor"]);
         assert_eq!(entry.comment.as_deref(), Some("real comment"));

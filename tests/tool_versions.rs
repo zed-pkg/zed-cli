@@ -1,6 +1,4 @@
-use zed_cli::tool_versions::{
-    ToolVersionsDocument, ToolVersionsParseErrorKind, VersionTokenKind,
-};
+use zed_cli::tool_versions::{ToolVersionsDocument, ToolVersionsParseErrorKind, VersionTokenKind};
 
 #[test]
 fn public_parser_preserves_order_comments_and_source_bytes() {
