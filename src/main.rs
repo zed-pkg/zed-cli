@@ -122,6 +122,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         } => ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks),
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
         Cmd::R2g {
+            registry_mode,
             docker,
             image,
             runtime,
@@ -131,6 +132,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             &cwd,
             &cfg,
             &R2gOptions {
+                registry_mode,
                 docker,
                 image,
                 runtime,
