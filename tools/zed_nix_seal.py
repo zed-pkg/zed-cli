@@ -8,7 +8,11 @@ def parse_package_spec(value: str) -> tuple[str, str, str]:
         fail("--as-package must be org/name@version")
     package, version = value.rsplit("@", 1)
     org, name = package.split("/", 1)
-    return validate_slug(org, "adapter org"), validate_slug(name, "adapter name"), validate_version(version, "adapter version")
+    return (
+        validate_slug(org, "adapter org"),
+        validate_slug(name, "adapter name"),
+        validate_version(version, "adapter version"),
+    )
 
 
 def parse_bins(values: Sequence[str]) -> dict[str, str]:
@@ -167,10 +171,16 @@ def add_tree_to_tar(archive: tarfile.TarFile, root: Path) -> None:
             fail(f"unsupported file type while sealing {relative}")
 
 
-def build_deterministic_tar(root: Path, extras: Mapping[str, tuple[bytes, int]], output: Path) -> None:
+def build_deterministic_tar(
+    root: Path, extras: Mapping[str, tuple[bytes, int]], output: Path
+) -> None:
     with output.open("wb") as raw:
-        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0) as compressed:
-            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT) as archive:
+        with gzip.GzipFile(
+            filename="", mode="wb", fileobj=raw, compresslevel=9, mtime=0
+        ) as compressed:
+            with tarfile.open(
+                fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT
+            ) as archive:
                 add_tree_to_tar(archive, root)
                 for relative, (content, mode) in sorted(extras.items()):
                     info = tar_info(relative, mode=mode, size=len(content))
@@ -227,13 +237,20 @@ def command_nix_to_zed(args: argparse.Namespace) -> None:
     if not isinstance(nar_size, int) or nar_size < 0:
         fail("path-info narSize must be a non-negative integer")
     references = record.get("references", [])
-    if not isinstance(references, list) or not all(isinstance(item, str) for item in references):
+    if not isinstance(references, list) or not all(
+        isinstance(item, str) for item in references
+    ):
         fail("path-info references must be a string array")
-    external_references = sorted(item for item in references if item != str(store_path))
+    store_path_value = str(store_path)
+    external_references = sorted(
+        item for item in references if item != store_path_value
+    )
     if external_references:
         fail("portable import rejected Nix references: " + ", ".join(external_references))
     signatures = record.get("signatures", record.get("sigs", []))
-    if not isinstance(signatures, list) or not all(isinstance(item, str) for item in signatures):
+    if not isinstance(signatures, list) or not all(
+        isinstance(item, str) for item in signatures
+    ):
         fail("path-info signatures must be a string array")
 
     flake_lock_bytes = args.flake_lock.read_bytes()
@@ -251,46 +268,58 @@ def command_nix_to_zed(args: argparse.Namespace) -> None:
     if repository.scheme != "https" or not repository.netloc:
         fail("--repository must be an HTTPS source URL")
 
-    adapter_core = {
+    package = {"org": org, "name": name, "version": version, "target": None}
+    source = {
+        "repository": args.repository,
+        "revision": source_revision,
+        "available": True,
+    }
+    policy = {
+        "profile": "strict-v1",
+        "resolution_authority": "nix",
+        "pure_evaluation": True,
+        "import_from_derivation": False,
+        "sandbox_required": True,
+        "builder_network": "disabled",
+        "dirty_source": False,
+        "portable_reference_count": len(external_references),
+        "nix_required_at_zed_runtime": False,
+    }
+    nix_evidence = {
+        "locked_ref": locked_ref,
+        "flake_lock_sha256": flake_lock_hash,
+        "attribute": args.attribute,
+        "system": system,
+        "output": output_name,
+        "derivation_json_sha256": derivation_hash,
+        "store_path": store_path_value,
+        "store_path_sha256": sha256_bytes(store_path_value.encode("utf-8")),
+        "nar_hash": nar_hash,
+        "nar_size": nar_size,
+        "references": external_references,
+        "signatures": sorted(signatures),
+        "nix_version": args.nix_version,
+        "store_info_json_version": 1,
+    }
+    embedded_nix_evidence = {
+        key: value for key, value in nix_evidence.items() if key != "store_path"
+    }
+    embedded_adapter = {
         "schema": SCHEMA,
         "schema_version": SCHEMA_VERSION,
         "direction": "nix-to-zed",
-        "package": {"org": org, "name": name, "version": version, "target": None},
-        "nix": {
-            "locked_ref": locked_ref,
-            "flake_lock_sha256": flake_lock_hash,
-            "attribute": args.attribute,
-            "system": system,
-            "output": output_name,
-            "derivation_json_sha256": derivation_hash,
-            "store_path": str(store_path),
-            "nar_hash": nar_hash,
-            "nar_size": nar_size,
-            "references": references,
-            "signatures": sorted(signatures),
-            "nix_version": args.nix_version,
-            "store_info_json_version": 1,
-        },
-        "source": {
-            "repository": args.repository,
-            "revision": source_revision,
-            "available": True,
-        },
-        "policy": {
-            "profile": "strict-v1",
-            "resolution_authority": "nix",
-            "pure_evaluation": True,
-            "import_from_derivation": False,
-            "sandbox_required": True,
-            "builder_network": "disabled",
-            "dirty_source": False,
-            "portable_reference_count": len(external_references),
-            "nix_required_at_zed_runtime": False,
-        },
+        "package": package,
+        "nix": embedded_nix_evidence,
+        "source": source,
+        "policy": policy,
         "sealed_paths": discovered,
         "licenses": [args.license],
     }
-    adapter_bytes = json_bytes(adapter_core)
+    sidecar_core = {
+        **embedded_adapter,
+        "nix": nix_evidence,
+    }
+    adapter_bytes = json_bytes(embedded_adapter)
     manifest_bytes = sealed_manifest(
         org=org,
         name=name,
@@ -305,7 +334,8 @@ def command_nix_to_zed(args: argparse.Namespace) -> None:
         "This artifact was deterministically sealed from one explicitly selected, "
         "closure-free Nix output. Ordinary Zed installation and execution do not "
         "require Nix. Origin and portability evidence is in "
-        "`zed-nix-adapter.json`.\n"
+        "`zed-nix-adapter.json`; the exact ephemeral store path remains only in "
+        "the external `bridge.json` sidecar.\n"
     ).encode()
     extras = {
         ".zpkg.toml": (manifest_bytes, 0o644),
@@ -327,7 +357,7 @@ def command_nix_to_zed(args: argparse.Namespace) -> None:
         artifact_hash = sha256_file(temporary)
         artifact_size = temporary.stat().st_size
         bridge = {
-            **adapter_core,
+            **sidecar_core,
             "artifact": {
                 "format": "tar.gz",
                 "file": artifact_name,
@@ -338,7 +368,9 @@ def command_nix_to_zed(args: argparse.Namespace) -> None:
             },
         }
         bridge_bytes = json_bytes(bridge)
-        bridge_descriptor, bridge_temp_name = tempfile.mkstemp(prefix=".bridge.json.", dir=out_dir)
+        bridge_descriptor, bridge_temp_name = tempfile.mkstemp(
+            prefix=".bridge.json.", dir=out_dir
+        )
         bridge_temp = Path(bridge_temp_name)
         try:
             with os.fdopen(bridge_descriptor, "wb") as stream:
