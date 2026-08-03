@@ -51,8 +51,14 @@ jobs:
 
           # Apply against the latest main tree. New unrelated files are kept;
           # overlapping edits are merged from recorded base blobs or fail
-          # closed with conflicts instead of deleting newer work.
-          git apply --3way --index --whitespace=error-all \
+          # closed with conflicts instead of deleting newer work. The patch's
+          # deletion of this temporary workflow is excluded because main never
+          # contains the publisher in the first place.
+          git apply \
+            --exclude=.github/workflows/agent-source-snapshot.yml \
+            --3way \
+            --index \
+            --whitespace=error-all \
             "$RUNNER_TEMP/nix-cross-build.patch"
           git diff --cached --check
 
