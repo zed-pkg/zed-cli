@@ -1195,6 +1195,8 @@ fn install_locked(
     // transaction exists.
     let mut package_sources: BTreeMap<String, PackageSource> = BTreeMap::new();
     let mut native_requirements = Vec::new();
+    let mut lifecycle_requirements: Vec<(String, Option<BuildSection>, InstallHooksSection)> =
+        Vec::new();
     let root_target = projected_root_target(&manifest, resolved_target.as_deref());
     native_requirements.push(NativeRequirement::new(
         manifest.full_name(),
@@ -1210,7 +1212,7 @@ fn install_locked(
             .as_ref()
             .and_then(|item| item.build.as_ref());
         let build = manifest.effective_build(key, dep_build);
-        ensure_lifecycle_permissions(key, build.as_ref(), &hooks, permissions)?;
+        lifecycle_requirements.push((key.clone(), build, hooks));
         native_requirements.push(NativeRequirement::new(key.clone(), native_dependencies));
         package_sources.insert(
             key.clone(),
@@ -1232,9 +1234,21 @@ fn install_locked(
         let (native_dependencies, hooks) =
             package_install_metadata(Some(&member), resolved_target.as_deref())?;
         let build = manifest.effective_build(key, member.build.as_ref());
-        ensure_lifecycle_permissions(key, build.as_ref(), &hooks, permissions)?;
+        lifecycle_requirements.push((key.clone(), build, hooks));
         native_requirements.push(NativeRequirement::new(key.clone(), native_dependencies));
         workspace_manifests.insert(key.clone(), member);
+    }
+
+    // Consent and manager compatibility are checked in a stable order before
+    // any host package manager runs: native prerequisites first, then all
+    // package-authored hooks and builds.
+    native::preflight(
+        &native_requirements,
+        permissions.allow_native_deps,
+        permissions.native_manager.as_deref(),
+    )?;
+    for (key, build, hooks) in &lifecycle_requirements {
+        ensure_lifecycle_permissions(key, build.as_ref(), hooks, permissions)?;
     }
 
     let native_outcome = native::install(

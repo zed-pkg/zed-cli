@@ -409,6 +409,56 @@ fn truthy_env(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Validate the complete graph-wide native install decision without mutating
+/// the host. The installer repeats these checks immediately before execution
+/// so a manager disappearing between preflight and execution still fails
+/// closed, while lifecycle-hook/build consent is resolved before any mutation.
+pub fn preflight(
+    requirements: &[NativeRequirement],
+    allow: bool,
+    requested_manager: Option<&str>,
+) -> Result<()> {
+    if requirements.iter().all(|item| item.managers.is_empty()) {
+        return Ok(());
+    }
+
+    let nix_build = in_nix_build();
+    let effective_request = if nix_build {
+        match requested_manager {
+            Some("nix") | None => Some("nix"),
+            Some(other) => {
+                bail!(
+                    "native package manager `{other}` cannot be executed inside a Nix build; declare a `[native-dependencies].nix` route and select `nix`"
+                )
+            }
+        }
+    } else {
+        requested_manager
+    };
+    let manager = select_manager_impl(requirements, effective_request, !nix_build)?
+        .context("native dependency graph unexpectedly selected no manager")?;
+    let packages = aggregate_packages(requirements, &manager);
+    if packages.is_empty() {
+        return Ok(());
+    }
+
+    if !allow {
+        bail!(
+            "the resolved package graph declares native dependencies; re-run with --allow-native-deps or ZED_PKG_ALLOW_NATIVE_DEPS=1 ({})",
+            supported_manager_summary(requirements)
+        );
+    }
+
+    if nix_build && !truthy_env("ZED_PKG_NATIVE_DEPS_PROVIDED") {
+        bail!(
+            "native dependencies are declared for `{manager}` inside a Nix build; place them in nativeBuildInputs/buildInputs and set ZED_PKG_NATIVE_DEPS_PROVIDED=1 instead of mutating a Nix profile ({})",
+            packages.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 pub fn install(
     requirements: &[NativeRequirement],
     allow: bool,
