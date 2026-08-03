@@ -58,6 +58,7 @@ fn clean_command(root: &Path) -> Command {
 }
 
 #[cfg(unix)]
+#[cfg(unix)]
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -72,6 +73,7 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+#[cfg(unix)]
 #[cfg(unix)]
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
