@@ -1,4 +1,4 @@
-{ lib, stdenv, stdenvNoCC, cacert, coreutils, findutils }:
+{ lib, stdenv, stdenvNoCC, cacert, coreutils, findutils, python3 }:
 
 let
   proxyImpureEnvVars = [
@@ -40,29 +40,41 @@ rec {
       targetArgs = lib.optionalString (target != null)
         "--target ${lib.escapeShellArg target}";
       manifestArgs = lib.optionalString (manifestPath == null) "--skip-manifest";
+      registryKind =
+        if registryPath != null then "immutable-nix-store-input"
+        else if registry != null then "explicit-url"
+        else "default";
       bridgeMetadata = builtins.toJSON {
         schema = "zed.nix-fetch-bridge/v1";
         resolver_authority = "zed-pkg";
-        lockfile = ".zpkg.lock";
         install_mode = "copy";
         inherit adapter target;
         build_hooks = false;
-        registry_override = registryValue;
+        registry_kind = registryKind;
+        registry_literal_retained = false;
+        raw_lock_retained = false;
+        raw_manifest_retained = false;
+        lock_summary_schema = "zed.nix-lock-summary/v1";
         canonical_adapter_record = false;
       };
     in
     assert lib.assertMsg (registry == null || registryPath == null)
       "fetchZedDeps: set at most one of registry and registryPath";
+    assert lib.assertMsg (!lib.hasInfix "/nix/store/" adapter)
+      "fetchZedDeps: adapter metadata must not contain a Nix store path";
+    assert lib.assertMsg (target == null || !lib.hasInfix "/nix/store/" target)
+      "fetchZedDeps: target metadata must not contain a Nix store path";
     stdenvNoCC.mkDerivation {
       inherit pname version src;
 
-      nativeBuildInputs = [ zed cacert coreutils findutils ];
+      nativeBuildInputs = [ zed cacert coreutils findutils python3 ];
       phases = [ "installPhase" ];
 
       # An explicit path-valued attribute keeps immutable file registries in
       # the sandbox closure. Callers that already registered a path with Nix
       # should pass it through builtins.storePath so the URL frozen into the
-      # lock remains the exact store identity rather than a copied path.
+      # lock remains the exact input identity. That identity is never copied
+      # into the fixed output because FOD outputs must not retain store refs.
       ZED_PKG_NIX_REGISTRY_INPUT =
         if registryPath == null then "" else registryPath;
 
@@ -137,6 +149,7 @@ rec {
             exit 1
           fi
           cp "$src/$manifest_path" "$work/.zpkg.toml"
+          input_manifest_digest="$(sha256sum "$work/.zpkg.toml" | cut -d' ' -f1)"
         ''}
 
         cd "$work"
@@ -152,6 +165,14 @@ rec {
           echo "zed-pkg Nix bridge: frozen install rewrote .zpkg.lock bytes; refusing non-frozen output" >&2
           exit 1
         fi
+
+        ${lib.optionalString (manifestPath != null) ''
+          installed_manifest_digest="$(sha256sum "$work/.zpkg.toml" | cut -d' ' -f1)"
+          if [[ "$installed_manifest_digest" != "$input_manifest_digest" ]]; then
+            echo "zed-pkg Nix bridge: frozen install rewrote .zpkg.toml bytes" >&2
+            exit 1
+          fi
+        ''}
 
         if [[ -e "$work/.zpkg-staging" ]]; then
           echo "zed-pkg Nix bridge: successful install left transaction state behind" >&2
@@ -171,12 +192,103 @@ rec {
         done
         shopt -u dotglob nullglob
 
-        cp "$work/.zpkg.lock" "$out/metadata/.zpkg.lock"
+        # Raw manifests and locks are build inputs, not FOD outputs. A lock may
+        # legitimately name an immutable file:///nix/store/... registry, while
+        # Nix correctly rejects fixed outputs that retain references to another
+        # store object. Preserve exact-byte evidence by digest and emit only a
+        # deterministic, source-redacted package inventory.
+        printf '%s\n' "$input_lock_digest" > "$out/metadata/lock.sha256"
         ${lib.optionalString (manifestPath != null) ''
-          cp "$work/.zpkg.toml" "$out/metadata/.zpkg.toml"
+          printf '%s\n' "$input_manifest_digest" > "$out/metadata/manifest.sha256"
         ''}
         printf '%s\n' ${lib.escapeShellArg bridgeMetadata} > "$out/metadata/bridge.json"
-        printf '%s  %s\n' "$input_lock_digest" .zpkg.lock > "$out/metadata/lock.sha256"
+
+        python3 - "$work/.zpkg.lock" "$out/metadata/lock-summary.json" "$input_lock_digest" <<'PY'
+        import hashlib
+        import json
+        import pathlib
+        import re
+        import sys
+        import tomllib
+
+        lock_path = pathlib.Path(sys.argv[1])
+        output_path = pathlib.Path(sys.argv[2])
+        expected_digest = sys.argv[3]
+        raw = lock_path.read_bytes()
+        actual_digest = hashlib.sha256(raw).hexdigest()
+        if actual_digest != expected_digest:
+            raise SystemExit("lock digest changed before summary generation")
+
+        data = tomllib.loads(raw.decode("utf-8"))
+        packages = data.get("package", [])
+        if not isinstance(packages, list):
+            raise SystemExit("lock package field must be an array")
+
+        def safe_text(value, label):
+            if not isinstance(value, str) or not value:
+                raise SystemExit(f"{label} must be a non-empty string")
+            if "/nix/store/" in value:
+                raise SystemExit(f"{label} must not contain a Nix store path")
+            return value
+
+        def source_kind(value):
+            if not isinstance(value, str):
+                raise SystemExit("package source must be a string")
+            if value.startswith("file:///nix/store/"):
+                return "immutable-nix-store-input"
+            if value.startswith("file://"):
+                return "file"
+            if value.startswith("https://"):
+                return "https"
+            if value.startswith("http://"):
+                return "http"
+            return "other"
+
+        normalized = []
+        for index, package in enumerate(packages):
+            if not isinstance(package, dict):
+                raise SystemExit(f"package[{index}] must be a table")
+            digest = package.get("sha256")
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                raise SystemExit(f"package[{index}].sha256 must be 64 lowercase hex characters")
+            size = package.get("size")
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                raise SystemExit(f"package[{index}].size must be a non-negative integer")
+            normalized.append({
+                "format": safe_text(package.get("format", "tar.gz"), f"package[{index}].format"),
+                "name": safe_text(package.get("name"), f"package[{index}].name"),
+                "org": safe_text(package.get("org"), f"package[{index}].org"),
+                "sha256": digest,
+                "size": size,
+                "source_kind": source_kind(package.get("source")),
+                "version": safe_text(package.get("version"), f"package[{index}].version"),
+            })
+
+        normalized.sort(key=lambda package: (
+            package["org"],
+            package["name"],
+            package["version"],
+            package["sha256"],
+        ))
+        adapters = data.get("nix-adapter", [])
+        if not isinstance(adapters, list):
+            raise SystemExit("lock nix-adapter field must be an array")
+
+        summary = {
+            "lockfile_version": data.get("version"),
+            "nix_adapter_count": len(adapters),
+            "package_count": len(normalized),
+            "packages": normalized,
+            "raw_lock_sha256": actual_digest,
+            "schema": "zed.nix-lock-summary/v1",
+            "source_literals_retained": False,
+        }
+        output_path.write_text(
+            json.dumps(summary, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        PY
+
         ${zed}/bin/zed --version > "$out/metadata/zed-version.txt"
 
         # Copy mode may preserve package-owned relative links, but the fixed
