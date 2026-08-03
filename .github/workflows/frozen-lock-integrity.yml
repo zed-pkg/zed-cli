@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/frozen-lock-integrity.yml'
       - 'tests/frozen-lock-integrity-e2e.sh'
+      - 'tests/content-addressed-provenance-e2e.sh'
       - 'tests/fixtures/polyglot/**'
       - 'src/config.rs'
       - 'src/ops.rs'
@@ -17,6 +18,7 @@ on:
     paths:
       - '.github/workflows/frozen-lock-integrity.yml'
       - 'tests/frozen-lock-integrity-e2e.sh'
+      - 'tests/content-addressed-provenance-e2e.sh'
       - 'tests/fixtures/polyglot/**'
       - 'src/config.rs'
       - 'src/ops.rs'
@@ -37,9 +39,9 @@ env:
 
 jobs:
   integrity:
-    name: Empty, incomplete, malformed, and drifting locks
+    name: Strict committed locks and content-addressed compatibility
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout zed-cli
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -91,9 +93,13 @@ jobs:
         working-directory: zed-cli
         run: cargo build --locked --bin zed
 
-      - name: Check the binary-level harness syntax
+      - name: Check both binary-level harnesses
         working-directory: zed-cli
-        run: bash -n tests/frozen-lock-integrity-e2e.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n tests/frozen-lock-integrity-e2e.sh
+          bash -n tests/content-addressed-provenance-e2e.sh
 
       - name: Prove frozen dependency locks fail closed and atomically
         working-directory: zed-cli
@@ -106,6 +112,17 @@ jobs:
           bash tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed" \
             2>&1 | tee "$RUNNER_TEMP/frozen-lock-integrity.log"
 
+      - name: Prove legacy publication emits explicit content-addressed provenance
+        working-directory: zed-cli
+        env:
+          ZED_CONTENT_PROVENANCE_E2E_ROOT: ${{ runner.temp }}/content-addressed-provenance
+          ZED_CONTENT_PROVENANCE_E2E_KEEP: '1'
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tests/content-addressed-provenance-e2e.sh "$PWD/target/debug/zed" \
+            2>&1 | tee "$RUNNER_TEMP/content-addressed-provenance.log"
+
       - name: Upload bounded failure diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -116,5 +133,8 @@ jobs:
             ${{ runner.temp }}/frozen-lock-integrity/negative-cases/*/frozen.log
             ${{ runner.temp }}/frozen-lock-integrity/negative-cases/*/.zpkg.toml
             ${{ runner.temp }}/frozen-lock-integrity/negative-cases/*/.zpkg.lock
+            ${{ runner.temp }}/content-addressed-provenance.log
+            ${{ runner.temp }}/content-addressed-provenance/consumer/.zpkg.toml
+            ${{ runner.temp }}/content-addressed-provenance/consumer/.zpkg.lock
           if-no-files-found: warn
           retention-days: 1
