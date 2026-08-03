@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - agent/den-1420-mise-dev-runtime
+  pull_request:
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
@@ -20,6 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: agent/den-1420-mise-dev-runtime
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
