@@ -160,17 +160,46 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
 
     // 4. Publish the exact tarball through the same registry abstraction as
     //    `zed publish`: private file storage by default, HTTP Rust server only
-    //    after the explicit server-mode flag.
+    //    after the explicit server-mode flag. Preserve `zed publish` retry
+    //    semantics: byte-identical same-version retries are accepted, while a
+    //    changed artifact at an immutable version is rejected before upload.
     let meta = build_publish_meta(&manifest, &packed, None);
     let registry = registry_for(&registry_target.url)?;
-    interactive::confirm(
-        cfg.interactive,
-        &format!(
-            "r2g step 2/5: publish {full} to {}",
-            registry_target.url
-        ),
-    )?;
-    registry.publish(&meta, &packed.path, registry_target.token.as_deref())?;
+    let identity = &meta.manifest.package;
+    let already_published = match registry.get_version(
+        &identity.org,
+        &identity.name,
+        &identity.version,
+    ) {
+        Ok(existing) if existing.sha256 == meta.sha256 => {
+            println!(
+                "r2g: already published {}/{}@{} with identical sha256; reusing it",
+                identity.org, identity.name, identity.version
+            );
+            true
+        }
+        Ok(existing) => {
+            bail!(
+                "{}/{}@{} already exists with sha256 {}; refusing to replace it with {}",
+                identity.org,
+                identity.name,
+                identity.version,
+                existing.sha256,
+                meta.sha256
+            );
+        }
+        Err(_) => false,
+    };
+    if !already_published {
+        interactive::confirm(
+            cfg.interactive,
+            &format!(
+                "r2g step 2/5: publish {full} to {}",
+                registry_target.url
+            ),
+        )?;
+        registry.publish(&meta, &packed.path, registry_target.token.as_deref())?;
+    }
 
     // 5. Synthesize a mock consumer that depends on exactly this version.
     let mut dependencies = BTreeMap::new();
