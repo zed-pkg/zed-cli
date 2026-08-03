@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - src/dev.rs
+      - tests/develop_edge_cases.rs
       - .dev-cli-flags.toml
       - docs/develop.md
       - .github/workflows/mise-runtime.yml
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - src/dev.rs
+      - tests/develop_edge_cases.rs
       - .dev-cli-flags.toml
       - docs/develop.md
       - .github/workflows/mise-runtime.yml
@@ -142,6 +144,22 @@ jobs:
           grep -qx '1' "$MISE_SMOKE_LOG"
           grep -qx 'mise.toml' "$MISE_SMOKE_LOG"
           grep -qx 'none' "$MISE_SMOKE_LOG"
+
+          : > "$MISE_SMOKE_LOG"
+          set +e
+          __MISE_DIFF=ambient PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
+            --no-install \
+            --frozen \
+            --nix never \
+            --mise required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c true > "$RUNNER_TEMP/ambient-frozen.out" 2> "$RUNNER_TEMP/ambient-frozen.err"
+          ambient_status=$?
+          set -e
+          test "$ambient_status" -eq 1
+          grep -q 'cannot verify an ambient mise activation' "$RUNNER_TEMP/ambient-frozen.err"
+          test ! -s "$MISE_SMOKE_LOG"
 
           set +e
           PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
