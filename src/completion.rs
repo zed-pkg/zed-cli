@@ -6,10 +6,12 @@ use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 
 use crate::cli::Cli;
-use crate::{dev, fetch};
+use crate::{dev, fetch, nix_export_plan};
 
 fn root_command() -> clap::Command {
-    fetch::augment_root_command(dev::augment_root_command(Cli::command()))
+    nix_export_plan::augment_root_command(fetch::augment_root_command(
+        dev::augment_root_command(Cli::command()),
+    ))
 }
 
 /// Write a static completion script for `zed` to stdout.
@@ -47,6 +49,10 @@ mod tests {
             "install",
             "init",
             "fetch",
+            "interop",
+            "nix",
+            "plan",
+            "export",
             "develop",
             "dev",
             "completions",
@@ -60,6 +66,8 @@ mod tests {
             "--skip-manifest",
             "--install-mode",
             "--frozen",
+            "--json",
+            "--target",
             "--output",
             "--python-venv",
             "--isolated-home",
@@ -80,6 +88,10 @@ mod tests {
             "install",
             "init",
             "fetch",
+            "interop",
+            "nix",
+            "plan",
+            "export",
             "develop",
             "dev",
             "completions",
@@ -93,6 +105,8 @@ mod tests {
             "--skip-manifest",
             "--install-mode",
             "--frozen",
+            "--json",
+            "--target",
             "--output",
             "--python-venv",
             "--isolated-home",
