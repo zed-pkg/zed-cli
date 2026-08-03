@@ -175,14 +175,22 @@ jobs:
           test -f "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/package.json"
           test -f "$deps_a/tree/node_modules/@zed-pkg/docker-node-lib/package.json"
           test -f "$deps_a/metadata/.zpkg.lock"
-          test -f "$deps_a/metadata/contract.json"
-          grep -F '"install_mode":"copy"' "$deps_a/metadata/contract.json"
-          grep -F '"build_hooks":false' "$deps_a/metadata/contract.json"
+          test -f "$deps_a/metadata/bridge.json"
+          grep -F '"schema":"zed.nix-fetch-bridge/v1"' "$deps_a/metadata/bridge.json"
+          grep -F '"install_mode":"copy"' "$deps_a/metadata/bridge.json"
+          grep -F '"build_hooks":false' "$deps_a/metadata/bridge.json"
+          grep -F '"canonical_adapter_record":false' "$deps_a/metadata/bridge.json"
 
-          if find "$deps_a/tree" -type l -lname '/*' -print -quit | grep -q .; then
-            echo "fixed output contains an absolute symlink" >&2
-            exit 1
-          fi
+          python3 - "$deps_a/tree" <<'PY'
+          import os
+          import pathlib
+          import sys
+
+          root = pathlib.Path(sys.argv[1])
+          for path in root.rglob("*"):
+              if path.is_symlink() and os.path.isabs(os.readlink(path)):
+                  raise SystemExit(f"fixed output contains an absolute symlink: {path}")
+          PY
 
       - name: Build the ordinary offline consumer derivation
         shell: bash
