@@ -10,6 +10,7 @@ pub mod fetch;
 pub mod flags;
 pub mod interactive;
 pub mod manifestless;
+pub mod nix_export_bundle;
 pub mod nix_export_plan;
 pub mod ops;
 pub mod pack;
