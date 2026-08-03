@@ -161,6 +161,10 @@ impl Store {
         }
     }
 
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
+    }
+
     pub fn root(&self) -> PathBuf {
         self.home.join("store")
     }

@@ -229,14 +229,17 @@ pub struct InstallOutcome {
 
 fn ensure_artifact(reg: &dyn Registry, store: &Store, vm: &VersionMetadata) -> Result<PathBuf> {
     validate_version_metadata(vm)?;
-    if store.has(&vm.sha256) {
-        return Ok(store.pkg_dir(&vm.sha256));
-    }
-    let cached = store.cached_artifact(&vm.sha256);
-    if !cached.exists() {
-        reg.download(vm, &cached)?;
-    }
-    store.add_artifact(&cached, &vm.sha256)
+    crate::install_graph::ensure_artifact(reg, store, vm)
+        .map(|(package_dir, _downloaded)| package_dir)
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_ensure_artifact_for_test(
+    reg: &dyn Registry,
+    store: &Store,
+    vm: &VersionMetadata,
+) -> Result<PathBuf> {
+    ensure_artifact(reg, store, vm)
 }
 
 fn replace_dest(dest: &Path) -> Result<()> {

@@ -18,7 +18,7 @@ pub(super) fn worker_loop(
             let registry = registry
                 .as_deref()
                 .context("recursive install worker has no registry")?;
-            prefetch_one(registry, &store, &home, task)
+            prefetch_one(registry, &store, task)
         })();
         if results.send(FetchMessage { sequence, result }).is_err() {
             return;
@@ -26,13 +26,8 @@ pub(super) fn worker_loop(
     }
 }
 
-fn prefetch_one(
-    registry: &dyn Registry,
-    store: &Store,
-    home: &Path,
-    task: FetchTask,
-) -> Result<FetchResult> {
-    let (package_dir, downloaded) = ensure_artifact(registry, store, home, &task.version)
+fn prefetch_one(registry: &dyn Registry, store: &Store, task: FetchTask) -> Result<FetchResult> {
+    let (package_dir, downloaded) = ensure_artifact(registry, store, &task.version)
         .with_context(|| format!("prefetching {}@{}", task.key, task.version.version))?;
     let dependencies = read_manifest(&package_dir)
         .map(|manifest| manifest.dependencies)
@@ -43,10 +38,15 @@ fn prefetch_one(
     })
 }
 
-fn ensure_artifact(
+/// Acquire one immutable artifact through the shared cache/store path.
+///
+/// Every caller uses the same blocking per-hash process lock, staged download,
+/// integrity check, atomic cache publication, and extraction sequence. This is
+/// intentionally crate-visible so the legacy transactional installer cannot
+/// bypass recursive-prefetch locking.
+pub(crate) fn ensure_artifact(
     registry: &dyn Registry,
     store: &Store,
-    home: &Path,
     version: &VersionMetadata,
 ) -> Result<(PathBuf, bool)> {
     validate_version_identity(version, &version.org, &version.name, &version.version)?;
@@ -54,7 +54,7 @@ fn ensure_artifact(
         return Ok((store.pkg_dir(&version.sha256), false));
     }
 
-    let _artifact_lock = ArtifactProcessLock::acquire(home, &version.sha256)?;
+    let _artifact_lock = ArtifactProcessLock::acquire(store.home(), &version.sha256)?;
     if store.has(&version.sha256) {
         return Ok((store.pkg_dir(&version.sha256), false));
     }

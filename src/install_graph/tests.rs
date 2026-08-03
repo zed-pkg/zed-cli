@@ -1,4 +1,8 @@
-use std::sync::{Arc, Barrier, mpsc as test_mpsc};
+use std::sync::{
+    Arc, Barrier,
+    atomic::{AtomicUsize, Ordering},
+    mpsc as test_mpsc,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -128,6 +132,144 @@ fn published_version(
         .join("versions")
         .join(format!("{version}.json"));
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+struct CountingRegistry {
+    artifact: PathBuf,
+    downloads: Arc<AtomicUsize>,
+    started: Option<test_mpsc::Sender<()>>,
+    release: Option<test_mpsc::Receiver<()>>,
+}
+
+impl Registry for CountingRegistry {
+    fn get_package(&self, _org: &str, _name: &str) -> Result<PackageMetadata> {
+        unreachable!("mixed-path acquisition test does not resolve package metadata")
+    }
+
+    fn get_version(&self, _org: &str, _name: &str, _version: &str) -> Result<VersionMetadata> {
+        unreachable!("mixed-path acquisition test receives resolved version metadata")
+    }
+
+    fn download(&self, _version: &VersionMetadata, dest: &Path) -> Result<()> {
+        self.downloads.fetch_add(1, Ordering::SeqCst);
+        if let Some(started) = &self.started {
+            started.send(()).unwrap();
+        }
+        if let Some(release) = &self.release {
+            release.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        fs::create_dir_all(dest.parent().unwrap())?;
+        fs::copy(&self.artifact, dest)?;
+        Ok(())
+    }
+
+    fn publish(
+        &self,
+        _meta: &zed_interfaces::registry::PublishMeta,
+        _artifact: &Path,
+        _token: Option<&str>,
+    ) -> Result<zed_interfaces::registry::PublishResponse> {
+        unreachable!("mixed-path acquisition test does not publish")
+    }
+
+    fn claim_org(
+        &self,
+        _slug: &str,
+        _token: Option<&str>,
+    ) -> Result<zed_interfaces::registry::ClaimOrgResponse> {
+        unreachable!("mixed-path acquisition test does not claim organizations")
+    }
+
+    fn search(&self, _query: &str) -> Result<zed_interfaces::registry::SearchResponse> {
+        unreachable!("mixed-path acquisition test does not search")
+    }
+
+    fn yank(
+        &self,
+        _org: &str,
+        _name: &str,
+        _version: &str,
+        _yanked: bool,
+        _token: Option<&str>,
+    ) -> Result<zed_interfaces::registry::YankResponse> {
+        unreachable!("mixed-path acquisition test does not yank")
+    }
+
+    fn audit_log(
+        &self,
+        _org: &str,
+        _limit: Option<u64>,
+        _token: Option<&str>,
+    ) -> Result<zed_interfaces::registry::AuditLogResponse> {
+        unreachable!("mixed-path acquisition test does not read audit logs")
+    }
+}
+
+#[test]
+fn legacy_and_recursive_acquisition_paths_share_one_download_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry_root = temp.path().join("registry");
+    let scratch = temp.path().join("scratch");
+    let home = temp.path().join("home");
+
+    let sha = publish_fixture(&registry_root, &scratch, "test", "shared", "1.0.0", &[]);
+    let version = published_version(&registry_root, "test", "shared", "1.0.0");
+    let artifact = registry_root
+        .join("artifacts")
+        .join(format!("{sha}.tar.gz"));
+    let downloads = Arc::new(AtomicUsize::new(0));
+    let (recursive_started_tx, recursive_started_rx) = test_mpsc::channel();
+    let (recursive_release_tx, recursive_release_rx) = test_mpsc::channel();
+    let (legacy_started_tx, legacy_started_rx) = test_mpsc::channel();
+
+    let recursive_registry = CountingRegistry {
+        artifact: artifact.clone(),
+        downloads: Arc::clone(&downloads),
+        started: Some(recursive_started_tx),
+        release: Some(recursive_release_rx),
+    };
+    let legacy_registry = CountingRegistry {
+        artifact,
+        downloads: Arc::clone(&downloads),
+        started: Some(legacy_started_tx),
+        release: None,
+    };
+    let recursive_store = Store::new(&home);
+    let legacy_store = Store::new(&home);
+    let recursive_version = version.clone();
+    let legacy_version = version;
+
+    let recursive = thread::spawn(move || {
+        super::ensure_artifact(&recursive_registry, &recursive_store, &recursive_version).unwrap()
+    });
+    recursive_started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap();
+
+    let legacy = thread::spawn(move || {
+        crate::ops::legacy_ensure_artifact_for_test(
+            &legacy_registry,
+            &legacy_store,
+            &legacy_version,
+        )
+        .unwrap()
+    });
+
+    let legacy_entered_download = legacy_started_rx
+        .recv_timeout(Duration::from_millis(300))
+        .is_ok();
+    recursive_release_tx.send(()).unwrap();
+
+    let (recursive_path, recursive_downloaded) = recursive.join().unwrap();
+    let legacy_path = legacy.join().unwrap();
+    assert!(recursive_downloaded);
+    assert!(
+        !legacy_entered_download,
+        "the legacy path bypassed the shared artifact lock and started a duplicate download"
+    );
+    assert_eq!(downloads.load(Ordering::SeqCst), 1);
+    assert_eq!(legacy_path, recursive_path);
+    assert!(recursive_path.is_dir());
 }
 
 #[test]

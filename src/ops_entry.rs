@@ -25,6 +25,9 @@ pub(crate) use implementation::{
     detect_adapter, detect_native_manifest_target, detect_structure_target, detect_target,
 };
 
+#[cfg(test)]
+pub(crate) use implementation::legacy_ensure_artifact_for_test;
+
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))
 }
