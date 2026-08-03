@@ -112,6 +112,14 @@ jobs:
           test ! -e "$consumer/node_modules/@zed-pkg/docker-node-lib"
           grep -F "source = \"file://$registry_store\"" "$consumer/.zpkg.lock"
 
+          lock_sha256="$(
+            python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+              "$consumer/.zpkg.lock"
+          )"
+          manifest_sha256="$(
+            python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+              "$consumer/.zpkg.toml"
+          )"
           zed_store="$(nix store add-path "$zed")"
           consumer_store="$(nix store add-path "$consumer")"
 
@@ -119,6 +127,8 @@ jobs:
           printf 'ZED_CONSUMER_STORE=%s\n' "$consumer_store" >> "$GITHUB_ENV"
           printf 'ZED_REGISTRY_STORE=%s\n' "$registry_store" >> "$GITHUB_ENV"
           printf 'ZED_CONSUMER_WORK=%s\n' "$consumer" >> "$GITHUB_ENV"
+          printf 'ZED_LOCK_SHA256=%s\n' "$lock_sha256" >> "$GITHUB_ENV"
+          printf 'ZED_MANIFEST_SHA256=%s\n' "$manifest_sha256" >> "$GITHUB_ENV"
 
       - name: Evaluate the standalone flake library
         run: >-
@@ -176,12 +186,58 @@ jobs:
           test -f "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/package.json"
           test -f "$deps_a/tree/node_modules/@zed-pkg/docker-node-lib/package.json"
           test ! -e "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
-          test -f "$deps_a/metadata/.zpkg.lock"
           test -f "$deps_a/metadata/bridge.json"
-          grep -F '"schema":"zed.nix-fetch-bridge/v1"' "$deps_a/metadata/bridge.json"
-          grep -F '"install_mode":"copy"' "$deps_a/metadata/bridge.json"
-          grep -F '"build_hooks":false' "$deps_a/metadata/bridge.json"
-          grep -F '"canonical_adapter_record":false' "$deps_a/metadata/bridge.json"
+          test -f "$deps_a/metadata/lock-summary.json"
+          test -f "$deps_a/metadata/lock.sha256"
+          test -f "$deps_a/metadata/manifest.sha256"
+          test ! -e "$deps_a/metadata/.zpkg.lock"
+          test ! -e "$deps_a/metadata/.zpkg.toml"
+          test "$(cat "$deps_a/metadata/lock.sha256")" = "$ZED_LOCK_SHA256"
+          test "$(cat "$deps_a/metadata/manifest.sha256")" = "$ZED_MANIFEST_SHA256"
+
+          python3 - \
+            "$deps_a/metadata/bridge.json" \
+            "$deps_a/metadata/lock-summary.json" \
+            "$ZED_LOCK_SHA256" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          bridge = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          summary = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          expected_lock_digest = sys.argv[3]
+
+          assert bridge["schema"] == "zed.nix-fetch-bridge/v1"
+          assert bridge["install_mode"] == "copy"
+          assert bridge["build_hooks"] is False
+          assert bridge["registry_kind"] == "immutable-nix-store-input"
+          assert bridge["registry_literal_retained"] is False
+          assert bridge["raw_lock_retained"] is False
+          assert bridge["raw_manifest_retained"] is False
+          assert bridge["canonical_adapter_record"] is False
+
+          assert summary["schema"] == "zed.nix-lock-summary/v1"
+          assert summary["raw_lock_sha256"] == expected_lock_digest
+          assert summary["source_literals_retained"] is False
+          assert summary["package_count"] == 1
+          package = summary["packages"][0]
+          assert package["org"] == "zed-pkg"
+          assert package["name"] == "docker-node-lib"
+          assert package["version"] == "1.0.0"
+          assert package["source_kind"] == "immutable-nix-store-input"
+          PY
+
+          if grep -R -I -F '/nix/store/' "$deps_a/metadata"; then
+            echo "fixed-output metadata retained a Nix store path" >&2
+            exit 1
+          fi
+
+          references="$(nix-store --query --references "$deps_a")"
+          if [[ -n "$references" ]]; then
+            echo "fixed output unexpectedly retained store references:" >&2
+            printf '%s\n' "$references" >&2
+            exit 1
+          fi
 
           python3 - "$deps_a/tree" <<'PY'
           import os
