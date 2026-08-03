@@ -43,8 +43,23 @@ fn main() {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    let cfg = Config::from_globals(&cli.globals)?;
     let cwd = std::env::current_dir()?;
+
+    // Planning is deliberately outside the normal command bootstrap. It does
+    // not construct Config, resolve saved credentials, or recover/mutate a
+    // pending project transaction. Its only writes are inside temporary pack
+    // directories that are deleted before the command returns.
+    if let Cmd::Oci { cmd } = &cli.cmd {
+        return match cmd {
+            OciCmd::Plan {
+                destination,
+                target,
+                json,
+            } => oci::plan(&cwd, destination, target.as_deref(), *json),
+        };
+    }
+
+    let cfg = Config::from_globals(&cli.globals)?;
     zed_cli::transaction::recover_pending(&cwd)?;
     match cli.cmd {
         Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
@@ -92,13 +107,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ReleaseCmd::Plan { json } => release::plan(&cwd, json),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
         },
-        Cmd::Oci { cmd } => match cmd {
-            OciCmd::Plan {
-                destination,
-                target,
-                json,
-            } => oci::plan(&cwd, &destination, target.as_deref(), json),
-        },
+        Cmd::Oci { .. } => unreachable!("OCI commands return before Config construction"),
         Cmd::Publish {
             dry_run,
             allow_dirty,
