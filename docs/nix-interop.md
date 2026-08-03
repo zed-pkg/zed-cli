@@ -36,10 +36,18 @@ $out/
 └── metadata/
     ├── .zpkg.toml              # when a manifest was supplied
     ├── .zpkg.lock              # exact lock used by the build
-    ├── contract.json           # normalized adapter boundary
+    ├── bridge.json             # operational FOD bridge metadata
     ├── lock.sha256             # digest of the retained lock
     └── zed-version.txt         # CLI implementation identity
 ```
+
+`bridge.json` identifies itself as `zed.nix-fetch-bridge/v1` and explicitly
+sets `canonical_adapter_record` to `false`. It is not the canonical
+`zed.nix-adapter/v1` provenance/attestation record being defined in
+`zed-interfaces`; the deterministic exporter and Nix-to-Zed sealer will emit
+that shared record after the schema lands. Keeping these formats distinct
+prevents a materialization receipt from being mistaken for publication
+evidence.
 
 The fetch stage:
 
@@ -63,9 +71,10 @@ store paths, or substituter metadata.
 ### Example
 
 ```nix
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs }:
 
 let
+  # `pkgs` must come from the consumer's locked flake input.
   zedNix = pkgs.callPackage ./vendor/zed-cli/nix/zed-package.nix { };
 
   # `zed` is a Nix package containing bin/zed. It may come from a pinned flake,
@@ -108,8 +117,10 @@ inputs.zed-pkg.url = "github:zed-pkg/zed-cli";
 zedNix = inputs.zed-pkg.lib.makeZedPackageLib pkgs;
 ```
 
-Consumers should pin the zed-cli input in `flake.lock`; the example omits the
-rest of the flake only for clarity.
+Consumers must pin both zed-cli and Nixpkgs in their own `flake.lock`. The lock
+committed under `nix/flake.lock` establishes the repository CI baseline and is
+kept aligned with the reviewed `zed-interfaces` Nix baseline; it does not
+silently replace the consumer's package-set decision.
 
 ## Ordinary builder: `mkZedPackage`
 
@@ -141,6 +152,7 @@ The first output is a deterministic **materialized project tree**. It is not yet
 
 - a snapshot of zed-pkg's global content-addressed store;
 - a replacement for a dedicated `zed fetch --frozen --output ...` command;
+- the canonical `zed.nix-adapter/v1` publication record;
 - an upstream Nixpkgs package definition generator;
 - a Zed binary package in a maintained overlay;
 - a binary-cache publication service;
@@ -156,8 +168,8 @@ Publishing should be staged in three explicit tiers.
 
 ### Tier 1: generated local flake or derivation
 
-`zed nix export` should eventually generate a deterministic package definition
-that calls this bridge with:
+`zed interop nix export` should generate a deterministic package bundle that
+calls this bridge or directly consumes exact immutable Zed artifacts with:
 
 - immutable zed-cli input identity;
 - package name and version;
@@ -170,14 +182,17 @@ that calls this bridge with:
 
 Generated files must be stable under repeated export and must never contain a
 mutable branch, channel, unqualified registry latest-version lookup, or hidden
-credential.
+credential. Version 1 covers no-build archives, prebuilt binaries already
+present in immutable artifacts, and fully frozen dependency graphs; native
+source-builder inference remains out of scope.
 
 ### Tier 2: maintained zed-pkg overlay and binary cache
 
 A project-operated overlay can expose reviewed exports with a cache populated by
 CI. Cache publication must bind the Nix output identity to the originating Zed
-release, `.zpkg.lock`, source commit/tag, artifact digest, and build attestation.
-The overlay and cache are distribution channels, not independent resolvers.
+release, `.zpkg.lock`, source commit/tag, artifact digest, canonical adapter
+record, and build attestation. The overlay and cache are distribution channels,
+not independent resolvers.
 
 ### Tier 3: optional upstream Nixpkgs contribution
 
@@ -191,7 +206,7 @@ candidate patch; it must not submit or merge packages blindly.
 Nix-to-Zed import is deliberately narrower than "accept a Nix expression". A
 safe import starts from a fully locked and evaluated output identity.
 
-A future normalized import descriptor should record at least:
+A normalized import descriptor must record at least:
 
 ```text
 schema version
@@ -203,18 +218,21 @@ evaluated system
 Nix version
 nixpkgs revision
 output names
-per-output store NAR hashes
+per-output store NAR hashes and sizes
+runtime store references
 platform constraints
 license metadata
 source metadata
-runtime closure policy
+policy profile
 provenance and attestations
 ```
 
-The importer should accept a descriptor generated from a pinned flake lock or an
-explicit immutable revision. It should then copy or archive only the selected,
-verified outputs into a deterministic Zed artifact and record adapter provenance
-in `.zpkg.lock` and registry metadata.
+The importer accepts a descriptor generated from a pinned flake lock or an
+explicit immutable revision. It copies or archives only the selected, verified
+outputs into a deterministic Zed artifact and records canonical adapter
+provenance in registry metadata. Strict portable version 1 rejects outputs with
+runtime store references instead of publishing a package that breaks outside
+one Nix store.
 
 The following inputs must fail closed:
 
@@ -224,7 +242,8 @@ The following inputs must fail closed:
 - hidden network fetches whose hashes are not known;
 - arbitrary functions requiring caller-provided secrets or host state;
 - unsupported dynamic overlays or system-dependent attribute selection;
-- output sets whose boundaries or hashes cannot be enumerated; and
+- output sets whose boundaries or hashes cannot be enumerated;
+- non-portable outputs with unresolved runtime store references; and
 - platform assumptions that do not match the requested Zed target.
 
 A Nix import is immutable packaging of proven outputs. It does not make the
@@ -233,15 +252,16 @@ runtime.
 
 ## Proposed CLI surface
 
-The final names should be settled with the shared adapter schema, but the
-operations should remain explicit:
+The approved command family keeps planning, export, sealing, and verification
+explicit:
 
 ```text
-zed nix export       # .zpkg.lock -> deterministic Nix definition
-zed nix publish      # reviewed overlay/cache publication
-zed nix import       # pinned Nix descriptor -> immutable Zed package
-zed nix verify       # re-evaluate identity and reject drift/tampering
-zed fetch --frozen   # future resolver-only materialization primitive
+zed interop nix plan export --frozen --json
+zed interop nix export --frozen --system <system> --nixpkgs-lock <path> --out <dir>
+zed interop nix plan import --flake <locked-ref> --attribute <attr> --system <system>
+zed interop nix import --plan <canonical-json> --out <artifact>
+zed interop nix verify --record <canonical-json>
+zed fetch --frozen --output <dir>   # future resolver-only materialization primitive
 ```
 
 `zed fetch` should populate an explicit output/cache directory without project
@@ -260,17 +280,22 @@ exported metadata must always include the evaluated system and output platform.
 
 `.github/workflows/nix-interop.yml` proves the current boundary by:
 
-1. building the exact zed-cli branch;
-2. publishing the existing Node fixture to a local registry;
-3. adding that registry to the Nix store before resolution so the frozen lock
+1. installing a commit-pinned Nix action and loading Nixpkgs from the committed
+   flake lock without updating it;
+2. building the exact zed-cli branch;
+3. normalizing the Linux runner-built binary's interpreter and RPATH inside Nix;
+4. publishing the existing Node fixture to a local registry;
+5. adding that registry to the Nix store before resolution so the frozen lock
    points at an immutable, sandbox-visible URL;
-4. generating a real `.zpkg.lock` and uninstalling the project materialization;
-5. evaluating the standalone flake library;
-6. bootstrapping the recursive fixed-output hash;
-7. rebuilding the same graph under two derivation names and comparing NAR hashes;
-8. building and checking a normal offline consumer derivation;
-9. rejecting an incorrect Nix output hash; and
-10. rejecting a lockfile whose Zed artifact digest was tampered with.
+6. generating a real `.zpkg.lock` and uninstalling the project materialization;
+7. evaluating the standalone flake library with lock updates disabled;
+8. bootstrapping the recursive fixed-output hash;
+9. rebuilding the same graph under two derivation names and comparing SHA-256
+   NAR hashes;
+10. checking the self-identified non-canonical bridge metadata and link policy;
+11. building and checking a normal offline consumer derivation;
+12. rejecting an incorrect Nix output hash; and
+13. rejecting a lockfile whose Zed artifact digest was tampered with.
 
 This canary is intentionally based on the same copy-install fixture used for OCI
 ownership tests, so Nix and container boundaries enforce one materialization
