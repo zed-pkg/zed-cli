@@ -8,6 +8,11 @@ on:
       - ".github/workflows/agent-format-artifact.yml"
       - "src/fetch.rs"
       - "tests/frozen_fetch_boundaries.rs"
+  pull_request:
+    paths:
+      - ".github/workflows/agent-format-artifact.yml"
+      - "src/fetch.rs"
+      - "tests/frozen_fetch_boundaries.rs"
   workflow_dispatch:
 
 permissions:
