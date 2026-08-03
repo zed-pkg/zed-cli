@@ -6,6 +6,12 @@ on:
       - agent/oci-local-layout-v1
     paths:
       - .github/workflows/oci-layout-format-once.yml
+  pull_request:
+    branches:
+      - agent/oci-publish-plan-v1
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/oci-layout-format-once.yml
 
 permissions:
   contents: write
@@ -18,16 +24,24 @@ defaults:
   run:
     shell: bash
 
+env:
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  TARGET_BRANCH: agent/oci-local-layout-v1
+
 jobs:
   format:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/agent/oci-local-layout-v1') ||
+      (github.event_name == 'pull_request' &&
+       github.head_ref == 'agent/oci-local-layout-v1' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - name: Check out the exact triggering commit
+      - name: Check out the exact candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.TARGET_SHA }}
           fetch-depth: 0
           persist-credentials: true
           show-progress: false
@@ -76,4 +90,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -- "${allowed[@]}"
           git commit -m "style: format OCI layout implementation"
-          git push origin HEAD:agent/oci-local-layout-v1
+          git push origin HEAD:${TARGET_BRANCH}
