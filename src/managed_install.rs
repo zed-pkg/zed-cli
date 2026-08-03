@@ -480,8 +480,7 @@ fn generated_manifest(
 fn is_generated_manifest_path(project: &Path) -> Result<bool> {
     let path = project.join(MANIFEST_FILE);
     let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    let manifest =
-        Manifest::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
+    let manifest = Manifest::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
     Ok(is_generated_consumer(&manifest))
 }
 
@@ -735,8 +734,7 @@ mod tests {
             ("acme/http-kit".to_string(), "^1".to_string()),
             ("acme/log-kit".to_string(), "=2.0.0".to_string()),
         ]);
-        let first =
-            generated_manifest(&nested, dependencies.clone(), Some("node"), Adapter::Node);
+        let first = generated_manifest(&nested, dependencies.clone(), Some("node"), Adapter::Node);
         let second = generated_manifest(&nested, dependencies, Some("node"), Adapter::Node);
         assert_eq!(
             first.to_toml_string().unwrap(),
