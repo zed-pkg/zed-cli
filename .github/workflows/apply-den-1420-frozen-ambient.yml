@@ -87,6 +87,16 @@ jobs:
           text = text.replace(test_anchor, regression + test_anchor, 1)
           source.write_text(text, encoding='utf-8')
 
+          edge_tests = Path('tests/develop_edge_cases.rs')
+          edge_text = edge_tests.read_text(encoding='utf-8')
+          for shell_name in ('bash', 'fish'):
+              old_case = f'        ("{shell_name}", &["-lc", script]),'
+              new_case = f'        ("{shell_name}", &["-c", script]),'
+              if edge_text.count(old_case) != 1:
+                  raise SystemExit(f'expected one {shell_name} login-shell expectation')
+              edge_text = edge_text.replace(old_case, new_case, 1)
+          edge_tests.write_text(edge_text, encoding='utf-8')
+
           docs = Path('docs/develop.md')
           documentation = docs.read_text(encoding='utf-8')
           automation = '''An interactive invocation requires a terminal. Automation should always use
@@ -131,6 +141,6 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/dev.rs docs/develop.md
+          git add src/dev.rs docs/develop.md tests/develop_edge_cases.rs
           git commit -m 'fix(DEN-1420): preserve PATH and frozen mise integrity'
           git push origin HEAD:agent/den-1420-mise-dev-runtime
