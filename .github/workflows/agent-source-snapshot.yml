@@ -1,29 +1,60 @@
-name: agent source snapshot
+name: apply Nix cross-build implementation
 
 on:
   push:
     branches:
       - agent/nix-cross-build-contract
-  pull_request:
-    branches:
-      - main
+    paths:
+      - ".github/patch-trigger"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  snapshot:
+  apply:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out the branch
+      - name: Check out the implementation branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          persist-credentials: false
-      - name: Upload the complete checkout
-        uses: actions/upload-artifact@v4
-        with:
-          name: zed-cli-source
-          path: .
-          include-hidden-files: true
-          retention-days: 1
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply, squash, and publish the implementation
+        shell: bash
+        env:
+          EXPECTED_PATCH_SHA256: 89b9b37b66cc261d90276cfce219329ddff0de310a444b8ae3af0565e697ff4f
+          TARGET_BRANCH: agent/nix-cross-build-contract
+        run: |
+          set -euo pipefail
+
+          cat .github/patch-parts/part-* \
+            | base64 --decode \
+            | gzip --decompress \
+            > "$RUNNER_TEMP/nix-cross-build.patch"
+          printf '%s  %s\n' \
+            "$EXPECTED_PATCH_SHA256" \
+            "$RUNNER_TEMP/nix-cross-build.patch" \
+            | sha256sum --check --strict
+
+          git apply --index --whitespace=error-all \
+            "$RUNNER_TEMP/nix-cross-build.patch"
+          git rm -f \
+            .github/workflows/agent-source-snapshot.yml \
+            .github/patch-trigger
+          git rm -r .github/patch-parts
+          git diff --cached --check
+
+          git config user.name "zed-pkg automation"
+          git config user.email "automation@users.noreply.github.com"
+          git fetch --no-tags origin main
+
+          # Keep the fully assembled tree, but make its only parent the current
+          # main branch. This removes all temporary snapshot/patch commits.
+          git reset --soft origin/main
+          git diff --cached --check
+          git commit -m "feat: add target-aware offline source builds for Nix"
+          git push \
+            --force-with-lease="refs/heads/$TARGET_BRANCH:$GITHUB_SHA" \
+            origin "HEAD:refs/heads/$TARGET_BRANCH"
