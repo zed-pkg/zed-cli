@@ -1,0 +1,68 @@
+name: synchronize blocking-lock stack
+
+on:
+  push:
+    branches:
+      - agent/blocking-store-process-locks
+    paths:
+      - .github/workflows/sync-lock-stack.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synchronize-blocking-lock-stack
+  cancel-in-progress: true
+
+jobs:
+  merge-final-cross-platform-base:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the blocking-lock branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/blocking-store-process-locks
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Merge the final cross-platform base semantically
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: b7893ae396d20badeeb56ba36019edfa69e6d0e0
+        run: |
+          set -euo pipefail
+          if git merge-base --is-ancestor "$BASE_SHA" HEAD; then
+            echo "cross-platform lock base already present"
+            exit 0
+          fi
+
+          git fetch --no-tags origin agent/recursive-lock-cross-platform
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          set +e
+          git merge --no-ff --no-commit FETCH_HEAD
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -ne 0 ]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            test "$conflicts" = '.github/workflows/recursive-install-windows.yml'
+            git checkout --ours -- .github/workflows/recursive-install-windows.yml
+            grep -F 'cancel-in-progress: true' .github/workflows/recursive-install-windows.yml
+            grep -F 'owner termination releases the lower-level store lock' .github/workflows/recursive-install-windows.yml
+            git add .github/workflows/recursive-install-windows.yml
+          fi
+
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check
+          git commit -m 'merge: synchronize cross-platform lock base'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/blocking-store-process-locks
