@@ -144,7 +144,8 @@ jobs:
 
           metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
           lock = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
-          packages = lock.get('packages', [])
+          assert 'packages' not in lock
+          packages = lock.get('package', [])
           assert len(packages) == 1
           package = packages[0]
           assert package['org'] == metadata['org']
