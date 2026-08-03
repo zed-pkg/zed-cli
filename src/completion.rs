@@ -9,9 +9,9 @@ use crate::cli::Cli;
 use crate::{dev, fetch, nix_export_plan};
 
 fn root_command() -> clap::Command {
-    nix_export_plan::augment_root_command(fetch::augment_root_command(
-        dev::augment_root_command(Cli::command()),
-    ))
+    nix_export_plan::augment_root_command(fetch::augment_root_command(dev::augment_root_command(
+        Cli::command(),
+    )))
 }
 
 /// Write a static completion script for `zed` to stdout.

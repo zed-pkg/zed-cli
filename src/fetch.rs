@@ -369,8 +369,9 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
 
 fn validate_source(source: &str) -> Result<()> {
     if source.starts_with("file://") {
-        let url = reqwest::Url::parse(source)
-            .map_err(|_| anyhow::anyhow!("frozen lockfile contains an invalid file registry source"))?;
+        let url = reqwest::Url::parse(source).map_err(|_| {
+            anyhow::anyhow!("frozen lockfile contains an invalid file registry source")
+        })?;
         if !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
@@ -380,9 +381,9 @@ fn validate_source(source: &str) -> Result<()> {
                 "frozen file registry sources may not embed credentials, query strings, or fragments"
             );
         }
-        let path = url
-            .to_file_path()
-            .map_err(|_| anyhow::anyhow!("frozen file registry source is not a local absolute path"))?;
+        let path = url.to_file_path().map_err(|_| {
+            anyhow::anyhow!("frozen file registry source is not a local absolute path")
+        })?;
         if !path.is_absolute() {
             bail!("frozen file registry source is not a local absolute path");
         }
@@ -861,6 +862,7 @@ mod tests {
         let lock = Lockfile {
             version: Lockfile::CURRENT_VERSION,
             packages,
+            nix_adapters: Vec::new(),
         };
         let bytes = lock.to_toml_string().unwrap().into_bytes();
         fs::write(project.join(LOCKFILE_FILE), &bytes).unwrap();

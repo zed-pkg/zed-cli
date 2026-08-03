@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 
 use serde_json::Value;
@@ -88,12 +88,11 @@ license = "MIT"
 [package.repository]
 url = "https://github.com/acme/dataset"
 
+{extra}
 [publish.nix]
 attribute = "dataset"
 systems = ["x86_64-linux", "aarch64-linux"]
 outputs = ["out"]
-
-{extra}
 "#
     )
 }
@@ -133,16 +132,13 @@ fn single_data_plan_is_path_independent_sorted_and_read_only() {
         serde_json::json!(["aarch64-linux", "x86_64-linux"])
     );
     assert_eq!(plan["intent"]["outputs"], serde_json::json!(["out"]));
-    assert_eq!(plan["source"]["manifest_sha256"], sha256(manifest.as_bytes()));
     assert_eq!(
-        plan["source"]["lock_sha256"],
-        sha256(b"version = 1\n")
+        plan["source"]["manifest_sha256"],
+        sha256(manifest.as_bytes())
     );
+    assert_eq!(plan["source"]["lock_sha256"], sha256(b"version = 1\n"));
     assert_eq!(
-        plan["source"]["artifact"]["sha256"]
-            .as_str()
-            .unwrap()
-            .len(),
+        plan["source"]["artifact"]["sha256"].as_str().unwrap().len(),
         64
     );
     assert_eq!(plan["dependencies"], serde_json::json!([]));
@@ -172,7 +168,10 @@ fn environment_flags_work_without_leaking_or_creating_global_state() {
             ("ZED_PKG_HOME", home.to_str().unwrap()),
             ("ZED_PKG_TOKEN", secret),
             ("ZED_PKG_SUPABASE_KEY", secret),
-            ("ZED_PKG_REGISTRY", "https://person:secret@example.invalid/registry"),
+            (
+                "ZED_PKG_REGISTRY",
+                "https://person:secret@example.invalid/registry",
+            ),
         ],
     );
     assert!(output.status.success(), "{}", stderr(&output));
@@ -225,10 +224,7 @@ fn prebuilt_bins_must_exist_and_survive_publish_excludes() {
     let valid = root.path().join("valid");
     let excluded = root.path().join("excluded");
     let missing = root.path().join("missing");
-    let manifest = format!(
-        "{}\n[bin]\ntool = \"bin/tool\"\n",
-        data_manifest("")
-    );
+    let manifest = format!("{}\n[bin]\ntool = \"bin/tool\"\n", data_manifest(""));
     write_project(
         &valid,
         &manifest,
@@ -242,8 +238,8 @@ fn prebuilt_bins_must_exist_and_survive_publish_excludes() {
     assert_eq!(valid_plan["bins"]["tool"], "bin/tool");
 
     let excluded_manifest = format!(
-        "{}\n[bin]\ntool = \"bin/tool\"\n\n[publish]\nexclude = [\"bin/**\"]\n",
-        data_manifest("")
+        "{}\n[bin]\ntool = \"bin/tool\"\n",
+        data_manifest("[publish]\nexclude = [\"bin/**\"]\n")
     );
     write_project(
         &excluded,
@@ -342,9 +338,15 @@ outputs = ["out"]
         manifest,
         Some("version = 1\n"),
         &[
-            ("clients/node/package.json", b"{\"name\":\"@acme/clients\"}\n"),
+            (
+                "clients/node/package.json",
+                b"{\"name\":\"@acme/clients\"}\n",
+            ),
             ("clients/node/src/index.js", b"export const value = 1;\n"),
-            ("clients/rust/Cargo.toml", b"[package]\nname='clients'\nversion='2.0.0'\n"),
+            (
+                "clients/rust/Cargo.toml",
+                b"[package]\nname='clients'\nversion='2.0.0'\n",
+            ),
             ("clients/rust/src/lib.rs", b"pub const VALUE: u8 = 1;\n"),
         ],
     );
@@ -353,16 +355,8 @@ outputs = ["out"]
     assert!(!missing_target.status.success());
     assert!(stderr(&missing_target).contains("requires --target"));
 
-    let first = run_plan(
-        &project,
-        &["--frozen", "--json", "--target", "node"],
-        &[],
-    );
-    let second = run_plan(
-        &project,
-        &["--frozen", "--json", "--target", "nodejs"],
-        &[],
-    );
+    let first = run_plan(&project, &["--frozen", "--json", "--target", "node"], &[]);
+    let second = run_plan(&project, &["--frozen", "--json", "--target", "nodejs"], &[]);
     assert!(first.status.success(), "{}", stderr(&first));
     assert!(second.status.success(), "{}", stderr(&second));
     assert_eq!(stdout(&first), stdout(&second));
@@ -402,11 +396,7 @@ url = "https://github.com/acme/plain"
     assert!(!missing_route.status.success());
     assert!(stderr(&missing_route).contains("declares no [publish.nix]"));
 
-    let unknown_target = run_plan(
-        &project,
-        &["--frozen", "--json", "--target", "java"],
-        &[],
-    );
+    let unknown_target = run_plan(&project, &["--frozen", "--json", "--target", "java"], &[]);
     assert!(!unknown_target.status.success());
     assert!(stderr(&unknown_target).contains("has no target"));
 }

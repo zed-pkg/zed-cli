@@ -22,8 +22,8 @@ use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::manifest::is_sha256_hex;
 use zed_interfaces::paths::{ARCHIVE_ROOT, LOCKFILE_FILE, MANIFEST_FILE};
 use zed_interfaces::{
-    Lockfile, Manifest, NixBuilderNetwork, NixExportMode, NixExportSection,
-    NixInteropArtifact, NixPackageIdentity, NixPolicyEvidence, NixPolicyProfile,
+    Lockfile, Manifest, NixBuilderNetwork, NixExportMode, NixExportSection, NixInteropArtifact,
+    NixPackageIdentity, NixPolicyEvidence, NixPolicyProfile,
 };
 
 use crate::cli::Globals;
@@ -181,8 +181,7 @@ impl NixExportPlan {
             .artifact
             .validate("planned Zed artifact")
             .map_err(|error| anyhow::anyhow!(error))?;
-        if !is_sha256_hex(&self.source.manifest_sha256)
-            || !is_sha256_hex(&self.source.lock_sha256)
+        if !is_sha256_hex(&self.source.manifest_sha256) || !is_sha256_hex(&self.source.lock_sha256)
         {
             bail!("planned manifest and lock digests must be lowercase SHA-256 hex");
         }
@@ -539,7 +538,10 @@ fn verify_bins_in_artifact(packed: &PackResult, bins: &BTreeMap<String, String>)
         .with_context(|| format!("opening packed artifact {}", packed.path.display()))?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
     let mut files = BTreeSet::new();
-    for entry in archive.entries().context("reading packed artifact entries")? {
+    for entry in archive
+        .entries()
+        .context("reading packed artifact entries")?
+    {
         let entry = entry.context("reading packed artifact entry")?;
         if entry.header().entry_type().is_file() {
             files.insert(entry.path()?.to_string_lossy().replace('\\', "/"));
@@ -791,7 +793,11 @@ mod tests {
             .get_subcommands()
             .find(|command| command.get_name() == "interop")
             .expect("interop command must be present");
-        assert!(interop.get_subcommands().any(|command| command.get_name() == "nix"));
+        assert!(
+            interop
+                .get_subcommands()
+                .any(|command| command.get_name() == "nix")
+        );
     }
 
     #[test]

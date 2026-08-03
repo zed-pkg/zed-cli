@@ -30,12 +30,9 @@ fn write_lock(project: &Path, source: Option<String>) {
     let lock = Lockfile {
         version: Lockfile::CURRENT_VERSION,
         packages,
+        nix_adapters: Vec::new(),
     };
-    fs::write(
-        project.join(LOCKFILE_FILE),
-        lock.to_toml_string().unwrap(),
-    )
-    .unwrap();
+    fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();
 }
 
 fn fetch(project: &Path, home: &Path, output: &Path) -> Output {
@@ -110,7 +107,10 @@ fn symlinked_parent_cannot_redirect_output_into_the_project() {
     assert!(!result.status.success());
     assert!(stderr(&result).contains("canonical fetch output"));
     assert!(!project.join("generated").exists());
-    assert_eq!(fs::read(project.join("owned.txt")).unwrap(), b"consumer-owned\n");
+    assert_eq!(
+        fs::read(project.join("owned.txt")).unwrap(),
+        b"consumer-owned\n"
+    );
     assert!(!home.exists());
 }
 
