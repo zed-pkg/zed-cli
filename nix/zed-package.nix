@@ -35,8 +35,6 @@ rec {
       registryValue =
         if registryPath != null then "file://${toString registryPath}"
         else registry;
-      registryArgs = lib.optionalString (registryValue != null)
-        "--registry ${lib.escapeShellArg registryValue}";
       targetArgs = lib.optionalString (target != null)
         "--target ${lib.escapeShellArg target}";
       manifestArgs = lib.optionalString (manifestPath == null) "--skip-manifest";
@@ -98,11 +96,25 @@ rec {
           "$XDG_DATA_HOME" \
           "$ZED_PKG_HOME"
 
+        registry_args=()
         ${lib.optionalString (registryPath != null) ''
           if [[ ! -d "$ZED_PKG_NIX_REGISTRY_INPUT" ]]; then
             echo "zed-pkg Nix bridge: immutable file registry input is missing: $ZED_PKG_NIX_REGISTRY_INPUT" >&2
             exit 1
           fi
+
+          # Linux's sandbox is stricter than Darwin's about traversing store
+          # inputs through application-level file:// URLs. Mirror the already
+          # declared immutable input into this builder's private workspace and
+          # point Zed at the mirror. This does not mutate lock provenance or
+          # broaden the input graph: the only source remains registryPath.
+          local_registry="$TMPDIR/zed-registry"
+          mkdir -p "$local_registry"
+          cp -a "$ZED_PKG_NIX_REGISTRY_INPUT"/. "$local_registry"/
+          registry_args=(--registry "file://$local_registry")
+        ''}
+        ${lib.optionalString (registry != null) ''
+          registry_args=(--registry ${lib.escapeShellArg registry})
         ''}
 
         work="$TMPDIR/zed-project"
@@ -139,7 +151,7 @@ rec {
         ''}
 
         cd "$work"
-        ${zed}/bin/zed ${registryArgs} install \
+        ${zed}/bin/zed "''${registry_args[@]}" install \
           --frozen \
           --install-mode copy \
           --adapter ${lib.escapeShellArg adapter} \
