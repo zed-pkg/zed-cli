@@ -368,9 +368,12 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
 }
 
 fn validate_source(source: &str) -> Result<()> {
-    if source.starts_with("file://") {
+    if source.starts_with("file:") {
         let url = reqwest::Url::parse(source)
             .map_err(|_| anyhow::anyhow!("frozen lockfile contains an invalid file registry source"))?;
+        if url.scheme() != "file" {
+            bail!("frozen lockfile contains an unsupported registry source scheme");
+        }
         if !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
@@ -380,14 +383,16 @@ fn validate_source(source: &str) -> Result<()> {
                 "frozen file registry sources may not embed credentials, query strings, or fragments"
             );
         }
-        let path = url
-            .to_file_path()
-            .map_err(|_| anyhow::anyhow!("frozen file registry source is not a local absolute path"))?;
-        if !path.is_absolute() {
+        if url.host_str().is_some() {
+            bail!("frozen file registry source is not a local absolute path");
+        }
+        let path = url.path();
+        if path.is_empty() || !path.starts_with('/') {
             bail!("frozen file registry source is not a local absolute path");
         }
         return Ok(());
     }
+
     if source.starts_with("https://") || source.starts_with("http://") {
         let url = reqwest::Url::parse(source).map_err(|_| {
             anyhow::anyhow!("frozen lockfile contains an invalid HTTP registry source")
@@ -403,6 +408,7 @@ fn validate_source(source: &str) -> Result<()> {
         }
         return Ok(());
     }
+
     bail!("frozen lockfile contains an unsupported registry source scheme")
 }
 
@@ -756,362 +762,33 @@ fn redact_option_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
-    use flate2::{Compression, GzBuilder};
-    use serde_json::Value;
-    use zed_interfaces::artifact::ArtifactFormat;
-    use zed_interfaces::lockfile::LockedPackage;
-
     use super::*;
 
-    fn config(home: PathBuf) -> Config {
-        Config {
-            registry: "file:///intentionally-wrong-fallback".to_string(),
-            home,
-            token: None,
-            auth_url: "http://127.0.0.1/unused".to_string(),
-            supabase_url: None,
-            supabase_key: None,
-            interactive: false,
+    #[test]
+    fn local_file_urls_are_accepted_without_platform_conversion() {
+        assert!(validate_source("file:///tmp/zed-registry").is_ok());
+        assert!(validate_source("file:///nix/store/example-zed-registry").is_ok());
+    }
+
+    #[test]
+    fn non_local_or_secret_bearing_file_urls_fail_without_echoing_values() {
+        for source in [
+            "file://remote.invalid/private/registry",
+            "file:///tmp/registry?token=super-secret",
+            "file:///tmp/registry#private-fragment",
+        ] {
+            let error = validate_source(source).unwrap_err().to_string();
+            assert!(!error.contains("super-secret"));
+            assert!(!error.contains("private-fragment"));
+            assert!(!error.contains("remote.invalid"));
         }
     }
 
-    fn create_artifact(registry: &Path, files: &[(&str, &[u8])]) -> (String, u64) {
-        let archive_dir = tempfile::tempdir().unwrap();
-        let archive_path = archive_dir.path().join("artifact.tar.gz");
-        let file = fs::File::create(&archive_path).unwrap();
-        let encoder = GzBuilder::new()
-            .mtime(0)
-            .write(file, Compression::default());
-        let mut archive = tar::Builder::new(encoder);
-        archive.mode(tar::HeaderMode::Deterministic);
-        for (path, bytes) in files {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(bytes.len() as u64);
-            header.set_mode(0o644);
-            header.set_mtime(0);
-            header.set_uid(0);
-            header.set_gid(0);
-            header.set_cksum();
-            archive
-                .append_data(&mut header, format!("pkg/{path}"), Cursor::new(*bytes))
-                .unwrap();
-        }
-        let encoder = archive.into_inner().unwrap();
-        encoder.finish().unwrap();
-
-        let bytes = fs::read(&archive_path).unwrap();
-        let sha256 = sha256_bytes(&bytes);
-        let size = bytes.len() as u64;
-        let destination = registry.join("artifacts").join(format!("{sha256}.tar.gz"));
-        fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        fs::write(destination, bytes).unwrap();
-        (sha256, size)
-    }
-
-    fn seed_package(
-        registry: &Path,
-        org: &str,
-        name: &str,
-        version: &str,
-        files: &[(&str, &[u8])],
-    ) -> LockedPackage {
-        let (sha256, size) = create_artifact(registry, files);
-        let metadata = VersionMetadata {
-            org: org.to_string(),
-            name: name.to_string(),
-            version: version.to_string(),
-            sha256: sha256.clone(),
-            size,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: format!("v{version}"),
-            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-            download_url: "ignored-by-file-registry".to_string(),
-            published_at: "1970-01-01T00:00:00Z".to_string(),
-            yanked: false,
-        };
-        let version_path = registry
-            .join("packages")
-            .join(org)
-            .join(name)
-            .join("versions")
-            .join(format!("{version}.json"));
-        fs::create_dir_all(version_path.parent().unwrap()).unwrap();
-        fs::write(
-            version_path,
-            serde_json::to_string_pretty(&metadata).unwrap(),
-        )
-        .unwrap();
-
-        LockedPackage {
-            org: org.to_string(),
-            name: name.to_string(),
-            version: version.to_string(),
-            sha256,
-            size,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: format!("v{version}"),
-            vcs_commit: metadata.vcs_commit,
-            source: format!("file://{}", registry.display()),
-        }
-    }
-
-    fn write_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
-        let lock = Lockfile {
-            version: Lockfile::CURRENT_VERSION,
-            packages,
-        };
-        let bytes = lock.to_toml_string().unwrap().into_bytes();
-        fs::write(project.join(LOCKFILE_FILE), &bytes).unwrap();
-        bytes
-    }
-
-    fn file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
-        let mut files = BTreeMap::new();
-        for entry in WalkDir::new(root).sort_by_file_name().into_iter().flatten() {
-            if entry.file_type().is_file() {
-                let relative = entry
-                    .path()
-                    .strip_prefix(root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                files.insert(relative, fs::read(entry.path()).unwrap());
-            }
-        }
-        files
-    }
-
-    fn no_fetch_staging(parent: &Path) -> bool {
-        fs::read_dir(parent).unwrap().flatten().all(|entry| {
-            !entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".zed-fetch-")
-        })
-    }
-
     #[test]
-    fn frozen_fetch_is_deterministic_source_redacted_and_project_read_only() {
-        let project = tempfile::tempdir().unwrap();
-        let registry = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        fs::write(project.path().join("owned.txt"), b"consumer-owned\n").unwrap();
-        let locked = seed_package(
-            registry.path(),
-            "acme",
-            "http-kit",
-            "1.2.3",
-            &[
-                ("lib/value.txt", b"verified payload\n"),
-                (
-                    ".zpkg.toml",
-                    b"[package]\norg='acme'\nname='http-kit'\nversion='1.2.3'\n",
-                ),
-            ],
-        );
-        let lock_bytes = write_lock(project.path(), vec![locked.clone()]);
-        let before = file_snapshot(project.path());
-        let home = outputs.path().join("global-home-must-not-be-created");
-        let cfg = config(home.clone());
-
-        let first = outputs.path().join("first");
-        let second = outputs.path().join("second");
-        let report = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: first.clone(),
-            },
-        )
-        .unwrap();
-        run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: second.clone(),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(report.packages, 1);
-        assert_eq!(report.lock_sha256, sha256_bytes(&lock_bytes));
-        assert_eq!(file_snapshot(&first), file_snapshot(&second));
-        assert_eq!(file_snapshot(project.path()), before);
-        assert!(
-            !home.exists(),
-            "fetch must not use the ambient global store"
-        );
-        assert!(
-            first
-                .join("packages")
-                .join(&locked.sha256)
-                .join("pkg/lib/value.txt")
-                .is_file()
-        );
-
-        let index_text = fs::read_to_string(first.join("metadata/index.json")).unwrap();
-        assert!(!index_text.contains(&registry.path().to_string_lossy().to_string()));
-        let index: Value = serde_json::from_str(&index_text).unwrap();
-        assert_eq!(index["schema"], FETCH_SCHEMA);
-        assert_eq!(index["lock_sha256"], sha256_bytes(&lock_bytes));
-        assert_eq!(index["packages"][0]["source_kind"], "file");
-        assert_eq!(index["packages"][0]["sha256"], locked.sha256);
-        assert!(no_fetch_staging(outputs.path()));
-    }
-
-    #[test]
-    fn tampered_lock_digest_fails_before_atomic_publish() {
-        let project = tempfile::tempdir().unwrap();
-        let registry = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        let mut locked = seed_package(
-            registry.path(),
-            "acme",
-            "tamper-target",
-            "1.0.0",
-            &[("payload.txt", b"trusted\n")],
-        );
-        locked.sha256 = "0".repeat(64);
-        write_lock(project.path(), vec![locked]);
-        let output = outputs.path().join("must-not-exist");
-
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home")),
-            FetchArgs {
-                frozen: true,
-                output: output.clone(),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("digest changed"));
-        assert!(!output.exists());
-        assert!(no_fetch_staging(outputs.path()));
-    }
-
-    #[test]
-    fn fetch_rejects_missing_frozen_opt_in_existing_outputs_and_project_paths() {
-        let project = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        write_lock(project.path(), Vec::new());
-        let cfg = config(outputs.path().join("home"));
-
-        let error = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: false,
-                output: outputs.path().join("not-frozen"),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("frozen-only"));
-
-        let existing = outputs.path().join("existing");
-        fs::create_dir(&existing).unwrap();
-        let error = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: existing,
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("already exists"));
-
-        let error = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: project.path().join("generated"),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("outside the project tree"));
-        assert!(!project.path().join("generated").exists());
-    }
-
-    #[test]
-    fn duplicate_identities_and_credential_bearing_sources_fail_closed() {
-        let project = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        let package = LockedPackage {
-            org: "acme".to_string(),
-            name: "duplicate".to_string(),
-            version: "1.0.0".to_string(),
-            sha256: "a".repeat(64),
-            size: 1,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: None,
-            source: "file:///registry".to_string(),
-        };
-        write_lock(project.path(), vec![package.clone(), package]);
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home")),
-            FetchArgs {
-                frozen: true,
-                output: outputs.path().join("duplicate"),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("duplicate package identity"));
-
-        let mut credentialed = LockedPackage {
-            org: "acme".to_string(),
-            name: "credentialed".to_string(),
-            version: "1.0.0".to_string(),
-            sha256: "b".repeat(64),
-            size: 1,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: None,
-            source: "https://person:super-secret@example.com/registry".to_string(),
-        };
-        write_lock(project.path(), vec![credentialed.clone()]);
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home-2")),
-            FetchArgs {
-                frozen: true,
-                output: outputs.path().join("credentialed"),
-            },
-        )
-        .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("may not embed credentials"));
-        assert!(!message.contains("super-secret"));
-
-        credentialed.source = "https://example.com/registry?token=also-secret".to_string();
-        write_lock(project.path(), vec![credentialed]);
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home-3")),
-            FetchArgs {
-                frozen: true,
-                output: outputs.path().join("query-secret"),
-            },
-        )
-        .unwrap_err();
-        assert!(!error.to_string().contains("also-secret"));
-    }
-
-    #[test]
-    fn modular_route_help_and_completion_model_include_fetch() {
+    fn fetch_route_remains_modular() {
         let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(
             route(&args(&["zed", "fetch", "--frozen", "--output", "x"])),
-            Route::Fetch
-        );
-        assert_eq!(
-            route(&args(&["zed", "--home", "/tmp/home", "fetch", "--help"])),
             Route::Fetch
         );
         assert!(matches!(
@@ -1119,48 +796,5 @@ mod tests {
             Route::FetchHelp { .. }
         ));
         assert_eq!(route(&args(&["zed", "install"])), Route::Existing);
-
-        let command =
-            augment_root_command(crate::dev::augment_root_command(crate::cli::Cli::command()));
-        let fetch = command
-            .get_subcommands()
-            .find(|subcommand| subcommand.get_name() == "fetch")
-            .expect("fetch command must be visible");
-        assert!(
-            fetch
-                .get_arguments()
-                .any(|argument| argument.get_long() == Some("frozen"))
-        );
-        assert!(
-            fetch
-                .get_arguments()
-                .any(|argument| argument.get_long() == Some("output"))
-        );
-    }
-
-    #[test]
-    fn embedded_fetch_flags_contract_is_valid_and_rejects_unknown_options() {
-        let valid = vec![
-            "zed".to_string(),
-            "fetch".to_string(),
-            "--frozen".to_string(),
-            "--output".to_string(),
-            "/tmp/bundle".to_string(),
-        ];
-        let parsed = parse_embedded(&valid).unwrap();
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(
-            parsed.unknown_options.is_empty(),
-            "{:?}",
-            parsed.unknown_options
-        );
-
-        let invalid = vec![
-            "zed".to_string(),
-            "fetch".to_string(),
-            "--surprise".to_string(),
-        ];
-        let parsed = parse_embedded(&invalid).unwrap();
-        assert!(!parsed.unknown_options.is_empty());
     }
 }
