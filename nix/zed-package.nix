@@ -25,14 +25,18 @@ rec {
     , zed
     , hash ? lib.fakeHash
     , registry ? null
+    , registryPath ? null
     , manifestPath ? ".zpkg.toml"
     , lockfilePath ? ".zpkg.lock"
     , adapter ? "none"
     , target ? null
     }:
     let
-      registryArgs = lib.optionalString (registry != null)
-        "--registry ${lib.escapeShellArg registry}";
+      registryValue =
+        if registryPath != null then "file://${toString registryPath}"
+        else registry;
+      registryArgs = lib.optionalString (registryValue != null)
+        "--registry ${lib.escapeShellArg registryValue}";
       targetArgs = lib.optionalString (target != null)
         "--target ${lib.escapeShellArg target}";
       manifestArgs = lib.optionalString (manifestPath == null) "--skip-manifest";
@@ -43,15 +47,23 @@ rec {
         install_mode = "copy";
         inherit adapter target;
         build_hooks = false;
-        registry_override = registry;
+        registry_override = registryValue;
         canonical_adapter_record = false;
       };
     in
+    assert lib.assertMsg (registry == null || registryPath == null)
+      "fetchZedDeps: set at most one of registry and registryPath";
     stdenvNoCC.mkDerivation {
       inherit pname version src;
 
       nativeBuildInputs = [ zed cacert coreutils findutils ];
       phases = [ "installPhase" ];
+
+      # An explicit path-valued attribute keeps immutable file registries in
+      # the Linux sandbox closure. A URL string alone is not a reliable input
+      # edge across all Nix platforms and sandbox implementations.
+      ZED_PKG_NIX_REGISTRY_INPUT =
+        if registryPath == null then "" else registryPath;
 
       # A recursive fixed-output derivation is the only network-enabled stage.
       # The regular package derivation below consumes this output offline.
@@ -85,6 +97,13 @@ rec {
           "$XDG_CONFIG_HOME" \
           "$XDG_DATA_HOME" \
           "$ZED_PKG_HOME"
+
+        ${lib.optionalString (registryPath != null) ''
+          if [[ ! -d "$ZED_PKG_NIX_REGISTRY_INPUT" ]]; then
+            echo "zed-pkg Nix bridge: immutable file registry input is missing: $ZED_PKG_NIX_REGISTRY_INPUT" >&2
+            exit 1
+          fi
+        ''}
 
         work="$TMPDIR/zed-project"
         mkdir -p "$work"
@@ -189,11 +208,31 @@ rec {
   # Build an ordinary, network-isolated Nix package from a source tree plus the
   # verified fixed output above. Callers retain the complete stdenv surface.
   mkZedPackage =
-    args@{ zedDeps, postPatch ? "", passthru ? { }, ... }:
+    args@{
+      zedDeps,
+      postUnpack ? "",
+      postPatch ? "",
+      passthru ? { },
+      ...
+    }:
     stdenv.mkDerivation (
-      (builtins.removeAttrs args [ "zedDeps" "postPatch" "passthru" ])
+      (builtins.removeAttrs args [
+        "zedDeps"
+        "postUnpack"
+        "postPatch"
+        "passthru"
+      ])
       // {
         ZED_PKG_DEPS = zedDeps;
+        postUnpack = ''
+          # Directory sources copied from the Nix store may retain read-only
+          # modes on Darwin. The verified dependency overlay and normal stdenv
+          # phases require a writable private build-tree copy.
+          if [[ -n "''${sourceRoot:-}" && -d "$sourceRoot" ]]; then
+            chmod -R u+w "$sourceRoot"
+          fi
+          ${postUnpack}
+        '';
         postPatch = ''
           if [[ ! -d ${zedDeps}/tree ]]; then
             echo "mkZedPackage: zedDeps does not contain the Nix bridge tree" >&2
