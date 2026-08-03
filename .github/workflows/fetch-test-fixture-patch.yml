@@ -1,0 +1,79 @@
+name: temporary resolver test-fixture patch
+
+on:
+  push:
+    branches:
+      - agent/den-1436-frozen-fetch-main
+    paths:
+      - .github/workflows/fetch-test-fixture-patch.yml
+      - src/fetch.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: temporary-resolver-test-fixture-patch-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt
+
+      - name: Apply the exact test-only compatibility patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/fetch.rs')
+          source = path.read_text(encoding='utf-8')
+
+          old_duplicate = '        assert!(error.to_string().contains("duplicate package identity"));'
+          new_duplicate = '''        let message = error.to_string();
+                  assert!(
+                      message.contains("duplicate locked package identity")
+                          && message.contains("acme/duplicate"),
+                      "unexpected duplicate diagnostic: {message}"
+                  );'''
+          if source.count(old_duplicate) != 1:
+              raise SystemExit('expected exactly one stale duplicate assertion')
+          source = source.replace(old_duplicate, new_duplicate)
+
+          old_revision = '''            vcs_commit: None,
+                  source: "https://person:super-secret@example.com/registry".to_string(),'''
+          new_revision = '''            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+                  source: "https://person:super-secret@example.com/registry".to_string(),'''
+          if source.count(old_revision) != 1:
+              raise SystemExit('expected exactly one credential-source fixture without a revision')
+          source = source.replace(old_revision, new_revision)
+
+          path.write_text(source, encoding='utf-8')
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Prove the intended resolver boundary
+        run: >-
+          cargo test --locked
+          fetch::tests::duplicate_identities_and_credential_bearing_sources_fail_closed
+          -- --nocapture --test-threads=1
+
+      - name: Upload the verified complete source file
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-fetch-test-fixture-patch-${{ github.sha }}
+          path: src/fetch.rs
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: false
