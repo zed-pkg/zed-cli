@@ -43,9 +43,9 @@ $out/
 
 `bridge.json` identifies itself as `zed.nix-fetch-bridge/v1` and explicitly
 sets `canonical_adapter_record` to `false`. It is not the canonical
-`zed.nix-adapter/v1` provenance/attestation record being defined in
-`zed-interfaces`; the deterministic exporter and Nix-to-Zed sealer will emit
-that shared record after the schema lands. Keeping these formats distinct
+`zed.nix-adapter/v1` provenance/attestation record now defined and
+schema-published by `zed-interfaces`. The deterministic exporter and
+Nix-to-Zed sealer will emit that shared record. Keeping these formats distinct
 prevents a materialization receipt from being mistaken for publication
 evidence.
 
@@ -57,6 +57,9 @@ The fetch stage:
 - isolates `HOME`, XDG directories, and `ZED_PKG_HOME`;
 - removes token and password environment variables;
 - accepts only proxy variables as impure networking configuration;
+- mirrors an explicitly declared immutable `registryPath` into the builder's
+  private workspace before Zed reads it, preserving the same Nix input graph
+  across Linux and Darwin sandbox behavior;
 - rejects transaction residue, absolute links, escaping links, and broken
   links; and
 - declares `outputHashMode = "recursive"`, `outputHashAlgo = "sha256"`, and
@@ -119,8 +122,8 @@ zedNix = inputs.zed-pkg.lib.makeZedPackageLib pkgs;
 
 Consumers must pin both zed-cli and Nixpkgs in their own `flake.lock`. The lock
 committed under `nix/flake.lock` establishes the repository CI baseline and is
-kept aligned with the reviewed `zed-interfaces` Nix baseline; it does not
-silently replace the consumer's package-set decision.
+kept aligned with the merged `zed-interfaces` Nix intent, provenance, and schema
+contract; it does not silently replace the consumer's package-set decision.
 
 ## Ordinary builder: `mkZedPackage`
 
@@ -250,7 +253,7 @@ A Nix import is immutable packaging of proven outputs. It does not make the
 zed-pkg resolver depend on Nix and it does not require Nix at application
 runtime.
 
-## Proposed CLI surface
+## CLI surface
 
 The approved command family keeps planning, export, sealing, and verification
 explicit:
@@ -286,10 +289,11 @@ exported metadata must always include the evaluated system and output platform.
 3. normalizing the Linux runner-built binary's interpreter and RPATH inside Nix;
 4. publishing the existing Node fixture to a local registry;
 5. adding that registry to the Nix store before resolution so the frozen lock
-   points at an immutable, sandbox-visible URL;
+   points at an immutable URL;
 6. generating a real `.zpkg.lock` and uninstalling the project materialization;
 7. evaluating the standalone flake library with lock updates disabled;
-8. bootstrapping the recursive fixed-output hash;
+8. bootstrapping the recursive fixed-output hash while mirroring the declared
+   immutable registry input into the builder-private workspace;
 9. rebuilding the same graph under two derivation names and comparing SHA-256
    NAR hashes;
 10. checking the self-identified non-canonical bridge metadata and link policy;
