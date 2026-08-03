@@ -45,22 +45,32 @@ jobs:
 
           old_duplicate = '        assert!(error.to_string().contains("duplicate package identity"));'
           new_duplicate = '''        let message = error.to_string();
-                  assert!(
-                      message.contains("duplicate locked package identity")
-                          && message.contains("acme/duplicate"),
-                      "unexpected duplicate diagnostic: {message}"
-                  );'''
+          assert!(
+              message.contains("duplicate locked package identity")
+                  && message.contains("acme/duplicate"),
+              "unexpected duplicate diagnostic: {message}"
+          );'''
           if source.count(old_duplicate) != 1:
               raise SystemExit('expected exactly one stale duplicate assertion')
           source = source.replace(old_duplicate, new_duplicate)
 
-          old_revision = '''            vcs_commit: None,
-                  source: "https://person:super-secret@example.com/registry".to_string(),'''
-          new_revision = '''            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-                  source: "https://person:super-secret@example.com/registry".to_string(),'''
-          if source.count(old_revision) != 1:
-              raise SystemExit('expected exactly one credential-source fixture without a revision')
-          source = source.replace(old_revision, new_revision)
+          marker = '        let mut credentialed = LockedPackage {'
+          start = source.find(marker)
+          if start < 0:
+              raise SystemExit('credential fixture start not found')
+          end = source.find('\n        };', start)
+          if end < 0:
+              raise SystemExit('credential fixture end not found')
+          block = source[start:end]
+          old_revision = '            vcs_commit: None,'
+          new_revision = (
+              '            vcs_commit: '
+              'Some("0123456789abcdef0123456789abcdef01234567".to_string()),'
+          )
+          if block.count(old_revision) != 1:
+              raise SystemExit('credential fixture must contain exactly one empty VCS revision')
+          block = block.replace(old_revision, new_revision)
+          source = source[:start] + block + source[end:]
 
           path.write_text(source, encoding='utf-8')
           PY
