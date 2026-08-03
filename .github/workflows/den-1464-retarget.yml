@@ -1,0 +1,81 @@
+name: DEN-1464 retarget strict lock contract
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '.github/workflows/den-1464-retarget.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1464-retarget-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  OLD_ZED_INTERFACES_SHA: cc5ed7339672543c734c5f1fd19f7e017a771854
+  NEW_ZED_INTERFACES_SHA: c2e049006453c26ca8ca291783f681fce75cb01f
+  EXPECTED_BRANCH: agent/den-1464-frozen-lock-integrity
+
+jobs:
+  retarget:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/den-1464-frozen-lock-integrity'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout only the reviewed PR branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Replace the exact dependency revision and regenerate Cargo.lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_HEAD_REF" = "$EXPECTED_BRANCH"
+          python3 - <<'PY'
+          import os
+          import pathlib
+
+          path = pathlib.Path('Cargo.toml')
+          text = path.read_text()
+          old = os.environ['OLD_ZED_INTERFACES_SHA']
+          new = os.environ['NEW_ZED_INTERFACES_SHA']
+          old_count = text.count(old)
+          new_count = text.count(new)
+          if old_count == 1 and new_count == 0:
+              path.write_text(text.replace(old, new, 1))
+          elif old_count == 0 and new_count == 1:
+              pass
+          else:
+              raise SystemExit(
+                  f'unexpected Cargo.toml revision counts: old={old_count}, new={new_count}'
+              )
+          PY
+          cargo update -p zed-interfaces --precise "$NEW_ZED_INTERFACES_SHA"
+          test "$(grep -c "$NEW_ZED_INTERFACES_SHA" Cargo.toml)" -eq 1
+          test "$(grep -c "$NEW_ZED_INTERFACES_SHA" Cargo.lock)" -eq 1
+          ! grep -q "$OLD_ZED_INTERFACES_SHA" Cargo.toml
+          ! grep -q "$OLD_ZED_INTERFACES_SHA" Cargo.lock
+          git diff --check -- Cargo.toml Cargo.lock
+
+      - name: Commit only the generated dependency files
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Cargo.toml Cargo.lock; then
+            echo 'Cargo dependency already targets the reviewed merge.'
+            exit 0
+          fi
+          test -z "$(git diff --name-only -- . ':!Cargo.toml' ':!Cargo.lock')"
+          git config user.name zed-den-1464-bot
+          git config user.email zed-den-1464-bot@users.noreply.github.com
+          git add Cargo.toml Cargo.lock
+          git commit -m 'DEN-1464 pin content-addressed provenance contract'
+          git push origin "HEAD:$EXPECTED_BRANCH"
