@@ -343,11 +343,9 @@ fn install_with_generated_manifest(
     ) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
-            if let Err(rollback) = restore_if_unchanged(
-                &path,
-                replacement_text.as_bytes(),
-                previous_text.as_bytes(),
-            ) {
+            if let Err(rollback) =
+                restore_if_unchanged(&path, replacement_text.as_bytes(), previous_text.as_bytes())
+            {
                 return Err(error.context(format!(
                     "installation failed and the generated manifest update could not be rolled back: {rollback:#}"
                 )));
@@ -357,10 +355,7 @@ fn install_with_generated_manifest(
     }
 }
 
-fn resolve_direct_dependencies(
-    cfg: &Config,
-    specs: &[String],
-) -> Result<BTreeMap<String, String>> {
+fn resolve_direct_dependencies(cfg: &Config, specs: &[String]) -> Result<BTreeMap<String, String>> {
     let parsed = parse_requested_specs(specs)?;
     let registry = if parsed.values().any(Option::is_none) {
         Some(registry_for(&cfg.registry)?)
@@ -395,9 +390,7 @@ fn resolve_direct_dependencies(
     Ok(dependencies)
 }
 
-fn parse_requested_specs(
-    specs: &[String],
-) -> Result<BTreeMap<String, Option<String>>> {
+fn parse_requested_specs(specs: &[String]) -> Result<BTreeMap<String, Option<String>>> {
     let mut requested = BTreeMap::new();
     for spec in specs {
         let (key, requirement) = split_dependency_spec(spec)?;
@@ -486,10 +479,9 @@ fn generated_manifest(
 
 fn is_generated_manifest_path(project: &Path) -> Result<bool> {
     let path = project.join(MANIFEST_FILE);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let manifest = Manifest::parse(&text)
-        .with_context(|| format!("invalid {}", path.display()))?;
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let manifest =
+        Manifest::parse(&text).with_context(|| format!("invalid {}", path.display()))?;
     Ok(is_generated_consumer(&manifest))
 }
 
@@ -743,19 +735,13 @@ mod tests {
             ("acme/http-kit".to_string(), "^1".to_string()),
             ("acme/log-kit".to_string(), "=2.0.0".to_string()),
         ]);
-        let first = generated_manifest(
-            &nested,
-            dependencies.clone(),
-            Some("node"),
-            Adapter::Node,
+        let first =
+            generated_manifest(&nested, dependencies.clone(), Some("node"), Adapter::Node);
+        let second = generated_manifest(&nested, dependencies, Some("node"), Adapter::Node);
+        assert_eq!(
+            first.to_toml_string().unwrap(),
+            second.to_toml_string().unwrap()
         );
-        let second = generated_manifest(
-            &nested,
-            dependencies,
-            Some("node"),
-            Adapter::Node,
-        );
-        assert_eq!(first.to_toml_string().unwrap(), second.to_toml_string().unwrap());
         assert_eq!(first.package.name, "my-consumer-app");
         assert!(is_generated_consumer(&first));
         assert!(is_non_publishable_generated(&first));
