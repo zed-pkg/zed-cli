@@ -1,8 +1,8 @@
 //! Public command model shared by runtime parsing and completion generation.
 //!
-//! The derived [`crate::cli::Cli`] structure remains the stable internal data
-//! model. This module owns compatibility changes to public spellings so one
-//! command definition drives parsing, help, and shell completion.
+//! The derived [`crate::cli::Cli`] structure is the canonical public model.
+//! This module adds only process-startup environment compatibility so runtime
+//! parsing, help, and shell completion all consume the same command tree.
 
 use std::ffi::OsString;
 
@@ -14,22 +14,10 @@ pub const DO_NOT_WRITE_NEW_MANIFEST_ENV: &str =
     "ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST";
 pub const LEGACY_ALLOW_NO_MANIFEST_ENV: &str = "ZED_PKG_ALLOW_NO_MANIFEST";
 
-/// Build the established CLI command with the durable-manifest contract's
-/// canonical spelling applied to the existing typed argument ID.
+/// Build the exact typed command model used by every public parser and help or
+/// completion surface.
 pub fn command() -> Command {
-    Cli::command().mut_subcommand("install", |install| {
-        install.mut_arg("allow_no_manifest", |argument| {
-            argument
-                .long("do-not-write-new-manifest")
-                // The derived model already carries `skip-manifest` as a
-                // visible alias. Preserve it and add only the displaced former
-                // long spelling here so Clap never sees a duplicate alias.
-                .visible_alias("allow-no-manifest")
-                .help(
-                    "Do not create a new .zpkg.toml when installing into a project without one",
-                )
-        })
-    })
+    Cli::command()
 }
 
 /// Parse the process arguments through the exact command model used by help
@@ -43,8 +31,8 @@ pub fn parse() -> Cli {
 /// configuration, and report deprecated command-line spellings.
 ///
 /// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` is canonical. The old environment key
-/// remains functional for scripts while the embedded flags2env contract is
-/// migrated without breaking existing deployments.
+/// remains the embedded compatibility key for this migration window so older
+/// scripts continue to work without changing the typed `Cmd::Install` shape.
 pub fn prepare_environment(args: &[OsString]) {
     let canonical = std::env::var_os(DO_NOT_WRITE_NEW_MANIFEST_ENV);
     let legacy = std::env::var_os(LEGACY_ALLOW_NO_MANIFEST_ENV);
