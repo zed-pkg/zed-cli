@@ -18,7 +18,7 @@ jobs:
   apply:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -27,7 +27,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          components: rustfmt
+          components: rustfmt,clippy
 
       - name: Generate, validate, commit, and remove this helper
         run: |
@@ -86,34 +86,40 @@ jobs:
               r'(?P=indent)    packages,\n'
               r'(?P=indent)\};'
           )
-          for filename in ('src/fetch.rs', 'tests/frozen_fetch_cli.rs'):
-              path = Path(filename)
-              source = path.read_text()
-              def replacement(match: re.Match[str]) -> str:
-                  indent = match.group('indent')
-                  return (
-                      f'{indent}let lock = Lockfile {{\n'
-                      f'{indent}    version: Lockfile::CURRENT_VERSION,\n'
-                      f'{indent}    packages,\n'
-                      f'{indent}    nix_adapters: Vec::new(),\n'
-                      f'{indent}}};'
-                  )
-              source, count = pattern.subn(replacement, source, count=1)
-              if count != 1:
-                  raise SystemExit(f'lock initializer anchor not found in {filename}')
-              path.write_text(source)
+          replaced = []
+          for root in (Path('src'), Path('tests')):
+              for path in sorted(root.rglob('*.rs')):
+                  source = path.read_text()
+                  def replacement(match: re.Match[str]) -> str:
+                      indent = match.group('indent')
+                      return (
+                          f'{indent}let lock = Lockfile {{\n'
+                          f'{indent}    version: Lockfile::CURRENT_VERSION,\n'
+                          f'{indent}    packages,\n'
+                          f'{indent}    nix_adapters: Vec::new(),\n'
+                          f'{indent}}};'
+                      )
+                  updated, count = pattern.subn(replacement, source)
+                  if count:
+                      path.write_text(updated)
+                      replaced.append((str(path), count))
+          if not replaced:
+              raise SystemExit('no legacy Lockfile initializer anchors were found')
+          print('updated legacy Lockfile initializers:', replaced)
           PY
           cargo fmt --all
           cargo fmt --all --check
           cargo check --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked nix_export_plan::tests:: -- --test-threads=1
           cargo test --locked --test nix_export_plan -- --test-threads=1
           cargo test --locked fetch::tests:: -- --test-threads=1
           cargo test --locked --test frozen_fetch_cli -- --test-threads=1
+          cargo test --locked --test frozen_fetch_boundaries -- --test-threads=1
           git rm .github/workflows/agent-nix-plan-generated.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock src/nix_export_plan.rs src/main.rs src/lib.rs src/completion.rs src/fetch.rs tests/nix_export_plan.rs tests/frozen_fetch_cli.rs
+          git add Cargo.lock src tests
           git diff --cached --check
-          git commit -m "test(DEN-1418): apply generated planner lock and compatibility fixes"
+          git commit -m "test(DEN-1418): apply generated planner compatibility fixes"
           git push origin HEAD:agent/den-1418-nix-export-plan
