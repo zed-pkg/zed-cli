@@ -1,0 +1,66 @@
+name: integrate tool-versions parser
+
+on:
+  push:
+    branches:
+      - agent/tool-versions-parser
+    paths:
+      - .github/workflows/apply-tool-versions-parser.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: integrate-tool-versions-parser
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: agent/tool-versions-parser
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Export the parser from the public crate
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/lib.rs')
+          text = path.read_text()
+          declaration = 'pub mod tool_versions;'
+          if declaration not in text:
+              if not text.endswith('\n'):
+                  text += '\n'
+              text += f'\n{declaration}\n'
+              path.write_text(text)
+          PY
+
+      - name: Validate parser and repository
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --locked tool_versions
+          cargo test --locked --doc
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Remove bootstrap workflow and commit ordinary source
+        run: |
+          rm .github/workflows/apply-tool-versions-parser.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: expose lossless tool-versions parser'
+          git push origin HEAD:agent/tool-versions-parser
