@@ -21,7 +21,10 @@ pub fn command() -> Command {
         install.mut_arg("allow_no_manifest", |argument| {
             argument
                 .long("do-not-write-new-manifest")
-                .visible_aliases(["allow-no-manifest", "skip-manifest"])
+                // The derived model already carries `skip-manifest` as a
+                // visible alias. Preserve it and add only the displaced former
+                // long spelling here so Clap never sees a duplicate alias.
+                .visible_alias("allow-no-manifest")
                 .help(
                     "Do not create a new .zpkg.toml when installing into a project without one",
                 )
