@@ -32,6 +32,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  ZED_INTERFACES_SHA: cc5ed7339672543c734c5f1fd19f7e017a771854
+
 jobs:
   integrity:
     name: Empty, incomplete, malformed, and drifting locks
@@ -44,13 +47,21 @@ jobs:
           path: zed-cli
           persist-credentials: false
 
-      - name: Checkout the exact interface contract
+      - name: Checkout the exact merged strict interface contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 625ba7bdf4339df7d0880f791a0715ca894558fe
+          ref: ${{ env.ZED_INTERFACES_SHA }}
           path: zed-interfaces
           persist-credentials: false
+
+      - name: Prove the sibling contract is the reviewed merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
+          grep -F 'vcs_commit must be explicitly present' zed-interfaces/src/lockfile.rs
+          grep -F '"vcs_commit"' zed-interfaces/schemas/lockfile.json
 
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
