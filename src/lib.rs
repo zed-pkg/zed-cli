@@ -19,3 +19,5 @@ pub mod store;
 pub mod transaction;
 pub mod update;
 pub mod vcs;
+
+pub mod tool_versions;
