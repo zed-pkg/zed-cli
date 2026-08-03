@@ -510,10 +510,27 @@ fn parse_os_constraint(value: Option<&toml::Value>, name: &str, path: &str) -> R
     }
 }
 
+fn strip_tool_versions_comment(line: &str) -> &str {
+    for (index, character) in line.char_indices() {
+        if character != '#' {
+            continue;
+        }
+        let begins_comment = index == 0
+            || line[..index]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_whitespace);
+        if begins_comment {
+            return &line[..index];
+        }
+    }
+    line
+}
+
 fn parse_tool_versions(input: &str, path: &str) -> Result<BTreeMap<String, ConfiguredTool>> {
     let mut tools = BTreeMap::new();
     for (index, original) in input.lines().enumerate() {
-        let line = original.split('#').next().unwrap_or_default().trim();
+        let line = strip_tool_versions_comment(original).trim();
         if line.is_empty() {
             continue;
         }
@@ -905,6 +922,16 @@ checksum = "{}"
         assert_eq!(imported.plan.tools.len(), 2);
         assert!(imported.plan.tools["node"].resolved.is_none());
         assert!(import_mise(temp.path(), None, None, true).is_err());
+    }
+
+    #[test]
+    fn tool_versions_preserves_hash_inside_version_token() {
+        let parsed = parse_tool_versions(
+            "custom ref:feature#anchor # trailing comment\n# full-line comment\n",
+            ".tool-versions",
+        )
+        .unwrap();
+        assert_eq!(parsed["custom"].requirement, "ref:feature#anchor");
     }
 
     #[test]
