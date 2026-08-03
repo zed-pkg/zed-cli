@@ -1,0 +1,79 @@
+name: format OCI layout candidate once
+
+on:
+  push:
+    branches:
+      - agent/oci-local-layout-v1
+    paths:
+      - .github/workflows/oci-layout-format-once.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oci-layout-format-once
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install the declared Rust formatter
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          cargo fmt --version
+
+      - name: Format only the certified OCI layout surface
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --check
+
+          mapfile -t changed < <(git diff --name-only)
+          allowed=(
+            src/cli_oci.rs
+            src/lib.rs
+            src/main.rs
+            src/oci_layout.rs
+          )
+
+          for path in "${changed[@]}"; do
+            permitted=false
+            for candidate in "${allowed[@]}"; do
+              if [[ "$path" == "$candidate" ]]; then
+                permitted=true
+                break
+              fi
+            done
+            if [[ "$permitted" != true ]]; then
+              echo "rustfmt changed an unexpected path: $path" >&2
+              exit 1
+            fi
+          done
+
+          if [[ ${#changed[@]} -eq 0 ]]; then
+            echo "candidate is already formatted"
+            exit 0
+          fi
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- "${allowed[@]}"
+          git commit -m "style: format OCI layout implementation"
+          git push origin HEAD:agent/oci-local-layout-v1
