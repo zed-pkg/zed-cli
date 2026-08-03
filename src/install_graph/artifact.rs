@@ -52,12 +52,38 @@ where
     FetchMessage { sequence, result }
 }
 
-fn prefetch_one(registry: &dyn Registry, store: &Store, task: FetchTask) -> Result<FetchResult> {
+pub(super) fn prefetch_one(
+    registry: &dyn Registry,
+    store: &Store,
+    task: FetchTask,
+) -> Result<FetchResult> {
     let (package_dir, downloaded) = ensure_artifact(registry, store, &task.version)
         .with_context(|| format!("prefetching {}@{}", task.key, task.version.version))?;
-    let dependencies = read_manifest(&package_dir)
-        .map(|manifest| manifest.dependencies)
-        .unwrap_or_default();
+    let manifest_path = package_dir.join(MANIFEST_FILE);
+    let dependencies = if manifest_path.is_file() {
+        let manifest = read_manifest(&package_dir).with_context(|| {
+            format!(
+                "reading dependency manifest for {}@{} from {}",
+                task.key,
+                task.version.version,
+                manifest_path.display()
+            )
+        })?;
+        if manifest.full_name() != task.key || manifest.package.version != task.version.version {
+            bail!(
+                "artifact manifest declares {}@{} while registry metadata selected {}@{}; refusing transitive dependency expansion",
+                manifest.full_name(),
+                manifest.package.version,
+                task.key,
+                task.version.version
+            );
+        }
+        manifest.dependencies
+    } else {
+        // Keep legacy manifestless artifacts installable as leaves, but never
+        // hide a malformed or identity-mismatched manifest when one is present.
+        BTreeMap::new()
+    };
     Ok(FetchResult {
         dependencies,
         downloaded,
@@ -157,10 +183,12 @@ fn download_atomic(
 pub(super) fn split_key(key: &str) -> Result<(String, String)> {
     let mut parts = key.splitn(2, '/');
     match (parts.next(), parts.next()) {
-        (Some(org), Some(name)) if !org.is_empty() && !name.is_empty() => {
+        (Some(org), Some(name)) if is_slug(org) && is_slug(name) => {
             Ok((org.to_string(), name.to_string()))
         }
-        _ => bail!("invalid package spec `{key}` (expected org/name)"),
+        _ => bail!(
+            "invalid package spec `{key}` (expected slug/slug without path traversal or extra segments)"
+        ),
     }
 }
 
