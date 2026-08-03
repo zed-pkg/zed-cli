@@ -44,7 +44,7 @@ jobs:
           source = path.read_text(encoding='utf-8')
 
           old_duplicate = '        assert!(error.to_string().contains("duplicate package identity"));'
-          new_duplicate = '''        let message = error.to_string();
+          new_duplicate = '''        let message = format!("{error:#}");
           assert!(
               message.contains("duplicate locked package identity")
                   && message.contains("acme/duplicate"),
