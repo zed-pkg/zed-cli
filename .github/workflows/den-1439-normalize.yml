@@ -7,6 +7,7 @@ on:
       - .github/scripts/den1439_require_checksums.py
       - .github/scripts/den1439_fix_shadow.py
       - .github/workflows/den-1439-normalize.yml
+      - tests/mise_environment_cli.rs
 
 permissions:
   contents: write
