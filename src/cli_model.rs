@@ -10,8 +10,7 @@ use clap::{Command, CommandFactory, FromArgMatches};
 
 use crate::cli::Cli;
 
-pub const DO_NOT_WRITE_NEW_MANIFEST_ENV: &str =
-    "ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST";
+pub const DO_NOT_WRITE_NEW_MANIFEST_ENV: &str = "ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST";
 pub const LEGACY_ALLOW_NO_MANIFEST_ENV: &str = "ZED_PKG_ALLOW_NO_MANIFEST";
 
 /// Build the exact typed command model used by every public parser and help or
@@ -152,10 +151,7 @@ mod tests {
 
     #[test]
     fn option_matching_does_not_accept_prefix_collisions() {
-        assert!(option_is(
-            "--allow-no-manifest=true",
-            "--allow-no-manifest"
-        ));
+        assert!(option_is("--allow-no-manifest=true", "--allow-no-manifest"));
         assert!(!option_is(
             "--allow-no-manifest-extra",
             "--allow-no-manifest"
