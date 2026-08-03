@@ -7,6 +7,7 @@ pub mod completion;
 pub mod config;
 pub mod dev;
 pub mod flags;
+pub mod global;
 pub mod interactive;
 pub mod manifestless;
 pub mod ops;
