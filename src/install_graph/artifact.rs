@@ -33,12 +33,7 @@ fn prefetch_one(
     task: FetchTask,
 ) -> Result<FetchResult> {
     let (package_dir, downloaded) = ensure_artifact(registry, store, home, &task.version)
-        .with_context(|| {
-            format!(
-                "prefetching {}@{}",
-                task.key, task.version.version
-            )
-        })?;
+        .with_context(|| format!("prefetching {}@{}", task.key, task.version.version))?;
     let dependencies = read_manifest(&package_dir)
         .map(|manifest| manifest.dependencies)
         .unwrap_or_default();
@@ -81,9 +76,7 @@ fn ensure_artifact(
             store
                 .add_artifact(&cached, &version.sha256)
                 .with_context(|| {
-                    format!(
-                        "cached artifact was invalid ({first_error:#}); redownload also failed"
-                    )
+                    format!("cached artifact was invalid ({first_error:#}); redownload also failed")
                 })
                 .map(|package_dir| (package_dir, true))
         }
