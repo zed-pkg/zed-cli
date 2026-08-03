@@ -84,7 +84,7 @@ fn publish_fixture(
         version: version.to_string(),
         sha256: packed.sha256.clone(),
         size: packed.size,
-        format: packed.format.clone(),
+        format: packed.format,
         vcs_tag: format!("v{version}"),
         vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
         download_url: format!("file://{}/{}.tar.gz", artifacts.display(), packed.sha256),
@@ -147,7 +147,6 @@ fn recursively_prefetches_packages_of_packages_and_deduplicates_diamonds() {
     let home = temp.path().join("home");
     let project = temp.path().join("project");
     fs::create_dir_all(&project).unwrap();
-
     let leaf = publish_fixture(&registry, &scratch, "test", "leaf", "1.0.0", &[]);
     let left = publish_fixture(
         &registry,
