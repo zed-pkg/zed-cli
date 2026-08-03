@@ -1,3 +1,6 @@
+use super::*;
+use super::artifact::{resolve_version, split_key, validate_version_identity};
+
 /// Warm the content-addressed store for an install. The normal installer runs
 /// immediately afterward and remains responsible for the project transaction.
 pub fn prefetch(project: &Path, cfg: &Config, frozen: bool) -> Result<PrefetchReport> {
@@ -27,7 +30,7 @@ fn install_concurrency() -> usize {
     )
 }
 
-fn normalize_concurrency(raw: Option<&str>) -> usize {
+pub(super) fn normalize_concurrency(raw: Option<&str>) -> usize {
     raw.and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_INSTALL_CONCURRENCY)
@@ -194,4 +197,3 @@ fn prefetch_recursive(
         })
     })
 }
-
