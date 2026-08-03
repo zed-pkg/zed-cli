@@ -13,9 +13,6 @@ let
     "ALL_PROXY"
     "NO_PROXY"
   ];
-
-  shellArgs = values:
-    lib.concatStringsSep " " (map lib.escapeShellArg values);
 in
 rec {
   # Resolve exactly the graph already pinned by .zpkg.lock and materialize its
@@ -32,7 +29,6 @@ rec {
     , lockfilePath ? ".zpkg.lock"
     , adapter ? "none"
     , target ? null
-    , extraArgs ? [ ]
     }:
     let
       registryArgs = lib.optionalString (registry != null)
@@ -40,7 +36,6 @@ rec {
       targetArgs = lib.optionalString (target != null)
         "--target ${lib.escapeShellArg target}";
       manifestArgs = lib.optionalString (manifestPath == null) "--skip-manifest";
-      extraArgsString = shellArgs extraArgs;
       bridgeMetadata = builtins.toJSON {
         schema = "zed.nix-fetch-bridge/v1";
         resolver_authority = "zed-pkg";
@@ -94,15 +89,29 @@ rec {
         work="$TMPDIR/zed-project"
         mkdir -p "$work"
 
+        require_safe_relative() {
+          local label="$1"
+          local value="$2"
+          case "$value" in
+            ""|/*|.|..|../*|*/../*|*/..)
+              echo "zed-pkg Nix bridge: $label must be a safe relative path, got: $value" >&2
+              exit 1
+              ;;
+          esac
+        }
+
         lockfile_path=${lib.escapeShellArg lockfilePath}
+        require_safe_relative lockfilePath "$lockfile_path"
         if [[ ! -f "$src/$lockfile_path" ]]; then
           echo "zed-pkg Nix bridge: missing lockfile $lockfile_path in $src" >&2
           exit 1
         fi
         cp "$src/$lockfile_path" "$work/.zpkg.lock"
+        input_lock_digest="$(sha256sum "$work/.zpkg.lock" | cut -d' ' -f1)"
 
         ${lib.optionalString (manifestPath != null) ''
           manifest_path=${lib.escapeShellArg manifestPath}
+          require_safe_relative manifestPath "$manifest_path"
           if [[ ! -f "$src/$manifest_path" ]]; then
             echo "zed-pkg Nix bridge: missing manifest $manifest_path in $src" >&2
             exit 1
@@ -116,8 +125,13 @@ rec {
           --install-mode copy \
           --adapter ${lib.escapeShellArg adapter} \
           ${targetArgs} \
-          ${manifestArgs} \
-          ${extraArgsString}
+          ${manifestArgs}
+
+        installed_lock_digest="$(sha256sum "$work/.zpkg.lock" | cut -d' ' -f1)"
+        if [[ "$installed_lock_digest" != "$input_lock_digest" ]]; then
+          echo "zed-pkg Nix bridge: frozen install rewrote .zpkg.lock bytes; refusing non-frozen output" >&2
+          exit 1
+        fi
 
         if [[ -e "$work/.zpkg-staging" ]]; then
           echo "zed-pkg Nix bridge: successful install left transaction state behind" >&2
@@ -142,8 +156,7 @@ rec {
           cp "$work/.zpkg.toml" "$out/metadata/.zpkg.toml"
         ''}
         printf '%s\n' ${lib.escapeShellArg bridgeMetadata} > "$out/metadata/bridge.json"
-        lock_digest="$(sha256sum "$out/metadata/.zpkg.lock" | cut -d' ' -f1)"
-        printf '%s  %s\n' "$lock_digest" .zpkg.lock > "$out/metadata/lock.sha256"
+        printf '%s  %s\n' "$input_lock_digest" .zpkg.lock > "$out/metadata/lock.sha256"
         ${zed}/bin/zed --version > "$out/metadata/zed-version.txt"
 
         # Copy mode may preserve package-owned relative links, but the fixed
