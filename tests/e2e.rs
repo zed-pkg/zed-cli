@@ -4,8 +4,11 @@
 //! container-safety guarantee for copy-mode installs.
 
 use std::collections::BTreeMap;
+use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 use flate2::read::GzDecoder;
 use semver::VersionReq;
@@ -106,6 +109,76 @@ fn test_config(tmp: &Path, registry_dir: &Path) -> Config {
         supabase_key: None,
         interactive: false,
     }
+}
+
+const CLEAN_INSTALL_ENV: &[&str] = &[
+    "NIX_BUILD_TOP",
+    "NIX_STORE",
+    "ZED_NATIVE_MANAGER",
+    "ZED_NATIVE_PACKAGES",
+    "ZED_PKG_ADAPTER",
+    "ZED_PKG_ALLOW_BUILD",
+    "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH",
+    "ZED_PKG_ALLOW_INSTALL_HOOKS",
+    "ZED_PKG_ALLOW_NATIVE_DEPS",
+    "ZED_PKG_FROZEN",
+    "ZED_PKG_HOME",
+    "ZED_PKG_INSTALL_MODE",
+    "ZED_PKG_INTERACTIVE",
+    "ZED_PKG_NATIVE_DEPS_PROVIDED",
+    "ZED_PKG_NATIVE_MANAGER",
+    "ZED_PKG_REGISTRY",
+    "ZED_PKG_TARGET",
+    "ZED_PKG_TOKEN",
+];
+
+fn zed_install_command(project: &Path, cfg: &Config) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zed"));
+    command.current_dir(project);
+    for key in CLEAN_INSTALL_ENV {
+        command.env_remove(key);
+    }
+    command
+        .arg("--registry")
+        .arg(&cfg.registry)
+        .arg("--home")
+        .arg(&cfg.home)
+        .arg("install");
+    command
+}
+
+fn path_with(directory: &Path) -> OsString {
+    let mut entries = vec![directory.to_path_buf()];
+    entries.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    env::join_paths(entries).expect("construct fixture PATH")
+}
+
+fn output_text(output: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+fn assert_child_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "command failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_child_failure(output: &Output) -> String {
+    assert!(
+        !output.status.success(),
+        "command unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output_text(output)
 }
 
 const BASE_FILES: &[(&str, &str)] = &[
@@ -1300,6 +1373,89 @@ fn workspace_members_link_from_source() {
     assert!(lock.find("acme", "liba").is_none());
 }
 
+/// Workspace members stay live-linked only when they are inert. A member with
+/// package lifecycle hooks is prepared in a disposable copy, and the finalized
+/// tree is copied into the consumer without mutating the workspace source.
+#[test]
+fn workspace_install_hooks_use_a_staging_copy() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    let root = tmp.path().join("workspace-hooks");
+    fs::create_dir_all(root.join("packages")).unwrap();
+    fs::write(
+        root.join(MANIFEST_FILE),
+        format!(
+            "{}\n[workspace]\nmembers = [\"packages/*\"]\n",
+            manifest_toml("acme", "workspace-hooks", "0.0.0", &BTreeMap::new(), None)
+        ),
+    )
+    .unwrap();
+
+    let library = root.join("packages").join("library");
+    fs::create_dir_all(library.join("src")).unwrap();
+    fs::write(library.join("src/lib.txt"), "workspace v1\n").unwrap();
+    fs::write(
+        library.join(MANIFEST_FILE),
+        format!(
+            r#"{}
+[hooks]
+pre-install = ['printf pre > generated.txt']
+post-install = ['printf post >> generated.txt']
+"#,
+            manifest_toml("acme", "library", "1.0.0", &BTreeMap::new(), None)
+        ),
+    )
+    .unwrap();
+
+    let app = root.join("packages").join("app");
+    fs::create_dir_all(&app).unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/library".to_string(), "^1".to_string());
+    fs::write(
+        app.join(MANIFEST_FILE),
+        manifest_toml("acme", "workspace-app", "1.0.0", &deps, None),
+    )
+    .unwrap();
+
+    let permissions = ops::InstallPermissions {
+        allow_install_hooks: true,
+        ..ops::InstallPermissions::default()
+    };
+    ops::install_with_permissions(
+        &app,
+        &cfg,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        &permissions,
+        None,
+        false,
+    )
+    .unwrap();
+
+    let installed = app.join(MODULES_DIR).join("acme").join("library");
+    assert_eq!(
+        fs::read_to_string(installed.join("generated.txt")).unwrap(),
+        "prepost"
+    );
+    assert_eq!(
+        fs::read_to_string(installed.join("src/lib.txt")).unwrap(),
+        "workspace v1\n"
+    );
+    assert!(!library.join("generated.txt").exists());
+
+    fs::write(library.join("src/lib.txt"), "workspace v2\n").unwrap();
+    assert_eq!(
+        fs::read_to_string(installed.join("src/lib.txt")).unwrap(),
+        "workspace v1\n",
+        "a lifecycle-prepared workspace package must not point at staging or source"
+    );
+    let lock = Lockfile::parse(&fs::read_to_string(app.join(LOCKFILE_FILE)).unwrap()).unwrap();
+    assert!(lock.find("acme", "library").is_none());
+}
+
 /// [build] steps run in a staging copy, results land in the per-platform
 /// build cache, the immutable source store stays pristine, and builds only
 /// run when explicitly allowed.
@@ -1389,6 +1545,526 @@ fn build_hooks_stage_build_and_cache() {
         "build cache entry missing for {platform}"
     );
     assert!(store.build_size() > 0, "build cache should be populated");
+}
+
+/// Native packages are selected once for the complete graph, de-duplicated,
+/// installed before package staging, and exposed to ordered lifecycle hooks.
+/// A lifecycle cache hit never re-runs author code.
+#[test]
+fn native_dependencies_and_install_hooks_are_graph_wide_staged_and_cached() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    let native_b = fixture_package(
+        tmp.path(),
+        "acme",
+        "native-b",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[("src/lib.txt", "native b\n")],
+    );
+    fs::write(
+        native_b.join(MANIFEST_FILE),
+        format!(
+            "{}\n[native-dependencies]\napt = [\"libssl-dev\", \"zlib1g-dev\"]\n",
+            fs::read_to_string(native_b.join(MANIFEST_FILE)).unwrap()
+        ),
+    )
+    .unwrap();
+    publish_to(&registry, &native_b);
+
+    let mut native_a_deps = BTreeMap::new();
+    native_a_deps.insert("acme/native-b".to_string(), "^1".to_string());
+    let native_a = fixture_package(
+        tmp.path(),
+        "acme",
+        "native-a",
+        "1.0.0",
+        &native_a_deps,
+        None,
+        &[("src/lib.txt", "native a\n")],
+    );
+    fs::write(
+        native_a.join(MANIFEST_FILE),
+        format!(
+            r#"{}
+[native-dependencies]
+apt = ["pkg-config", "libssl-dev"]
+
+[hooks]
+pre-install = ['printf "pre\n" >> "$HOOK_CAPTURE"; printf "pre\n" > lifecycle.txt; printf "%s\n" "$ZED_INSTALL_PHASE" > pre-phase.txt; printf "%s\n" "$ZED_NATIVE_MANAGER" > native-manager.txt; printf "%s\n" "$ZED_NATIVE_PACKAGES" > native-packages.json']
+post-install = ['printf "post\n" >> "$HOOK_CAPTURE"; printf "post\n" >> lifecycle.txt']
+
+[build]
+command = 'printf "build\n" >> "$HOOK_CAPTURE"; printf "build\n" >> lifecycle.txt'
+"#,
+            fs::read_to_string(native_a.join(MANIFEST_FILE)).unwrap()
+        ),
+    )
+    .unwrap();
+    let native_a_sha = publish_to(&registry, &native_a);
+
+    let consumer = tmp.path().join("consumer-native-lifecycle");
+    fs::create_dir_all(&consumer).unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/native-a".to_string(), "^1".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml(
+            "zed-local",
+            "consumer-native-lifecycle",
+            "0.0.0",
+            &deps,
+            None,
+        ),
+    )
+    .unwrap();
+
+    let fake_bin = tmp.path().join("fake-native-bin");
+    let native_capture = tmp.path().join("native-manager.capture");
+    let hook_capture = tmp.path().join("hooks.capture");
+    write_executable(
+        &fake_bin.join("apt-get"),
+        r#"#!/bin/sh
+set -eu
+{
+  printf 'call\n'
+  for arg do
+    printf 'arg=%s\n' "$arg"
+  done
+} >> "$NATIVE_CAPTURE"
+"#,
+    );
+
+    let mut denied = zed_install_command(&consumer, &cfg);
+    denied
+        .args(["--native-manager", "apt"])
+        .env("PATH", path_with(&fake_bin))
+        .env("NATIVE_CAPTURE", &native_capture)
+        .env("HOOK_CAPTURE", &hook_capture);
+    let denied_output = denied.output().expect("run denied native install");
+    let denied_text = assert_child_failure(&denied_output);
+    assert!(denied_text.contains("--allow-native-deps"), "{denied_text}");
+    assert!(!consumer.join(MODULES_DIR).exists());
+    assert!(!native_capture.exists());
+    assert!(!hook_capture.exists());
+
+    let mut hooks_denied = zed_install_command(&consumer, &cfg);
+    hooks_denied
+        .args(["--allow-native-deps", "--native-manager", "apt"])
+        .env("PATH", path_with(&fake_bin))
+        .env("NATIVE_CAPTURE", &native_capture)
+        .env("HOOK_CAPTURE", &hook_capture);
+    let hooks_denied_output = hooks_denied.output().expect("run denied hook install");
+    let hooks_denied_text = assert_child_failure(&hooks_denied_output);
+    assert!(
+        hooks_denied_text.contains("--allow-install-hooks"),
+        "{hooks_denied_text}"
+    );
+    assert!(
+        !native_capture.exists(),
+        "native package manager ran before lifecycle consent preflight"
+    );
+
+    let mut build_denied = zed_install_command(&consumer, &cfg);
+    build_denied
+        .args([
+            "--allow-native-deps",
+            "--allow-install-hooks",
+            "--native-manager",
+            "apt",
+        ])
+        .env("PATH", path_with(&fake_bin))
+        .env("NATIVE_CAPTURE", &native_capture)
+        .env("HOOK_CAPTURE", &hook_capture);
+    let build_denied_output = build_denied.output().expect("run denied build install");
+    let build_denied_text = assert_child_failure(&build_denied_output);
+    assert!(
+        build_denied_text.contains("--allow-build"),
+        "{build_denied_text}"
+    );
+    assert!(
+        !native_capture.exists(),
+        "native package manager ran before complete lifecycle consent preflight"
+    );
+
+    let run_install = || {
+        let mut command = zed_install_command(&consumer, &cfg);
+        command
+            .args([
+                "--allow-native-deps",
+                "--allow-install-hooks",
+                "--allow-build",
+                "--native-manager",
+                "apt",
+            ])
+            .env("PATH", path_with(&fake_bin))
+            .env("NATIVE_CAPTURE", &native_capture)
+            .env("HOOK_CAPTURE", &hook_capture);
+        command.output().expect("run native lifecycle install")
+    };
+
+    let first = run_install();
+    assert_child_success(&first);
+
+    let native_log = fs::read_to_string(&native_capture).unwrap();
+    assert_eq!(native_log.lines().filter(|line| *line == "call").count(), 1);
+    for package in ["pkg-config", "libssl-dev", "zlib1g-dev"] {
+        let expected = format!("arg={package}");
+        assert_eq!(
+            native_log
+                .lines()
+                .filter(|line| *line == expected.as_str())
+                .count(),
+            1,
+            "native package `{package}` was not installed exactly once: {native_log}"
+        );
+    }
+    assert!(native_log.contains("arg=--\n"), "{native_log}");
+
+    let installed = consumer.join(MODULES_DIR).join("acme").join("native-a");
+    assert_eq!(
+        fs::read_to_string(installed.join("lifecycle.txt")).unwrap(),
+        "pre\nbuild\npost\n"
+    );
+    assert_eq!(
+        fs::read_to_string(installed.join("pre-phase.txt")).unwrap(),
+        "pre-install\n"
+    );
+    assert_eq!(
+        fs::read_to_string(installed.join("native-manager.txt")).unwrap(),
+        "apt\n"
+    );
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(
+            fs::read_to_string(installed.join("native-packages.json"))
+                .unwrap()
+                .trim()
+        )
+        .unwrap(),
+        vec!["pkg-config", "libssl-dev"]
+    );
+    assert_eq!(
+        fs::read_to_string(&hook_capture).unwrap(),
+        "pre\nbuild\npost\n"
+    );
+
+    let store = zed_cli::store::Store::new(&cfg.home);
+    assert!(store.pkg_dir(&native_a_sha).is_dir());
+    assert!(!store.pkg_dir(&native_a_sha).join("lifecycle.txt").exists());
+
+    let second = run_install();
+    assert_child_success(&second);
+    assert_eq!(
+        fs::read_to_string(&hook_capture).unwrap(),
+        "pre\nbuild\npost\n",
+        "cache hit re-ran package-authored lifecycle code"
+    );
+    let native_log = fs::read_to_string(&native_capture).unwrap();
+    assert_eq!(
+        native_log.lines().filter(|line| *line == "call").count(),
+        2,
+        "native prerequisites are checked once per install transaction"
+    );
+}
+
+/// A failed post-install hook aborts the install transaction. The previous
+/// modules tree is restored and neither the immutable source store nor the
+/// lifecycle cache receives the staged mutation.
+#[test]
+fn failed_install_hook_rolls_back_project_and_does_not_promote_staging() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    let package = fixture_package(
+        tmp.path(),
+        "acme",
+        "hook-failure",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[("src/lib.txt", "immutable source\n")],
+    );
+    fs::write(
+        package.join(MANIFEST_FILE),
+        format!(
+            r#"{}
+[hooks]
+pre-install = ['printf "pre\n" >> "$HOOK_CAPTURE"; printf staged > staged.txt']
+post-install = ['exit 17']
+"#,
+            fs::read_to_string(package.join(MANIFEST_FILE)).unwrap()
+        ),
+    )
+    .unwrap();
+    let source_sha = publish_to(&registry, &package);
+
+    let consumer = tmp.path().join("consumer-hook-failure");
+    fs::create_dir_all(consumer.join(MODULES_DIR)).unwrap();
+    fs::write(consumer.join(MODULES_DIR).join("sentinel.txt"), "keep me\n").unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/hook-failure".to_string(), "^1".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml("zed-local", "consumer-hook-failure", "0.0.0", &deps, None),
+    )
+    .unwrap();
+
+    let hook_capture = tmp.path().join("failed-hooks.capture");
+    let mut command = zed_install_command(&consumer, &cfg);
+    command
+        .arg("--allow-install-hooks")
+        .env("HOOK_CAPTURE", &hook_capture);
+    let output = command.output().expect("run failing lifecycle install");
+    let text = assert_child_failure(&output);
+    assert!(text.contains("post-install hook 1"), "{text}");
+
+    assert_eq!(
+        fs::read_to_string(consumer.join(MODULES_DIR).join("sentinel.txt")).unwrap(),
+        "keep me\n"
+    );
+    assert!(
+        !consumer
+            .join(MODULES_DIR)
+            .join("acme")
+            .join("hook-failure")
+            .exists()
+    );
+    assert!(!consumer.join(LOCKFILE_FILE).exists());
+    assert_eq!(fs::read_to_string(&hook_capture).unwrap(), "pre\n");
+
+    let store = zed_cli::store::Store::new(&cfg.home);
+    assert!(!store.pkg_dir(&source_sha).join("staged.txt").exists());
+    let promoted_staged_file = if store.builds_root().exists() {
+        walkdir::WalkDir::new(store.builds_root())
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.file_name() == "staged.txt")
+    } else {
+        false
+    };
+    assert!(
+        !promoted_staged_file,
+        "failed staging tree reached the lifecycle cache"
+    );
+}
+
+/// An interactive Nix shell may expose `NIX_STORE` without being a derivation
+/// build. Zed must still use its own content-addressed profile, inject that
+/// profile into hooks, and reuse both the native profile and lifecycle cache.
+#[test]
+fn nix_shell_uses_a_zed_managed_profile_and_reuses_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    let package = fixture_package(
+        tmp.path(),
+        "acme",
+        "nix-profile-native",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[("src/lib.txt", "managed nix profile\n")],
+    );
+    fs::write(
+        package.join(MANIFEST_FILE),
+        format!(
+            r#"{}
+[native-dependencies]
+nix = ["hello"]
+
+[hooks]
+post-install = [
+  'printf "%s\n" "$ZED_NATIVE_PROFILE" > native-profile.txt',
+  'printf "%s\n" "$ZED_NATIVE_PACKAGES" > native-packages.txt',
+  'native-tool > native-tool-output.txt',
+]
+"#,
+            fs::read_to_string(package.join(MANIFEST_FILE)).unwrap()
+        ),
+    )
+    .unwrap();
+    publish_to(&registry, &package);
+
+    let consumer = tmp.path().join("consumer-nix-profile-native");
+    fs::create_dir_all(&consumer).unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/nix-profile-native".to_string(), "^1".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml(
+            "zed-local",
+            "consumer-nix-profile-native",
+            "0.0.0",
+            &deps,
+            None,
+        ),
+    )
+    .unwrap();
+
+    let fake_bin = tmp.path().join("fake-nix-bin");
+    let fake_store = tmp.path().join("fake-nix-store");
+    let capture = tmp.path().join("nix.capture");
+    write_executable(
+        &fake_bin.join("nix"),
+        r#"#!/bin/sh
+set -eu
+printf 'call\n' >> "$NIX_CAPTURE"
+profile=''
+while [ "$#" -gt 0 ]; do
+  printf 'arg=%s\n' "$1" >> "$NIX_CAPTURE"
+  if [ "$1" = '--profile' ]; then
+    shift
+    profile="$1"
+    printf 'arg=%s\n' "$1" >> "$NIX_CAPTURE"
+  fi
+  shift
+done
+test -n "$profile"
+mkdir -p "$(dirname "$profile")"
+ln -s "$NIX_FAKE_STORE" "$profile"
+"#,
+    );
+    write_executable(
+        &fake_store.join("bin/native-tool"),
+        "#!/bin/sh\nprintf 'native tool from managed profile\\n'\n",
+    );
+
+    let run = || {
+        let mut command = zed_install_command(&consumer, &cfg);
+        command
+            .args([
+                "--allow-native-deps",
+                "--allow-install-hooks",
+                "--native-manager",
+                "nix",
+            ])
+            .env("PATH", path_with(&fake_bin))
+            .env("NIX_STORE", "/nix/store")
+            .env("NIX_CAPTURE", &capture)
+            .env("NIX_FAKE_STORE", &fake_store);
+        command.output().expect("run managed Nix profile install")
+    };
+
+    let first = run();
+    assert_child_success(&first);
+    let installed = consumer
+        .join(MODULES_DIR)
+        .join("acme")
+        .join("nix-profile-native");
+    let profile = fs::read_to_string(installed.join("native-profile.txt")).unwrap();
+    let profile = PathBuf::from(profile.trim());
+    assert!(profile.starts_with(cfg.home.join("native/nix/v1")));
+    assert_eq!(
+        fs::read_to_string(installed.join("native-packages.txt")).unwrap(),
+        "[\"hello\"]\n"
+    );
+    assert_eq!(
+        fs::read_to_string(installed.join("native-tool-output.txt")).unwrap(),
+        "native tool from managed profile\n"
+    );
+
+    let first_capture = fs::read_to_string(&capture).unwrap();
+    assert_eq!(
+        first_capture.lines().filter(|line| *line == "call").count(),
+        1
+    );
+    assert!(first_capture.contains("arg=--profile\n"), "{first_capture}");
+    assert!(
+        first_capture.contains("arg=nixpkgs#hello\n"),
+        "{first_capture}"
+    );
+
+    let second = run();
+    assert_child_success(&second);
+    let second_capture = fs::read_to_string(&capture).unwrap();
+    assert_eq!(
+        second_capture
+            .lines()
+            .filter(|line| *line == "call")
+            .count(),
+        1,
+        "the content-addressed managed profile should be reused: {second_capture}"
+    );
+}
+
+/// Nix derivations provide native inputs declaratively. Zed validates the
+/// `.zpkg.toml` route but never mutates a Nix profile inside the sandbox.
+#[test]
+fn nix_build_requires_declared_native_inputs_acknowledgement_without_running_nix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let registry_dir = tmp.path().join("registry");
+    let registry = FileRegistry::new(registry_dir.clone());
+    let cfg = test_config(tmp.path(), &registry_dir);
+
+    let package = fixture_package(
+        tmp.path(),
+        "acme",
+        "nix-native",
+        "1.0.0",
+        &BTreeMap::new(),
+        None,
+        &[("src/lib.txt", "nix native\n")],
+    );
+    fs::write(
+        package.join(MANIFEST_FILE),
+        format!(
+            "{}\n[native-dependencies]\nnix = [\"pkg-config\", \"openssl\"]\n",
+            fs::read_to_string(package.join(MANIFEST_FILE)).unwrap()
+        ),
+    )
+    .unwrap();
+    publish_to(&registry, &package);
+
+    let consumer = tmp.path().join("consumer-nix-native");
+    fs::create_dir_all(&consumer).unwrap();
+    let mut deps = BTreeMap::new();
+    deps.insert("acme/nix-native".to_string(), "^1".to_string());
+    fs::write(
+        consumer.join(MANIFEST_FILE),
+        manifest_toml("zed-local", "consumer-nix-native", "0.0.0", &deps, None),
+    )
+    .unwrap();
+
+    let mut denied = zed_install_command(&consumer, &cfg);
+    denied
+        .args(["--allow-native-deps", "--native-manager", "nix"])
+        .env("NIX_BUILD_TOP", tmp.path().join("nix-build-top"));
+    let denied_output = denied.output().expect("run Nix native validation");
+    let denied_text = assert_child_failure(&denied_output);
+    assert!(
+        denied_text.contains("nativeBuildInputs/buildInputs"),
+        "{denied_text}"
+    );
+    assert!(!consumer.join(MODULES_DIR).exists());
+
+    let mut allowed = zed_install_command(&consumer, &cfg);
+    allowed
+        .args(["--allow-native-deps", "--native-manager", "nix"])
+        .env("NIX_BUILD_TOP", tmp.path().join("nix-build-top"))
+        .env("ZED_PKG_NATIVE_DEPS_PROVIDED", "1");
+    let allowed_output = allowed.output().expect("run acknowledged Nix install");
+    assert_child_success(&allowed_output);
+    let allowed_text = output_text(&allowed_output);
+    assert!(
+        allowed_text.contains("validated 2 native prerequisite"),
+        "{allowed_text}"
+    );
+    assert!(
+        consumer
+            .join(MODULES_DIR)
+            .join("acme")
+            .join("nix-native")
+            .join("src/lib.txt")
+            .is_file()
+    );
 }
 
 /// A consumer's [overrides.build."org/name"] replaces a broken upstream

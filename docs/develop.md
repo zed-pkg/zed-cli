@@ -148,6 +148,9 @@ Every long option has a flags-2-env fallback:
 | `--no-install` | `ZED_DEV_NO_INSTALL` |
 | `--frozen` | `ZED_PKG_FROZEN` |
 | `--allow-build` | `ZED_PKG_ALLOW_BUILD` |
+| `--allow-native-deps` | `ZED_PKG_ALLOW_NATIVE_DEPS` |
+| `--allow-install-hooks` | `ZED_PKG_ALLOW_INSTALL_HOOKS` |
+| `--native-manager` | `ZED_PKG_NATIVE_MANAGER` |
 | `--isolated-home` | `ZED_DEV_ISOLATED_HOME` |
 | `--print-env` | `ZED_DEV_PRINT_ENV` |
 | `--python-venv` | `ZED_DEV_PYTHON_VENV` |
