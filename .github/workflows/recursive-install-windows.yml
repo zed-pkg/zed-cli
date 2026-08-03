@@ -1,0 +1,81 @@
+name: recursive install windows locking
+
+on:
+  pull_request:
+    paths:
+      - src/install_graph.rs
+      - src/install_graph/**
+      - src/store.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/recursive-install-windows.yml
+  push:
+    branches: [main]
+    paths:
+      - src/install_graph.rs
+      - src/install_graph/**
+      - src/store.rs
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/recursive-install-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recursive-install-windows-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  windows-kernel-lock:
+    name: Windows process lock and shared-home races
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out pinned zed-interfaces sibling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust with formatting support
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Check formatting
+        run: cargo fmt --all --check --manifest-path zed-cli/Cargo.toml
+
+      - name: Prove a separate process blocks on the same artifact lock
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::artifact_waiters_block_until_the_owner_releases_the_kernel_lock -- --exact --nocapture
+
+      - name: Prove concurrent prefetches deduplicate a shared artifact
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::concurrent_prefetches_share_one_artifact_download -- --exact --nocapture
+
+      - name: Prove recursive and transactional paths share one lock
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::legacy_and_recursive_acquisition_paths_share_one_download_lock -- --exact --nocapture
+
+      - name: Prove failed downloads leave no cache publication
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::failed_downloads_remove_staging_files_and_never_publish_cache_entries -- --exact --nocapture
