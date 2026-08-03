@@ -35,7 +35,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZED_INTERFACES_SHA: cc5ed7339672543c734c5f1fd19f7e017a771854
+  ZED_INTERFACES_SHA: c2e049006453c26ca8ca291783f681fce75cb01f
 
 jobs:
   integrity:
@@ -49,7 +49,7 @@ jobs:
           path: zed-cli
           persist-credentials: false
 
-      - name: Checkout the exact merged strict interface contract
+      - name: Checkout the exact merged strict and compatibility interface contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: zed-pkg/zed-interfaces
@@ -67,6 +67,8 @@ jobs:
           grep -F "ZED_INTERFACES_SHA: $ZED_INTERFACES_SHA" \
             zed-cli/.github/workflows/frozen-lock-integrity.yml
           grep -F 'vcs_commit must be explicitly present' zed-interfaces/src/lockfile.rs
+          grep -F 'artifact-sha256:' zed-interfaces/src/lockfile.rs
+          grep -F 'normalize_missing_package_revisions' zed-interfaces/src/lockfile.rs
           grep -F '"vcs_commit"' zed-interfaces/schemas/lockfile.json
           test ! -e zed-cli/.github/workflows/den-1464-retarget.yml
           for old in \
@@ -74,7 +76,8 @@ jobs:
             2d397c60cdaa8fe0d331e98caba5202e61eaca4f \
             50ff18ed934c9871920373403fff69b1dc1a0e0a \
             31caf94d89ef04b9e4fc589fa945d028d0c8e0a0 \
-            625ba7bdf4339df7d0880f791a0715ca894558fe; do
+            625ba7bdf4339df7d0880f791a0715ca894558fe \
+            cc5ed7339672543c734c5f1fd19f7e017a771854; do
             ! grep -q "$old" zed-cli/Cargo.toml
             ! grep -q "$old" zed-cli/Cargo.lock
           done
