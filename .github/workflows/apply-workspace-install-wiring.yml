@@ -7,13 +7,20 @@ on:
     paths:
       - .github/workspace_install_wiring.py
       - .github/workflows/apply-workspace-install-wiring.yml
+  pull_request:
+    branches:
+      - agent/recursive-resolver-input-hardening
+    paths:
+      - .github/workspace_install_wiring.py
+      - .github/workflows/apply-workspace-install-wiring.yml
+      - src/ops.rs
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: apply-workspace-install-wiring
+  group: apply-workspace-install-wiring-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
