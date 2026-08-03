@@ -34,12 +34,18 @@ jobs:
 
           path = Path('.github/workflows/nix-fetch-bundle.yml')
           source = path.read_text(encoding='utf-8')
-          old_publish = '''          (
+
+          publish_start_marker = '''          (
             cd "$fixture_root/node-lib"
             "$zed" --registry "file://$registry" publish --skip-vcs-checks
-          )
-
-          registry_store="$(nix store add-path "$registry")"'''
+          )'''
+          start = source.find(publish_start_marker)
+          if start < 0:
+              raise SystemExit('skip-vcs fixture publisher not found')
+          boundary = '\n\n          registry_store="$(nix store add-path "$registry")"'
+          end = source.find(boundary, start)
+          if end < 0:
+              raise SystemExit('registry store boundary not found')
           new_publish = '''          (
             cd "$fixture_root/node-lib"
             git init -q
@@ -64,17 +70,15 @@ jobs:
           expected_commit = sys.argv[2]
           assert metadata['vcs_tag'] == 'v1.0.0'
           assert metadata['vcs_commit'] == expected_commit
-          PY_REGISTRY
+          PY_REGISTRY'''
+          source = source[:start] + new_publish + source[end:]
 
-          registry_store="$(nix store add-path "$registry")"'''
-          if source.count(old_publish) != 1:
-              raise SystemExit('expected exactly one skip-vcs fixture publisher')
-          source = source.replace(old_publish, new_publish)
-
-          old_lock = '''          grep -F "source = \\\"file://$registry_store\\\"" "$consumer/.zpkg.lock"
-
-          printf 'version = 1\\n' > "$empty/.zpkg.lock"'''
-          new_lock = '''          grep -F "source = \\\"file://$registry_store\\\"" "$consumer/.zpkg.lock"
+          lock_marker = '''          grep -F "source = \\\"file://$registry_store\\\"" "$consumer/.zpkg.lock"'''
+          lock_start = source.find(lock_marker)
+          if lock_start < 0:
+              raise SystemExit('generated-lock source assertion not found')
+          insert_at = lock_start + len(lock_marker)
+          lock_verifier = '''
           python3 - "$registry_meta" "$consumer/.zpkg.lock" <<'PY_LOCK'
           import json
           import sys
@@ -94,12 +98,8 @@ jobs:
           assert package['format'] == metadata['format']
           assert package['vcs_tag'] == metadata['vcs_tag']
           assert package['vcs_commit'] == metadata['vcs_commit']
-          PY_LOCK
-
-          printf 'version = 1\\n' > "$empty/.zpkg.lock"'''
-          if source.count(old_lock) != 1:
-              raise SystemExit('expected exactly one generated-lock source assertion')
-          source = source.replace(old_lock, new_lock)
+          PY_LOCK'''
+          source = source[:insert_at] + lock_verifier + source[insert_at:]
           path.write_text(source, encoding='utf-8')
           PY
           git diff --check
