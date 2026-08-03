@@ -1,9 +1,8 @@
 name: Format global package branch once
 
 on:
-  push:
-    branches:
-      - agent/global-zed-packages
+  pull_request:
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
@@ -14,13 +13,16 @@ concurrency:
 
 jobs:
   format:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      github.event.pull_request.head.ref == 'agent/global-zed-packages' &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out branch
+      - name: Check out the PR branch rather than the merge ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.ref }}
           persist-credentials: true
           fetch-depth: 0
 
