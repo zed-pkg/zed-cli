@@ -30,9 +30,7 @@ fn prepared_artifact(
     let packed = pack(&source, &manifest, Some(&temp.path().join("packed"))).unwrap();
 
     let store = Store::new(&temp.path().join("home"));
-    let package_dir = store
-        .add_artifact(&packed.path, &packed.sha256)
-        .unwrap();
+    let package_dir = store.add_artifact(&packed.path, &packed.sha256).unwrap();
     match stored_manifest {
         Some(text) => fs::write(package_dir.join(MANIFEST_FILE), text).unwrap(),
         None => fs::remove_file(package_dir.join(MANIFEST_FILE)).unwrap(),
@@ -64,7 +62,13 @@ fn prepared_artifact(
 
 #[test]
 fn dependency_keys_are_slug_validated_before_registry_access() {
-    for key in ["../escape", "test/../escape", "test/name/extra", "/name", "org/"] {
+    for key in [
+        "../escape",
+        "test/../escape",
+        "test/name/extra",
+        "/name",
+        "org/",
+    ] {
         let error = super::artifact::split_key(key).unwrap_err().to_string();
         assert!(error.contains("invalid package spec"), "{key}: {error}");
     }
@@ -80,8 +84,7 @@ fn malformed_embedded_manifests_fail_closed_instead_of_truncating_the_graph() {
     let temp = tempfile::tempdir().unwrap();
     let (store, task, registry) = prepared_artifact(&temp, Some("[package\ninvalid = true\n"));
 
-    let error = super::artifact::prefetch_one(registry.as_ref(), &store, task)
-        .unwrap_err();
+    let error = super::artifact::prefetch_one(registry.as_ref(), &store, task).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("reading dependency manifest"), "{message}");
     assert!(message.contains("test/selected@1.0.0"), "{message}");
@@ -126,7 +129,9 @@ fn sequenced_receive_buffers_later_failures_until_earlier_results_arrive() {
     sender
         .send(FetchMessage {
             sequence: 1,
-            result: Err(anyhow!("later lockfile entry failed first in wall-clock time")),
+            result: Err(anyhow!(
+                "later lockfile entry failed first in wall-clock time"
+            )),
         })
         .unwrap();
     sender
