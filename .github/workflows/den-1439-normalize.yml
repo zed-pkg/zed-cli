@@ -1,0 +1,132 @@
+name: harden DEN-1439 mise adapter
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/den-1439-normalize.yml
+      - src/environment.rs
+      - tests/e2e.rs
+
+permissions:
+  contents: write
+
+concurrency:
+  group: harden-den1439-mise-adapter
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'alexanderdmills/den-1439-mise-import-verify' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: alexanderdmills/den-1439-mise-import-verify
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Apply semantic parser and target-boundary repairs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          environment = Path('src/environment.rs')
+          text = environment.read_text()
+
+          old_split = "        let line = original.split('#').next().unwrap_or_default().trim();"
+          new_split = "        let line = strip_tool_versions_comment(original).trim();"
+          if old_split in text:
+              text = text.replace(old_split, new_split, 1)
+          elif new_split not in text:
+              raise SystemExit('tool-versions comment split not found')
+
+          parser_marker = 'fn parse_tool_versions(input: &str, path: &str) -> Result<BTreeMap<String, ConfiguredTool>> {\n'
+          parser_with_helper = '''fn strip_tool_versions_comment(line: &str) -> &str {
+              for (index, character) in line.char_indices() {
+                  if character != '#' {
+                      continue;
+                  }
+                  let begins_comment = index == 0
+                      || line[..index]
+                          .chars()
+                          .next_back()
+                          .is_some_and(char::is_whitespace);
+                  if begins_comment {
+                      return &line[..index];
+                  }
+              }
+              line
+          }
+
+          fn parse_tool_versions(input: &str, path: &str) -> Result<BTreeMap<String, ConfiguredTool>> {
+          '''
+          if 'fn strip_tool_versions_comment' not in text:
+              if parser_marker not in text:
+                  raise SystemExit('tool-versions parser marker not found')
+              text = text.replace(parser_marker, parser_with_helper, 1)
+
+          test_marker = '    #[test]\n    fn normalized_digest_ignores_toml_presentation_but_tracks_semantics() {\n'
+          regression = '''    #[test]
+              fn tool_versions_preserves_hash_inside_version_token() {
+                  let parsed = parse_tool_versions(
+                      "custom ref:feature#anchor # trailing comment\\n# full-line comment\\n",
+                      ".tool-versions",
+                  )
+                  .unwrap();
+                  assert_eq!(parsed["custom"].requirement, "ref:feature#anchor");
+              }
+
+              #[test]
+              fn normalized_digest_ignores_toml_presentation_but_tracks_semantics() {
+          '''
+          if 'tool_versions_preserves_hash_inside_version_token' not in text:
+              if test_marker not in text:
+                  raise SystemExit('environment regression insertion point not found')
+              text = text.replace(test_marker, regression, 1)
+          environment.write_text(text)
+
+          e2e = Path('tests/e2e.rs')
+          text = e2e.read_text()
+          old_consumer = 'fn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {'
+          new_consumer = '#[cfg(unix)]\nfn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {'
+          if old_consumer in text and new_consumer not in text:
+              text = text.replace(old_consumer, new_consumer, 1)
+          elif new_consumer not in text:
+              raise SystemExit('bin_consumer helper not found')
+
+          while '#[cfg(unix)]\n#[cfg(unix)]\n' in text:
+              text = text.replace('#[cfg(unix)]\n#[cfg(unix)]\n', '#[cfg(unix)]\n')
+          e2e.write_text(text)
+          PY
+
+      - name: Validate focused and full Rust surfaces
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --locked tool_versions_preserves_hash_inside_version_token
+          cargo test --locked --lib environment::tests
+          cargo test --locked --test mise_environment_cli
+          cargo test --locked install_dir_is_honored_by_install_run_and_remove
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit ordinary source and remove hardening workflow
+        run: |
+          set -euo pipefail
+          rm .github/workflows/den-1439-normalize.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/environment.rs tests/e2e.rs .github/workflows/den-1439-normalize.yml
+          git diff --cached --check
+          git commit -m 'fix(DEN-1439): harden tool-version parsing and Windows tests'
+          git push origin HEAD:alexanderdmills/den-1439-mise-import-verify
