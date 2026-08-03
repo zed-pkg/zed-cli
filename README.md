@@ -119,7 +119,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
-| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
+| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact through a private file registry by default, or through the configured Rust HTTP registry with explicit `--registry-mode server`; then install it into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
@@ -330,6 +330,7 @@ actual CLI never drift, so it is always authoritative:
 | `--name` (init) | `ZED_PKG_NAME` | directory name |
 | `--check` (self-update) | `ZED_PKG_UPDATE_CHECK` | off |
 | `--force` (self-update) | `ZED_PKG_UPDATE_FORCE` | off |
+| `--registry-mode` (r2g) | `ZED_PKG_R2G_REGISTRY_MODE` | `isolated`; `server` intentionally persists the package version on the configured HTTP(S) registry |
 | `--docker` (r2g) | `ZED_PKG_R2G_DOCKER` | off |
 | `--image` (r2g) | `ZED_PKG_R2G_IMAGE` | `debian:stable-slim` |
 | `--runtime` (r2g) | `ZED_PKG_R2G_RUNTIME` | auto (docker, then podman) |
@@ -337,7 +338,7 @@ actual CLI never drift, so it is always authoritative:
 | `--clean` (r2g) | `ZED_PKG_R2G_CLEAN` | off |
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
-air-gapped mirrors, and `zed r2g` all use it.
+air-gapped mirrors, and the default `zed r2g` mode all use it.
 
 ## Authentication
 
@@ -393,7 +394,8 @@ consumer would:
 
 1. **Pack** — builds the exact pruned, deterministic tarball `zed publish`
    would upload.
-2. **Publish** — to a throwaway `file://` registry.
+2. **Publish** — to a private throwaway `file://` registry by default, or to
+   the configured HTTP(S) server only with `--registry-mode server`.
 3. **Install** — into a mock consumer project (`zed-local/consumer`) with its
    own throwaway store, so the tarball actually roundtrips through
    extraction — no reaching back into your source tree.
@@ -407,10 +409,25 @@ are left behind for inspection (pass `--clean`, or set `--r2g-root` to
 relocate them). `zed test-local` is a backwards-compatible alias.
 
 ```sh
-zed r2g                       # roundtrip on the host
+zed r2g                       # safe, hermetic roundtrip on the host
 zed r2g --docker              # ...inside a fresh debian:stable-slim container
 zed r2g --docker --image node:22-slim   # pick an image with the runtime you need
+
+# Certify a disposable Rust registry reached through a port-forward. This is
+# intentionally persistent from the registry's point of view: use a fresh
+# version, and reset the memory-backed server + metadata database together.
+zed --registry http://127.0.0.1:48080 --token "$ZED_PKG_TOKEN" \
+  r2g --registry-mode server --clean
 ```
+
+Server mode is deliberately loud and explicit. It uses the ordinary HTTP
+registry client for both upload and consumer install, including the configured
+credential. The package version remains published after `--clean`; cleanup
+only removes the local mock consumer and store. A repeated run against an
+immutable registry therefore needs a new version (or a reset disposable
+registry). This is the mode used to certify the bounded Rust process-memory
+backend on the AWS and Hetzner Kubernetes deployment paths; the ordinary
+pre-publish developer loop remains hermetic.
 
 With `--docker`, r2g installs in copy mode (self-contained, zero symlinks —
 the same guarantee `--install-mode copy` gives OCI builds), bind-mounts the
