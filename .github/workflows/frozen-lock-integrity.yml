@@ -62,7 +62,8 @@ jobs:
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
           test "$(grep -c "$ZED_INTERFACES_SHA" zed-cli/Cargo.toml)" -eq 1
           test "$(grep -c "$ZED_INTERFACES_SHA" zed-cli/Cargo.lock)" -eq 1
-          test "$(grep -c "$ZED_INTERFACES_SHA" zed-cli/.github/workflows/frozen-lock-integrity.yml)" -eq 1
+          grep -F "ZED_INTERFACES_SHA: $ZED_INTERFACES_SHA" \
+            zed-cli/.github/workflows/frozen-lock-integrity.yml
           grep -F 'vcs_commit must be explicitly present' zed-interfaces/src/lockfile.rs
           grep -F '"vcs_commit"' zed-interfaces/schemas/lockfile.json
           test ! -e zed-cli/.github/workflows/den-1464-retarget.yml
@@ -74,7 +75,6 @@ jobs:
             625ba7bdf4339df7d0880f791a0715ca894558fe; do
             ! grep -q "$old" zed-cli/Cargo.toml
             ! grep -q "$old" zed-cli/Cargo.lock
-            ! grep -q "$old" zed-cli/.github/workflows/frozen-lock-integrity.yml
           done
 
       - name: Install pinned Rust toolchain
