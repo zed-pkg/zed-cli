@@ -62,3 +62,5 @@ jobs:
           git push \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             HEAD:agent/recursive-lock-cross-platform
+
+# This second branch commit intentionally triggers the already-present workflow.
