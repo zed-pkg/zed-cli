@@ -232,7 +232,10 @@ fn resolve_project_file(root: &Path, requested: &Path, kind: &str) -> Result<Pat
         root.join(requested)
     };
     if !candidate.is_file() {
-        bail!("{kind} does not exist or is not a file: {}", candidate.display());
+        bail!(
+            "{kind} does not exist or is not a file: {}",
+            candidate.display()
+        );
     }
     let canonical = candidate
         .canonicalize()
@@ -375,15 +378,8 @@ fn validate_plugin_lock(name: &str, plugin: &AsdfPluginLock, path: &str) -> Resu
             "`plugins.{name}.revision` in `{path}` must be a full 40- or 64-character hexadecimal commit"
         );
     }
-    if plugin.sha256.len() != 64
-        || !plugin
-            .sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        bail!(
-            "`plugins.{name}.sha256` in `{path}` must be 64 hexadecimal characters"
-        );
+    if plugin.sha256.len() != 64 || !plugin.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("`plugins.{name}.sha256` in `{path}` must be 64 hexadecimal characters");
     }
     for platform in &plugin.platforms {
         if platform.is_empty()
@@ -391,9 +387,7 @@ fn validate_plugin_lock(name: &str, plugin: &AsdfPluginLock, path: &str) -> Resu
                 .chars()
                 .any(|character| character.is_whitespace() || character.is_control())
         {
-            bail!(
-                "`plugins.{name}.platforms` in `{path}` contains invalid platform `{platform}`"
-            );
+            bail!("`plugins.{name}.platforms` in `{path}` contains invalid platform `{platform}`");
         }
     }
     Ok(())
@@ -557,11 +551,7 @@ sha256 = "{}"
     #[test]
     fn authoring_import_needs_no_sidecar() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(
-            temp.path().join(DEFAULT_CONFIG_PATH),
-            "nodejs 22.11.0\n",
-        )
-        .unwrap();
+        fs::write(temp.path().join(DEFAULT_CONFIG_PATH), "nodejs 22.11.0\n").unwrap();
 
         let imported = import_asdf(temp.path(), None, None, false).unwrap();
         assert!(imported.lock_path.is_none());
@@ -571,11 +561,7 @@ sha256 = "{}"
     #[test]
     fn frozen_import_requires_sidecar() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(
-            temp.path().join(DEFAULT_CONFIG_PATH),
-            "nodejs 22.11.0\n",
-        )
-        .unwrap();
+        fs::write(temp.path().join(DEFAULT_CONFIG_PATH), "nodejs 22.11.0\n").unwrap();
 
         let error = import_asdf(temp.path(), None, None, true).unwrap_err();
         assert!(error.to_string().contains("requires `.zed/asdf.lock.toml`"));
@@ -591,7 +577,11 @@ sha256 = "{}"
         .unwrap();
 
         let error = import_asdf(temp.path(), None, None, false).unwrap_err();
-        assert!(error.to_string().contains("exactly one plugin and one version"));
+        assert!(
+            error
+                .to_string()
+                .contains("exactly one plugin and one version")
+        );
     }
 
     #[test]
@@ -611,11 +601,7 @@ sha256 = "{}"
     #[test]
     fn mutable_plugin_revision_is_rejected() {
         let temp = tempfile::tempdir().unwrap();
-        fs::write(
-            temp.path().join(DEFAULT_CONFIG_PATH),
-            "nodejs 22.11.0\n",
-        )
-        .unwrap();
+        fs::write(temp.path().join(DEFAULT_CONFIG_PATH), "nodejs 22.11.0\n").unwrap();
         fs::create_dir_all(temp.path().join(".zed")).unwrap();
         fs::write(
             temp.path().join(DEFAULT_LOCK_PATH),
