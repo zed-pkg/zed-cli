@@ -1,0 +1,103 @@
+name: nix-export-bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nix-export-bundle.yml"
+      - "docs/nix-export-bundle.md"
+      - "src/lib.rs"
+      - "src/nix_export_bundle.rs"
+      - "src/nix_export_plan.rs"
+      - "tests/nix_export_bundle.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/nix-export-bundle.yml"
+      - "docs/nix-export-bundle.md"
+      - "src/lib.rs"
+      - "src/nix_export_bundle.rs"
+      - "src/nix_export_plan.rs"
+      - "tests/nix_export_bundle.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-export-bundle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: Deterministic bundle on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Verify immutable shared-contract pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'rev = "625ba7bdf4339df7d0880f791a0715ca894558fe"' Cargo.toml
+          grep -F '#625ba7bdf4339df7d0880f791a0715ca894558fe' Cargo.lock
+
+      - name: Check formatting and warnings
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run pure renderer tests
+        run: |
+          cargo test --locked nix_export_bundle::tests:: -- --test-threads=1
+          cargo test --locked --test nix_export_bundle -- --test-threads=1
+
+      - name: Certify generated flake with offline evaluation and build
+        run: >-
+          cargo test --locked --test nix_export_bundle
+          generated_flake_checks_and_builds_offline_after_archive --
+          --ignored --exact --nocapture --test-threads=1
+
+      - name: Prove workflow and generated-code boundary are read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/nix-export-bundle.yml').read_text()
+          module = Path('src/nix_export_bundle.rs').read_text()
+          assert 'permissions:\n  contents: read' in workflow
+          assert 'persist-credentials: false' in workflow
+          for forbidden in (
+              'contents: write',
+              'pull_request_target:',
+              'git push',
+              'Command::new("nix")',
+              'std::fs::write',
+              'reqwest::',
+              'ZED_PKG_TOKEN',
+          ):
+              assert forbidden not in workflow + '\n' + module, forbidden
+          PY
