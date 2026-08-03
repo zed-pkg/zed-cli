@@ -4,7 +4,8 @@
 installing that graph into the project:
 
 ```sh
-zed fetch --frozen --output /tmp/my-project-zed-deps
+mkdir -p /tmp/zed-fetch-outputs
+zed fetch --frozen --output /tmp/zed-fetch-outputs/my-project-zed-deps
 ```
 
 Version 1 is deliberately frozen-only. It never performs semver resolution,
@@ -56,24 +57,44 @@ The command does not write `ZED_PKG_HOME`, `refs.json`, `zed_modules/`,
 `node_modules/`, `.zed/`, build-cache output, or project transaction state.
 
 The output must not exist and must be outside the project tree. Paths containing
-`..` are rejected. Temporary bundle and store directories are removed after
-success and through error cleanup; the final directory appears only after all
-packages and metadata have been verified and written.
+`..` are rejected. Its parent must already exist and be a directory. That parent
+is canonicalized before any temporary or final state is created, so a symlink
+cannot redirect an apparently external output back into the project. Temporary
+bundle and store directories are removed after success and through error
+cleanup; the final directory appears only after all packages and metadata have
+been verified and written.
+
+`file://` lock sources must resolve to local absolute paths. User information,
+passwords, query strings, fragments, and non-local authorities fail closed, and
+diagnostics do not echo the rejected source literal.
 
 ## Nix use
 
-The Nix fixed-output bridge can migrate from frozen copy installation to this
-primitive:
+A Nix fixed-output derivation should ask `zed fetch` to publish into an existing
+writable temporary parent and then copy the verified bundle into `$out`:
 
 ```nix
 installPhase = ''
-  zed fetch --frozen --output "$out"
+  set -euo pipefail
+  bundle_parent="$TMPDIR/zed-fetch-output"
+  mkdir -p "$bundle_parent"
+
+  zed fetch \
+    --frozen \
+    --output "$bundle_parent/bundle"
+
+  mkdir -p "$out"
+  cp -a "$bundle_parent/bundle/." "$out/"
 '';
 ```
 
-Nix remains the recursive output verifier, while `.zpkg.lock` and zed-pkg remain
-the only graph resolver and artifact verifier. The generated fetch bundle is
-not a project install and does not contain native ecosystem wiring.
+Writing directly to `$out` is not the intended atomic-fetch boundary: the Nix
+store path and its parent are controlled by Nix, while `zed fetch` needs a
+writable pre-existing sibling directory for staging and same-filesystem rename.
+Nix still verifies the recursively hashed final `$out`. `.zpkg.lock` and
+zed-pkg remain the only graph resolver and artifact verifier. The generated
+fetch bundle is not a project install and does not contain native ecosystem
+wiring.
 
 ## Deliberate exclusions
 
