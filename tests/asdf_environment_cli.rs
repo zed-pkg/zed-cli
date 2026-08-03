@@ -103,7 +103,8 @@ fn frozen_verify_fails_without_provenance_sidecar() {
 #[test]
 fn adapter_does_not_inherit_parent_tool_versions() {
     let parent = tempfile::tempdir().unwrap();
-    fs::write(parent.path().join(".tool-versions"), "nodejs 22.11.0\n").unwrap();
+    let parent_config = parent.path().join(".tool-versions");
+    fs::write(&parent_config, "nodejs 22.11.0\n").unwrap();
     let child = parent.path().join("child");
     fs::create_dir_all(&child).unwrap();
 
@@ -117,7 +118,7 @@ fn adapter_does_not_inherit_parent_tool_versions() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("project-local asdf config does not exist"));
-    assert!(!stderr.contains(parent.path().to_string_lossy().as_ref()));
+    assert!(!stderr.contains(parent_config.to_string_lossy().as_ref()));
 }
 
 #[test]
