@@ -1,10 +1,9 @@
-use clap::Parser;
 use zed_cli::auth;
-use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
+use zed_cli::cli::{AuthCmd, CacheCmd, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
-use zed_cli::manifestless;
+use zed_cli::managed_install;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -14,6 +13,7 @@ use zed_cli::update;
 
 fn main() {
     let args = std::env::args_os().collect::<Vec<_>>();
+    zed_cli::cli_model::prepare_environment(&args);
     if let Err(error) = zed_cli::flags::normalize_global_boolean_environment(&args) {
         eprintln!("error: {error:#}");
         std::process::exit(2);
@@ -33,14 +33,14 @@ fn main() {
         eprintln!("error: {error:#}");
         std::process::exit(2);
     }
-    let cli = Cli::parse();
+    let cli = zed_cli::cli_model::parse();
     if let Err(error) = run(cli) {
         eprintln!("error: {error:#}");
         std::process::exit(1);
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+fn run(cli: zed_cli::cli::Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
     let cwd = std::env::current_dir()?;
     zed_cli::transaction::recover_pending(&cwd)?;
@@ -57,7 +57,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             allow_no_manifest,
             allow_ecosystem_mismatch,
-        } => manifestless::install(
+        } => managed_install::install(
             &cwd,
             &cfg,
             &specs,
@@ -94,7 +94,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             dry_run,
             allow_dirty,
             skip_vcs_checks,
-        } => ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks),
+        } => {
+            managed_install::ensure_publishable(&cwd)?;
+            ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks)
+        }
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
         Cmd::R2g {
             docker,
