@@ -16,7 +16,7 @@ concurrency:
 jobs:
   candidate-smoke:
     name: Exact CLI against pinned fixture organization
-    uses: zed-pkg-test/zed-pkg-e2e/.github/workflows/candidate-smoke.yml@cb4110466600c01ed2a142688ad91acab6beedc4
+    uses: zed-pkg-test/zed-pkg-e2e/.github/workflows/candidate-smoke.yml@fe34a2a6b910806480aee1b3aee68d617ad0c6fe
     with:
       zed_cli_ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      harness_ref: cb4110466600c01ed2a142688ad91acab6beedc4
+      harness_ref: fe34a2a6b910806480aee1b3aee68d617ad0c6fe
