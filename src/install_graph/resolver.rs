@@ -1,5 +1,5 @@
-use super::*;
 use super::artifact::{resolve_version, split_key, validate_version_identity};
+use super::*;
 
 /// Warm the content-addressed store for an install. The normal installer runs
 /// immediately afterward and remains responsible for the project transaction.
@@ -23,11 +23,7 @@ pub fn prefetch(project: &Path, cfg: &Config, frozen: bool) -> Result<PrefetchRe
 }
 
 fn install_concurrency() -> usize {
-    normalize_concurrency(
-        std::env::var("ZED_PKG_INSTALL_CONCURRENCY")
-            .ok()
-            .as_deref(),
-    )
+    normalize_concurrency(std::env::var("ZED_PKG_INSTALL_CONCURRENCY").ok().as_deref())
 }
 
 pub(super) fn normalize_concurrency(raw: Option<&str>) -> usize {
@@ -154,12 +150,12 @@ fn prefetch_recursive(
             while let Some(request) = pending.pop_front() {
                 if let Some(member_dependencies) = workspace.dependencies.get(&request.key) {
                     if expanded_workspace.insert(request.key.clone()) {
-                        pending.extend(member_dependencies.iter().map(
-                            |(key, requirement)| DependencyRequest {
+                        pending.extend(member_dependencies.iter().map(|(key, requirement)| {
+                            DependencyRequest {
                                 key: key.clone(),
                                 requirement: requirement.clone(),
-                            },
-                        ));
+                            }
+                        }));
                     }
                     continue;
                 }
@@ -197,9 +193,12 @@ fn prefetch_recursive(
             next_result += 1;
             in_flight -= 1;
             downloaded += usize::from(result.downloaded);
-            pending.extend(result.dependencies.into_iter().map(
-                |(key, requirement)| DependencyRequest { key, requirement },
-            ));
+            pending.extend(
+                result
+                    .dependencies
+                    .into_iter()
+                    .map(|(key, requirement)| DependencyRequest { key, requirement }),
+            );
         }
 
         Ok(PrefetchReport {
