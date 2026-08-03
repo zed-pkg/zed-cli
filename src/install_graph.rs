@@ -50,6 +50,7 @@ struct DependencyRequest {
 
 #[derive(Debug, Clone)]
 struct FetchTask {
+    sequence: usize,
     key: String,
     version: VersionMetadata,
 }
@@ -58,6 +59,12 @@ struct FetchTask {
 struct FetchResult {
     dependencies: BTreeMap<String, String>,
     downloaded: bool,
+}
+
+#[derive(Debug)]
+struct FetchMessage {
+    sequence: usize,
+    result: Result<FetchResult>,
 }
 
 #[derive(Debug, Default)]
@@ -121,7 +128,7 @@ impl TaskQueue {
 
 struct FetchPool {
     queue: Arc<TaskQueue>,
-    results: mpsc::Receiver<Result<FetchResult>>,
+    results: mpsc::Receiver<FetchMessage>,
     workers: Vec<JoinHandle<()>>,
 }
 
@@ -172,10 +179,10 @@ impl FetchPool {
         Ok(())
     }
 
-    fn receive(&self) -> Result<FetchResult> {
+    fn receive(&self) -> Result<FetchMessage> {
         self.results
             .recv()
-            .context("all recursive install workers stopped unexpectedly")?
+            .context("all recursive install workers stopped unexpectedly")
     }
 
     fn shutdown(self, cancel: bool) -> Result<()> {
