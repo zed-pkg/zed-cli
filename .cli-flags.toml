@@ -301,6 +301,19 @@ help = "Emit the release plan as JSON."
 [commands.release.commands.preflight]
 help = "Run fixed credential-free native package preflight adapters."
 
+[commands.oci]
+help = "Plan immutable Zed package distribution through OCI registries."
+
+[commands.oci.commands.plan]
+help = "Build the exact credential-free OCI publication plan."
+
+[commands.oci.commands.plan.flags.oci_json]
+env = "ZED_PKG_OCI_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit the OCI publication plan as JSON."
+
 [commands.publish]
 help = "Publish an artifact."
 
