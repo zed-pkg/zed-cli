@@ -141,9 +141,8 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
 }
 
 fn print_root_help() -> Result<()> {
-    let mut command = augment_root_command(crate::dev::augment_root_command(
-        crate::cli::Cli::command(),
-    ));
+    let mut command =
+        augment_root_command(crate::dev::augment_root_command(crate::cli::Cli::command()));
     command.print_help().context("printing zed help")?;
     println!();
     Ok(())
@@ -158,9 +157,7 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
-            error
-                .print()
-                .context("printing zed fetch argument error")?;
+            error.print().context("printing zed fetch argument error")?;
             return Ok(code);
         }
     };
@@ -196,9 +193,7 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
 /// ```
 pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<FetchReport> {
     if !options.frozen {
-        bail!(
-            "`zed fetch` version 1 is frozen-only; pass --frozen or set ZED_PKG_FROZEN=1"
-        );
+        bail!("`zed fetch` version 1 is frozen-only; pass --frozen or set ZED_PKG_FROZEN=1");
     }
 
     let requested_root = fs::canonicalize(requested_root)
@@ -259,9 +254,7 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
         verify_registry_metadata(locked, &metadata)?;
         let package = ensure_artifact(registry.as_ref(), &store, &metadata)?;
 
-        let relative = PathBuf::from("packages")
-            .join(&locked.sha256)
-            .join("pkg");
+        let relative = PathBuf::from("packages").join(&locked.sha256).join("pkg");
         let destination = staging.path().join(&relative);
         if !destination.exists() {
             copy_package_tree(&package, &destination)?;
@@ -324,7 +317,10 @@ fn lock_root(requested: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-fn validate_locked_packages(lock: &Lockfile, fallback_registry: &str) -> Result<Vec<LockedPackage>> {
+fn validate_locked_packages(
+    lock: &Lockfile,
+    fallback_registry: &str,
+) -> Result<Vec<LockedPackage>> {
     let mut packages = lock.packages.clone();
     packages.sort_by(|left, right| {
         (&left.org, &left.name, &left.version, &left.sha256).cmp(&(
@@ -346,7 +342,10 @@ fn validate_locked_packages(lock: &Lockfile, fallback_registry: &str) -> Result<
         }
         require_sha256(&package.sha256)?;
         if package.version.trim().is_empty() {
-            bail!("lockfile entry `{}` has an empty version", package.full_name());
+            bail!(
+                "lockfile entry `{}` has an empty version",
+                package.full_name()
+            );
         }
         if !identities.insert((package.org.clone(), package.name.clone())) {
             bail!(
@@ -376,8 +375,9 @@ fn validate_source(source: &str) -> Result<()> {
         return Ok(());
     }
     if source.starts_with("https://") || source.starts_with("http://") {
-        let url = reqwest::Url::parse(source)
-            .context("frozen lockfile contains an invalid HTTP registry source")?;
+        let url = reqwest::Url::parse(source).map_err(|_| {
+            anyhow::anyhow!("frozen lockfile contains an invalid HTTP registry source")
+        })?;
         if !url.username().is_empty()
             || url.password().is_some()
             || url.query().is_some()
@@ -531,10 +531,7 @@ fn prepare_output_path(
 }
 
 fn copy_package_tree(source: &Path, destination: &Path) -> Result<()> {
-    for entry in WalkDir::new(source)
-        .follow_links(false)
-        .sort_by_file_name()
-    {
+    for entry in WalkDir::new(source).follow_links(false).sort_by_file_name() {
         let entry = entry?;
         if entry.depth() == 0 {
             fs::create_dir_all(destination)?;
@@ -783,9 +780,7 @@ mod tests {
         let bytes = fs::read(&archive_path).unwrap();
         let sha256 = sha256_bytes(&bytes);
         let size = bytes.len() as u64;
-        let destination = registry
-            .join("artifacts")
-            .join(format!("{sha256}.tar.gz"));
+        let destination = registry.join("artifacts").join(format!("{sha256}.tar.gz"));
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
         fs::write(destination, bytes).unwrap();
         (sha256, size)
@@ -866,10 +861,12 @@ mod tests {
     }
 
     fn no_fetch_staging(parent: &Path) -> bool {
-        fs::read_dir(parent)
-            .unwrap()
-            .flatten()
-            .all(|entry| !entry.file_name().to_string_lossy().starts_with(".zed-fetch-"))
+        fs::read_dir(parent).unwrap().flatten().all(|entry| {
+            !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".zed-fetch-")
+        })
     }
 
     #[test]
@@ -921,7 +918,10 @@ mod tests {
         assert_eq!(report.lock_sha256, sha256_bytes(&lock_bytes));
         assert_eq!(file_snapshot(&first), file_snapshot(&second));
         assert_eq!(file_snapshot(project.path()), before);
-        assert!(!home.exists(), "fetch must not use the ambient global store");
+        assert!(
+            !home.exists(),
+            "fetch must not use the ambient global store"
+        );
         assert!(
             first
                 .join("packages")
@@ -1083,7 +1083,10 @@ mod tests {
     #[test]
     fn modular_route_help_and_completion_model_include_fetch() {
         let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
-        assert_eq!(route(&args(&["zed", "fetch", "--frozen", "--output", "x"])), Route::Fetch);
+        assert_eq!(
+            route(&args(&["zed", "fetch", "--frozen", "--output", "x"])),
+            Route::Fetch
+        );
         assert_eq!(
             route(&args(&["zed", "--home", "/tmp/home", "fetch", "--help"])),
             Route::Fetch
@@ -1094,15 +1097,22 @@ mod tests {
         ));
         assert_eq!(route(&args(&["zed", "install"])), Route::Existing);
 
-        let command = augment_root_command(crate::dev::augment_root_command(
-            crate::cli::Cli::command(),
-        ));
+        let command =
+            augment_root_command(crate::dev::augment_root_command(crate::cli::Cli::command()));
         let fetch = command
             .get_subcommands()
             .find(|subcommand| subcommand.get_name() == "fetch")
             .expect("fetch command must be visible");
-        assert!(fetch.get_arguments().any(|argument| argument.get_long() == Some("frozen")));
-        assert!(fetch.get_arguments().any(|argument| argument.get_long() == Some("output")));
+        assert!(
+            fetch
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("frozen"))
+        );
+        assert!(
+            fetch
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("output"))
+        );
     }
 
     #[test]
@@ -1116,7 +1126,11 @@ mod tests {
         ];
         let parsed = parse_embedded(&valid).unwrap();
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(parsed.unknown_options.is_empty(), "{:?}", parsed.unknown_options);
+        assert!(
+            parsed.unknown_options.is_empty(),
+            "{:?}",
+            parsed.unknown_options
+        );
 
         let invalid = vec![
             "zed".to_string(),
