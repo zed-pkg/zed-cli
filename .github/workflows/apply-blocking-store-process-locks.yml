@@ -32,6 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/blocking_store_process_locks.py
+          python3 .github/add_owner_exit_lock_test.py
           cargo fmt --all
           git diff --check
 
@@ -42,6 +43,9 @@ jobs:
           cargo fmt --all --check
           cargo test --locked --lib \
             store::tests::install_process_lock_blocks_without_polling_until_owner_release \
+            -- --exact --nocapture
+          cargo test --locked --lib \
+            store::tests::install_process_lock_is_released_when_owner_process_is_terminated \
             -- --exact --nocapture
           cargo test --locked --lib store::tests
           cargo test --locked --lib install_graph::tests
