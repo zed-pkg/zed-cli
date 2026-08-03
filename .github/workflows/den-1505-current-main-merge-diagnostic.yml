@@ -1,0 +1,107 @@
+name: DEN-1505 current-main merge diagnostic
+
+on:
+  push:
+    branches:
+      - agent/den-1505-current-main-integration
+    paths:
+      - '.github/workflows/den-1505-current-main-merge-diagnostic.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CURRENT_MAIN_SHA: b82da352472e301425c175b78d9d2c1c0cd0f1db
+
+jobs:
+  conflict-map:
+    name: Map the exact semantic conflict blocks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the cumulative installer stack
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Attempt the exact current-main merge without committing
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$CURRENT_MAIN_SHA"
+          set +e
+          git -c merge.conflictStyle=diff3 merge --no-commit --no-ff "$CURRENT_MAIN_SHA"
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          git status --short
+          git diff --name-only --diff-filter=U | sort > "$RUNNER_TEMP/conflicts.txt"
+          cat "$RUNNER_TEMP/conflicts.txt"
+
+      - name: Require the bounded two-file conflict surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' src/lib.rs src/ops.rs > "$RUNNER_TEMP/expected.txt"
+          cmp "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/conflicts.txt"
+
+      - name: Render every conflict block with bounded context
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          for raw_path in Path('/tmp').glob('this-path-never-matches'):
+              raise AssertionError(raw_path)
+
+          for name in ('src/lib.rs', 'src/ops.rs'):
+              lines = Path(name).read_text(encoding='utf-8').splitlines()
+              print(f'::group::{name} conflict blocks')
+              index = 0
+              block = 0
+              while index < len(lines):
+                  if not lines[index].startswith('<<<<<<< '):
+                      index += 1
+                      continue
+                  start = index
+                  depth = 0
+                  while index < len(lines):
+                      line = lines[index]
+                      if line.startswith('<<<<<<< '):
+                          depth += 1
+                      elif line.startswith('>>>>>>> '):
+                          depth -= 1
+                          if depth == 0:
+                              break
+                      index += 1
+                  if index >= len(lines):
+                      raise SystemExit(f'unterminated conflict in {name}')
+                  block += 1
+                  lo = max(0, start - 12)
+                  hi = min(len(lines), index + 13)
+                  print(f'--- block {block}: lines {start + 1}-{index + 1} ---')
+                  for line_number in range(lo, hi):
+                      print(f'{line_number + 1:05d}: {lines[line_number]}')
+                  index += 1
+              print(f'conflict_blocks={block}')
+              print('::endgroup::')
+          PY
+
+      - name: Upload the bounded conflicted files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: den-1505-current-main-conflicts
+          path: |
+            src/lib.rs
+            src/ops.rs
+            ${{ runner.temp }}/conflicts.txt
+          if-no-files-found: error
+          retention-days: 1
