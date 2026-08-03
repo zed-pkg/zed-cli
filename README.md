@@ -59,6 +59,9 @@ git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
 zed publish
 
+# derive the exact immutable OCI identity without credentials or uploads
+zed oci plan oci://ghcr.io/acme/my-lib:0.1.0
+
 # consume packages from a manifest
 zed add acme/http-kit@^1
 zed install
@@ -116,6 +119,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed oci plan <oci://registry/repository:version> [--target <name>] [--json]` | Pack in a temporary directory and print exact OCI config, layer, manifest, and resolved digest identities without credentials, network, or uploads |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
@@ -316,6 +320,8 @@ actual CLI never drift, so it is always authoritative:
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
 | `--allow-no-manifest` / `--skip-manifest` (install) | `ZED_PKG_ALLOW_NO_MANIFEST` | off; otherwise a real-terminal confirmation is required |
+| `--target` (OCI plan/polyglot install) | `ZED_PKG_TARGET` | required for a polyglot OCI plan; inferred for install when possible |
+| `--json` (OCI plan) | `ZED_PKG_OCI_JSON` | off |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
@@ -355,6 +361,26 @@ mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
 always removes the local session.
 
 ## Containers & OCI
+
+### Immutable OCI publication plans
+
+`zed oci plan` derives the exact OCI artifact bytes and identities before any
+registry is contacted:
+
+```sh
+zed oci plan oci://ghcr.io/acme/tool:1.2.3
+zed oci plan oci://ghcr.io/acme/tool-rust:1.2.3 --target rust --json
+```
+
+The input is a tagged destination. Contract v1 requires that tag to equal the
+package version and rejects a caller-supplied digest. Zed validates the source
+manifest and frozen dependency provenance, packs in a temporary directory, and
+hashes the package archive, Zed manifest, optional lockfile, config JSON, and
+OCI image manifest. The output includes the resolved immutable
+`oci://...@sha256:...` reference. Planning reads no registry credentials,
+performs no network request, uploads nothing, and leaves no `.zed/pack` output.
+A later transport command can consume the same descriptors without changing
+what is signed, attested, or pushed.
 
 Symlinks into `$HOME/.zed-pkg` do not survive a `COPY --from=build` between
 image stages, so use copy mode inside builds and cache-mount the store:
