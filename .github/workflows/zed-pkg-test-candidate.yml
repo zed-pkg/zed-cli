@@ -1,0 +1,22 @@
+name: zed-pkg-test candidate smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-pkg-test-candidate-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  candidate-smoke:
+    name: Exact CLI against pinned fixture organization
+    uses: zed-pkg-test/zed-pkg-e2e/.github/workflows/candidate-smoke.yml@b4f1c50e3f117fecad9e6c92e493bfe4aa9585ee
+    with:
+      zed_cli_ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      harness_ref: b4f1c50e3f117fecad9e6c92e493bfe4aa9585ee
