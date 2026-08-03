@@ -34,6 +34,9 @@ normal package resolver.
 
 An interactive invocation requires a terminal. Automation should always use
 `-c` or `--print-env`.
+Non-interactive POSIX commands use `-c` rather than a login shell. This
+preserves the exact PATH assembled by mise, Nix, and Zed instead of allowing login
+startup files to overwrite it, including on macOS.
 
 ## Environment layout
 
@@ -85,11 +88,17 @@ project-local directories under `.zed/dev/mise`. This prevents user-global
 runtime pins from changing a frozen agent or CI run while leaving ordinary
 non-frozen developer composition compatible with standard mise behavior.
 
-A shell already entered by `mise exec` is detected through mise's environment
-diff marker and is not re-entered. `zed develop` does not require direnv and
-does not source `.envrc` itself. A shell already entered through direnv or
-`nix develop` is detected through `IN_NIX_SHELL` and is not re-entered. No
-dotenv file, including production env files, is loaded automatically.
+A non-frozen shell already entered by `mise exec` is detected through mise's
+environment diff marker and is not re-entered. Frozen integrated composition
+fails closed when it detects ambient mise state because Zed cannot prove which
+project configuration and lock produced that parent environment. Run the frozen
+command outside the activated shell, or use `--mise never` after an explicit,
+separately verified `mise exec`.
+
+`zed develop` does not require direnv and does not source `.envrc` itself. A
+shell already entered through direnv or `nix develop` is detected through
+`IN_NIX_SHELL` and is not re-entered. No dotenv file, including production env
+files, is loaded automatically.
 
 Precedence is:
 

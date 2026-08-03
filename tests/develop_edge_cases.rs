@@ -675,8 +675,8 @@ fn shell_name_controls_the_command_argument_protocol() {
     let shells = fixture.root.join("shells");
     let script = "printf sentinel";
     let cases: &[(&str, &[&str])] = &[
-        ("bash", &["-lc", script]),
-        ("fish", &["-lc", script]),
+        ("bash", &["-c", script]),
+        ("fish", &["-c", script]),
         ("pwsh", &["-NoLogo", "-Command", script]),
         ("cmd.exe", &["/D", "/S", "/C", script]),
         ("custom-shell", &["-c", script]),

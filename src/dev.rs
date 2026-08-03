@@ -621,10 +621,7 @@ fn maybe_reenter_through_mise(
     cfg: &Config,
     options: &DevelopArgs,
 ) -> Result<Option<i32>> {
-    if options.mise == DevMiseMode::Never
-        || env::var_os(MISE_REENTRY_ENV).is_some()
-        || env::var_os("__MISE_DIFF").is_some()
-    {
+    if options.mise == DevMiseMode::Never || env::var_os(MISE_REENTRY_ENV).is_some() {
         return Ok(None);
     }
 
@@ -637,6 +634,15 @@ fn maybe_reenter_through_mise(
         }
         return Ok(None);
     };
+
+    if env::var_os("__MISE_DIFF").is_some() {
+        if options.frozen {
+            bail!(
+                "--frozen mise composition cannot verify an ambient mise activation; run `zed dev --mise required --frozen` outside an activated mise shell, or use `--mise never` after an explicit `mise exec`"
+            );
+        }
+        return Ok(None);
+    }
 
     if !program_available("mise") {
         if options.mise == DevMiseMode::Required {
@@ -1262,7 +1268,7 @@ fn configure_shell_arguments(command: &mut Command, shell: &Path, script: Option
             command.args(["-NoLogo", "-Command", script]);
         }
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => {
-            command.args(["-lc", script]);
+            command.args(["-c", script]);
         }
         _ => {
             command.args(["-c", script]);
@@ -1290,6 +1296,17 @@ mod tests {
             python: None,
             venv: PathBuf::from(DEFAULT_VENV),
         }
+    }
+
+    #[test]
+    fn noninteractive_posix_commands_do_not_use_login_shells() {
+        let mut command = Command::new("/bin/bash");
+        configure_shell_arguments(&mut command, Path::new("/bin/bash"), Some("true"));
+        let arguments: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+        assert_eq!(
+            arguments,
+            vec![OsString::from("-c"), OsString::from("true")]
+        );
     }
 
     #[test]
