@@ -131,10 +131,7 @@ fn frozen_verify_is_read_only_and_does_not_load_parent_or_global_mise_config() {
     project_entries.sort();
     assert_eq!(
         project_entries,
-        vec![
-            OsString::from("mise.lock"),
-            OsString::from("mise.toml"),
-        ]
+        vec![OsString::from("mise.lock"), OsString::from("mise.toml"),]
     );
 }
 
