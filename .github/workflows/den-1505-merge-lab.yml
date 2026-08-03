@@ -41,6 +41,8 @@ jobs:
           git fetch --no-tags origin "$STACK_SHA"
           git clone --quiet --no-hardlinks . "$RUNNER_TEMP/merge-work"
           git -C "$RUNNER_TEMP/merge-work" checkout --quiet --detach "$STACK_SHA"
+          git -C "$RUNNER_TEMP/merge-work" config user.name 'DEN-1505 merge laboratory'
+          git -C "$RUNNER_TEMP/merge-work" config user.email 'den-1505-merge-lab@users.noreply.github.com'
 
           set +e
           git -C "$RUNNER_TEMP/merge-work" \
