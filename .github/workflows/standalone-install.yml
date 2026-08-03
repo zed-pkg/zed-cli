@@ -1,0 +1,56 @@
+name: standalone locked install
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/standalone-install.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/standalone-install.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standalone-locked-install-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out zed-cli without sibling repositories
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - name: Reject checkout-relative dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e ../zed-interfaces
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+              for name, spec in manifest.get(section, {}).items():
+                  if isinstance(spec, dict) and "path" in spec:
+                      raise SystemExit(f"{section}.{name} is checkout-relative: {spec['path']}")
+          PY
+      - name: Install and execute the locked CLI from the isolated checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --path . --locked --root "$RUNNER_TEMP/zed-root"
+          "$RUNNER_TEMP/zed-root/bin/zed" --help >/dev/null
