@@ -1,0 +1,77 @@
+name: asdf environment interop
+
+on:
+  pull_request:
+    paths:
+      - "src/asdf_environment.rs"
+      - "src/bin/zed-asdf.rs"
+      - "src/lib.rs"
+      - "tests/asdf_environment_cli.rs"
+      - "docs/asdf-interop.md"
+      - ".github/workflows/asdf-interop.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - "src/asdf_environment.rs"
+      - "src/bin/zed-asdf.rs"
+      - "src/lib.rs"
+      - "tests/asdf_environment_cli.rs"
+      - ".github/workflows/asdf-interop.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: asdf-interop-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  asdf-adapter:
+    name: asdf adapter / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2025
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Unit and black-box tests
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib asdf_environment::tests
+          cargo test --locked --test asdf_environment_cli
+
+      - name: Clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --bin zed-asdf --test asdf_environment_cli -- -D warnings
