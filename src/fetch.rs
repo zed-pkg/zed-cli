@@ -869,6 +869,20 @@ mod tests {
         bytes
     }
 
+    /// Serialize intentionally malformed lock fixtures without invoking the
+    /// shared writer's validity checks. Production code never calls this; the
+    /// negative tests need malformed bytes to reach the resolver boundary.
+    fn write_unchecked_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
+        let lock = Lockfile {
+            version: Lockfile::CURRENT_VERSION,
+            packages,
+            nix_adapters: Vec::new(),
+        };
+        let bytes = toml::to_string(&lock).unwrap().into_bytes();
+        fs::write(project.join(LOCKFILE_FILE), &bytes).unwrap();
+        bytes
+    }
+
     fn file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
         let mut files = BTreeMap::new();
         for entry in WalkDir::new(root).sort_by_file_name().into_iter().flatten() {
@@ -977,7 +991,9 @@ mod tests {
             "1.0.0",
             &[("payload.txt", b"trusted\n")],
         );
-        locked.sha256 = "0".repeat(64);
+        // Keep the digest structurally valid so the failure is the intended
+        // registry-versus-lock mismatch rather than lock-shape validation.
+        locked.sha256 = "f".repeat(64);
         write_lock(project.path(), vec![locked]);
         let output = outputs.path().join("must-not-exist");
 
@@ -1054,7 +1070,7 @@ mod tests {
             vcs_commit: None,
             source: "file:///registry".to_string(),
         };
-        write_lock(project.path(), vec![package.clone(), package]);
+        write_unchecked_lock(project.path(), vec![package.clone(), package]);
         let error = run(
             project.path(),
             &config(outputs.path().join("home")),
@@ -1077,7 +1093,7 @@ mod tests {
             vcs_commit: None,
             source: "https://person:super-secret@example.com/registry".to_string(),
         };
-        write_lock(project.path(), vec![credentialed.clone()]);
+        write_unchecked_lock(project.path(), vec![credentialed.clone()]);
         let error = run(
             project.path(),
             &config(outputs.path().join("home-2")),
@@ -1092,7 +1108,7 @@ mod tests {
         assert!(!message.contains("super-secret"));
 
         credentialed.source = "https://example.com/registry?token=also-secret".to_string();
-        write_lock(project.path(), vec![credentialed]);
+        write_unchecked_lock(project.path(), vec![credentialed]);
         let error = run(
             project.path(),
             &config(outputs.path().join("home-3")),
