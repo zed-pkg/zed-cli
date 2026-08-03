@@ -11,6 +11,7 @@ pub mod flags;
 pub mod interactive;
 pub mod manifestless;
 pub mod oci;
+pub mod oci_layout;
 pub mod ops;
 pub mod pack;
 pub mod preflight;
