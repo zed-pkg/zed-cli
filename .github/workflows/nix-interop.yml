@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - tools/zed_nix_bridge.py
+      - tools/zed_nix_common.py
+      - tools/zed_nix_export.py
+      - tools/zed_nix_seal.py
+      - tools/zed_nix_verify.py
       - tools/test_zed_nix_bridge.py
       - docs/nix-interop.md
       - tests/fixtures/nix-interop/**
@@ -12,6 +16,10 @@ on:
   pull_request:
     paths:
       - tools/zed_nix_bridge.py
+      - tools/zed_nix_common.py
+      - tools/zed_nix_export.py
+      - tools/zed_nix_seal.py
+      - tools/zed_nix_verify.py
       - tools/test_zed_nix_bridge.py
       - docs/nix-interop.md
       - tests/fixtures/nix-interop/**
@@ -37,7 +45,7 @@ jobs:
           show-progress: false
 
       - name: Compile the bridge oracle
-        run: python3 -m py_compile tools/zed_nix_bridge.py tools/test_zed_nix_bridge.py
+        run: python3 -m py_compile tools/zed_nix_*.py tools/test_zed_nix_bridge.py
 
       - name: Run fail-closed adapter tests
         working-directory: tools
@@ -59,44 +67,41 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build deterministic Zed fixture artifact
+      - name: Resolve one immutable HTTPS Zed artifact
         id: fixture
         shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           fixture="$RUNNER_TEMP/zed-to-nix"
           mkdir -p "$fixture"
-          tar \
-            --sort=name \
-            --mtime='UTC 1970-01-01' \
-            --owner=0 \
-            --group=0 \
-            --numeric-owner \
-            -C tests/fixtures/nix-interop/payload \
-            -czf "$fixture/nix-bridge-data.tar.gz" .
-          sha256=$(sha256sum "$fixture/nix-bridge-data.tar.gz" | awk '{print $1}')
-          ARTIFACT="$fixture/nix-bridge-data.tar.gz" SHA256="$sha256" python3 - <<'PY'
+          url="https://github.com/zed-pkg/zed-cli/archive/$SOURCE_SHA.tar.gz"
+          artifact="$fixture/zed-cli-$SOURCE_SHA.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 "$url" --output "$artifact"
+          sha256=$(sha256sum "$artifact" | awk '{print $1}')
+          URL="$url" SHA256="$sha256" SOURCE_SHA="$SOURCE_SHA" FIXTURE="$fixture" python3 - <<'PY'
           import json
           import os
           from pathlib import Path
 
-          artifact = Path(os.environ["ARTIFACT"]).resolve()
           metadata = {
               "org": "zed-pkg-test",
               "name": "nix-bridge-data",
               "version": "1.0.0",
               "sha256": os.environ["SHA256"],
               "format": "tar.gz",
-              "download_url": artifact.as_uri(),
-              "vcs_tag": "v1.0.0",
-              "vcs_commit": "174a5b30fbee5bcd58ff92cd5edc3e5632d14ce9",
+              "download_url": os.environ["URL"],
+              "vcs_tag": f"nix-interop-{os.environ['SOURCE_SHA']}",
+              "vcs_commit": os.environ["SOURCE_SHA"],
           }
-          (artifact.parent / "version.json").write_text(
+          (Path(os.environ["FIXTURE"]) / "version.json").write_text(
               json.dumps(metadata, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
           PY
           printf 'fixture=%s\n' "$fixture" >> "$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Export and verify the standalone flake
         shell: bash
@@ -108,8 +113,7 @@ jobs:
             --manifest tests/fixtures/nix-interop/.zpkg.toml \
             --metadata "$FIXTURE/version.json" \
             --nixpkgs-lock tests/fixtures/nix-interop/nix-portable/flake.lock \
-            --out-dir "$FIXTURE/export" \
-            --allow-local-source
+            --out-dir "$FIXTURE/export"
           python3 tools/zed_nix_bridge.py verify --directory "$FIXTURE/export"
           git diff --no-index --exit-code \
             tests/fixtures/nix-interop/nix-portable/flake.lock \
@@ -122,9 +126,19 @@ jobs:
         run: |
           set -euo pipefail
           nix flake check --no-update-lock-file "$FIXTURE/export" --show-trace
-          output=$(nix build --no-update-lock-file "$FIXTURE/export" --no-link --print-out-paths --print-build-logs)
-          message="$output/share/zed-pkg/zed-pkg-test/nix-bridge-data/data/hello.txt"
-          test -f "$message"
+          output=$(nix build \
+            --no-update-lock-file \
+            "$FIXTURE/export" \
+            --no-link \
+            --print-out-paths \
+            --print-build-logs)
+          package_root="$output/share/zed-pkg/zed-pkg-test/nix-bridge-data"
+          message=$(find "$package_root" \
+            -type f \
+            -path '*/tests/fixtures/nix-interop/payload/data/hello.txt' \
+            -print \
+            -quit)
+          test -n "$message"
           grep -Fx 'hello from a hash-pinned Zed artifact' "$message"
 
   nix-to-zed:
@@ -158,7 +172,7 @@ jobs:
             --no-link \
             --print-out-paths \
             --print-build-logs)
-          nix path-info --json "$output" > "$RUNNER_TEMP/path-info.json"
+          nix path-info --json-format 1 "$output" > "$RUNNER_TEMP/path-info.json"
           derivation=$(nix-store --query --deriver "$output")
           nix derivation show "$derivation" > "$RUNNER_TEMP/derivation.json"
           system=$(nix eval --raw --impure --expr builtins.currentSystem)
@@ -170,6 +184,7 @@ jobs:
         env:
           OUTPUT: ${{ steps.realize.outputs.output }}
           SYSTEM: ${{ steps.realize.outputs.system }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           sealed="$RUNNER_TEMP/nix-to-zed"
@@ -178,14 +193,14 @@ jobs:
             --path-info "$RUNNER_TEMP/path-info.json" \
             --derivation-json "$RUNNER_TEMP/derivation.json" \
             --flake-lock tests/fixtures/nix-interop/nix-portable/flake.lock \
-            --locked-ref "github:zed-pkg/zed-cli/$GITHUB_SHA?dir=tests/fixtures/nix-interop/nix-portable" \
+            --locked-ref "github:zed-pkg/zed-cli/$SOURCE_SHA?dir=tests/fixtures/nix-interop/nix-portable" \
             --attribute "packages.$SYSTEM.portable" \
             --system "$SYSTEM" \
             --output out \
             --as-package zed-pkg-test/nix-portable@1.0.0 \
             --bin zed-nix-portable=bin/zed-nix-portable \
             --repository https://github.com/zed-pkg/zed-cli \
-            --source-revision "$GITHUB_SHA" \
+            --source-revision "$SOURCE_SHA" \
             --source-available \
             --license MIT \
             --description 'Closure-free Nix output sealed for Zed' \
