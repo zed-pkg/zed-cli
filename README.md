@@ -413,9 +413,9 @@ zed r2g                       # safe, hermetic roundtrip on the host
 zed r2g --docker              # ...inside a fresh debian:stable-slim container
 zed r2g --docker --image node:22-slim   # pick an image with the runtime you need
 
-# Certify a disposable Rust registry reached through a port-forward. This is
-# intentionally persistent from the registry's point of view: use a fresh
-# version, and reset the memory-backed server + metadata database together.
+# Certify a disposable Rust registry reached through a port-forward. Publishing
+# is persistent from the registry's point of view: an identical retry reuses
+# the immutable version, while changed bytes require a new version or a reset.
 zed --registry http://127.0.0.1:48080 --token "$ZED_PKG_TOKEN" \
   r2g --registry-mode server --clean
 ```
@@ -423,11 +423,13 @@ zed --registry http://127.0.0.1:48080 --token "$ZED_PKG_TOKEN" \
 Server mode is deliberately loud and explicit. It uses the ordinary HTTP
 registry client for both upload and consumer install, including the configured
 credential. The package version remains published after `--clean`; cleanup
-only removes the local mock consumer and store. A repeated run against an
-immutable registry therefore needs a new version (or a reset disposable
-registry). This is the mode used to certify the bounded Rust process-memory
-backend on the AWS and Hetzner Kubernetes deployment paths; the ordinary
-pre-publish developer loop remains hermetic.
+only removes the local mock consumer and store. A byte-identical repeated run
+reuses the immutable version. If the package bytes change without a version
+bump, r2g fails before upload; publish a new version or reset the disposable
+registry metadata and process-memory artifact store together. This is the mode
+used to certify the bounded Rust process-memory backend on the AWS and Hetzner
+Kubernetes deployment paths; the ordinary pre-publish developer loop remains
+hermetic.
 
 With `--docker`, r2g installs in copy mode (self-contained, zero symlinks —
 the same guarantee `--install-mode copy` gives OCI builds), bind-mounts the
