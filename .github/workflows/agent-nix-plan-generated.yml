@@ -6,6 +6,11 @@ on:
       - agent/den-1418-nix-export-plan
     paths:
       - ".github/workflows/agent-nix-plan-generated.yml"
+  pull_request:
+    branches:
+      - agent/den-1477-nix-fetch-bundle
+    paths:
+      - ".github/workflows/agent-nix-plan-generated.yml"
 
 permissions:
   contents: write
@@ -16,6 +21,7 @@ concurrency:
 
 jobs:
   apply:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
