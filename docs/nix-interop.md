@@ -34,12 +34,28 @@ derivation. Its output contains:
 $out/
 ├── tree/                       # copy-installed project materialization
 └── metadata/
-    ├── .zpkg.toml              # when a manifest was supplied
-    ├── .zpkg.lock              # exact lock used by the build
     ├── bridge.json             # operational FOD bridge metadata
-    ├── lock.sha256             # digest of the retained lock
+    ├── lock-summary.json       # stable package inventory; sources redacted
+    ├── lock.sha256             # SHA-256 of the exact input lock bytes
+    ├── manifest.sha256         # present when a manifest was supplied
     └── zed-version.txt         # CLI implementation identity
 ```
+
+The raw `.zpkg.lock` and `.zpkg.toml` remain derivation inputs. They are not
+copied into the fixed output. This is an important Nix boundary: a valid frozen
+lock may name an immutable `file:///nix/store/...` registry, but a fixed-output
+derivation must not retain references to another store object. The bridge
+therefore verifies the original bytes before and after installation, records
+their exact digests, and emits a deterministic package inventory that retains
+artifact identity while replacing every registry source with a source **kind**.
+It also avoids retaining registry strings that could contain credentials.
+
+`lock-summary.json` identifies itself as `zed.nix-lock-summary/v1`. For each
+locked package it retains organization, name, version, artifact SHA-256, size,
+archive format, and a normalized source kind such as
+`immutable-nix-store-input`, `file`, `https`, or `http`. It never retains the
+literal source URL. It also records the exact raw-lock digest and the number of
+canonical Nix adapter records present in the input lock.
 
 `bridge.json` identifies itself as `zed.nix-fetch-bridge/v1` and explicitly
 sets `canonical_adapter_record` to `false`. It is not the canonical
@@ -52,6 +68,7 @@ evidence.
 The fetch stage:
 
 - requires `.zpkg.lock` and runs only frozen resolution;
+- verifies that frozen installation leaves lock and manifest bytes unchanged;
 - uses copy mode, never global-store links;
 - disables dependency build hooks;
 - isolates `HOME`, XDG directories, and `ZED_PKG_HOME`;
@@ -60,6 +77,7 @@ The fetch stage:
 - keeps an explicitly declared immutable `registryPath` in the sandbox closure
   and addresses that exact store identity, preserving the `file://` source
   already frozen into `.zpkg.lock` across Linux and Darwin;
+- retains digests and redacted inventory rather than raw source-bearing files;
 - rejects transaction residue, absolute links, escaping links, and broken
   links; and
 - declares `outputHashMode = "recursive"`, `outputHashAlgo = "sha256"`, and
@@ -155,6 +173,7 @@ The first output is a deterministic **materialized project tree**. It is not yet
 
 - a snapshot of zed-pkg's global content-addressed store;
 - a replacement for a dedicated `zed fetch --frozen --output ...` command;
+- a copy of raw source-bearing lock or manifest files;
 - the canonical `zed.nix-adapter/v1` publication record;
 - an upstream Nixpkgs package definition generator;
 - a Zed binary package in a maintained overlay;
@@ -193,9 +212,9 @@ source-builder inference remains out of scope.
 
 A project-operated overlay can expose reviewed exports with a cache populated by
 CI. Cache publication must bind the Nix output identity to the originating Zed
-release, `.zpkg.lock`, source commit/tag, artifact digest, canonical adapter
-record, and build attestation. The overlay and cache are distribution channels,
-not independent resolvers.
+release, `.zpkg.lock` digest, source commit/tag, artifact digest, canonical
+adapter record, and build attestation. The overlay and cache are distribution
+channels, not independent resolvers.
 
 ### Tier 3: optional upstream Nixpkgs contribution
 
@@ -271,6 +290,8 @@ zed fetch --frozen --output <dir>   # future resolver-only materialization primi
 links, adapters, build hooks, or source-tree mutation. Once shipped, the Nix FOD
 can use it instead of extracting the materialized paths from copy installation.
 The lockfile remains the only graph-resolution input in either implementation.
+Like the current bridge, a future fetch index must retain digests and normalized
+source kinds rather than literal Nix store paths or credential-bearing URLs.
 
 ## Platform boundary
 
@@ -290,16 +311,21 @@ exported metadata must always include the evaluated system and output platform.
 4. publishing the existing Node fixture to a local registry;
 5. adding that registry to the Nix store before resolution so the frozen lock
    points at an immutable URL;
-6. generating a real `.zpkg.lock` and uninstalling the project materialization;
+6. generating a real `.zpkg.lock`, recording its exact digest, and uninstalling
+   the project materialization;
 7. evaluating the standalone flake library with lock updates disabled;
 8. bootstrapping the recursive fixed-output hash while addressing the declared
    registry input through the exact store identity recorded in the frozen lock;
 9. rebuilding the same graph under two derivation names and comparing SHA-256
    NAR hashes;
-10. checking the self-identified non-canonical bridge metadata and link policy;
-11. building and checking a normal offline consumer derivation;
-12. rejecting an incorrect Nix output hash; and
-13. rejecting a lockfile whose Zed artifact digest was tampered with.
+10. checking that lock/manifest digests and the source-redacted inventory match
+    the original inputs while raw source-bearing files are absent;
+11. proving that the FOD has no retained Nix store references;
+12. checking the self-identified non-canonical bridge metadata, link policy, and
+    disabled dependency build hook;
+13. building and checking a normal offline consumer derivation;
+14. rejecting an incorrect Nix output hash; and
+15. rejecting a lockfile whose Zed artifact digest was tampered with.
 
 This canary is intentionally based on the same copy-install fixture used for OCI
 ownership tests, so Nix and container boundaries enforce one materialization
