@@ -346,10 +346,7 @@ url = "https://example.invalid/recursive-consumer/wide-frontier"
 "#,
     );
     for package in packages {
-        manifest.push_str(&format!(
-            "\"{ORG}/{}\" = \"={VERSION}\"\n",
-            package.name
-        ));
+        manifest.push_str(&format!("\"{ORG}/{}\" = \"={VERSION}\"\n", package.name));
     }
     fs::write(project.join(".zpkg.toml"), manifest)?;
     Ok(())
@@ -425,17 +422,11 @@ fn recursive_http_prefetch_saturates_at_five_and_warm_runs_do_not_redownload() -
 
     let artifact_locks = fs::read_dir(home.join("locks"))?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("artifact-")
-        })
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("artifact-"))
         .count();
     assert_eq!(artifact_locks, PACKAGE_COUNT);
 
-    let cache_entries = fs::read_dir(home.join("cache"))?
-        .collect::<std::io::Result<Vec<_>>>()?;
+    let cache_entries = fs::read_dir(home.join("cache"))?.collect::<std::io::Result<Vec<_>>>()?;
     assert_eq!(cache_entries.len(), PACKAGE_COUNT);
     assert!(
         cache_entries
