@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -130,7 +131,10 @@ fn frozen_verify_is_read_only_and_does_not_load_parent_or_global_mise_config() {
     project_entries.sort();
     assert_eq!(
         project_entries,
-        vec!["mise.lock".into(), "mise.toml".into()]
+        vec![
+            OsString::from("mise.lock"),
+            OsString::from("mise.toml"),
+        ]
     );
 }
 
