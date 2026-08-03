@@ -4,7 +4,7 @@
 //! model. This module owns compatibility changes to public spellings so one
 //! command definition drives parsing, help, and shell completion.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, FromArgMatches};
 
@@ -71,9 +71,7 @@ pub fn prepare_environment(args: &[OsString]) {
     }
 
     if let Some(flag) = legacy_manifest_flag(args) {
-        eprintln!(
-            "warning: {flag} is deprecated; use --do-not-write-new-manifest"
-        );
+        eprintln!("warning: {flag} is deprecated; use --do-not-write-new-manifest");
     }
 }
 
@@ -91,9 +89,10 @@ fn legacy_manifest_flag(args: &[OsString]) -> Option<&'static str> {
 }
 
 fn option_is(argument: &str, option: &str) -> bool {
-    argument == option || argument.strip_prefix(option).is_some_and(|tail| {
-        tail.starts_with('=')
-    })
+    argument == option
+        || argument
+            .strip_prefix(option)
+            .is_some_and(|tail| tail.starts_with('='))
 }
 
 #[cfg(test)]
@@ -170,9 +169,6 @@ mod tests {
             "--allow-no-manifest-extra",
             "--allow-no-manifest"
         ));
-        assert!(!option_is(
-            OsStr::new("allow-no-manifest").to_str().unwrap(),
-            "--allow-no-manifest"
-        ));
+        assert!(!option_is("allow-no-manifest", "--allow-no-manifest"));
     }
 }
