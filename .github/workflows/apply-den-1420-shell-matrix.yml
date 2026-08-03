@@ -1,0 +1,62 @@
+name: apply DEN-1420 shell matrix regression
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1420-shell-matrix-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'agent/den-1420-mise-dev-runtime' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1420-mise-dev-runtime
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Update the remaining command-shell matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/develop_shell_edge_cases.rs')
+          text = path.read_text(encoding='utf-8')
+          replacements = {
+              '("bash", vec!["-lc", script]),': '("bash", vec!["-c", script]),',
+              '("fish", vec!["-lc", script]),': '("fish", vec!["-c", script]),',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'expected exactly one stale shell expectation: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cargo fmt --all --check
+          git diff --check
+          cargo test --locked --test develop_shell_edge_cases shell_dispatch_covers_posix_fish_powershell_cmd_and_generic_shells
+          cargo test --locked --test develop_edge_cases --test develop_help_contract
+          cargo test --locked dev::tests
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/develop_shell_edge_cases.rs
+          git commit -m 'test(DEN-1420): align shell matrix with non-login commands'
+          git push origin HEAD:agent/den-1420-mise-dev-runtime
