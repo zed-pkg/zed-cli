@@ -3,11 +3,13 @@
 
 pub mod auth;
 pub mod cli;
+pub mod cli_model;
 pub mod completion;
 pub mod config;
 pub mod dev;
 pub mod flags;
 pub mod interactive;
+pub mod managed_install;
 pub mod manifestless;
 pub mod ops;
 pub mod pack;
