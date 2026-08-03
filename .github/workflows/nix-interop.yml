@@ -1,0 +1,210 @@
+name: Zed Nix interoperability
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - tools/zed_nix_bridge.py
+      - tools/test_zed_nix_bridge.py
+      - docs/nix-interop.md
+      - tests/fixtures/nix-interop/**
+      - .github/workflows/nix-interop.yml
+  pull_request:
+    paths:
+      - tools/zed_nix_bridge.py
+      - tools/test_zed_nix_bridge.py
+      - docs/nix-interop.md
+      - tests/fixtures/nix-interop/**
+      - .github/workflows/nix-interop.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-interop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Compile the bridge oracle
+        run: python3 -m py_compile tools/zed_nix_bridge.py tools/test_zed_nix_bridge.py
+
+      - name: Run fail-closed adapter tests
+        working-directory: tools
+        run: python3 -m unittest -v test_zed_nix_bridge.py
+
+  zed-to-nix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build deterministic Zed fixture artifact
+        id: fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$RUNNER_TEMP/zed-to-nix"
+          mkdir -p "$fixture"
+          tar \
+            --sort=name \
+            --mtime='UTC 1970-01-01' \
+            --owner=0 \
+            --group=0 \
+            --numeric-owner \
+            -C tests/fixtures/nix-interop/payload \
+            -czf "$fixture/nix-bridge-data.tar.gz" .
+          sha256=$(sha256sum "$fixture/nix-bridge-data.tar.gz" | awk '{print $1}')
+          ARTIFACT="$fixture/nix-bridge-data.tar.gz" SHA256="$sha256" python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          artifact = Path(os.environ["ARTIFACT"]).resolve()
+          metadata = {
+              "org": "zed-pkg-test",
+              "name": "nix-bridge-data",
+              "version": "1.0.0",
+              "sha256": os.environ["SHA256"],
+              "format": "tar.gz",
+              "download_url": artifact.as_uri(),
+              "vcs_tag": "v1.0.0",
+              "vcs_commit": "174a5b30fbee5bcd58ff92cd5edc3e5632d14ce9",
+          }
+          (artifact.parent / "version.json").write_text(
+              json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          printf 'fixture=%s\n' "$fixture" >> "$GITHUB_OUTPUT"
+
+      - name: Export and verify the standalone flake
+        shell: bash
+        env:
+          FIXTURE: ${{ steps.fixture.outputs.fixture }}
+        run: |
+          set -euo pipefail
+          python3 tools/zed_nix_bridge.py zed-to-nix \
+            --manifest tests/fixtures/nix-interop/.zpkg.toml \
+            --metadata "$FIXTURE/version.json" \
+            --nixpkgs-lock tests/fixtures/nix-interop/nix-portable/flake.lock \
+            --out-dir "$FIXTURE/export" \
+            --allow-local-source
+          python3 tools/zed_nix_bridge.py verify --directory "$FIXTURE/export"
+          git diff --no-index --exit-code \
+            tests/fixtures/nix-interop/nix-portable/flake.lock \
+            "$FIXTURE/export/flake.lock"
+
+      - name: Evaluate and build the exported package
+        shell: bash
+        env:
+          FIXTURE: ${{ steps.fixture.outputs.fixture }}
+        run: |
+          set -euo pipefail
+          nix flake check --no-update-lock-file "$FIXTURE/export" --show-trace
+          output=$(nix build --no-update-lock-file "$FIXTURE/export" --no-link --print-out-paths --print-build-logs)
+          message="$output/share/zed-pkg/zed-pkg-test/nix-bridge-data/data/hello.txt"
+          test -f "$message"
+          grep -Fx 'hello from a hash-pinned Zed artifact' "$message"
+
+  nix-to-zed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            allow-import-from-derivation = false
+
+      - name: Realize one explicit closure-free output
+        id: realize
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$PWD/tests/fixtures/nix-interop/nix-portable"
+          nix flake check --no-update-lock-file "$fixture" --show-trace
+          output=$(nix build \
+            --no-write-lock-file \
+            --no-update-lock-file \
+            "$fixture#portable" \
+            --no-link \
+            --print-out-paths \
+            --print-build-logs)
+          nix path-info --json "$output" > "$RUNNER_TEMP/path-info.json"
+          derivation=$(nix-store --query --deriver "$output")
+          nix derivation show "$derivation" > "$RUNNER_TEMP/derivation.json"
+          system=$(nix eval --raw --impure --expr builtins.currentSystem)
+          printf 'output=%s\n' "$output" >> "$GITHUB_OUTPUT"
+          printf 'system=%s\n' "$system" >> "$GITHUB_OUTPUT"
+
+      - name: Seal and verify a normal Zed artifact
+        shell: bash
+        env:
+          OUTPUT: ${{ steps.realize.outputs.output }}
+          SYSTEM: ${{ steps.realize.outputs.system }}
+        run: |
+          set -euo pipefail
+          sealed="$RUNNER_TEMP/nix-to-zed"
+          python3 tools/zed_nix_bridge.py nix-to-zed \
+            --store-path "$OUTPUT" \
+            --path-info "$RUNNER_TEMP/path-info.json" \
+            --derivation-json "$RUNNER_TEMP/derivation.json" \
+            --flake-lock tests/fixtures/nix-interop/nix-portable/flake.lock \
+            --locked-ref "github:zed-pkg/zed-cli/$GITHUB_SHA?dir=tests/fixtures/nix-interop/nix-portable" \
+            --attribute "packages.$SYSTEM.portable" \
+            --system "$SYSTEM" \
+            --output out \
+            --as-package zed-pkg-test/nix-portable@1.0.0 \
+            --bin zed-nix-portable=bin/zed-nix-portable \
+            --repository https://github.com/zed-pkg/zed-cli \
+            --source-revision "$GITHUB_SHA" \
+            --source-available \
+            --license MIT \
+            --description 'Closure-free Nix output sealed for Zed' \
+            --nix-version "$(nix --version)" \
+            --out-dir "$sealed"
+          python3 tools/zed_nix_bridge.py verify --directory "$sealed"
+
+      - name: Prove the sealed package does not need Nix
+        shell: bash
+        run: |
+          set -euo pipefail
+          sealed="$RUNNER_TEMP/nix-to-zed"
+          unpacked="$RUNNER_TEMP/unpacked-zed-package"
+          mkdir -p "$unpacked"
+          tar -xzf "$sealed/nix-portable-1.0.0.tar.gz" -C "$unpacked"
+          env -i PATH=/usr/bin:/bin HOME="$RUNNER_TEMP" \
+            "$unpacked/bin/zed-nix-portable" \
+            | grep -Fx 'portable Nix output sealed for Zed'
+          if grep -R -a -E '/nix/store/[0-9a-z]{32}-' "$unpacked"; then
+            echo 'sealed package retained a concrete Nix store reference' >&2
+            exit 1
+          fi
