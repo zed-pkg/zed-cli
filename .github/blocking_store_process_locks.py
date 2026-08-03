@@ -1,28 +1,22 @@
 from pathlib import Path
 
 
-def replace_once(path: str, old: str, new: str) -> None:
-    file = Path(path)
-    text = file.read_text()
-    count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"expected one match in {path}, found {count}")
-    file.write_text(text.replace(old, new, 1))
-
-
 store = Path("src/store.rs")
 text = store.read_text()
-text = text.replace(
-    "use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};",
-    "use std::time::{Duration, SystemTime, UNIX_EPOCH};",
-    1,
-)
 
-start_marker = "/// An advisory (flock-based) process lock held for the life of the guard."
-end_marker = "/// What `Store::gc` did (or, with `dry_run`, would do)."
-start = text.index(start_marker)
-end = text.index(end_marker, start)
-replacement = '''/// A descriptor-backed process lock held for the life of the guard.
+new_lock_marker = "/// A descriptor-backed process lock held for the life of the guard."
+if new_lock_marker not in text:
+    old_import = "use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};"
+    new_import = "use std::time::{Duration, SystemTime, UNIX_EPOCH};"
+    if text.count(old_import) != 1:
+        raise RuntimeError("could not locate the store time import")
+    text = text.replace(old_import, new_import, 1)
+
+    start_marker = "/// An advisory (flock-based) process lock held for the life of the guard."
+    end_marker = "/// What `Store::gc` did (or, with `dry_run`, would do)."
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    replacement = '''/// A descriptor-backed process lock held for the life of the guard.
 ///
 /// Acquisition uses the operating system's blocking lock primitive directly:
 /// `flock`/`fcntl` semantics on Unix and `LockFileEx` semantics on Windows via
@@ -57,16 +51,18 @@ impl ProcessLock {
 }
 
 '''
-text = text[:start] + replacement + text[end:]
+    text = text[:start] + replacement + text[end:]
 
-old_test_header = '''#[cfg(test)]
+new_test_name = "fn install_process_lock_blocks_without_polling_until_owner_release()"
+if new_test_name not in text:
+    old_test_header = '''#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn gc_survives_hostile_max_age() {
 '''
-new_test_header = '''#[cfg(test)]
+    new_test_header = '''#[cfg(test)]
 mod tests {
     use std::process::{Command, Stdio};
     use std::time::Instant;
@@ -152,20 +148,8 @@ mod tests {
     #[test]
     fn gc_survives_hostile_max_age() {
 '''
-if text.count(old_test_header) != 1:
-    raise RuntimeError("could not locate store test module header")
-text = text.replace(old_test_header, new_test_header, 1)
+    if text.count(old_test_header) != 1:
+        raise RuntimeError("could not locate store test module header")
+    text = text.replace(old_test_header, new_test_header, 1)
+
 store.write_text(text)
-
-replace_once(
-    ".github/workflows/recursive-install-windows.yml",
-    '''      - name: Prove failed downloads leave no cache publication
-        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::failed_downloads_remove_staging_files_and_never_publish_cache_entries -- --exact --nocapture
-''',
-    '''      - name: Prove failed downloads leave no cache publication
-        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::failed_downloads_remove_staging_files_and_never_publish_cache_entries -- --exact --nocapture
-
-      - name: Prove the lower-level store lock blocks across processes
-        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
-''',
-)
