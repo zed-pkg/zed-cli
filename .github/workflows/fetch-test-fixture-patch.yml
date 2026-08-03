@@ -54,23 +54,35 @@ jobs:
               raise SystemExit('expected exactly one stale duplicate assertion')
           source = source.replace(old_duplicate, new_duplicate)
 
-          marker = '        let mut credentialed = LockedPackage {'
-          start = source.find(marker)
-          if start < 0:
-              raise SystemExit('credential fixture start not found')
-          end = source.find('\n        };', start)
-          if end < 0:
-              raise SystemExit('credential fixture end not found')
-          block = source[start:end]
-          old_revision = '            vcs_commit: None,'
-          new_revision = (
+          replacement = (
               '            vcs_commit: '
               'Some("0123456789abcdef0123456789abcdef01234567".to_string()),'
           )
-          if block.count(old_revision) != 1:
-              raise SystemExit('credential fixture must contain exactly one empty VCS revision')
-          block = block.replace(old_revision, new_revision)
-          source = source[:start] + block + source[end:]
+
+          def replace_single_revision(source: str, marker: str, label: str) -> str:
+              start = source.find(marker)
+              if start < 0:
+                  raise SystemExit(f'{label} fixture start not found')
+              end = source.find('\n        };', start)
+              if end < 0:
+                  raise SystemExit(f'{label} fixture end not found')
+              block = source[start:end]
+              old = '            vcs_commit: None,'
+              if block.count(old) != 1:
+                  raise SystemExit(f'{label} fixture must contain exactly one empty VCS revision')
+              block = block.replace(old, replacement)
+              return source[:start] + block + source[end:]
+
+          source = replace_single_revision(
+              source,
+              '        let package = LockedPackage {',
+              'duplicate package',
+          )
+          source = replace_single_revision(
+              source,
+              '        let mut credentialed = LockedPackage {',
+              'credential source',
+          )
 
           path.write_text(source, encoding='utf-8')
           PY
