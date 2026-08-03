@@ -225,6 +225,14 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
     let global = <GlobalArgs as Args>::augment_args(
         clap::Command::new("global")
             .about("Install executable packages globally and manage their PATH entries"),
+    )
+    .arg(
+        clap::Arg::new("global-bin-dir")
+            .long("global-bin-dir")
+            .global(true)
+            .env("ZED_PKG_GLOBAL_BIN_DIR")
+            .value_name("PATH")
+            .help("Directory placed on PATH for global package executables"),
     );
     command.subcommand(global)
 }
@@ -382,6 +390,15 @@ fn state_path(cfg: &Config) -> PathBuf {
     global_root(cfg).join(STATE_FILE)
 }
 
+#[cfg(windows)]
+fn resolve_bin_dir(cfg: &Config, explicit: Option<&Path>) -> PathBuf {
+    explicit
+        .map(Path::to_path_buf)
+        .or_else(|| dirs::data_local_dir().map(|root| root.join("zed-pkg").join("bin")))
+        .unwrap_or_else(|| cfg.home.join("bin"))
+}
+
+#[cfg(not(windows))]
 fn resolve_bin_dir(cfg: &Config, explicit: Option<&Path>) -> PathBuf {
     explicit
         .map(Path::to_path_buf)
@@ -540,9 +557,7 @@ fn list(cfg: &Config, bin_dir: &Path) -> Result<i32> {
     }
     for profile in profiles {
         let version = locked_root_version(&profile).unwrap_or_else(|| "unknown".to_string());
-        let mut bins: Vec<String> = profile_bins(&profile.root)?
-            .into_keys()
-            .collect();
+        let mut bins: Vec<String> = profile_bins(&profile.root)?.into_keys().collect();
         bins.sort();
         println!(
             "{}@{} (requested `{}`; bins: {})",
@@ -685,7 +700,7 @@ fn validate_bin_name(name: &str) -> Result<()> {
 }
 
 fn collect_desired_bins(profiles: &[Profile]) -> Result<BTreeMap<String, DesiredBin>> {
-    let mut desired = BTreeMap::new();
+    let mut desired: BTreeMap<String, DesiredBin> = BTreeMap::new();
     for profile in profiles {
         for (logical_name, source) in profile_bins(&profile.root)? {
             let destination = destination_name(&logical_name);
@@ -787,7 +802,9 @@ fn sync_bins(cfg: &Config, bin_dir: &Path, profiles: &[Profile]) -> Result<usize
 }
 
 fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
-    let parent = destination.context("global executable destination has no parent")?;
+    let parent = destination
+        .parent()
+        .context("global executable destination has no parent")?;
     fs::create_dir_all(parent)?;
     let file_name = destination
         .file_name()
@@ -853,6 +870,18 @@ fn hash_file(path: &Path) -> Result<String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+#[cfg(windows)]
+fn print_path_guidance(bin_dir: &Path) {
+    if path_contains(bin_dir) {
+        return;
+    }
+    eprintln!(
+        "warning: {} is not currently on PATH; add it to the user PATH once",
+        bin_dir.display()
+    );
+}
+
+#[cfg(not(windows))]
 fn print_path_guidance(bin_dir: &Path) {
     if path_contains(bin_dir) {
         return;
@@ -867,9 +896,8 @@ fn print_path_guidance(bin_dir: &Path) {
 fn path_contains(bin_dir: &Path) -> bool {
     let expected = fs::canonicalize(bin_dir).unwrap_or_else(|_| bin_dir.to_path_buf());
     env::var_os("PATH").is_some_and(|value| {
-        env::split_paths(&value).any(|entry| {
-            fs::canonicalize(&entry).unwrap_or(entry) == expected
-        })
+        env::split_paths(&value)
+            .any(|entry| fs::canonicalize(&entry).unwrap_or(entry) == expected)
     })
 }
 
@@ -913,7 +941,13 @@ mod tests {
             parse_package_spec("acme/tool").unwrap(),
             ("acme/tool".to_string(), None)
         );
-        for invalid in ["tool", "acme/tool/extra", "../tool", "acme/../tool", "Acme/tool"] {
+        for invalid in [
+            "tool",
+            "acme/tool/extra",
+            "../tool",
+            "acme/../tool",
+            "Acme/tool",
+        ] {
             assert!(parse_package_spec(invalid).is_err(), "accepted {invalid}");
         }
     }
@@ -942,7 +976,10 @@ mod tests {
         let cfg = config(home.path());
         let profile = add_profile(home.path(), "acme/tool", "acme-tool", b"first");
 
-        assert_eq!(sync_bins(&cfg, &bin_dir, std::slice::from_ref(&profile)).unwrap(), 1);
+        assert_eq!(
+            sync_bins(&cfg, &bin_dir, std::slice::from_ref(&profile)).unwrap(),
+            1
+        );
         let installed = bin_dir.join(destination_name("acme-tool"));
         assert_eq!(fs::read(&installed).unwrap(), b"first");
 
