@@ -7,6 +7,7 @@ use zed_cli::config::Config;
 use zed_cli::dev;
 use zed_cli::manifestless;
 use zed_cli::oci;
+use zed_cli::oci_layout;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -45,17 +46,32 @@ fn main() {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // Planning is deliberately outside the normal command bootstrap. It does
-    // not construct Config, resolve saved credentials, or recover/mutate a
-    // pending project transaction. Its only writes are inside temporary pack
-    // directories that are deleted before the command returns.
+    // OCI planning and local layout materialization deliberately stay outside
+    // the normal command bootstrap. They do not construct Config, resolve
+    // saved credentials, or recover/mutate a pending project transaction.
+    // Planning writes only temporary pack data; materialization writes only to
+    // the explicit --out directory after every planned blob is reconstructed
+    // and verified.
     if let Cmd::Oci { cmd } = &cli.cmd {
         return match cmd {
             OciCmd::Plan {
                 destination,
                 target,
+                out,
                 json,
-            } => oci::plan(&cwd, destination, target.as_deref(), *json),
+            } => {
+                if let Some(out) = out {
+                    oci_layout::materialize(
+                        &cwd,
+                        destination,
+                        target.as_deref(),
+                        out,
+                        *json,
+                    )
+                } else {
+                    oci::plan(&cwd, destination, target.as_deref(), *json)
+                }
+            }
         };
     }
 
