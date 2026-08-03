@@ -4,6 +4,7 @@ use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
+use zed_cli::fetch;
 use zed_cli::manifestless;
 use zed_cli::ops;
 use zed_cli::preflight;
@@ -17,6 +18,16 @@ fn main() {
     if let Err(error) = zed_cli::flags::normalize_global_boolean_environment(&args) {
         eprintln!("error: {error:#}");
         std::process::exit(2);
+    }
+    if let Some(result) = fetch::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Some(result) = dev::dispatch(args) {
         match result {
