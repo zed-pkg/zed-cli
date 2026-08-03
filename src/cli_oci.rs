@@ -82,7 +82,10 @@ mod tests {
             } => {
                 assert_eq!(destination, "oci://ghcr.io/acme/tool:1.2.3");
                 assert!(target.is_none());
-                assert_eq!(out.as_deref(), Some(std::path::Path::new("dist/tool-layout")));
+                assert_eq!(
+                    out.as_deref(),
+                    Some(std::path::Path::new("dist/tool-layout"))
+                );
                 assert!(!json);
             }
             other => panic!("unexpected command: {other:?}"),

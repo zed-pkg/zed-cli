@@ -133,7 +133,12 @@ pub fn write_layout(
     let staging = tempfile::Builder::new()
         .prefix(".zed-oci-layout-")
         .tempdir_in(parent)
-        .with_context(|| format!("create OCI layout staging directory in {}", parent.display()))?;
+        .with_context(|| {
+            format!(
+                "create OCI layout staging directory in {}",
+                parent.display()
+            )
+        })?;
     let blob_dir = staging.path().join("blobs/sha256");
     fs::create_dir_all(&blob_dir).context("create OCI blob directory")?;
 
@@ -171,10 +176,9 @@ pub fn write_layout(
         .tag
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("planned OCI layout is missing its requested tag"))?;
-    index_manifest.annotations.insert(
-        "org.opencontainers.image.ref.name".to_string(),
-        tag.clone(),
-    );
+    index_manifest
+        .annotations
+        .insert("org.opencontainers.image.ref.name".to_string(), tag.clone());
     index_manifest
         .validate("OCI image index manifest")
         .map_err(|error| anyhow::anyhow!(error))?;
@@ -183,8 +187,7 @@ pub fn write_layout(
         media_type: OCI_IMAGE_INDEX_MEDIA_TYPE,
         manifests: vec![index_manifest],
     })?;
-    fs::write(staging.path().join(OCI_INDEX_FILE), index_bytes)
-        .context("write OCI image index")?;
+    fs::write(staging.path().join(OCI_INDEX_FILE), index_bytes).context("write OCI image index")?;
 
     if out.exists() {
         bail!(
@@ -419,20 +422,8 @@ url = "https://github.com/acme/tool"
         let first = workspace.path().join("layout-a");
         let second = workspace.path().join("layout-b");
 
-        let result = write_layout(
-            &project,
-            "oci://ghcr.io/acme/tool:1.2.3",
-            None,
-            &first,
-        )
-        .unwrap();
-        write_layout(
-            &project,
-            "oci://ghcr.io/acme/tool:1.2.3",
-            None,
-            &second,
-        )
-        .unwrap();
+        let result = write_layout(&project, "oci://ghcr.io/acme/tool:1.2.3", None, &first).unwrap();
+        write_layout(&project, "oci://ghcr.io/acme/tool:1.2.3", None, &second).unwrap();
 
         assert_eq!(snapshot(&first), snapshot(&second));
         assert_eq!(result.blob_count, 4);
@@ -474,15 +465,7 @@ url = "https://github.com/acme/tool"
         fs::create_dir(&output).unwrap();
         fs::write(output.join("keep.txt"), "keep\n").unwrap();
 
-        assert!(
-            write_layout(
-                &project,
-                "oci://ghcr.io/acme/tool:1.2.3",
-                None,
-                &output,
-            )
-            .is_err()
-        );
+        assert!(write_layout(&project, "oci://ghcr.io/acme/tool:1.2.3", None, &output,).is_err());
         assert_eq!(
             fs::read_to_string(output.join("keep.txt")).unwrap(),
             "keep\n"

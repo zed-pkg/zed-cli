@@ -61,13 +61,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 json,
             } => {
                 if let Some(out) = out {
-                    oci_layout::materialize(
-                        &cwd,
-                        destination,
-                        target.as_deref(),
-                        out,
-                        *json,
-                    )
+                    oci_layout::materialize(&cwd, destination, target.as_deref(), out, *json)
                 } else {
                     oci::plan(&cwd, destination, target.as_deref(), *json)
                 }
