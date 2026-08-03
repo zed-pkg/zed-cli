@@ -185,8 +185,12 @@ pub fn export_environment(
 
     let requested_plan = plan_path.unwrap_or_else(|| Path::new(DEFAULT_PLAN_PATH));
     let (plan_absolute, plan_relative) = resolve_project_input(&root, requested_plan, "plan")?;
-    let raw_plan = fs::read(&plan_absolute)
-        .with_context(|| format!("failed to read environment plan {}", plan_absolute.display()))?;
+    let raw_plan = fs::read(&plan_absolute).with_context(|| {
+        format!(
+            "failed to read environment plan {}",
+            plan_absolute.display()
+        )
+    })?;
     let plan: EnvironmentPlan = serde_json::from_slice(&raw_plan)
         .with_context(|| format!("failed to parse environment plan `{plan_relative}`"))?;
     plan.validate(EnvironmentValidationMode::FrozenPortable)
@@ -265,7 +269,8 @@ pub fn generate_devbox(packages: &[ManagerPackage]) -> Result<Vec<u8>> {
             version: package.version.clone(),
             platforms: package.platforms.clone(),
         };
-        if let Some(existing) = output_packages.insert(package.package_ref.clone(), candidate.clone())
+        if let Some(existing) =
+            output_packages.insert(package.package_ref.clone(), candidate.clone())
         {
             if existing != candidate {
                 bail!(
@@ -369,9 +374,10 @@ fn tool_package(
             "tool `{name}` needs an exact nixpkgs package reference in `backend` for Devbox/Flox export"
         ))?;
     validate_package_ref(name, package_ref)?;
-    let version = requirement.resolved.as_deref().expect(
-        "frozen-portable EnvironmentPlan validation guarantees a resolved tool identity",
-    );
+    let version = requirement
+        .resolved
+        .as_deref()
+        .expect("frozen-portable EnvironmentPlan validation guarantees a resolved tool identity");
     Ok(ManagerPackage {
         kind: PackageKind::Tool,
         logical_name: name.to_string(),
@@ -439,8 +445,7 @@ fn validate_package_ref(name: &str, value: &str) -> Result<()> {
             .chars()
             .any(|character| character.is_whitespace() || character.is_control())
         || !value.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '_' | '-' | '.' | '+')
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.' | '+')
         })
     {
         bail!(
@@ -454,8 +459,7 @@ fn validate_flox_alias(value: &str) -> Result<()> {
     if value.is_empty()
         || value.starts_with('.')
         || !value.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '_' | '-' | '.')
+            character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')
         })
     {
         bail!(
@@ -542,11 +546,7 @@ fn resolve_project_input(root: &Path, requested: &Path, kind: &str) -> Result<(P
     Ok((canonical, relative))
 }
 
-fn resolve_project_output(
-    root: &Path,
-    requested: &Path,
-    kind: &str,
-) -> Result<(PathBuf, String)> {
+fn resolve_project_output(root: &Path, requested: &Path, kind: &str) -> Result<(PathBuf, String)> {
     let relative = normalized_relative_path(requested, kind)?;
     let joined = root.join(path_from_slash(&relative));
     if let Ok(metadata) = fs::symlink_metadata(&joined) {
@@ -627,9 +627,7 @@ fn write_pair_fail_closed(
 ) -> Result<bool> {
     let output_state = preflight_file(output_path, output, "manager output")?;
     let receipt_state = preflight_file(receipt_path, receipt, "export receipt")?;
-    if output_state == FileDisposition::Identical
-        && receipt_state == FileDisposition::Identical
-    {
+    if output_state == FileDisposition::Identical && receipt_state == FileDisposition::Identical {
         return Ok(false);
     }
 
@@ -667,8 +665,9 @@ fn preflight_file(path: &Path, expected: &[u8], kind: &str) -> Result<FileDispos
             }
         }
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(FileDisposition::Missing),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect {kind} path {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect {kind} path {}", path.display()))
+        }
     }
 }
 
@@ -774,10 +773,12 @@ mod tests {
             value["shell"]["init_hook"],
             serde_json::json!([FROZEN_INSTALL_COMMAND])
         );
-        assert!(!value["packages"]["nodejs_22"]["version"]
-            .as_str()
-            .unwrap()
-            .contains("linux"));
+        assert!(
+            !value["packages"]["nodejs_22"]["version"]
+                .as_str()
+                .unwrap()
+                .contains("linux")
+        );
     }
 
     #[test]
@@ -788,8 +789,14 @@ mod tests {
         assert_eq!(first, second);
         let value: toml::Value = toml::from_str(std::str::from_utf8(&first).unwrap()).unwrap();
         assert_eq!(value["version"].as_integer(), Some(1));
-        assert_eq!(value["install"]["node"]["pkg-path"].as_str(), Some("nodejs_22"));
-        assert_eq!(value["install"]["node"]["version"].as_str(), Some("22.11.0"));
+        assert_eq!(
+            value["install"]["node"]["pkg-path"].as_str(),
+            Some("nodejs_22")
+        );
+        assert_eq!(
+            value["install"]["node"]["version"].as_str(),
+            Some("22.11.0")
+        );
         assert_eq!(
             value["hook"]["on-activate"].as_str(),
             Some(FROZEN_INSTALL_COMMAND)
@@ -811,7 +818,11 @@ mod tests {
         let mut plan = fixture_plan();
         plan.tools.get_mut("node").unwrap().provider = Some("core".to_string());
         let error = collect_manager_packages(&plan.normalized()).unwrap_err();
-        assert!(error.to_string().contains("supports only explicit `nixpkgs`"));
+        assert!(
+            error
+                .to_string()
+                .contains("supports only explicit `nixpkgs`")
+        );
     }
 
     #[test]
@@ -819,7 +830,11 @@ mod tests {
         let mut plan = fixture_plan();
         plan.tools.get_mut("node").unwrap().platforms = vec!["aarch64-linux".to_string()];
         let error = collect_manager_packages(&plan.normalized()).unwrap_err();
-        assert!(error.to_string().contains("outside the plan-level platform set"));
+        assert!(
+            error
+                .to_string()
+                .contains("outside the plan-level platform set")
+        );
     }
 
     #[test]
@@ -836,7 +851,11 @@ mod tests {
         conflicting.logical_name = "node-secondary".to_string();
         conflicting.version = "22.12.0".to_string();
         let error = generate_devbox(&[package, conflicting]).unwrap_err();
-        assert!(error.to_string().contains("conflicting versions or platforms"));
+        assert!(
+            error
+                .to_string()
+                .contains("conflicting versions or platforms")
+        );
     }
 
     #[test]
@@ -850,14 +869,14 @@ mod tests {
         )
         .unwrap();
 
-        let first = export_environment(temp.path(), ExportManager::Devbox, None, None, None)
-            .unwrap();
+        let first =
+            export_environment(temp.path(), ExportManager::Devbox, None, None, None).unwrap();
         assert!(first.changed);
         let output = fs::read(temp.path().join("devbox.json")).unwrap();
         let receipt = fs::read(temp.path().join(".zed/environment-exports/devbox.json")).unwrap();
 
-        let second = export_environment(temp.path(), ExportManager::Devbox, None, None, None)
-            .unwrap();
+        let second =
+            export_environment(temp.path(), ExportManager::Devbox, None, None, None).unwrap();
         assert!(!second.changed);
         assert_eq!(fs::read(temp.path().join("devbox.json")).unwrap(), output);
         assert_eq!(
@@ -866,9 +885,13 @@ mod tests {
         );
 
         fs::write(temp.path().join("devbox.json"), b"{\"human\":true}\n").unwrap();
-        let error = export_environment(temp.path(), ExportManager::Devbox, None, None, None)
-            .unwrap_err();
-        assert!(error.to_string().contains("refusing to overwrite conflicting"));
+        let error =
+            export_environment(temp.path(), ExportManager::Devbox, None, None, None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to overwrite conflicting")
+        );
     }
 
     #[test]
@@ -889,6 +912,10 @@ mod tests {
             None,
         )
         .unwrap_err();
-        assert!(error.to_string().contains("normalized and project-relative"));
+        assert!(
+            error
+                .to_string()
+                .contains("normalized and project-relative")
+        );
     }
 }
