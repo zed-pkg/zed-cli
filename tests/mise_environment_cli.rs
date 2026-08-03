@@ -55,7 +55,10 @@ fn run_zed(project: &Path, home: &Path, args: &[&str]) -> Output {
         .env("USERPROFILE", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("ZED_PKG_HOME", home.join(".zed-pkg"))
-        .env("MISE_GLOBAL_CONFIG_FILE", home.join(".config/mise/config.toml"))
+        .env(
+            "MISE_GLOBAL_CONFIG_FILE",
+            home.join(".config/mise/config.toml"),
+        )
         // The adapter is a parser, not a shell-out wrapper. An empty PATH proves
         // the command does not require a `mise` executable to verify a plan.
         .env("PATH", empty_path)
@@ -81,11 +84,7 @@ fn frozen_verify_is_read_only_and_does_not_load_parent_or_global_mise_config() {
     )
     .unwrap();
     fs::create_dir_all(&workspace).unwrap();
-    fs::write(
-        workspace.join("mise.toml"),
-        "[tools]\nruby = \"latest\"\n",
-    )
-    .unwrap();
+    fs::write(workspace.join("mise.toml"), "[tools]\nruby = \"latest\"\n").unwrap();
     write_locked_project(&project);
 
     let config_before = fs::read(project.join("mise.toml")).unwrap();
@@ -118,10 +117,7 @@ fn frozen_verify_is_read_only_and_does_not_load_parent_or_global_mise_config() {
     assert_eq!(result["config"], "mise.toml");
     assert_eq!(result["lock"], "mise.lock");
     assert_eq!(
-        result["environment_plan_sha256"]
-            .as_str()
-            .unwrap()
-            .len(),
+        result["environment_plan_sha256"].as_str().unwrap().len(),
         64
     );
 
@@ -186,11 +182,7 @@ fn frozen_verify_fails_closed_on_ambiguous_or_incomplete_project_state() {
     fs::create_dir_all(&home).unwrap();
     fs::create_dir_all(&project).unwrap();
     fs::write(project.join("mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
-    fs::write(
-        project.join(".mise.toml"),
-        "[tools]\npython = \"3.12\"\n",
-    )
-    .unwrap();
+    fs::write(project.join(".mise.toml"), "[tools]\npython = \"3.12\"\n").unwrap();
 
     let ambiguous = run_zed(
         &project,
@@ -198,9 +190,7 @@ fn frozen_verify_fails_closed_on_ambiguous_or_incomplete_project_state() {
         &["env", "verify", "mise", "--frozen", "--json"],
     );
     assert!(!ambiguous.status.success());
-    assert!(
-        String::from_utf8_lossy(&ambiguous.stderr).contains("multiple project-local")
-    );
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("multiple project-local"));
 
     fs::remove_file(project.join(".mise.toml")).unwrap();
     let unlocked = run_zed(
@@ -218,7 +208,6 @@ fn frozen_verify_fails_closed_on_ambiguous_or_incomplete_project_state() {
     );
     assert!(!unlocked.status.success());
     assert!(
-        String::from_utf8_lossy(&unlocked.stderr)
-            .contains("requires a project-local lockfile")
+        String::from_utf8_lossy(&unlocked.stderr).contains("requires a project-local lockfile")
     );
 }
