@@ -964,6 +964,57 @@ fn validate_frozen_manifest_requirements(
     Ok(())
 }
 
+/// Write a newly resolved lockfile. A frozen install is a verifier and
+/// materializer only: it must preserve the caller's exact lock bytes,
+/// including comments and provenance fields newer than this CLI knows.
+fn write_resolved_lockfile(
+    lock_path: &Path,
+    frozen: bool,
+    resolved: &BTreeMap<String, VersionMetadata>,
+    registry: &str,
+) -> Result<()> {
+    if frozen {
+        return Ok(());
+    }
+    let mut lock = Lockfile::default();
+    for vm in resolved.values() {
+        lock.upsert(LockedPackage {
+            org: vm.org.clone(),
+            name: vm.name.clone(),
+            version: vm.version.clone(),
+            sha256: vm.sha256.clone(),
+            size: vm.size,
+            format: vm.format,
+            vcs_tag: vm.vcs_tag.clone(),
+            vcs_commit: vm.vcs_commit.clone(),
+            source: registry.to_string(),
+        });
+    }
+    fs::write(lock_path, lock.to_toml_string()?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn frozen_lock_write_preserves_exact_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_path = dir.path().join(LOCKFILE_FILE);
+    let original = b"# retained provenance and formatting
+version = 1
+";
+    fs::write(&lock_path, original).unwrap();
+
+    write_resolved_lockfile(
+        &lock_path,
+        true,
+        &BTreeMap::new(),
+        "file:///temporary-registry-mirror",
+    )
+    .unwrap();
+
+    assert_eq!(fs::read(&lock_path).unwrap(), original);
+}
+
 /// Install body, called with the store lock already held. Split out so the
 /// build-hook path can install `[build-dependencies]` into a staging dir
 /// under the same lock without deadlocking on a re-acquire.
@@ -1353,28 +1404,19 @@ fn install_locked(
     write_toolchain_wiring(project, &wired_roots)?;
     write_paths_index(project, modules_dir, &wired_packages)?;
 
-    let mut lock = Lockfile::default();
-    for vm in resolved.values() {
-        lock.upsert(LockedPackage {
-            org: vm.org.clone(),
-            name: vm.name.clone(),
-            version: vm.version.clone(),
-            sha256: vm.sha256.clone(),
-            size: vm.size,
-            format: vm.format,
-            vcs_tag: vm.vcs_tag.clone(),
-            vcs_commit: vm.vcs_commit.clone(),
-            source: cfg.registry.clone(),
-        });
-    }
-    interactive::confirm(
-        cfg.interactive,
-        &format!(
+    let transaction_summary = if frozen {
+        format!(
+            "preserve {LOCKFILE_FILE} byte-for-byte, update project references, and commit transaction {}",
+            transaction.id()
+        )
+    } else {
+        format!(
             "write {LOCKFILE_FILE}, update project references, and commit transaction {}",
             transaction.id()
-        ),
-    )?;
-    fs::write(&lock_path, lock.to_toml_string()?)?;
+        )
+    };
+    interactive::confirm(cfg.interactive, &transaction_summary)?;
+    write_resolved_lockfile(&lock_path, frozen, &resolved, &cfg.registry)?;
     store.record_project(project, shas)?;
     transaction.commit()?;
 
