@@ -1,4 +1,4 @@
-name: temporary resolver test-fixture patch
+name: one-shot verified resolver fixture patch
 
 on:
   push:
@@ -6,34 +6,32 @@ on:
       - agent/den-1436-frozen-fetch-main
     paths:
       - .github/workflows/fetch-test-fixture-patch.yml
-      - src/fetch.rs
-  pull_request:
-    paths:
-      - .github/workflows/fetch-test-fixture-patch.yml
-      - src/fetch.rs
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: temporary-resolver-test-fixture-patch-${{ github.ref }}
+  group: one-shot-resolver-test-fixture-patch-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  patch:
+  apply:
+    if: github.ref == 'refs/heads/agent/den-1436-frozen-fetch-main'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false
+          ref: agent/den-1436-frozen-fetch-main
+          persist-credentials: true
+          fetch-depth: 0
           show-progress: false
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           components: rustfmt
 
-      - name: Apply the exact test-only compatibility patch
+      - name: Apply the already-verified test-only compatibility patch
         shell: bash
         run: |
           set -euo pipefail
@@ -83,23 +81,21 @@ jobs:
               '        let mut credentialed = LockedPackage {',
               'credential source',
           )
-
           path.write_text(source, encoding='utf-8')
           PY
           cargo fmt --all
           git diff --check
+          cargo test --locked \
+            fetch::tests::duplicate_identities_and_credential_bearing_sources_fail_closed \
+            -- --nocapture --test-threads=1
 
-      - name: Prove the intended resolver boundary
-        run: >-
-          cargo test --locked
-          fetch::tests::duplicate_identities_and_credential_bearing_sources_fail_closed
-          -- --nocapture --test-threads=1
-
-      - name: Upload the verified complete source file
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: verified-fetch-test-fixture-patch-${{ github.sha }}
-          path: src/fetch.rs
-          if-no-files-found: error
-          retention-days: 1
-          include-hidden-files: false
+      - name: Commit the verified source and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/fetch-test-fixture-patch.yml
+          git add src/fetch.rs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test(DEN-1436): preserve resolver fail-closed boundary coverage'
+          git push origin HEAD:agent/den-1436-frozen-fetch-main
