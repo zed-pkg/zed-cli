@@ -1,0 +1,53 @@
+name: agent-nix-plan-generated
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/agent-nix-plan-generated.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/nix_export_plan.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "tests/nix_export_plan.rs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt
+
+      - name: Refresh the exact interface lock and format sources
+        run: |
+          set -euo pipefail
+          cargo update -p zed-interfaces --precise 625ba7bdf4339df7d0880f791a0715ca894558fe
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo check --locked --all-targets
+          cargo test --locked nix_export_plan::tests:: -- --test-threads=1
+          cargo test --locked --test nix_export_plan -- --test-threads=1
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: den-1418-generated
+          path: |
+            Cargo.lock
+            src/nix_export_plan.rs
+            src/main.rs
+            src/lib.rs
+            src/completion.rs
+            tests/nix_export_plan.rs
+          if-no-files-found: error
+          retention-days: 1
