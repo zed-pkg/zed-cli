@@ -54,9 +54,7 @@ fn create_artifact(registry: &Path, files: &[(&str, &[u8])]) -> (String, u64) {
     let bytes = fs::read(archive_path).unwrap();
     let digest = sha256(&bytes);
     let size = bytes.len() as u64;
-    let destination = registry
-        .join("artifacts")
-        .join(format!("{digest}.tar.gz"));
+    let destination = registry.join("artifacts").join(format!("{digest}.tar.gz"));
     fs::create_dir_all(destination.parent().unwrap()).unwrap();
     fs::write(destination, bytes).unwrap();
     (digest, size)
@@ -72,12 +70,7 @@ fn version_path(registry: &Path, org: &str, name: &str, version: &str) -> PathBu
 }
 
 fn write_version(registry: &Path, metadata: &VersionMetadata) {
-    let path = version_path(
-        registry,
-        &metadata.org,
-        &metadata.name,
-        &metadata.version,
-    );
+    let path = version_path(registry, &metadata.org, &metadata.name, &metadata.version);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, serde_json::to_string_pretty(metadata).unwrap()).unwrap();
 }
@@ -280,8 +273,7 @@ fn multi_package_lock_is_sorted_and_deduplicates_one_artifact_payload() {
             ("bin/tool.sh", b"#!/bin/sh\necho fetched\n"),
         ],
     );
-    let (zeta, zeta_metadata) =
-        locked_package(&registry, "acme", "zeta", "2.0.0", &digest, size);
+    let (zeta, zeta_metadata) = locked_package(&registry, "acme", "zeta", "2.0.0", &digest, size);
     let (alpha, alpha_metadata) =
         locked_package(&registry, "acme", "alpha", "1.0.0", &digest, size);
     write_version(&registry, &zeta_metadata);
