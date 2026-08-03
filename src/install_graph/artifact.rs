@@ -43,7 +43,10 @@ where
                 .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("non-string panic payload");
             Err(anyhow::anyhow!(
-                "recursive install worker panicked while processing {key}                  (sequence {sequence}): {detail}"
+                "recursive install worker panicked while processing {} (sequence {}): {}",
+                key,
+                sequence,
+                detail
             ))
         },
     );
