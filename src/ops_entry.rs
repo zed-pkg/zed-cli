@@ -16,8 +16,8 @@ use crate::config::Config;
 mod implementation;
 
 pub use implementation::{
-    InstallOutcome, WorkspaceInfo, add, build_cmd, build_publish_meta, cache_clean, find, gc,
-    init, login, org_audit, org_claim, pack_cmd, publish, remove, run, split_key, store_prune,
+    InstallOutcome, WorkspaceInfo, add, build_cmd, build_publish_meta, cache_clean, find, gc, init,
+    login, org_audit, org_claim, pack_cmd, publish, remove, run, split_key, store_prune,
     store_status, uninstall, yank,
 };
 
