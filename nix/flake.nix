@@ -12,7 +12,7 @@
     {
       lib = {
         makeZedPackageLib = pkgs:
-          pkgs.callPackage ./zed-package.nix { };
+          import ./default.nix { inherit pkgs; };
 
         # CI uses the exact locked input as NIX_PATH for the legacy expression
         # canary; it never falls back to a mutable channel lookup.
