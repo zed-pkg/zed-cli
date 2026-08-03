@@ -1,0 +1,90 @@
+name: frozen-fetch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/frozen-fetch.yml"
+      - ".fetch-cli-flags.toml"
+      - "docs/frozen-fetch.md"
+      - "src/fetch.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "src/registry.rs"
+      - "src/store.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/frozen-fetch.yml"
+      - ".fetch-cli-flags.toml"
+      - "docs/frozen-fetch.md"
+      - "src/fetch.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "src/registry.rs"
+      - "src/store.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frozen-fetch-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Resolver-only fetch on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Show pinned Rust toolchain
+        run: rustc --version && cargo --version
+
+      - name: Build the exact branch CLI
+        run: cargo build --locked --bin zed
+
+      - name: Run deterministic and fail-closed fetch tests
+        run: cargo test --locked fetch::tests:: -- --test-threads=1
+
+      - name: Verify generated completion coverage
+        run: cargo test --locked completion::tests:: -- --test-threads=1
+
+      - name: Verify modular help routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          root_help="$(cargo run --quiet --locked -- --help)"
+          fetch_help="$(cargo run --quiet --locked -- fetch --help)"
+          grep -F 'fetch' <<<"$root_help"
+          grep -F -- '--frozen' <<<"$fetch_help"
+          grep -F -- '--output' <<<"$fetch_help"
+
+      - name: Prove the fetch contract never requests repository writes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/frozen-fetch.yml').read_text()
+          assert 'contents: read' in workflow
+          assert 'persist-credentials: false' in workflow
+          forbidden = ['contents: write', 'git push', 'pull_request_target:']
+          for token in forbidden:
+              assert token not in workflow, token
+          PY
