@@ -81,12 +81,7 @@ struct OciImageManifest<'a> {
     annotations: &'a BTreeMap<String, String>,
 }
 
-pub fn plan(
-    project: &Path,
-    destination: &str,
-    target: Option<&str>,
-    json: bool,
-) -> Result<()> {
+pub fn plan(project: &Path, destination: &str, target: Option<&str>, json: bool) -> Result<()> {
     let plan = build_plan(project, destination, target)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&plan)?);
@@ -149,21 +144,12 @@ pub fn build_plan(
     };
 
     let manifest_bytes = selected_manifest_bytes(project, &root_manifest, &selected)?;
-    let manifest_layer = layer_from_bytes(
-        OciLayerKind::Manifest,
-        &manifest_bytes,
-        BTreeMap::new(),
-    )?;
+    let manifest_layer =
+        layer_from_bytes(OciLayerKind::Manifest, &manifest_bytes, BTreeMap::new())?;
 
     let lock_layer = lock
         .as_ref()
-        .map(|lock| {
-            layer_from_bytes(
-                OciLayerKind::Lockfile,
-                &lock.bytes,
-                BTreeMap::new(),
-            )
-        })
+        .map(|lock| layer_from_bytes(OciLayerKind::Lockfile, &lock.bytes, BTreeMap::new()))
         .transpose()?;
 
     let config_bytes = serde_json::to_vec(&ZedOciConfig {
@@ -177,15 +163,10 @@ pub fn build_plan(
             size: selected.packed.size,
         },
         manifest_digest: &manifest_layer.descriptor.digest,
-        lock_digest: lock_layer
-            .as_ref()
-            .map(|layer| &layer.descriptor.digest),
+        lock_digest: lock_layer.as_ref().map(|layer| &layer.descriptor.digest),
     })?;
-    let config = descriptor_from_bytes(
-        ZED_OCI_CONFIG_MEDIA_TYPE_V1,
-        &config_bytes,
-        BTreeMap::new(),
-    )?;
+    let config =
+        descriptor_from_bytes(ZED_OCI_CONFIG_MEDIA_TYPE_V1, &config_bytes, BTreeMap::new())?;
 
     let mut annotations = BTreeMap::from([
         (
@@ -216,10 +197,7 @@ pub fn build_plan(
         media_type: OCI_IMAGE_MANIFEST_MEDIA_TYPE,
         artifact_type: ZED_OCI_CONFIG_MEDIA_TYPE_V1,
         config: &config,
-        layers: layers
-            .iter()
-            .map(|layer| &layer.descriptor)
-            .collect(),
+        layers: layers.iter().map(|layer| &layer.descriptor).collect(),
         annotations: &annotations,
     })?;
     let manifest_descriptor = descriptor_from_bytes(
@@ -368,9 +346,7 @@ fn validate_locked_packages(lock: &Lockfile) -> Result<()> {
             bail!("{LOCKFILE_FILE} package `{identity}` has zero artifact size");
         }
         if package.vcs_tag.trim().is_empty() || package.source.trim().is_empty() {
-            bail!(
-                "{LOCKFILE_FILE} package `{identity}` is missing source or VCS tag provenance"
-            );
+            bail!("{LOCKFILE_FILE} package `{identity}` is missing source or VCS tag provenance");
         }
     }
     Ok(())
@@ -387,10 +363,13 @@ fn resolve_target(manifest: &Manifest, requested: Option<&str>) -> Result<Option
     }
 
     let requested = requested.ok_or_else(|| {
-        let available = manifest.targets.keys().cloned().collect::<Vec<_>>().join(", ");
-        anyhow::anyhow!(
-            "polyglot OCI planning requires --target; available targets: {available}"
-        )
+        let available = manifest
+            .targets
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::anyhow!("polyglot OCI planning requires --target; available targets: {available}")
     })?;
     let target = manifest.resolve_target_key(requested).ok_or_else(|| {
         let available = manifest.targets.keys().cloned().collect::<Vec<_>>().join(", ");
@@ -465,8 +444,7 @@ fn sha256_digest(bytes: &[u8]) -> Result<OciDigest> {
 
 fn sha256_digest_from_hex(hex_digest: &str) -> Result<OciDigest> {
     require_sha256(hex_digest)?;
-    OciDigest::parse(format!("sha256:{hex_digest}"))
-        .map_err(|error| anyhow::anyhow!(error))
+    OciDigest::parse(format!("sha256:{hex_digest}")).map_err(|error| anyhow::anyhow!(error))
 }
 
 fn split_dependency_key(key: &str) -> Result<(&str, &str)> {
@@ -530,8 +508,7 @@ fn planned_blob_kind(kind: OciPlannedBlobKind) -> &'static str {
 mod tests {
     use super::*;
 
-    const SHA_A: &str =
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn write_manifest(project: &Path, body: &str) {
         fs::write(project.join(MANIFEST_FILE), body).unwrap();
@@ -560,19 +537,16 @@ url = "https://github.com/acme/tool"
         let project = tempfile::tempdir().unwrap();
         write_manifest(project.path(), &simple_manifest(""));
 
-        let plan = build_plan(
-            project.path(),
-            "oci://ghcr.io/acme/tool:1.2.3",
-            None,
-        )
-        .unwrap();
+        let plan = build_plan(project.path(), "oci://ghcr.io/acme/tool:1.2.3", None).unwrap();
 
         assert_eq!(plan.package.name, "tool");
         assert!(plan.resolved_reference.is_immutable());
         plan.adapter.validate().unwrap();
-        assert!(plan.blobs.iter().any(|blob| {
-            blob.kind == OciPlannedBlobKind::Package && blob.size > 0
-        }));
+        assert!(
+            plan.blobs
+                .iter()
+                .any(|blob| { blob.kind == OciPlannedBlobKind::Package && blob.size > 0 })
+        );
         assert!(!project.path().join(".zed/pack").exists());
     }
 
@@ -581,9 +555,7 @@ url = "https://github.com/acme/tool"
         let project = tempfile::tempdir().unwrap();
         write_manifest(project.path(), &simple_manifest(""));
 
-        assert!(
-            build_plan(project.path(), "oci://ghcr.io/acme/tool:latest", None).is_err()
-        );
+        assert!(build_plan(project.path(), "oci://ghcr.io/acme/tool:latest", None).is_err());
         assert!(
             build_plan(
                 project.path(),
@@ -605,14 +577,7 @@ url = "https://github.com/acme/tool"
 "#,
             ),
         );
-        assert!(
-            build_plan(
-                project.path(),
-                "oci://ghcr.io/acme/tool:1.2.3",
-                None,
-            )
-            .is_err()
-        );
+        assert!(build_plan(project.path(), "oci://ghcr.io/acme/tool:1.2.3", None,).is_err());
 
         fs::write(
             project.path().join(LOCKFILE_FILE),
@@ -631,14 +596,7 @@ source = "https://registry.zpkg.tech"
             ),
         )
         .unwrap();
-        assert!(
-            build_plan(
-                project.path(),
-                "oci://ghcr.io/acme/tool:1.2.3",
-                None,
-            )
-            .is_err()
-        );
+        assert!(build_plan(project.path(), "oci://ghcr.io/acme/tool:1.2.3", None,).is_err());
     }
 
     #[test]
@@ -659,14 +617,7 @@ dir = "clients/rust"
             ),
         );
 
-        assert!(
-            build_plan(
-                project.path(),
-                "oci://ghcr.io/acme/tool-rust:1.2.3",
-                None,
-            )
-            .is_err()
-        );
+        assert!(build_plan(project.path(), "oci://ghcr.io/acme/tool-rust:1.2.3", None,).is_err());
         let plan = build_plan(
             project.path(),
             "oci://ghcr.io/acme/tool-rust:1.2.3",
