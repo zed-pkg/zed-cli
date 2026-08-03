@@ -1,0 +1,156 @@
+name: DEN-1505 semantic merge laboratory
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/den-1505-merge-lab.yml'
+  push:
+    branches:
+      - agent/den-1505-merge-lab
+    paths:
+      - '.github/workflows/den-1505-merge-lab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STACK_SHA: 8cc6745c75fd46dabf2e383cbcfc14db5ff933da
+  CURRENT_MAIN_SHA: b82da352472e301425c175b78d9d2c1c0cd0f1db
+
+jobs:
+  conflict-lab:
+    name: Export exact three-way conflict stages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the clean current-main laboratory branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Produce a bounded three-way merge artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$STACK_SHA"
+          git clone --quiet --no-hardlinks . "$RUNNER_TEMP/merge-work"
+          git -C "$RUNNER_TEMP/merge-work" checkout --quiet --detach "$STACK_SHA"
+
+          set +e
+          git -C "$RUNNER_TEMP/merge-work" \
+            -c merge.conflictStyle=diff3 \
+            merge --no-commit --no-ff "$CURRENT_MAIN_SHA"
+          merge_status=$?
+          set -e
+          test "$merge_status" -ne 0
+
+          artifact="$RUNNER_TEMP/den-1505-merge-lab"
+          mkdir -p "$artifact"
+          git -C "$RUNNER_TEMP/merge-work" \
+            diff --name-only --diff-filter=U | sort \
+            > "$artifact/conflicts.txt"
+          printf '%s\n' src/lib.rs src/ops.rs > "$RUNNER_TEMP/expected.txt"
+          cmp "$RUNNER_TEMP/expected.txt" "$artifact/conflicts.txt"
+
+          for spec in 'src/lib.rs:src__lib.rs' 'src/ops.rs:src__ops.rs'; do
+            path=${spec%%:*}
+            stem=${spec##*:}
+            git -C "$RUNNER_TEMP/merge-work" show ":1:$path" > "$artifact/$stem.base"
+            git -C "$RUNNER_TEMP/merge-work" show ":2:$path" > "$artifact/$stem.stack"
+            git -C "$RUNNER_TEMP/merge-work" show ":3:$path" > "$artifact/$stem.main"
+            cp "$RUNNER_TEMP/merge-work/$path" "$artifact/$stem.conflicted"
+            set +e
+            git merge-file -p --union \
+              "$artifact/$stem.stack" \
+              "$artifact/$stem.base" \
+              "$artifact/$stem.main" \
+              > "$artifact/$stem.union"
+            union_status=$?
+            set -e
+            printf '%s\n' "$union_status" > "$artifact/$stem.union-status"
+          done
+
+          python3 - "$artifact" "$STACK_SHA" "$CURRENT_MAIN_SHA" <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path(sys.argv[1])
+          stack_sha = sys.argv[2]
+          main_sha = sys.argv[3]
+          records = []
+          markdown = [
+              '# DEN-1505 semantic merge laboratory',
+              '',
+              f'- cumulative installer stack: `{stack_sha}`',
+              f'- exact current main: `{main_sha}`',
+              '- merge direction: stack first parent, current main second input',
+              '- no repository branch was resolved or mutated by this job',
+              '',
+          ]
+
+          for path, stem in (('src/lib.rs', 'src__lib.rs'), ('src/ops.rs', 'src__ops.rs')):
+              lines = (root / f'{stem}.conflicted').read_text(encoding='utf-8').splitlines()
+              blocks = []
+              index = 0
+              while index < len(lines):
+                  if not lines[index].startswith('<<<<<<< '):
+                      index += 1
+                      continue
+                  start = index
+                  while index < len(lines) and not lines[index].startswith('>>>>>>> '):
+                      index += 1
+                  if index >= len(lines):
+                      raise SystemExit(f'unterminated conflict in {path}')
+                  block_lines = lines[start:index + 1]
+                  if len(block_lines) > 500:
+                      raise SystemExit(f'conflict block too large in {path}')
+                  blocks.append({
+                      'startLine': start + 1,
+                      'endLine': index + 1,
+                      'lines': block_lines,
+                  })
+                  index += 1
+
+              if not blocks:
+                  raise SystemExit(f'expected conflict blocks in {path}')
+              records.append({'path': path, 'blocks': blocks})
+              markdown.extend([f'## `{path}` — {len(blocks)} block(s)', ''])
+              for number, block in enumerate(blocks, 1):
+                  markdown.extend([
+                      f'### Block {number}: lines {block["startLine"]}–{block["endLine"]}',
+                      '',
+                      '```diff',
+                      *block['lines'],
+                      '```',
+                      '',
+                  ])
+
+          (root / 'conflicts.json').write_text(
+              json.dumps(
+                  {
+                      'stackSha': stack_sha,
+                      'currentMainSha': main_sha,
+                      'conflicts': records,
+                  },
+                  sort_keys=True,
+                  indent=2,
+              ) + '\n',
+              encoding='utf-8',
+          )
+          (root / 'README.md').write_text('\n'.join(markdown) + '\n', encoding='utf-8')
+          PY
+
+      - name: Upload exact base, stack, main, conflict, and union candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: den-1505-semantic-merge-lab
+          path: ${{ runner.temp }}/den-1505-merge-lab
+          if-no-files-found: error
+          retention-days: 1
