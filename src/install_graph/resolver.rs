@@ -105,9 +105,9 @@ fn prefetch_locked(
             pool.submit(task)?;
         }
         let mut downloaded = 0usize;
-        for _ in 0..total {
-            let message = pool.receive()?;
-            let result = message.result?;
+        let mut buffered_results: BTreeMap<usize, Result<FetchResult>> = BTreeMap::new();
+        for expected in 0..total {
+            let result = receive_in_order(pool, &mut buffered_results, expected)?;
             downloaded += usize::from(result.downloaded);
         }
         Ok(PrefetchReport {
@@ -208,7 +208,7 @@ fn prefetch_recursive(
     })
 }
 
-fn receive_in_order(
+pub(super) fn receive_in_order(
     pool: &FetchPool,
     buffered: &mut BTreeMap<usize, Result<FetchResult>>,
     expected: usize,
