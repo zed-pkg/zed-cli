@@ -34,6 +34,11 @@ the content-addressed store. Two terminals or CI jobs sharing a Zed home can
 therefore install unrelated artifacts concurrently while downloading any one
 artifact at most once.
 
+Recursive prefetch and the transactional installer use the same artifact
+acquisition function. Frozen installs, build preparation, `zed add`, and
+`zed remove` therefore cannot bypass the per-hash lock through an older direct
+cache-download path.
+
 Downloads are written to a temporary file in the cache directory, verified,
 and atomically renamed. A corrupt cache file left by an interrupted older
 client is removed and fetched again while the artifact lock is held.
@@ -45,3 +50,15 @@ transaction remains responsible for lockfile writes, adapter wiring, rollback,
 and dependency materialization. Unix installations therefore continue to use
 store-backed symlinks by default; explicit copy mode and the non-Unix fallback
 remain self-contained copies.
+
+## Validation
+
+The unit suite races the recursive and transactional acquisition paths against
+the same absent content hash. The first download is held open while the second
+path attempts acquisition; the test proves that the second path never enters
+its registry download and that the aggregate download count remains one.
+
+The companion end-to-end suite also runs multiple independent CLI processes
+against one shared Zed home, verifies the complete transitive lock graph, and
+checks that project packages are store-backed symlinks rather than copied
+package trees.
