@@ -6,6 +6,7 @@ pub mod cli;
 pub mod completion;
 pub mod config;
 pub mod dev;
+pub mod environment;
 pub mod flags;
 pub mod interactive;
 pub mod manifestless;
