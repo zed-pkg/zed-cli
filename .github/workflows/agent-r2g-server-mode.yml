@@ -1,0 +1,347 @@
+name: Agent implement R2G server registry mode
+
+on:
+  push:
+    branches: [agent/r2g-server-registry-roundtrip]
+    paths: ['.github/workflows/agent-r2g-server-mode.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: agent/r2g-server-registry-roundtrip
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          components: rustfmt, clippy
+      - name: Implement and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f'{path}: replacement count={text.count(old)} for {old[:80]!r}')
+              p.write_text(text.replace(old, new, 1))
+
+          replace('src/cli.rs',
+          '''/// OCI runtime used by `zed r2g --docker` to roundtrip-test the package
+          /// inside a throwaway container. Auto-detected when unset.
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum ContainerRuntime {''',
+          '''/// Registry target used by `zed r2g`.
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum R2gRegistryMode {
+              /// Publish to a private file registry inside the throwaway workspace.
+              Isolated,
+              /// Publish to the configured HTTP(S) Zed registry, then install from it.
+              Server,
+          }
+
+          /// OCI runtime used by `zed r2g --docker` to roundtrip-test the package
+          /// inside a throwaway container. Auto-detected when unset.
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum ContainerRuntime {''')
+
+          replace('src/cli.rs',
+          '''    /// Roundtrip-test this package the way a consumer would install it:
+              /// pack it, publish it to a throwaway file:// registry, install it into a
+              /// mock consumer project under your home dir, and run `publish.smoke_test`
+              /// — optionally inside a fresh OCI container. Named after r2g
+              /// (github.com/oresoftware/r2g); `zed test-local` is a compatibility alias.
+              #[command(name = "r2g", alias = "test-local")]
+              R2g {
+                  /// Run the install + smoke test inside a throwaway OCI container, so''',
+          '''    /// Roundtrip-test this package the way a consumer would install it:
+              /// pack it, publish it to an isolated registry by default, install it into
+              /// a mock consumer project, and run `publish.smoke_test` — optionally
+              /// inside a fresh OCI container. `--registry-mode server` deliberately
+              /// publishes to the configured HTTP(S) Zed server instead. Named after
+              /// r2g (github.com/oresoftware/r2g); `zed test-local` is a compatibility alias.
+              #[command(name = "r2g", alias = "test-local")]
+              R2g {
+                  /// Keep the default hermetic registry, or deliberately publish to the
+                  /// configured HTTP(S) Zed server and consume the persisted version.
+                  #[arg(long, value_enum, env = "ZED_PKG_R2G_REGISTRY_MODE", default_value = "isolated")]
+                  registry_mode: R2gRegistryMode,
+                  /// Run the install + smoke test inside a throwaway OCI container, so''')
+
+          replace('src/main.rs',
+          '''        Cmd::R2g {
+                      docker,
+                      image,
+                      runtime,
+                      root,
+                      clean,
+                  } => r2g::run(
+                      &cwd,
+                      &cfg,
+                      &R2gOptions {
+                          docker,
+                          image,
+                          runtime,
+                          root,
+                          clean,
+                      },
+                  ),''',
+          '''        Cmd::R2g {
+                      registry_mode,
+                      docker,
+                      image,
+                      runtime,
+                      root,
+                      clean,
+                  } => r2g::run(
+                      &cwd,
+                      &cfg,
+                      &R2gOptions {
+                          registry_mode,
+                          docker,
+                          image,
+                          runtime,
+                          root,
+                          clean,
+                      },
+                  ),''')
+
+          replace('src/r2g.rs',
+                  'use crate::cli::{Adapter, ContainerRuntime, InstallMode};',
+                  'use crate::cli::{Adapter, ContainerRuntime, InstallMode, R2gRegistryMode};')
+          replace('src/r2g.rs',
+                  'use crate::registry::{FileRegistry, Registry};',
+                  'use crate::registry::{Registry, registry_for};')
+          replace('src/r2g.rs',
+          '''pub struct R2gOptions {
+              /// Run the install + smoke test inside a throwaway OCI container.''',
+          '''pub struct R2gOptions {
+              /// Publish privately, or deliberately use the configured HTTP(S) server.
+              pub registry_mode: R2gRegistryMode,
+              /// Run the install + smoke test inside a throwaway OCI container.''')
+          replace('src/r2g.rs',
+          '''        Self {
+                      docker: false,''',
+          '''        Self {
+                      registry_mode: R2gRegistryMode::Isolated,
+                      docker: false,''')
+          replace('src/r2g.rs',
+          '''    // 2. An explicitly configured file:// registry is a dependency input, not
+              //    the output registry. Snapshot it into the private workspace so r2g
+              //    can test packages that depend on other unpublished fixtures while
+              //    preserving the same no-shared-state guarantee as an empty registry.
+              snapshot_configured_file_registry(&cfg.registry, &registry_dir)?;
+
+              // 3. Pack the exact artifact `zed publish` would upload (tarball roundtrip).''',
+          '''    // 2. Default to a private registry; server mode is persistent by design
+              //    and therefore requires an explicit CLI or environment opt-in.
+              let registry_target =
+                  prepare_registry_target(cfg, opts.registry_mode, &registry_dir)?;
+
+              // 3. Pack the exact artifact `zed publish` would upload (tarball roundtrip).''')
+          replace('src/r2g.rs',
+          '''    // 4. Publish it to the throwaway file:// registry.
+              let meta = build_publish_meta(&manifest, &packed, None);
+              let file_registry = FileRegistry::new(registry_dir.clone());
+              interactive::confirm(
+                  cfg.interactive,
+                  &format!("r2g step 2/5: publish {full} to the throwaway file registry"),
+              )?;
+              file_registry.publish(&meta, &packed.path, None)?;''',
+          '''    // 4. Publish the exact packed bytes to the selected registry.
+              let meta = build_publish_meta(&manifest, &packed, None);
+              let registry = registry_for(&registry_target.url)?;
+              let destination = if registry_target.persistent {
+                  format!("configured server registry {}", registry_target.url)
+              } else {
+                  "throwaway file registry".to_string()
+              };
+              interactive::confirm(
+                  cfg.interactive,
+                  &format!("r2g step 2/5: publish {full} to the {destination}"),
+              )?;
+              registry.publish(&meta, &packed.path, registry_target.token.as_deref())?;''')
+          replace('src/r2g.rs',
+          '''    let test_cfg = Config {
+                  registry: format!("file://{}", registry_dir.display()),
+                  home: home_dir,
+                  token: None,''',
+          '''    let test_cfg = Config {
+                  registry: registry_target.url.clone(),
+                  home: home_dir,
+                  token: registry_target.token.clone(),''')
+          replace('src/r2g.rs',
+          '''/// Copy a configured file:// registry into r2g's private registry before the
+          /// package under test is published.''',
+          '''#[derive(Debug, Clone, PartialEq, Eq)]
+          struct RegistryTarget {
+              url: String,
+              token: Option<String>,
+              persistent: bool,
+          }
+
+          fn prepare_registry_target(
+              cfg: &Config,
+              mode: R2gRegistryMode,
+              registry_dir: &Path,
+          ) -> Result<RegistryTarget> {
+              match mode {
+                  R2gRegistryMode::Isolated => {
+                      snapshot_configured_file_registry(&cfg.registry, registry_dir)?;
+                      Ok(RegistryTarget {
+                          url: format!("file://{}", registry_dir.display()),
+                          token: None,
+                          persistent: false,
+                      })
+                  }
+                  R2gRegistryMode::Server => {
+                      if !(cfg.registry.starts_with("http://") || cfg.registry.starts_with("https://")) {
+                          bail!(
+                              "--registry-mode server requires an HTTP(S) --registry; got `{}`",
+                              cfg.registry
+                          );
+                      }
+                      println!("r2g: server mode publishes persistently to {}", cfg.registry);
+                      Ok(RegistryTarget {
+                          url: cfg.registry.clone(),
+                          token: cfg.resolve_token()?,
+                          persistent: true,
+                      })
+                  }
+              }
+          }
+
+          /// Copy a configured file:// registry into r2g's private registry before the
+          /// package under test is published.''')
+          replace('src/r2g.rs',
+          '''    use super::*;
+
+              #[test]
+              fn configured_file_registry_is_snapshotted_without_mutating_source() -> Result<()> {''',
+          '''    use super::*;
+
+              fn test_config(registry: String, home: PathBuf, token: Option<&str>) -> Config {
+                  Config {
+                      auth_url: format!("{}/shared-auth", registry.trim_end_matches('/')),
+                      registry,
+                      home,
+                      token: token.map(str::to_owned),
+                      supabase_url: None,
+                      supabase_key: None,
+                      interactive: false,
+                  }
+              }
+
+              #[test]
+              fn server_registry_mode_uses_configured_http_registry_and_token() -> Result<()> {
+                  let temp = tempfile::tempdir()?;
+                  let registry_dir = temp.path().join("private-registry");
+                  let cfg = test_config(
+                      "http://127.0.0.1:8080".to_string(),
+                      temp.path().join("home"),
+                      Some("test-token"),
+                  );
+                  let target =
+                      prepare_registry_target(&cfg, R2gRegistryMode::Server, &registry_dir)?;
+                  assert_eq!(target.url, "http://127.0.0.1:8080");
+                  assert_eq!(target.token.as_deref(), Some("test-token"));
+                  assert!(target.persistent);
+                  assert!(!registry_dir.exists());
+                  Ok(())
+              }
+
+              #[test]
+              fn server_registry_mode_rejects_file_registry_mutation() -> Result<()> {
+                  let temp = tempfile::tempdir()?;
+                  let cfg = test_config(
+                      format!("file://{}", temp.path().join("shared").display()),
+                      temp.path().join("home"),
+                      None,
+                  );
+                  let error = prepare_registry_target(
+                      &cfg,
+                      R2gRegistryMode::Server,
+                      &temp.path().join("private"),
+                  )
+                  .expect_err("server mode must reject file registries");
+                  assert!(error.to_string().contains("requires an HTTP(S) --registry"));
+                  Ok(())
+              }
+
+              #[test]
+              fn configured_file_registry_is_snapshotted_without_mutating_source() -> Result<()> {''')
+
+          replace('.cli-flags.toml',
+          '''[flags.runtime]
+          env = "ZED_PKG_R2G_RUNTIME"
+          aliases = ["runtime"]
+          type = "string"
+          help = "r2g container runtime."
+
+          [flags.r2g_root]''',
+          '''[flags.runtime]
+          env = "ZED_PKG_R2G_RUNTIME"
+          aliases = ["runtime"]
+          type = "string"
+          help = "r2g container runtime."
+
+          [flags.r2g_registry_mode]
+          env = "ZED_PKG_R2G_REGISTRY_MODE"
+          aliases = ["registry-mode"]
+          type = "string"
+          default = "isolated"
+          help = "Use an isolated registry or the configured HTTP(S) Zed server."
+
+          [flags.r2g_root]''')
+
+          replace('README.md',
+          '''zed r2g               # consume your own artifact before shipping (add --docker for a container)
+          zed publish''',
+          '''zed r2g               # hermetic consumer roundtrip (add --docker for a container)
+          zed --registry http://127.0.0.1:8080 r2g --registry-mode server
+          zed publish''')
+          replace('README.md',
+          '''| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |''',
+          '''| `zed r2g` (`zed test-local`) | Roundtrip-test through an isolated registry by default, or a configured HTTP(S) Zed server with `--registry-mode server`; install into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |''')
+          replace('README.md', '### Shell completion',
+          '''### R2G registry modes
+
+          `zed r2g` remains hermetic by default: configured `file://` dependency fixtures
+          are copied into a private workspace registry, and caller-owned state is never
+          mutated. Use `--registry-mode server` only to certify a real Rust registry:
+
+          ```sh
+          zed --registry http://127.0.0.1:8080 --token "$ZED_PKG_TOKEN" \
+            r2g --registry-mode server --clean
+          ```
+
+          Server mode requires HTTP(S), resolves the normal saved or explicit bearer
+          token, persists the published version, and installs from that same server.
+          `--clean` removes only local diagnostics. The flags-2-env equivalent is
+          `ZED_PKG_R2G_REGISTRY_MODE=server`.
+
+          ### Shell completion''')
+          PY
+          cargo fmt
+          cargo test --locked r2g
+          cargo test --locked cli::tests
+          cargo test --locked flags
+          cargo clippy --all-targets -- -D warnings
+      - name: Commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/cli.rs src/main.rs src/r2g.rs .cli-flags.toml README.md
+          git diff --cached --check
+          git commit -m 'feat(r2g): certify configured Rust registry servers'
+          git push origin HEAD:agent/r2g-server-registry-roundtrip
