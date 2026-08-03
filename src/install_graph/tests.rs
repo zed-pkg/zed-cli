@@ -2,6 +2,7 @@ use std::sync::{Arc, Barrier, mpsc as test_mpsc};
 use std::thread;
 use std::time::Duration;
 
+use zed_interfaces::lockfile::LockedPackage;
 use zed_interfaces::registry::{PackageMetadata, VersionMetadata};
 use zed_interfaces::vcs::Vcs;
 
@@ -112,6 +113,21 @@ fn publish_fixture(
     )
     .unwrap();
     packed.sha256
+}
+
+fn published_version(
+    registry_root: &Path,
+    org: &str,
+    name: &str,
+    version: &str,
+) -> VersionMetadata {
+    let path = registry_root
+        .join("packages")
+        .join(org)
+        .join(name)
+        .join("versions")
+        .join(format!("{version}.json"));
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
 }
 
 #[test]
@@ -247,6 +263,157 @@ fn concurrent_prefetches_share_one_artifact_download() {
         1,
         "one process should publish the shared content hash and the other should reuse it"
     );
+}
+
+#[test]
+fn a_warm_store_resolves_the_graph_without_redownloading_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = temp.path().join("registry");
+    let scratch = temp.path().join("scratch");
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+
+    publish_fixture(&registry, &scratch, "test", "leaf", "1.0.0", &[]);
+    publish_fixture(
+        &registry,
+        &scratch,
+        "test",
+        "left",
+        "1.0.0",
+        &[("test/leaf", "^1")],
+    );
+    publish_fixture(
+        &registry,
+        &scratch,
+        "test",
+        "right",
+        "1.0.0",
+        &[("test/leaf", "^1")],
+    );
+    publish_fixture(
+        &registry,
+        &scratch,
+        "test",
+        "root",
+        "1.0.0",
+        &[("test/left", "^1"), ("test/right", "^1")],
+    );
+    fs::write(
+        project.join(MANIFEST_FILE),
+        manifest_text("consumer", "app", "0.1.0", &[("test/root", "^1")]),
+    )
+    .unwrap();
+    let cfg = test_config(&registry, &home);
+
+    let cold = prefetch(&project, &cfg, false).unwrap();
+    let warm = prefetch(&project, &cfg, false).unwrap();
+    assert_eq!(cold.resolved, 4);
+    assert_eq!(cold.downloaded, 4);
+    assert_eq!(warm.resolved, 4);
+    assert_eq!(warm.downloaded, 0);
+}
+
+#[test]
+fn conflicting_transitive_requirements_fail_in_deterministic_graph_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = temp.path().join("registry");
+    let scratch = temp.path().join("scratch");
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+
+    publish_fixture(&registry, &scratch, "test", "leaf", "1.0.0", &[]);
+    publish_fixture(
+        &registry,
+        &scratch,
+        "test",
+        "left",
+        "1.0.0",
+        &[("test/leaf", "^1")],
+    );
+    publish_fixture(
+        &registry,
+        &scratch,
+        "test",
+        "right",
+        "1.0.0",
+        &[("test/leaf", "^2")],
+    );
+    publish_fixture(
+        &registry,
+        &scratch,
+        "test",
+        "root",
+        "1.0.0",
+        &[("test/left", "^1"), ("test/right", "^1")],
+    );
+    fs::write(
+        project.join(MANIFEST_FILE),
+        manifest_text("consumer", "app", "0.1.0", &[("test/root", "^1")]),
+    )
+    .unwrap();
+
+    let error = prefetch(&project, &test_config(&registry, &home), false).unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("version conflict for test/leaf"), "{message}");
+    assert!(message.contains("resolved 1.0.0"), "{message}");
+    assert!(message.contains("requires `^2`"), "{message}");
+}
+
+#[test]
+fn frozen_prefetch_installs_every_locked_artifact_without_a_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = temp.path().join("registry");
+    let scratch = temp.path().join("scratch");
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&project).unwrap();
+
+    for (name, dependencies) in [
+        ("leaf", vec![]),
+        ("left", vec![("test/leaf", "^1")]),
+        ("right", vec![("test/leaf", "^1")]),
+        (
+            "root",
+            vec![("test/left", "^1"), ("test/right", "^1")],
+        ),
+    ] {
+        publish_fixture(
+            &registry,
+            &scratch,
+            "test",
+            name,
+            "1.0.0",
+            &dependencies,
+        );
+    }
+
+    let source = format!("file://{}", registry.display());
+    let mut lock = Lockfile::default();
+    for name in ["leaf", "left", "right", "root"] {
+        let version = published_version(&registry, "test", name, "1.0.0");
+        lock.upsert(LockedPackage {
+            org: version.org,
+            name: version.name,
+            version: version.version,
+            sha256: version.sha256,
+            size: version.size,
+            format: version.format,
+            vcs_tag: version.vcs_tag,
+            vcs_commit: version.vcs_commit,
+            source: source.clone(),
+        });
+    }
+    fs::write(
+        project.join(LOCKFILE_FILE),
+        lock.to_toml_string().unwrap(),
+    )
+    .unwrap();
+
+    let report = prefetch(&project, &test_config(&registry, &home), true).unwrap();
+    assert_eq!(report.resolved, 4);
+    assert_eq!(report.downloaded, 4);
 }
 
 #[test]
