@@ -21,12 +21,7 @@ fn test_config(registry: &Path, home: &Path) -> Config {
     }
 }
 
-fn manifest_text(
-    org: &str,
-    name: &str,
-    version: &str,
-    dependencies: &[(&str, &str)],
-) -> String {
+fn manifest_text(org: &str, name: &str, version: &str, dependencies: &[(&str, &str)]) -> String {
     let mut text = format!(
         r#"[package]
 org = "{org}"
@@ -59,7 +54,11 @@ fn publish_fixture(
     fs::create_dir_all(&source).unwrap();
     let manifest_text = manifest_text(org, name, version, dependencies);
     fs::write(source.join(MANIFEST_FILE), &manifest_text).unwrap();
-    fs::write(source.join("payload.txt"), format!("{org}/{name}@{version}\n")).unwrap();
+    fs::write(
+        source.join("payload.txt"),
+        format!("{org}/{name}@{version}\n"),
+    )
+    .unwrap();
     let manifest = Manifest::parse(&manifest_text).unwrap();
     let packed = pack(
         &source,
@@ -221,8 +220,7 @@ fn concurrent_prefetches_share_one_artifact_download() {
     fs::create_dir_all(&second_project).unwrap();
 
     publish_fixture(&registry, &scratch, "test", "leaf", "1.0.0", &[]);
-    let consumer_manifest =
-        manifest_text("consumer", "app", "0.1.0", &[("test/leaf", "^1")]);
+    let consumer_manifest = manifest_text("consumer", "app", "0.1.0", &[("test/leaf", "^1")]);
     fs::write(first_project.join(MANIFEST_FILE), &consumer_manifest).unwrap();
     fs::write(second_project.join(MANIFEST_FILE), &consumer_manifest).unwrap();
 
@@ -292,7 +290,11 @@ fn artifact_waiters_block_until_the_owner_releases_the_kernel_lock() {
         acquired_tx.send(()).unwrap();
     });
 
-    assert!(acquired_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    assert!(
+        acquired_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_err()
+    );
     drop(owner);
     acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     waiter.join().unwrap();
