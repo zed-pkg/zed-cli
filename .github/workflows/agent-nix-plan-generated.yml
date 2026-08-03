@@ -34,6 +34,7 @@ jobs:
           cargo update -p zed-interfaces --precise 625ba7bdf4339df7d0880f791a0715ca894558fe
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           plan_tests = Path('tests/nix_export_plan.rs')
           text = plan_tests.read_text()
@@ -78,25 +79,28 @@ jobs:
           )
           plan_tests.write_text(text)
 
-          lock_initializer = '''        let lock = Lockfile {
-              version: Lockfile::CURRENT_VERSION,
-              packages,
-          };'''
-          lock_initializer_with_adapters = '''        let lock = Lockfile {
-              version: Lockfile::CURRENT_VERSION,
-              packages,
-              nix_adapters: Vec::new(),
-          };'''
+          pattern = re.compile(
+              r'(?P<indent>\s*)let lock = Lockfile \{\n'
+              r'(?P=indent)    version: Lockfile::CURRENT_VERSION,\n'
+              r'(?P=indent)    packages,\n'
+              r'(?P=indent)\};'
+          )
           for filename in ('src/fetch.rs', 'tests/frozen_fetch_cli.rs'):
               path = Path(filename)
               source = path.read_text()
-              if lock_initializer not in source:
+              def replacement(match: re.Match[str]) -> str:
+                  indent = match.group('indent')
+                  return (
+                      f'{indent}let lock = Lockfile {{\n'
+                      f'{indent}    version: Lockfile::CURRENT_VERSION,\n'
+                      f'{indent}    packages,\n'
+                      f'{indent}    nix_adapters: Vec::new(),\n'
+                      f'{indent}}};'
+                  )
+              source, count = pattern.subn(replacement, source, count=1)
+              if count != 1:
                   raise SystemExit(f'lock initializer anchor not found in {filename}')
-              path.write_text(source.replace(
-                  lock_initializer,
-                  lock_initializer_with_adapters,
-                  1,
-              ))
+              path.write_text(source)
           PY
           cargo fmt --all
           cargo fmt --all --check
