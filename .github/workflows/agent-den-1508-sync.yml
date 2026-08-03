@@ -33,6 +33,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin agent/den-1418-nix-export-plan
           git merge --no-edit origin/agent/den-1418-nix-export-plan
           cargo update -p zed-interfaces --precise 625ba7bdf4339df7d0880f791a0715ca894558fe
@@ -45,8 +47,6 @@ jobs:
           cargo test --locked nix_export_bundle:: -- --test-threads=1
           cargo test --locked --test nix_export_bundle -- --test-threads=1
           git rm .github/workflows/agent-den-1508-sync.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Cargo.lock src tests docs .github/workflows/nix-export-bundle.yml
           git diff --cached --check
           git commit -m "test(DEN-1508): synchronize planner and generated renderer files"
