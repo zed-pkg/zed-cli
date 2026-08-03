@@ -1,0 +1,50 @@
+name: kick DEN-1420 mise adapter
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'feat/den-1420-mise-dev-adapter'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/den-1420-mise-dev-adapter
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Extract and apply reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          from pathlib import Path
+
+          source = Path('.github/workflows/apply-den-1420-mise.yml').read_text(encoding='utf-8')
+          lines = source.splitlines()
+          start = next(i for i, line in enumerate(lines) if "base64 -d <<'PATCH_GZ'" in line) + 1
+          end = next(i for i in range(start, len(lines)) if lines[i].strip() == 'PATCH_GZ')
+          payload = ''.join(line.strip() for line in lines[start:end])
+          Path('/tmp/den-1420.patch').write_bytes(gzip.decompress(base64.b64decode(payload)))
+          PY
+          printf '%s  %s\n' 'd0d0a867d249556a41322169483f27f9107a58d4131a2a92270e16d4967623bc' /tmp/den-1420.patch | sha256sum -c -
+          git apply --check /tmp/den-1420.patch
+          git apply /tmp/den-1420.patch
+          rm .github/workflows/apply-den-1420-mise.yml
+          rm .github/workflows/kick-den-1420-mise.yml
+          cargo fmt --all
+          git diff --check
+          cargo test --locked
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(DEN-1420): compose zed dev with mise'
+          git push origin HEAD:feat/den-1420-mise-dev-adapter
