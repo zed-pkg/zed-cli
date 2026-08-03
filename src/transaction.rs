@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use zed_interfaces::paths::LOCKFILE_FILE;
 
 pub const STAGING_DIR: &str = ".zpkg-staging";
 const METADATA_FILE: &str = "transaction.json";
@@ -74,6 +75,13 @@ impl ProjectTransaction {
     /// Move the current value of a project-relative path into the staging
     /// area. If the path does not exist, recovery records that it must remove
     /// any newly created value.
+    ///
+    /// The project lockfile is the one managed path that is both a mutable
+    /// output during normal resolution and an immutable input during a frozen
+    /// install. Its rollback snapshot is therefore copied atomically while the
+    /// source remains visible. A non-frozen caller may overwrite it normally;
+    /// a frozen caller may commit without rewriting it; and either caller still
+    /// gets exact-byte rollback after an error or interrupted process.
     pub fn backup(&mut self, path: &Path) -> Result<()> {
         let relative = project_relative(&self.project, path)?;
         if self
@@ -96,27 +104,42 @@ impl ProjectTransaction {
             );
         }
 
+        let current_metadata = fs::symlink_metadata(path).ok();
+        let existed = current_metadata.is_some();
+        let preserve_source = relative == Path::new(LOCKFILE_FILE)
+            && current_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.file_type().is_file());
         let backup = PathBuf::from("backups").join(format!(
             "{:04}-{}",
             self.metadata.entries.len(),
             Uuid::new_v4()
         ));
-        let existed = fs::symlink_metadata(path).is_ok();
         let entry = Entry {
             relative,
             backup,
             existed,
         };
         // Persist intent first. Recovery can distinguish all crash windows by
-        // checking which side of the rename exists.
+        // checking which side of the rename/copy exists.
         self.metadata.entries.push(entry.clone());
         self.save()?;
         if existed {
             let backup_path = self.root.join(&entry.backup);
             fs::create_dir_all(backup_path.parent().context("backup parent")?)?;
-            fs::rename(path, &backup_path).with_context(|| {
-                format!("staging {} as {}", path.display(), backup_path.display())
-            })?;
+            if preserve_source {
+                copy_file_atomically(path, &backup_path).with_context(|| {
+                    format!(
+                        "checkpointing immutable transaction input {} as {}",
+                        path.display(),
+                        backup_path.display()
+                    )
+                })?;
+            } else {
+                fs::rename(path, &backup_path).with_context(|| {
+                    format!("staging {} as {}", path.display(), backup_path.display())
+                })?;
+            }
         }
         Ok(())
     }
@@ -218,8 +241,9 @@ fn restore(project: &Path, root: &Path, metadata: &Metadata) -> Result<()> {
                 fs::create_dir_all(destination.parent().context("destination parent")?)?;
                 fs::rename(&backup, &destination)?;
             }
-            // With no backup, interruption happened before the source rename;
-            // the original destination is still authoritative.
+            // With no backup, interruption happened before the source rename
+            // or before an atomic lockfile checkpoint completed; the original
+            // destination is still authoritative.
         } else {
             remove_path(&destination)?;
         }
@@ -260,6 +284,17 @@ fn validate_relative(path: &Path) -> Result<()> {
 
 fn covers(parent: &Path, child: &Path) -> bool {
     child == parent || child.starts_with(parent)
+}
+
+fn copy_file_atomically(source: &Path, destination: &Path) -> Result<()> {
+    let file_name = destination
+        .file_name()
+        .context("transaction backup has no filename")?
+        .to_string_lossy();
+    let temporary = destination.with_file_name(format!(".{file_name}.{}", Uuid::new_v4()));
+    fs::copy(source, &temporary)?;
+    fs::rename(&temporary, destination)?;
+    Ok(())
 }
 
 fn remove_path(path: &Path) -> Result<()> {
@@ -329,6 +364,39 @@ mod tests {
         fs::write(&path, "after").unwrap();
         transaction.commit().unwrap();
         assert_eq!(fs::read_to_string(path).unwrap(), "after");
+        assert!(!temp.path().join(STAGING_DIR).exists());
+    }
+
+    #[test]
+    fn lockfile_checkpoint_stays_visible_and_exact_after_commit() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = temp.path().join(LOCKFILE_FILE);
+        let original = b"# retained provenance\nversion = 1\n";
+        fs::write(&lock, original).unwrap();
+
+        let mut transaction = ProjectTransaction::begin(temp.path()).unwrap();
+        transaction.backup(&lock).unwrap();
+        assert_eq!(fs::read(&lock).unwrap(), original);
+        transaction.commit().unwrap();
+
+        assert_eq!(fs::read(&lock).unwrap(), original);
+        assert!(!temp.path().join(STAGING_DIR).exists());
+    }
+
+    #[test]
+    fn lockfile_checkpoint_restores_exact_bytes_after_failed_rewrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = temp.path().join(LOCKFILE_FILE);
+        let original = b"# retained provenance\nversion = 1\n";
+        fs::write(&lock, original).unwrap();
+
+        {
+            let mut transaction = ProjectTransaction::begin(temp.path()).unwrap();
+            transaction.backup(&lock).unwrap();
+            fs::write(&lock, b"version = 999\n").unwrap();
+        }
+
+        assert_eq!(fs::read(&lock).unwrap(), original);
         assert!(!temp.path().join(STAGING_DIR).exists());
     }
 }
