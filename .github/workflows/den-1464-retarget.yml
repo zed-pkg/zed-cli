@@ -6,9 +6,6 @@ on:
       - agent/den-1464-frozen-lock-integrity
     paths:
       - '.github/workflows/den-1464-retarget.yml'
-  pull_request:
-    paths:
-      - '.github/workflows/den-1464-retarget.yml'
 
 permissions:
   contents: write
@@ -19,14 +16,11 @@ concurrency:
 
 jobs:
   retarget:
-    if: >-
-      github.actor == 'ORESoftware' &&
-      (github.event_name == 'push' ||
-       github.event.pull_request.head.ref == 'agent/den-1464-frozen-lock-integrity')
+    if: github.actor == 'ORESoftware'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      NEW_INTERFACE_REV: 31caf94d89ef04b9e4fc589fa945d028d0c8e0a0
+      NEW_INTERFACE_REV: cc5ed7339672543c734c5f1fd19f7e017a771854
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -38,48 +32,62 @@ jobs:
         with:
           toolchain: 1.97.1
 
-      - name: Retarget the exact interface source
+      - name: Retarget Cargo.toml to the exact merged interface source
         shell: python
         run: |
           from pathlib import Path
           import os
 
           path = Path('Cargo.toml')
-          text = path.read_text()
-          candidates = [
+          new = os.environ['NEW_INTERFACE_REV']
+          old_revisions = [
               'dc0e0a0620b9462817950b552d3d334a184b1cb1',
               '2d397c60cdaa8fe0d331e98caba5202e61eaca4f',
               '50ff18ed934c9871920373403fff69b1dc1a0e0a',
+              '31caf94d89ef04b9e4fc589fa945d028d0c8e0a0',
           ]
-          matches = [candidate for candidate in candidates if candidate in text]
-          if len(matches) != 1:
-              raise SystemExit(
-                  f'Cargo.toml: expected exactly one prior interface revision, found {matches}'
-              )
-          path.write_text(text.replace(matches[0], os.environ['NEW_INTERFACE_REV'], 1))
+          text = path.read_text()
+          if text.count(new) == 1:
+              pass
+          else:
+              matches = [revision for revision in old_revisions if revision in text]
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f'{path}: expected one prior interface revision, found {matches}'
+                  )
+              path.write_text(text.replace(matches[0], new, 1))
 
       - name: Regenerate only the pinned interface lock entry
         run: cargo update -p zed-interfaces --precise "$NEW_INTERFACE_REV"
 
-      - name: Verify the regenerated lock, binary, and frozen-install suite
+      - name: Verify the exact dependency, binary, and frozen-install suite
+        shell: bash
         run: |
+          set -euo pipefail
           test "$(grep -c "$NEW_INTERFACE_REV" Cargo.toml)" -eq 1
           test "$(grep -c "$NEW_INTERFACE_REV" Cargo.lock)" -eq 1
+          test "$(grep -c "$NEW_INTERFACE_REV" .github/workflows/frozen-lock-integrity.yml)" -eq 1
           for old in \
             dc0e0a0620b9462817950b552d3d334a184b1cb1 \
             2d397c60cdaa8fe0d331e98caba5202e61eaca4f \
-            50ff18ed934c9871920373403fff69b1dc1a0e0a; do
+            50ff18ed934c9871920373403fff69b1dc1a0e0a \
+            31caf94d89ef04b9e4fc589fa945d028d0c8e0a0 \
+            625ba7bdf4339df7d0880f791a0715ca894558fe; do
             ! grep -q "$old" Cargo.toml
             ! grep -q "$old" Cargo.lock
+            ! grep -q "$old" .github/workflows/frozen-lock-integrity.yml
           done
           cargo build --locked --bin zed
           bash tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed"
 
-      - name: Commit only the dependency files
+      - name: Remove this one-shot workflow and commit the deterministic retarget
+        shell: bash
         run: |
+          set -euo pipefail
+          git rm .github/workflows/den-1464-retarget.yml
           git config user.name 'ORESoftware'
           git config user.email '11139560+ORESoftware@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock
+          git add Cargo.toml Cargo.lock .github/workflows/frozen-lock-integrity.yml
           git diff --cached --check
-          git commit -m 'fix(DEN-1464): consume strict lock metadata contract'
+          git commit -m 'fix(DEN-1464): consume merged strict lock metadata contract'
           git push origin HEAD:agent/den-1464-frozen-lock-integrity
