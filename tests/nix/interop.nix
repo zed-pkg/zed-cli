@@ -45,7 +45,7 @@ let
     version = "1.0.0";
     src = consumerSrc;
     inherit zed hash;
-    registry = "file://${toString registrySrc}";
+    registryPath = registrySrc;
     adapter = "node";
   };
 
@@ -56,6 +56,7 @@ let
     inherit zedDeps;
 
     nativeBuildInputs = [ pkgs.nodejs ];
+    dontConfigure = true;
     dontBuild = true;
     doCheck = true;
 
