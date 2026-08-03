@@ -2,21 +2,20 @@
 
 use std::io;
 
-use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 
-use crate::cli::Cli;
+use crate::cli_model;
 use crate::dev;
 
 /// Write a static completion script for `zed` to stdout.
 pub fn print(shell: Shell) {
-    let mut command = dev::augment_root_command(Cli::command());
+    let mut command = dev::augment_root_command(cli_model::command());
     generate(shell, &mut command, "zed", &mut io::stdout());
 }
 
 #[cfg(test)]
 fn render(shell: Shell) -> String {
-    let mut command = dev::augment_root_command(Cli::command());
+    let mut command = dev::augment_root_command(cli_model::command());
     let mut output = Vec::new();
     generate(shell, &mut command, "zed", &mut output);
     String::from_utf8(output).expect("completion output must be UTF-8")
@@ -29,7 +28,7 @@ mod tests {
     use super::render;
 
     #[test]
-    fn bash_completion_contains_commands_aliases_and_manifestless_flags() {
+    fn bash_completion_contains_commands_aliases_and_manifest_flags() {
         let script = render(Shell::Bash);
         assert!(
             script.contains("_zed"),
@@ -51,6 +50,7 @@ mod tests {
             assert!(script.contains(command), "missing command {command:?}");
         }
         for option in [
+            "--do-not-write-new-manifest",
             "--allow-no-manifest",
             "--skip-manifest",
             "--install-mode",
@@ -62,7 +62,7 @@ mod tests {
     }
 
     #[test]
-    fn zsh_completion_contains_registration_commands_and_manifestless_flags() {
+    fn zsh_completion_contains_registration_commands_and_manifest_flags() {
         let script = render(Shell::Zsh);
         assert!(
             script.contains("#compdef zed"),
@@ -81,6 +81,7 @@ mod tests {
             assert!(script.contains(command), "missing command {command:?}");
         }
         for option in [
+            "--do-not-write-new-manifest",
             "--allow-no-manifest",
             "--skip-manifest",
             "--install-mode",
