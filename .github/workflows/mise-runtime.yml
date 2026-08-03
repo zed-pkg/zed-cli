@@ -1,0 +1,175 @@
+name: mise runtime
+
+on:
+  pull_request:
+    paths:
+      - src/dev.rs
+      - .dev-cli-flags.toml
+      - docs/develop.md
+      - .github/workflows/mise-runtime.yml
+  push:
+    branches: [main]
+    paths:
+      - src/dev.rs
+      - .dev-cli-flags.toml
+      - docs/develop.md
+      - .github/workflows/mise-runtime.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mise-runtime-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  certify:
+    name: Runtime contract and smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out canonical interfaces
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Run focused parser and runtime tests
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo test --locked --test develop_edge_cases --test develop_help_contract
+          cargo test --locked dev::tests
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo build --locked --bin zed
+
+      - name: Certify controlled mise re-entry
+        shell: bash
+        env:
+          ZED_BIN: ${{ github.workspace }}/zed-cli/target/debug/zed
+          ZED_PKG_HOME: ${{ runner.temp }}/zed-home
+        run: |
+          set -euo pipefail
+
+          stub_bin="$RUNNER_TEMP/mise-bin"
+          mkdir -p "$stub_bin"
+          cat > "$stub_bin/mise" <<'MISE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          if [[ "${1:-}" == "--version" ]]; then
+            printf '%s\n' 'mise 2099.0.0-test'
+            exit 0
+          fi
+          test "${1:-}" = exec
+          shift
+          test "${1:-}" = --
+          shift
+          test "${ZED_DEV_MISE_ACTIVE:-}" = 1
+          printf '%s\n' "${MISE_LOCKED:-}" "${MISE_OVERRIDE_CONFIG_FILENAMES:-}" \
+            "${MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES:-}" >> "$MISE_SMOKE_LOG"
+          export MISE_SMOKE_ACTIVE=1
+          exec "$@"
+          MISE
+          chmod +x "$stub_bin/mise"
+
+          project="$RUNNER_TEMP/mise-project"
+          mkdir -p "$project/.git" "$project/zed_modules/.bin"
+          printf '%s\n' '{}' > "$project/package.json"
+          printf '%s\n' '[tools]' 'node = "22.4.0"' > "$project/mise.toml"
+          cat > "$project/zed_modules/.bin/zed-tool" <<'TOOL'
+          #!/usr/bin/env sh
+          printf zed-tool
+          TOOL
+          chmod +x "$project/zed_modules/.bin/zed-tool"
+          cd "$project"
+
+          export MISE_SMOKE_LOG="$RUNNER_TEMP/mise-smoke.log"
+          : > "$MISE_SMOKE_LOG"
+          PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --mise required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c 'test "$MISE_SMOKE_ACTIVE" = 1; test "$(zed-tool)" = zed-tool; printf mise-runtime-ok' \
+            | grep -q mise-runtime-ok
+          test "$(grep -c '^$' "$MISE_SMOKE_LOG")" -ge 3
+
+          if PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
+            --no-install \
+            --frozen \
+            --nix never \
+            --mise required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c true > "$RUNNER_TEMP/missing-lock.out" 2> "$RUNNER_TEMP/missing-lock.err"
+          then
+            echo 'frozen mise runtime unexpectedly accepted a missing mise.lock' >&2
+            exit 1
+          fi
+          grep -q 'requires the adjacent mise lockfile' "$RUNNER_TEMP/missing-lock.err"
+
+          : > mise.lock
+          : > "$MISE_SMOKE_LOG"
+          PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
+            --no-install \
+            --frozen \
+            --nix never \
+            --mise required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c 'test "$MISE_SMOKE_ACTIVE" = 1; test "$MISE_LOCKED" = 1; printf frozen-runtime-ok' \
+            | grep -q frozen-runtime-ok
+          grep -qx '1' "$MISE_SMOKE_LOG"
+          grep -qx 'mise.toml' "$MISE_SMOKE_LOG"
+          grep -qx 'none' "$MISE_SMOKE_LOG"
+
+          set +e
+          PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --mise required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c 'exit 37'
+          status=$?
+          set -e
+          test "$status" -eq 37
+
+          outer="$RUNNER_TEMP/parent-config"
+          checkout="$outer/checkout"
+          mkdir -p "$checkout/.git"
+          printf '%s\n' '[tools]' 'node = "99.0.0"' > "$outer/mise.toml"
+          printf '%s\n' '{}' > "$checkout/package.json"
+          cd "$checkout"
+          if PATH="$stub_bin:$PATH" "$ZED_BIN" dev \
+            --no-install \
+            --nix never \
+            --mise required \
+            --python-venv never \
+            --shell "$(command -v bash)" \
+            -c true > "$RUNNER_TEMP/parent-config.out" 2> "$RUNNER_TEMP/parent-config.err"
+          then
+            echo 'mise configuration escaped the owning checkout boundary' >&2
+            exit 1
+          fi
+          grep -q 'no project-local `mise.toml` or `.mise.toml`' "$RUNNER_TEMP/parent-config.err"
