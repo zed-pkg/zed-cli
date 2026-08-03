@@ -56,20 +56,20 @@ let
   validRouteMetadata = evaluates routedFetch.drvPath;
   validConsumer = evaluates consumer.drvPath;
   preservesCallerPassthru =
-    consumer.passthru.marker == "caller-passthru-preserved";
+    consumer.marker == "caller-passthru-preserved";
   exposesVerifiedDeps =
-    consumer.passthru.zedDeps.drvPath == defaultFetch.drvPath;
+    consumer.zedDeps.drvPath == defaultFetch.drvPath;
 
-  rejectsAmbiguousRegistry = !(evaluates (mkFetch {
+  rejectsAmbiguousRegistry = !(evaluates ((mkFetch {
     registry = "https://registry.example.invalid";
     registryPath = ./.;
-  }).drvPath);
-  rejectsAdapterStorePath = !(evaluates (mkFetch {
+  }).drvPath));
+  rejectsAdapterStorePath = !(evaluates ((mkFetch {
     adapter = "node-/nix/store/secret";
-  }).drvPath);
-  rejectsTargetStorePath = !(evaluates (mkFetch {
+  }).drvPath));
+  rejectsTargetStorePath = !(evaluates ((mkFetch {
     target = "nodejs-/nix/store/secret";
-  }).drvPath);
+  }).drvPath));
 in
 assert validDefault;
 assert validHttpsRegistry;
