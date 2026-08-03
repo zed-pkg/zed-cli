@@ -145,14 +145,7 @@ impl FetchPool {
             let worker_home = home.to_path_buf();
             let spawn = thread::Builder::new()
                 .name(format!("zed-install-{index}"))
-                .spawn(move || {
-                    worker_loop(
-                        worker_queue,
-                        worker_tx,
-                        worker_registry,
-                        worker_home,
-                    )
-                });
+                .spawn(move || worker_loop(worker_queue, worker_tx, worker_registry, worker_home));
             match spawn {
                 Ok(worker) => workers.push(worker),
                 Err(error) => {
@@ -212,9 +205,7 @@ struct ArtifactProcessLock {
 impl ArtifactProcessLock {
     fn acquire(home: &Path, sha256: &str) -> Result<Self> {
         require_sha256(sha256)?;
-        let path = home
-            .join("locks")
-            .join(format!("artifact-{sha256}.lock"));
+        let path = home.join("locks").join(format!("artifact-{sha256}.lock"));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
