@@ -103,6 +103,7 @@ jobs:
               --home "$zed_home" \
               install --install-mode copy
             node src/main.js
+            test ! -e .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt
             "$zed" --home "$zed_home" uninstall
           )
 
@@ -138,7 +139,7 @@ jobs:
               --no-out-link \
               --arg zedBinary "$ZED_BINARY_STORE" \
               --arg consumerSrc "$ZED_CONSUMER_STORE" \
-              --arg registrySrc "$ZED_REGISTRY_STORE" \
+              --argstr registryStore "$ZED_REGISTRY_STORE" \
               --argstr name "$name" \
               --argstr mode deps \
               "$@"
@@ -174,6 +175,7 @@ jobs:
 
           test -f "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/package.json"
           test -f "$deps_a/tree/node_modules/@zed-pkg/docker-node-lib/package.json"
+          test ! -e "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
           test -f "$deps_a/metadata/.zpkg.lock"
           test -f "$deps_a/metadata/bridge.json"
           grep -F '"schema":"zed.nix-fetch-bridge/v1"' "$deps_a/metadata/bridge.json"
@@ -201,13 +203,14 @@ jobs:
               --no-out-link \
               --arg zedBinary "$ZED_BINARY_STORE" \
               --arg consumerSrc "$ZED_CONSUMER_STORE" \
-              --arg registrySrc "$ZED_REGISTRY_STORE" \
+              --argstr registryStore "$ZED_REGISTRY_STORE" \
               --argstr hash "$ZED_DEPS_HASH" \
               --argstr name zed-nix-package \
               --argstr mode package
           )"
           test -f "$package/share/zed-nix-consumer/src/main.js"
           test -f "$package/share/zed-nix-consumer/.vendor/.zed/zed-pkg/docker-node-lib/package.json"
+          test ! -e "$package/share/zed-nix-consumer/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
 
       - name: Reject an incorrect Nix output hash
         shell: bash
@@ -217,7 +220,7 @@ jobs:
             --no-out-link \
             --arg zedBinary "$ZED_BINARY_STORE" \
             --arg consumerSrc "$ZED_CONSUMER_STORE" \
-            --arg registrySrc "$ZED_REGISTRY_STORE" \
+            --argstr registryStore "$ZED_REGISTRY_STORE" \
             --argstr hash sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB= \
             --argstr name zed-nix-bad-output-hash \
             --argstr mode deps
@@ -258,7 +261,7 @@ jobs:
             --no-out-link \
             --arg zedBinary "$ZED_BINARY_STORE" \
             --arg consumerSrc "$tampered_store" \
-            --arg registrySrc "$ZED_REGISTRY_STORE" \
+            --argstr registryStore "$ZED_REGISTRY_STORE" \
             --argstr hash "$ZED_DEPS_HASH" \
             --argstr name zed-nix-tampered-lock \
             --argstr mode deps
