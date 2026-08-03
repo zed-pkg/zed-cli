@@ -119,6 +119,24 @@ test("plan report and manifest tampering all fail verification", async () => {
   }
 });
 
+test("plan report and integrity paths must be distinct", async () => {
+  const paths = await setup();
+  try {
+    const originalReport = await readFile(paths.reportPath, "utf8");
+    await assert.rejects(
+      bindReleasePlanIntegrity({
+        planPath: paths.planPath,
+        reportPath: paths.reportPath,
+        integrityPath: paths.reportPath,
+      }),
+      /must be distinct/,
+    );
+    assert.equal(await readFile(paths.reportPath, "utf8"), originalReport);
+  } finally {
+    await rm(paths.root, { recursive: true, force: true });
+  }
+});
+
 test(
   "integrity output symlinks are refused before report mutation",
   { skip: process.platform === "win32" },
