@@ -285,20 +285,18 @@ fn route(args: &[OsString]) -> Route {
 
     match command.as_str() {
         "global" => Route::Global,
-        "install" | "i" => global_flag(args).map_or(Route::Existing, |global_index| {
-            Route::Alias {
-                command_index,
-                global_index,
-                action: "install",
-            }
+        "install" | "i" => global_flag(args).map_or(Route::Existing, |global_index| Route::Alias {
+            command_index,
+            global_index,
+            action: "install",
         }),
-        "uninstall" | "un" => global_flag(args).map_or(Route::Existing, |global_index| {
-            Route::Alias {
+        "uninstall" | "un" => {
+            global_flag(args).map_or(Route::Existing, |global_index| Route::Alias {
                 command_index,
                 global_index,
                 action: "uninstall",
-            }
-        }),
+            })
+        }
         "help" => match next_positional(args, command_index + 1) {
             Some((target_index, target)) if target == "global" => Route::GlobalHelp {
                 help_index: command_index,
@@ -370,6 +368,7 @@ fn acquire_lock(cfg: &Config) -> Result<GlobalLock> {
     fs::create_dir_all(&root)?;
     let file = fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(root.join(LOCK_FILE))?;
@@ -423,7 +422,9 @@ fn parse_package_spec(spec: &str) -> Result<(String, Option<String>)> {
     let (org, name) = key
         .split_once('/')
         .filter(|(org, name)| !org.is_empty() && !name.is_empty())
-        .with_context(|| format!("invalid package spec `{spec}` (expected org/name[@requirement])"))?;
+        .with_context(|| {
+            format!("invalid package spec `{spec}` (expected org/name[@requirement])")
+        })?;
     if name.contains('/') || !is_slug(org) || !is_slug(name) {
         bail!("invalid package identity `{key}`; expected lowercase slug org/name");
     }
@@ -810,10 +811,7 @@ fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("global executable name is not valid UTF-8")?;
-    let temporary = parent.join(format!(
-        ".{file_name}.zed-tmp-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temporary = parent.join(format!(".{file_name}.zed-tmp-{}", uuid::Uuid::new_v4()));
     fs::copy(source, &temporary).with_context(|| {
         format!(
             "copying global executable {} to {}",
@@ -834,10 +832,7 @@ fn atomic_copy(source: &Path, destination: &Path) -> Result<()> {
     if let Err(error) = fs::rename(&temporary, destination) {
         let _ = fs::remove_file(&temporary);
         return Err(error).with_context(|| {
-            format!(
-                "promoting global executable into {}",
-                destination.display()
-            )
+            format!("promoting global executable into {}", destination.display())
         });
     }
     Ok(())
@@ -850,10 +845,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("managed file name is not valid UTF-8")?;
-    let temporary = parent.join(format!(
-        ".{file_name}.zed-tmp-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temporary = parent.join(format!(".{file_name}.zed-tmp-{}", uuid::Uuid::new_v4()));
     fs::write(&temporary, bytes)?;
     if path.exists() {
         fs::remove_file(path)?;
@@ -896,8 +888,7 @@ fn print_path_guidance(bin_dir: &Path) {
 fn path_contains(bin_dir: &Path) -> bool {
     let expected = fs::canonicalize(bin_dir).unwrap_or_else(|_| bin_dir.to_path_buf());
     env::var_os("PATH").is_some_and(|value| {
-        env::split_paths(&value)
-            .any(|entry| fs::canonicalize(&entry).unwrap_or(entry) == expected)
+        env::split_paths(&value).any(|entry| fs::canonicalize(&entry).unwrap_or(entry) == expected)
     })
 }
 
