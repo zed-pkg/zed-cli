@@ -83,7 +83,10 @@ fn devbox_export_is_real_read_only_and_idempotent() {
     assert!(second.status.success());
     let result: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(result["changed"], false);
-    assert_eq!(fs::read(temp.path().join("devbox.json")).unwrap(), output_before);
+    assert_eq!(
+        fs::read(temp.path().join("devbox.json")).unwrap(),
+        output_before
+    );
     assert_eq!(
         fs::read(temp.path().join(".zed/environment-exports/devbox.json")).unwrap(),
         receipt_before
@@ -110,15 +113,19 @@ fn flox_export_emits_manifest_hook_and_receipt() {
     let manifest = fs::read_to_string(temp.path().join(".flox/env/manifest.toml")).unwrap();
     let value: toml::Value = toml::from_str(&manifest).unwrap();
     assert_eq!(value["version"].as_integer(), Some(1));
-    assert_eq!(value["install"]["node"]["pkg-path"].as_str(), Some("nodejs_22"));
+    assert_eq!(
+        value["install"]["node"]["pkg-path"].as_str(),
+        Some("nodejs_22")
+    );
     assert_eq!(
         value["hook"]["on-activate"].as_str(),
         Some("zed install --frozen")
     );
-    assert!(temp
-        .path()
-        .join(".zed/environment-exports/flox.json")
-        .is_file());
+    assert!(
+        temp.path()
+            .join(".zed/environment-exports/flox.json")
+            .is_file()
+    );
 }
 
 #[test]
@@ -137,10 +144,12 @@ fn existing_human_configuration_is_not_overwritten() {
         fs::read(temp.path().join("devbox.json")).unwrap(),
         b"{\"human\": true}\n"
     );
-    assert!(!temp
-        .path()
-        .join(".zed/environment-exports/devbox.json")
-        .exists());
+    assert!(
+        !temp
+            .path()
+            .join(".zed/environment-exports/devbox.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -150,13 +159,17 @@ fn unsupported_platform_fails_without_partial_output() {
 
     let output = run(temp.path(), &["flox"]);
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("flox export cannot represent platform `x86_64-windows`"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("flox export cannot represent platform `x86_64-windows`")
+    );
     assert!(!temp.path().join(".flox/env/manifest.toml").exists());
-    assert!(!temp
-        .path()
-        .join(".zed/environment-exports/flox.json")
-        .exists());
+    assert!(
+        !temp
+            .path()
+            .join(".zed/environment-exports/flox.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -175,8 +188,10 @@ fn output_and_receipt_paths_cannot_escape_project() {
         ],
     );
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("manager output path must be normalized and project-relative"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("manager output path must be normalized and project-relative")
+    );
 }
 
 #[test]
