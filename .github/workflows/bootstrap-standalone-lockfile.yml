@@ -5,18 +5,22 @@ on:
   push:
     branches:
       - agent/standalone-install-r2g
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   lockfile:
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Check out the exact branch head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
           fetch-depth: 0
       - name: Install the pinned Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
@@ -37,4 +41,4 @@ jobs:
           git add Cargo.lock
           test "$(git diff --cached --name-only)" = "Cargo.lock"
           git commit -m "chore: lock standalone zed-interfaces source"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref || github.ref_name }}"
