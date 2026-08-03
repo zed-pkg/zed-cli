@@ -368,9 +368,23 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
 }
 
 fn validate_source(source: &str) -> Result<()> {
-    if let Some(path) = source.strip_prefix("file://") {
-        if path.is_empty() {
-            bail!("frozen lockfile contains an empty file registry source");
+    if source.starts_with("file://") {
+        let url = reqwest::Url::parse(source)
+            .map_err(|_| anyhow::anyhow!("frozen lockfile contains an invalid file registry source"))?;
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            bail!(
+                "frozen file registry sources may not embed credentials, query strings, or fragments"
+            );
+        }
+        let path = url
+            .to_file_path()
+            .map_err(|_| anyhow::anyhow!("frozen file registry source is not a local absolute path"))?;
+        if !path.is_absolute() {
+            bail!("frozen file registry source is not a local absolute path");
         }
         return Ok(());
     }
@@ -496,8 +510,8 @@ fn prepare_output_path(
     };
     let project = fs::canonicalize(project)?;
 
-    // Reject project-tree and project-ancestor destinations before creating a
-    // parent directory, so even a failing request cannot mutate source.
+    // Reject project-tree and project-ancestor destinations before inspecting
+    // the parent, so the source tree remains an immutable input on every path.
     if raw.starts_with(&project) || project.starts_with(&raw) {
         bail!(
             "--output must be outside the project tree and may not contain it ({})",
@@ -509,8 +523,18 @@ fn prepare_output_path(
     }
 
     let parent = raw.parent().context("fetch output has no parent")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("creating fetch output parent {}", parent.display()))?;
+    let parent_metadata = fs::metadata(parent).with_context(|| {
+        format!(
+            "fetch output parent must already exist and be a directory: {}",
+            parent.display()
+        )
+    })?;
+    if !parent_metadata.is_dir() {
+        bail!(
+            "fetch output parent must already exist and be a directory: {}",
+            parent.display()
+        );
+    }
     let canonical_parent = fs::canonicalize(parent)
         .with_context(|| format!("canonicalizing fetch output parent {}", parent.display()))?;
     let name = raw
@@ -520,7 +544,7 @@ fn prepare_output_path(
     let output = canonical_parent.join(name);
 
     // A symlinked parent can redirect an apparently external path back into
-    // the project, so enforce containment again after canonicalization.
+    // the project. Canonicalize it before creating staging or final state.
     if output.starts_with(&project) || project.starts_with(&output) {
         bail!("canonical fetch output must remain outside the project tree");
     }
