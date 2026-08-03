@@ -6,17 +6,21 @@ use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 
 use crate::cli::Cli;
-use crate::dev;
+use crate::{dev, global};
+
+fn command() -> clap::Command {
+    global::augment_root_command(dev::augment_root_command(Cli::command()))
+}
 
 /// Write a static completion script for `zed` to stdout.
 pub fn print(shell: Shell) {
-    let mut command = dev::augment_root_command(Cli::command());
+    let mut command = command();
     generate(shell, &mut command, "zed", &mut io::stdout());
 }
 
 #[cfg(test)]
 fn render(shell: Shell) -> String {
-    let mut command = dev::augment_root_command(Cli::command());
+    let mut command = command();
     let mut output = Vec::new();
     generate(shell, &mut command, "zed", &mut output);
     String::from_utf8(output).expect("completion output must be UTF-8")
@@ -44,6 +48,8 @@ mod tests {
             "init",
             "develop",
             "dev",
+            "global",
+            "bin-dir",
             "completions",
             "self-update",
             "r2g",
@@ -54,6 +60,7 @@ mod tests {
             "--allow-no-manifest",
             "--skip-manifest",
             "--install-mode",
+            "--global-bin-dir",
             "--python-venv",
             "--isolated-home",
         ] {
@@ -74,6 +81,8 @@ mod tests {
             "init",
             "develop",
             "dev",
+            "global",
+            "bin-dir",
             "completions",
             "self-update",
             "r2g",
@@ -84,6 +93,7 @@ mod tests {
             "--allow-no-manifest",
             "--skip-manifest",
             "--install-mode",
+            "--global-bin-dir",
             "--python-venv",
             "--isolated-home",
         ] {
