@@ -54,6 +54,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             install_mode,
             adapter,
             allow_build,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager,
             target,
             allow_no_manifest,
             allow_ecosystem_mismatch,
@@ -65,6 +68,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             install_mode,
             adapter,
             allow_build,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager.as_deref(),
             target.as_deref(),
             allow_no_manifest,
             allow_ecosystem_mismatch,
@@ -75,7 +81,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             completion::print(shell.into());
             Ok(())
         }
-        Cmd::Build { force } => ops::build_cmd(&cwd, &cfg, force),
+        Cmd::Build {
+            force,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager,
+        } => ops::build_cmd(
+            &cwd,
+            &cfg,
+            force,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager.as_deref(),
+        ),
         Cmd::Run { command, args } => match ops::run(&cwd, &command, &args) {
             Ok(code) => std::process::exit(code),
             Err(error) => Err(error),

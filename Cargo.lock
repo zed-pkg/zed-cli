@@ -2055,7 +2055,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=dc0e0a0620b9462817950b552d3d334a184b1cb1#dc0e0a0620b9462817950b552d3d334a184b1cb1"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=cda6849b6a95b582554fcadc7a882e99c5018989#cda6849b6a95b582554fcadc7a882e99c5018989"
 dependencies = [
  "schemars",
  "semver",

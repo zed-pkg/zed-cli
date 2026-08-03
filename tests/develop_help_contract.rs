@@ -13,6 +13,9 @@ const CLEAN_ENV: &[&str] = &[
     "ZED_DEV_SHELL",
     "ZED_DEV_VENV",
     "ZED_PKG_ALLOW_BUILD",
+    "ZED_PKG_ALLOW_INSTALL_HOOKS",
+    "ZED_PKG_ALLOW_NATIVE_DEPS",
+    "ZED_PKG_NATIVE_MANAGER",
     "ZED_PKG_FROZEN",
 ];
 
@@ -67,6 +70,9 @@ fn every_help_spelling_exposes_the_same_develop_boundary() {
             "--command",
             "--nix",
             "--profile",
+            "--allow-native-deps",
+            "--allow-install-hooks",
+            "--native-manager",
             "--isolated-home",
             "--print-env",
             "--python-venv",

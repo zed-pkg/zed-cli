@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
-          ref: ebbb0028bf6c177a4f2a89a67db810b7f1d1ad64
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@v1

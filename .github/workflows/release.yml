@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30

@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
       - name: Build a container with the zed CLI
         run: |
@@ -258,6 +258,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
           persist-credentials: false
       - uses: actions/checkout@v4
@@ -436,7 +437,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
       - name: Build the real CLI container
         run: |
@@ -708,7 +709,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: cda6849b6a95b582554fcadc7a882e99c5018989
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
       - name: Install Zsh
