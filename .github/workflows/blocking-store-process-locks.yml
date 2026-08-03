@@ -8,7 +8,7 @@ on:
       - src/install_graph/**
       - Cargo.toml
       - Cargo.lock
-      - .github/workflows/apply-blocking-store-process-locks.yml
+      - .github/workflows/blocking-store-process-locks.yml
   push:
     branches: [main]
     paths:
@@ -17,7 +17,7 @@ on:
       - src/install_graph/**
       - Cargo.toml
       - Cargo.lock
-      - .github/workflows/apply-blocking-store-process-locks.yml
+      - .github/workflows/blocking-store-process-locks.yml
   workflow_dispatch:
 
 permissions:
