@@ -23,7 +23,7 @@ fn rejects_artifact_hash_and_size_drift() {
 }
 
 #[test]
-fn rejects_mutable_or_unsupported_flake_locks() {
+fn rejects_mutable_unsupported_or_multi_input_flake_locks() {
     let artifact = artifact(&[("data/value.txt", b"payload\n", 0o644)]);
     let plan = plan(&artifact, BTreeMap::new());
     let mut lock: serde_json::Value = serde_json::from_slice(&flake_lock()).unwrap();
@@ -43,10 +43,49 @@ fn rejects_mutable_or_unsupported_flake_locks() {
         render_nix_export_bundle(&plan, &artifact, &serde_json::to_vec(&lock).unwrap())
             .is_err()
     );
+
+    let mut multi_input: serde_json::Value = serde_json::from_slice(&flake_lock()).unwrap();
+    multi_input["nodes"]["extra"] = json!({
+        "locked": {
+            "narHash": "sha256-pGvFkM8N0xEkIIXDe5YYfbEAvHrk4IxBrjB/x8OomhE=",
+            "owner": "example",
+            "repo": "extra",
+            "rev": "e73de5be04e0eff4190a1432b946d469c794e7b4",
+            "type": "github"
+        },
+        "original": {
+            "owner": "example",
+            "repo": "extra",
+            "rev": "e73de5be04e0eff4190a1432b946d469c794e7b4",
+            "type": "github"
+        }
+    });
+    multi_input["nodes"]["root"]["inputs"]["extra"] = json!("extra");
+    assert!(
+        render_nix_export_bundle(
+            &plan,
+            &artifact,
+            &serde_json::to_vec(&multi_input).unwrap(),
+        )
+        .is_err()
+    );
 }
 
 #[test]
-fn rejects_non_executable_bins_unsafe_paths_and_archive_links() {
+fn rejects_unsorted_or_duplicate_system_declarations() {
+    let artifact = artifact(&[("data/value.txt", b"payload\n", 0o644)]);
+
+    let mut unsorted = plan(&artifact, BTreeMap::new());
+    unsorted.intent.systems = vec!["x86_64-linux".into(), "aarch64-linux".into()];
+    assert!(render_nix_export_bundle(&unsorted, &artifact, &flake_lock()).is_err());
+
+    let mut duplicate = plan(&artifact, BTreeMap::new());
+    duplicate.intent.systems = vec!["x86_64-linux".into(), "x86_64-linux".into()];
+    assert!(render_nix_export_bundle(&duplicate, &artifact, &flake_lock()).is_err());
+}
+
+#[test]
+fn rejects_non_executable_bins_unsafe_paths_archive_links_and_duplicates() {
     let non_executable = artifact(&[("bin/sample", b"payload", 0o644)]);
     let bins = BTreeMap::from([("sample".into(), "bin/sample".into())]);
     let plan = plan(&non_executable, bins);
@@ -61,6 +100,13 @@ fn rejects_non_executable_bins_unsafe_paths_and_archive_links() {
     let bins = BTreeMap::from([("sample".into(), "bin/tool".into())]);
     let plan = plan(&linked, bins);
     assert!(render_nix_export_bundle(&plan, &linked, &flake_lock()).is_err());
+
+    let duplicated = artifact(&[
+        ("data/value.txt", b"first", 0o644),
+        ("data/value.txt", b"second", 0o644),
+    ]);
+    let plan = plan(&duplicated, BTreeMap::new());
+    assert!(render_nix_export_bundle(&plan, &duplicated, &flake_lock()).is_err());
 }
 
 #[test]
@@ -73,6 +119,15 @@ fn canonical_inventory_detects_post_render_mutation() {
         .get_mut("README.md")
         .unwrap()
         .write_all(b"tampered")
+        .unwrap();
+    assert!(rendered.validate().is_err());
+
+    let mut rendered = render_nix_export_bundle(&plan, &artifact, &flake_lock()).unwrap();
+    rendered
+        .files
+        .get_mut("flake.lock")
+        .unwrap()
+        .write_all(b"\n")
         .unwrap();
     assert!(rendered.validate().is_err());
 
