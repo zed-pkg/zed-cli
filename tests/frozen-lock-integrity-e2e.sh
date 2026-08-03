@@ -158,8 +158,10 @@ lock_before="$(file_sha256 "$valid_root/.zpkg.lock")"
   || fail "valid frozen install rewrote the lock"
 [[ -f "$valid_root/zed_modules/zed-pkg/poly-fixture-nodejs/package.json" ]] \
   || fail "valid frozen install did not materialize the package"
-[[ -L "$valid_root/node_modules/@zed-pkg/poly-fixture-nodejs" ]] \
-  || fail "valid frozen install did not create the Node adapter link"
+[[ -f "$valid_root/.zed/node_path" ]] \
+  || fail "valid frozen install did not write the Node adapter path"
+[[ "$(cat "$valid_root/.zed/node_path")" == "zed_modules" ]] \
+  || fail "valid frozen install wrote the wrong Node adapter path"
 printf 'PASS: complete frozen lock restores byte-identically\n'
 
 assert_atomic_failure() {
