@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/recursive-lock-cross-platform
+  pull_request:
+    branches:
+      - agent/recursive-install-queue
 
 permissions:
   contents: read
@@ -62,5 +65,3 @@ jobs:
           git push \
             "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             HEAD:agent/recursive-lock-cross-platform
-
-# This second branch commit intentionally triggers the already-present workflow.
