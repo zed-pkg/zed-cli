@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - .github/scripts/den1439_normalize.py
+      - .github/scripts/den1439_require_checksums.py
       - .github/workflows/den-1439-normalize.yml
 
 permissions:
@@ -31,6 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 .github/scripts/den1439_normalize.py
+          python3 .github/scripts/den1439_require_checksums.py
           cargo fmt --check || cargo fmt
           cargo test --lib environment::tests
           cargo test --test mise_environment_cli
