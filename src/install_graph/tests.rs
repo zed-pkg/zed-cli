@@ -1,0 +1,258 @@
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc as test_mpsc;
+    use std::time::Duration;
+
+    use zed_interfaces::registry::{PackageMetadata, VersionMetadata};
+    use zed_interfaces::vcs::Vcs;
+
+    use super::*;
+    use crate::pack::pack;
+
+    fn test_config(registry: &Path, home: &Path) -> Config {
+        Config {
+            registry: format!("file://{}", registry.display()),
+            home: home.to_path_buf(),
+            token: None,
+            auth_url: "http://127.0.0.1/unused".to_string(),
+            supabase_url: None,
+            supabase_key: None,
+            interactive: false,
+        }
+    }
+
+    fn manifest_text(
+        org: &str,
+        name: &str,
+        version: &str,
+        dependencies: &[(&str, &str)],
+    ) -> String {
+        let mut text = format!(
+            r#"[package]
+org = "{org}"
+name = "{name}"
+version = "{version}"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/{org}/{name}"
+"#,
+        );
+        if !dependencies.is_empty() {
+            text.push_str("\n[dependencies]\n");
+            for (key, requirement) in dependencies {
+                text.push_str(&format!("\"{key}\" = \"{requirement}\"\n"));
+            }
+        }
+        text
+    }
+
+    fn publish_fixture(
+        registry_root: &Path,
+        scratch: &Path,
+        org: &str,
+        name: &str,
+        version: &str,
+        dependencies: &[(&str, &str)],
+    ) -> String {
+        let source = scratch.join(format!("source-{name}"));
+        fs::create_dir_all(&source).unwrap();
+        let manifest_text = manifest_text(org, name, version, dependencies);
+        fs::write(source.join(MANIFEST_FILE), &manifest_text).unwrap();
+        fs::write(source.join("payload.txt"), format!("{org}/{name}@{version}\n")).unwrap();
+        let manifest = Manifest::parse(&manifest_text).unwrap();
+        let packed = pack(
+            &source,
+            &manifest,
+            Some(&scratch.join(format!("packed-{name}"))),
+        )
+        .unwrap();
+
+        let artifacts = registry_root.join("artifacts");
+        fs::create_dir_all(&artifacts).unwrap();
+        fs::copy(
+            &packed.path,
+            artifacts.join(format!("{}.tar.gz", packed.sha256)),
+        )
+        .unwrap();
+
+        let package_dir = registry_root.join("packages").join(org).join(name);
+        fs::create_dir_all(package_dir.join("versions")).unwrap();
+        let version_metadata = VersionMetadata {
+            org: org.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            sha256: packed.sha256.clone(),
+            size: packed.size,
+            format: packed.format.clone(),
+            vcs_tag: format!("v{version}"),
+            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            download_url: format!("file://{}/{}.tar.gz", artifacts.display(), packed.sha256),
+            published_at: "1970-01-01T00:00:00Z".to_string(),
+            yanked: false,
+        };
+        fs::write(
+            package_dir.join("versions").join(format!("{version}.json")),
+            serde_json::to_string_pretty(&version_metadata).unwrap(),
+        )
+        .unwrap();
+        let package_metadata = PackageMetadata {
+            org: org.to_string(),
+            name: name.to_string(),
+            description: Some(format!("fixture {name}")),
+            vcs: Vcs::Git,
+            repo_url: format!("https://example.invalid/{org}/{name}"),
+            version_scheme: manifest.package.version_scheme,
+            latest: Some(version.to_string()),
+            tags: Vec::new(),
+            versions: vec![version.to_string()],
+        };
+        fs::write(
+            package_dir.join("package.json"),
+            serde_json::to_string_pretty(&package_metadata).unwrap(),
+        )
+        .unwrap();
+        packed.sha256
+    }
+
+    #[test]
+    fn defaults_to_five_workers_and_bounds_overrides() {
+        assert_eq!(normalize_concurrency(None), 5);
+        assert_eq!(normalize_concurrency(Some("not-a-number")), 5);
+        assert_eq!(normalize_concurrency(Some("0")), 5);
+        assert_eq!(normalize_concurrency(Some("1")), 1);
+        assert_eq!(normalize_concurrency(Some("999")), MAX_INSTALL_CONCURRENCY);
+    }
+
+    #[test]
+    fn recursively_prefetches_packages_of_packages_and_deduplicates_diamonds() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = temp.path().join("registry");
+        let scratch = temp.path().join("scratch");
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        let leaf = publish_fixture(&registry, &scratch, "test", "leaf", "1.0.0", &[]);
+        let left = publish_fixture(
+            &registry,
+            &scratch,
+            "test",
+            "left",
+            "1.0.0",
+            &[("test/leaf", "^1")],
+        );
+        let right = publish_fixture(
+            &registry,
+            &scratch,
+            "test",
+            "right",
+            "1.0.0",
+            &[("test/leaf", "^1")],
+        );
+        let root = publish_fixture(
+            &registry,
+            &scratch,
+            "test",
+            "root",
+            "1.0.0",
+            &[("test/left", "^1"), ("test/right", "^1")],
+        );
+        fs::write(
+            project.join(MANIFEST_FILE),
+            manifest_text("consumer", "app", "0.1.0", &[("test/root", "^1")]),
+        )
+        .unwrap();
+
+        let report = prefetch(&project, &test_config(&registry, &home), false).unwrap();
+        assert_eq!(report.resolved, 4);
+        assert_eq!(report.downloaded, 4);
+        let store = Store::new(&home);
+        for sha in [leaf, left, right, root] {
+            assert!(store.has(&sha), "missing prefetched artifact {sha}");
+        }
+    }
+
+    #[test]
+    fn dependency_cycles_terminate_after_each_package_is_resolved_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = temp.path().join("registry");
+        let scratch = temp.path().join("scratch");
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        publish_fixture(
+            &registry,
+            &scratch,
+            "test",
+            "a",
+            "1.0.0",
+            &[("test/b", "^1")],
+        );
+        publish_fixture(
+            &registry,
+            &scratch,
+            "test",
+            "b",
+            "1.0.0",
+            &[("test/a", "^1")],
+        );
+        fs::write(
+            project.join(MANIFEST_FILE),
+            manifest_text("consumer", "app", "0.1.0", &[("test/a", "^1")]),
+        )
+        .unwrap();
+
+        let report = prefetch(&project, &test_config(&registry, &home), false).unwrap();
+        assert_eq!(report.resolved, 2);
+        assert_eq!(report.downloaded, 2);
+    }
+
+    #[test]
+    fn a_corrupt_partial_cache_is_replaced_under_the_artifact_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let registry = temp.path().join("registry");
+        let scratch = temp.path().join("scratch");
+        let home = temp.path().join("home");
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        let sha = publish_fixture(&registry, &scratch, "test", "leaf", "1.0.0", &[]);
+        fs::write(
+            project.join(MANIFEST_FILE),
+            manifest_text("consumer", "app", "0.1.0", &[("test/leaf", "^1")]),
+        )
+        .unwrap();
+        let store = Store::new(&home);
+        let cached = store.cached_artifact(&sha);
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, b"partial download").unwrap();
+
+        let report = prefetch(&project, &test_config(&registry, &home), false).unwrap();
+        assert_eq!(report.resolved, 1);
+        assert_eq!(report.downloaded, 1);
+        assert!(store.has(&sha));
+        assert_eq!(sha256_file(&cached).unwrap().0, sha);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_waiters_block_until_the_owner_releases_the_kernel_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let sha = "a".repeat(64);
+        let owner = ArtifactProcessLock::acquire(temp.path(), &sha).unwrap();
+        let second_home = temp.path().to_path_buf();
+        let second_sha = sha.clone();
+        let (acquired_tx, acquired_rx) = test_mpsc::channel();
+        let waiter = thread::spawn(move || {
+            let _waiter = ArtifactProcessLock::acquire(&second_home, &second_sha).unwrap();
+            acquired_tx.send(()).unwrap();
+        });
+
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(owner);
+        acquired_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        waiter.join().unwrap();
+    }
+}
