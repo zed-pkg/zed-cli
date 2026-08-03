@@ -76,6 +76,22 @@ export function extractEmbeddedPlanDigest(html) {
   return meta;
 }
 
+export function assertDistinctArtifactPaths({ planPath, reportPath, integrityPath }) {
+  const resolved = [
+    resolve(assertString(planPath, "plan path")),
+    resolve(assertString(reportPath, "report path")),
+    resolve(assertString(integrityPath, "integrity path")),
+  ];
+  if (new Set(resolved).size !== resolved.length) {
+    throw new Error("release plan, report, and integrity paths must be distinct");
+  }
+  return {
+    planPath: resolved[0],
+    reportPath: resolved[1],
+    integrityPath: resolved[2],
+  };
+}
+
 async function metadataOrNull(path) {
   try {
     return await lstat(path);
@@ -192,7 +208,8 @@ export function validateIntegrityManifest(input, planPath, reportPath) {
   return input;
 }
 
-export async function bindReleasePlanIntegrity({ planPath, reportPath, integrityPath }) {
+export async function bindReleasePlanIntegrity(paths) {
+  const { planPath, reportPath, integrityPath } = assertDistinctArtifactPaths(paths);
   await Promise.all([
     assertSafeIntegrityOutputPath(reportPath, "release report"),
     assertSafeIntegrityOutputPath(integrityPath, "release report integrity manifest"),
@@ -218,10 +235,11 @@ export async function bindReleasePlanIntegrity({ planPath, reportPath, integrity
     manifest,
     "release report integrity manifest",
   );
-  return { planDigest, reportDigest, manifestPath: resolve(integrityPath) };
+  return { planDigest, reportDigest, manifestPath: integrityPath };
 }
 
-export async function verifyReleasePlanIntegrity({ planPath, reportPath, integrityPath }) {
+export async function verifyReleasePlanIntegrity(paths) {
+  const { planPath, reportPath, integrityPath } = assertDistinctArtifactPaths(paths);
   const [planSource, reportSource, integritySource] = await Promise.all([
     readFile(planPath, "utf8"),
     readFile(reportPath, "utf8"),
