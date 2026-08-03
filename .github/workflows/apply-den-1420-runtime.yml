@@ -136,8 +136,16 @@ jobs:
           cargo test --locked dev::tests
           cargo clippy --locked --all-targets -- -D warnings
 
+          # The job token can publish ordinary source files but cannot update
+          # workflow definitions. Restore both workflow paths before committing;
+          # the authenticated GitHub connector publishes those validated YAML
+          # changes in follow-up commits.
+          git checkout origin/agent/den-1420-mise-dev-runtime -- \
+            .github/workflows/develop-shell.yml \
+            .github/workflows/apply-den-1420-runtime.yml
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/dev.rs .dev-cli-flags.toml docs/develop.md .github/workflows/develop-shell.yml .github/workflows/apply-den-1420-runtime.yml
+          git add src/dev.rs .dev-cli-flags.toml docs/develop.md
           git commit -m 'feat(DEN-1420): compose zed dev with mise'
           git push origin HEAD:agent/den-1420-mise-dev-runtime
