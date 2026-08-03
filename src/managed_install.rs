@@ -187,7 +187,7 @@ pub fn install(
 /// remains useful immediately; accidental registry publication fails closed.
 pub fn ensure_publishable(project: &Path) -> Result<()> {
     let manifest = config::read_manifest(project)?;
-    if is_generated_consumer(&manifest) {
+    if is_non_publishable_generated(&manifest) {
         bail!(
             "{} is an auto-generated local consumer manifest and cannot be published; edit [package] identity/repository metadata and remove the `{GENERATED_MARKER}` keyword first",
             project.join(MANIFEST_FILE).display()
@@ -224,6 +224,10 @@ fn create_manifest_and_install(
         inferred_target.as_deref(),
         effective_adapter,
     );
+    // Validate the complete inferred package identity, dependency
+    // requirements, repository metadata, and install values before touching
+    // project state. Serialization alone does not run schema validation.
+    manifest.validate()?;
     let manifest_text = manifest.to_toml_string()?;
     let manifest_path = project.join(MANIFEST_FILE);
 
@@ -324,6 +328,7 @@ fn install_with_generated_manifest(
         manifest.install.adapter = adapter_name(effective).map(str::to_owned);
     }
 
+    manifest.validate()?;
     let replacement_text = manifest.to_toml_string()?;
     replace_atomic(&path, replacement_text.as_bytes())?;
     match ops::install(
@@ -488,20 +493,36 @@ fn is_generated_manifest_path(project: &Path) -> Result<bool> {
     Ok(is_generated_consumer(&manifest))
 }
 
-fn is_generated_consumer(manifest: &Manifest) -> bool {
+fn has_generated_marker(manifest: &Manifest) -> bool {
+    manifest
+        .package
+        .keywords
+        .iter()
+        .any(|keyword| keyword == GENERATED_MARKER)
+}
+
+fn has_generated_placeholder_identity(manifest: &Manifest) -> bool {
     manifest.package.org == GENERATED_ORG
         && manifest.package.version == GENERATED_VERSION
         && manifest
             .package
-            .keywords
-            .iter()
-            .any(|keyword| keyword == GENERATED_MARKER)
+            .repository
+            .url
+            .starts_with(&format!("https://localhost/{GENERATED_ORG}/"))
+}
+
+fn is_generated_consumer(manifest: &Manifest) -> bool {
+    has_generated_marker(manifest) && has_generated_placeholder_identity(manifest)
+}
+
+fn is_non_publishable_generated(manifest: &Manifest) -> bool {
+    has_generated_marker(manifest) || has_generated_placeholder_identity(manifest)
 }
 
 fn adapter_name(adapter: Adapter) -> Option<&'static str> {
     match adapter {
         Adapter::Auto => None,
-        Adapter::None => None,
+        Adapter::None => Some("none"),
         Adapter::Node => Some("node"),
         Adapter::Java => Some("java"),
         Adapter::Go => Some("go"),
@@ -543,7 +564,7 @@ fn lock_project_manifest(cfg: &Config, project: &Path) -> Result<File> {
         .write(true)
         .open(&lock_path)
         .with_context(|| format!("opening project manifest lock {}", lock_path.display()))?;
-    FileExt::lock_exclusive(&file)
+    file.lock_exclusive()
         .with_context(|| format!("locking project manifest {}", project.display()))?;
     Ok(file)
 }
@@ -737,13 +758,28 @@ mod tests {
         assert_eq!(first.to_toml_string().unwrap(), second.to_toml_string().unwrap());
         assert_eq!(first.package.name, "my-consumer-app");
         assert!(is_generated_consumer(&first));
+        assert!(is_non_publishable_generated(&first));
         assert_eq!(first.install.target.as_deref(), Some("node"));
         assert_eq!(first.install.adapter.as_deref(), Some("node"));
         assert_eq!(
             first.dependencies.get("acme/http-kit").map(String::as_str),
             Some("^1")
         );
+        first.validate().unwrap();
         Manifest::parse(&first.to_toml_string().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn explicit_none_adapter_is_durable() {
+        let project = tempfile::tempdir().unwrap();
+        let manifest = generated_manifest(
+            project.path(),
+            BTreeMap::from([("acme/http-kit".to_string(), "^1".to_string())]),
+            None,
+            Adapter::None,
+        );
+        assert_eq!(manifest.install.adapter.as_deref(), Some("none"));
+        manifest.validate().unwrap();
     }
 
     #[test]
@@ -784,6 +820,29 @@ mod tests {
         )
         .unwrap();
         assert!(!is_generated_manifest_path(project.path()).unwrap());
+        assert!(is_non_publishable_generated(&authored));
+
+        authored.package.org = "acme".to_string();
+        authored.package.version = "1.0.0".to_string();
+        authored.package.repository.url = "https://github.com/acme/project".to_string();
+        assert!(!is_non_publishable_generated(&authored));
+    }
+
+    #[test]
+    fn generated_marker_alone_still_blocks_publication() {
+        let project = tempfile::tempdir().unwrap();
+        let mut manifest = generated_manifest(
+            project.path(),
+            BTreeMap::from([("acme/http-kit".to_string(), "^1".to_string())]),
+            None,
+            Adapter::None,
+        );
+        manifest.package.org = "acme".to_string();
+        manifest.package.version = "1.0.0".to_string();
+        manifest.package.repository.url = "https://github.com/acme/project".to_string();
+        assert!(has_generated_marker(&manifest));
+        assert!(is_non_publishable_generated(&manifest));
+        assert!(!is_generated_consumer(&manifest));
     }
 
     #[test]
