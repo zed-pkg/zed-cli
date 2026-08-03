@@ -284,12 +284,22 @@ fn resolve_lock_path(
         return Ok(None);
     }
 
-    let candidate = config_path.with_extension("lock");
+    let candidate = implicit_mise_lock_path(config_path);
     if candidate.is_file() {
         resolve_project_file(root, &candidate, "mise lockfile").map(Some)
     } else {
         Ok(None)
     }
+}
+
+fn implicit_mise_lock_path(config_path: &Path) -> PathBuf {
+    let file_name = config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let visible_name = file_name.strip_prefix('.').unwrap_or(file_name);
+    let stem = visible_name.strip_suffix(".toml").unwrap_or(visible_name);
+    config_path.with_file_name(format!("{stem}.lock"))
 }
 
 fn resolve_project_file(root: &Path, requested: &Path, kind: &str) -> Result<PathBuf> {
@@ -815,6 +825,22 @@ mod tests {
 
     fn checksum(digit: char) -> String {
         format!("sha256:{}", digit.to_string().repeat(64))
+    }
+
+    #[test]
+    fn implicit_lock_paths_match_current_mise_naming() {
+        assert_eq!(
+            implicit_mise_lock_path(Path::new("mise.toml")),
+            PathBuf::from("mise.lock")
+        );
+        assert_eq!(
+            implicit_mise_lock_path(Path::new(".mise.toml")),
+            PathBuf::from("mise.lock")
+        );
+        assert_eq!(
+            implicit_mise_lock_path(Path::new("mise.test.toml")),
+            PathBuf::from("mise.test.lock")
+        );
     }
 
     #[test]

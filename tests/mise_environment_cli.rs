@@ -176,6 +176,39 @@ fn import_json_exposes_only_the_project_local_normalized_plan() {
 }
 
 #[test]
+fn dot_mise_toml_discovers_the_shared_mise_lock_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    fs::write(project.join(".mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
+    fs::write(
+        project.join("mise.lock"),
+        format!(
+            "[[tools.node]]\nversion = \"22.4.0\"\nbackend = \"core:node\"\n[tools.node.platforms.linux-x64]\nchecksum = \"{}\"\n",
+            sha256('c')
+        ),
+    )
+    .unwrap();
+
+    let output = run_zed(
+        &project,
+        &home,
+        &["env", "verify", "mise", "--frozen", "--json"],
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["config"], ".mise.toml");
+    assert_eq!(result["lock"], "mise.lock");
+    assert!(!project.join(".mise.lock").exists());
+}
+
+#[test]
 fn frozen_verify_fails_closed_on_ambiguous_or_incomplete_project_state() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
