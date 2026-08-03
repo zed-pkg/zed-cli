@@ -92,7 +92,11 @@ fn prefetch_locked(
                 version.sha256
             );
         }
-        tasks.push(FetchTask { key, version });
+        tasks.push(FetchTask {
+            sequence: tasks.len(),
+            key,
+            version,
+        });
     }
 
     if tasks.is_empty() {
@@ -106,7 +110,8 @@ fn prefetch_locked(
         }
         let mut downloaded = 0usize;
         for _ in 0..total {
-            let result = pool.receive()?;
+            let message = pool.receive()?;
+            let result = message.result?;
             downloaded += usize::from(result.downloaded);
         }
         Ok(PrefetchReport {
@@ -140,6 +145,9 @@ fn prefetch_recursive(
         let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
         let mut expanded_workspace = BTreeSet::new();
         let mut in_flight = 0usize;
+        let mut next_sequence = 0usize;
+        let mut next_result = 0usize;
+        let mut buffered_results: BTreeMap<usize, Result<FetchResult>> = BTreeMap::new();
         let mut downloaded = 0usize;
 
         loop {
@@ -173,9 +181,11 @@ fn prefetch_recursive(
                 let version = resolve_version(registry, &org, &name, &request.requirement)?;
                 resolved.insert(request.key.clone(), version.clone());
                 pool.submit(FetchTask {
+                    sequence: next_sequence,
                     key: request.key,
                     version,
                 })?;
+                next_sequence += 1;
                 in_flight += 1;
             }
 
@@ -183,7 +193,8 @@ fn prefetch_recursive(
                 break;
             }
 
-            let result = pool.receive()?;
+            let result = receive_in_order(pool, &mut buffered_results, next_result)?;
+            next_result += 1;
             in_flight -= 1;
             downloaded += usize::from(result.downloaded);
             pending.extend(result.dependencies.into_iter().map(
@@ -196,4 +207,26 @@ fn prefetch_recursive(
             downloaded,
         })
     })
+}
+
+fn receive_in_order(
+    pool: &FetchPool,
+    buffered: &mut BTreeMap<usize, Result<FetchResult>>,
+    expected: usize,
+) -> Result<FetchResult> {
+    loop {
+        if let Some(result) = buffered.remove(&expected) {
+            return result;
+        }
+        let message = pool.receive()?;
+        if message.sequence == expected {
+            return message.result;
+        }
+        if buffered.insert(message.sequence, message.result).is_some() {
+            bail!(
+                "recursive install worker returned duplicate result sequence {}",
+                message.sequence
+            );
+        }
+    }
 }
