@@ -1,9 +1,9 @@
 name: agent-den-1508-sync
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/den-1508-nix-export-bundle-renderer
+      - agent/den-1418-nix-export-plan
     paths:
       - ".github/workflows/agent-den-1508-sync.yml"
 
@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   sync-format-test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
