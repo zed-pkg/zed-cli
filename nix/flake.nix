@@ -9,6 +9,15 @@
 
   outputs =
     { self, nixpkgs }:
+    let
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+    in
     {
       lib = {
         makeZedPackageLib = pkgs:
@@ -18,5 +27,21 @@
         # canary; it never falls back to a mutable channel lookup.
         nixpkgsPath = nixpkgs.outPath;
       };
+
+      # Keep the reusable library's fail-closed argument contract executable.
+      # The existing Linux/macOS interop workflow invokes `nix flake check
+      # --no-build`, so these checks instantiate derivations without executing
+      # the dummy CLI or duplicating the full fixed-output canary.
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          evaluation-contract = import ./tests/evaluation-contract.nix {
+            inherit pkgs;
+          };
+        }
+      );
     };
 }
