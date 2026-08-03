@@ -8,6 +8,7 @@ on:
       - .github/scripts/den1439_fix_shadow.py
       - .github/workflows/den-1439-normalize.yml
       - tests/mise_environment_cli.rs
+      - tests/e2e.rs
 
 permissions:
   contents: write
@@ -16,7 +17,7 @@ jobs:
   harden:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out pull-request branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -30,15 +31,41 @@ jobs:
         with:
           components: rustfmt,clippy
 
-      - name: Apply normalized-state hardening and validate
+      - name: Apply normalized-state and cross-platform hardening
         run: |
           set -euo pipefail
           python3 .github/scripts/den1439_normalize.py
           python3 .github/scripts/den1439_require_checksums.py
           python3 .github/scripts/den1439_fix_shadow.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/e2e.rs')
+          text = path.read_text()
+
+          # Collapse duplicate attributes left by an earlier idempotent repair.
+          for declaration in [
+              'fn write_executable(path: &Path, contents: &str) {',
+              'fn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {',
+              '#[test]\nfn hoisted_bins_are_container_safe_in_copy_mode() {',
+          ]:
+              duplicate = '#[cfg(unix)]\n#[cfg(unix)]\n' + declaration
+              single = '#[cfg(unix)]\n' + declaration
+              text = text.replace(duplicate, single)
+
+          old = '#[test]\nfn install_dir_is_honored_by_install_run_and_remove() {'
+          new = '#[cfg(unix)]\n#[test]\nfn install_dir_is_honored_by_install_run_and_remove() {'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('relocation test header not found')
+
+          path.write_text(text)
+          PY
           cargo fmt --check || cargo fmt
           cargo test --lib environment::tests
           cargo test --test mise_environment_cli
+          cargo test install_dir_is_honored_by_install_run_and_remove
           cargo clippy --all-targets -- -D warnings
 
       - name: Commit hardened implementation
@@ -49,6 +76,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/environment.rs
-          git commit -m "fix(DEN-1439): normalize mise provenance and frozen identity"
+          git add src/environment.rs tests/e2e.rs
+          git commit -m "test(DEN-1439): gate Unix-only shell fixtures"
           git push origin "HEAD:${GITHUB_HEAD_REF}"
