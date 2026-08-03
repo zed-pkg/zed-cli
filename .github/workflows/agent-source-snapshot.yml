@@ -6,6 +6,17 @@ on:
       - agent/nix-cross-build-contract
     paths:
       - ".github/patch-trigger"
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - ".github/workflows/agent-source-snapshot.yml"
+      - ".github/patch-trigger"
+      - ".github/patch-parts/**"
 
 permissions:
   contents: write
@@ -20,11 +31,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Apply, squash, and publish the implementation
         shell: bash
         env:
           EXPECTED_PATCH_SHA256: 89b9b37b66cc261d90276cfce219329ddff0de310a444b8ae3af0565e697ff4f
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           TARGET_BRANCH: agent/nix-cross-build-contract
         run: |
           set -euo pipefail
@@ -56,5 +69,5 @@ jobs:
           git diff --cached --check
           git commit -m "feat: add target-aware offline source builds for Nix"
           git push \
-            --force-with-lease="refs/heads/$TARGET_BRANCH:$GITHUB_SHA" \
+            --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD_SHA" \
             origin "HEAD:refs/heads/$TARGET_BRANCH"
