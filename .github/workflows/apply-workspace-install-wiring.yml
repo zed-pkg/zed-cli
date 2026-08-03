@@ -1,0 +1,95 @@
+name: apply workspace install wiring
+
+on:
+  push:
+    branches:
+      - agent/workspace-install-wiring
+    paths:
+      - .github/workspace_install_wiring.py
+      - .github/workflows/apply-workspace-install-wiring.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-workspace-install-wiring
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  apply-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Check out workspace-wiring branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/workspace-install-wiring
+          path: zed-cli
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out pinned zed-interfaces sibling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust with formatting and lint support
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Apply exact workspace install patch
+        working-directory: zed-cli
+        run: |
+          set -euo pipefail
+          python3 .github/workspace_install_wiring.py
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate workspace and install contracts
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check --manifest-path zed-cli/Cargo.toml
+          cargo test --locked --manifest-path zed-cli/Cargo.toml --lib \
+            ops::tests::frozen_workspace_resolution_expands_transitive_members_and_validates_versions \
+            -- --exact --nocapture
+          cargo test --locked --manifest-path zed-cli/Cargo.toml --lib ops::tests
+          cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests
+          cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::hardening_tests
+          cargo clippy --locked --manifest-path zed-cli/Cargo.toml --all-targets -- -D warnings
+
+      - name: Publish validated workspace install implementation
+        working-directory: zed-cli
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git add src/ops.rs
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'workspace install implementation is already published'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: wire and restore workspace packages'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/workspace-install-wiring
