@@ -34,71 +34,87 @@ jobs:
 
           path = Path('.github/workflows/nix-fetch-bundle.yml')
           source = path.read_text(encoding='utf-8')
+          step = ' ' * 10
+          body = ' ' * 12
+          continuation = ' ' * 14
 
-          publish_start_marker = '''          (
-            cd "$fixture_root/node-lib"
-            "$zed" --registry "file://$registry" publish --skip-vcs-checks
-          )'''
+          publish_start_marker = (
+              f'{step}(\n'
+              f'{body}cd "$fixture_root/node-lib"\n'
+              f'{body}"$zed" --registry "file://$registry" publish --skip-vcs-checks\n'
+              f'{step})'
+          )
           start = source.find(publish_start_marker)
           if start < 0:
               raise SystemExit('skip-vcs fixture publisher not found')
-          boundary = '\n\n          registry_store="$(nix store add-path "$registry")"'
+          boundary = f'\n\n{step}registry_store="$(nix store add-path "$registry")"'
           end = source.find(boundary, start)
           if end < 0:
               raise SystemExit('registry store boundary not found')
-          new_publish = '''          (
-            cd "$fixture_root/node-lib"
-            git init -q
-            git config user.name 'zed-pkg Nix canary'
-            git config user.email 'nix-canary@invalid.example'
-            git add .
-            GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' \\
-            GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \\
-              git commit -q -m 'deterministic zed-pkg fixture'
-            git tag v1.0.0
-            "$zed" --registry "file://$registry" publish
+
+          new_publish = '\n'.join(
+              [
+                  f'{step}(',
+                  f'{body}cd "$fixture_root/node-lib"',
+                  f'{body}git init -q',
+                  f"{body}git config user.name 'zed-pkg Nix canary'",
+                  f"{body}git config user.email 'nix-canary@invalid.example'",
+                  f'{body}git add .',
+                  f"{body}GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' \\",
+                  f"{body}GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \\",
+                  f"{continuation}git commit -q -m 'deterministic zed-pkg fixture'",
+                  f'{body}git tag v1.0.0',
+                  f'{body}"$zed" --registry "file://$registry" publish',
+                  f'{step})',
+                  '',
+                  f'{step}fixture_commit="$(git -C "$fixture_root/node-lib" rev-parse HEAD)"',
+                  f'{step}registry_meta="$registry/packages/zed-pkg/docker-node-lib/versions/1.0.0.json"',
+                  f'{step}python3 - "$registry_meta" "$fixture_commit" <<\'PY_REGISTRY\'',
+                  f'{step}import json',
+                  f'{step}import sys',
+                  f'{step}from pathlib import Path',
+                  '',
+                  f"{step}metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))",
+                  f'{step}expected_commit = sys.argv[2]',
+                  f"{step}assert metadata['vcs_tag'] == 'v1.0.0'",
+                  f"{step}assert metadata['vcs_commit'] == expected_commit",
+                  f'{step}PY_REGISTRY',
+              ]
           )
-
-          fixture_commit="$(git -C "$fixture_root/node-lib" rev-parse HEAD)"
-          registry_meta="$registry/packages/zed-pkg/docker-node-lib/versions/1.0.0.json"
-          python3 - "$registry_meta" "$fixture_commit" <<'PY_REGISTRY'
-          import json
-          import sys
-          from pathlib import Path
-
-          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
-          expected_commit = sys.argv[2]
-          assert metadata['vcs_tag'] == 'v1.0.0'
-          assert metadata['vcs_commit'] == expected_commit
-          PY_REGISTRY'''
           source = source[:start] + new_publish + source[end:]
 
-          lock_marker = '''          grep -F "source = \\\"file://$registry_store\\\"" "$consumer/.zpkg.lock"'''
+          lock_marker = (
+              f'{step}grep -F "source = \\\"file://$registry_store\\\"" '
+              '"$consumer/.zpkg.lock"'
+          )
           lock_start = source.find(lock_marker)
           if lock_start < 0:
               raise SystemExit('generated-lock source assertion not found')
           insert_at = lock_start + len(lock_marker)
-          lock_verifier = '''
-          python3 - "$registry_meta" "$consumer/.zpkg.lock" <<'PY_LOCK'
-          import json
-          import sys
-          import tomllib
-          from pathlib import Path
-
-          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
-          lock = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
-          packages = lock.get('packages', [])
-          assert len(packages) == 1
-          package = packages[0]
-          assert package['org'] == metadata['org']
-          assert package['name'] == metadata['name']
-          assert package['version'] == metadata['version']
-          assert package['sha256'] == metadata['sha256']
-          assert package['size'] == metadata['size']
-          assert package['format'] == metadata['format']
-          assert package['vcs_tag'] == metadata['vcs_tag']
-          assert package['vcs_commit'] == metadata['vcs_commit']
-          PY_LOCK'''
+          lock_verifier = '\n' + '\n'.join(
+              [
+                  f'{step}python3 - "$registry_meta" "$consumer/.zpkg.lock" <<\'PY_LOCK\'',
+                  f'{step}import json',
+                  f'{step}import sys',
+                  f'{step}import tomllib',
+                  f'{step}from pathlib import Path',
+                  '',
+                  f"{step}metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))",
+                  f"{step}lock = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))",
+                  f"{step}packages = lock.get('packages', [])",
+                  f'{step}assert len(packages) == 1',
+                  f'{step}package = packages[0]',
+                  f"{step}assert package['org'] == metadata['org']",
+                  f"{step}assert package['name'] == metadata['name']",
+                  f"{step}assert package['version'] == metadata['version']",
+                  f"{step}assert package['sha256'] == metadata['sha256']",
+                  f"{step}assert package['size'] == metadata['size']",
+                  f"{step}assert package['format'] == metadata['format']",
+                  f"{step}assert package['vcs_tag'] == metadata['vcs_tag']",
+                  f"{step}assert package['vcs_commit'] == metadata['vcs_commit']",
+                  f'{step}PY_LOCK',
+              ]
+          )
           source = source[:insert_at] + lock_verifier + source[insert_at:]
           path.write_text(source, encoding='utf-8')
           PY
