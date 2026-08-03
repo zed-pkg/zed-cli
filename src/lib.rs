@@ -9,6 +9,7 @@ pub mod dev;
 pub mod flags;
 pub mod interactive;
 pub mod manifestless;
+pub mod oci;
 pub mod ops;
 pub mod pack;
 pub mod preflight;
