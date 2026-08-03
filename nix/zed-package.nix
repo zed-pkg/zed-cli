@@ -41,14 +41,15 @@ rec {
         "--target ${lib.escapeShellArg target}";
       manifestArgs = lib.optionalString (manifestPath == null) "--skip-manifest";
       extraArgsString = shellArgs extraArgs;
-      contract = builtins.toJSON {
-        schema_version = 1;
-        resolver = "zed-pkg";
+      bridgeMetadata = builtins.toJSON {
+        schema = "zed.nix-fetch-bridge/v1";
+        resolver_authority = "zed-pkg";
         lockfile = ".zpkg.lock";
         install_mode = "copy";
         inherit adapter target;
         build_hooks = false;
         registry_override = registry;
+        canonical_adapter_record = false;
       };
     in
     stdenvNoCC.mkDerivation {
@@ -140,7 +141,7 @@ rec {
         ${lib.optionalString (manifestPath != null) ''
           cp "$work/.zpkg.toml" "$out/metadata/.zpkg.toml"
         ''}
-        printf '%s\n' ${lib.escapeShellArg contract} > "$out/metadata/contract.json"
+        printf '%s\n' ${lib.escapeShellArg bridgeMetadata} > "$out/metadata/bridge.json"
         lock_digest="$(sha256sum "$out/metadata/.zpkg.lock" | cut -d' ' -f1)"
         printf '%s  %s\n' "$lock_digest" .zpkg.lock > "$out/metadata/lock.sha256"
         ${zed}/bin/zed --version > "$out/metadata/zed-version.txt"
