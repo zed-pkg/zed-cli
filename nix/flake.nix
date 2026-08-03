@@ -20,18 +20,19 @@
     in
     {
       lib = {
+        # Expose both the install-shaped and resolver-only bridge families from
+        # one pinned library without collapsing their distinct output contracts.
         makeZedPackageLib = pkgs:
-          pkgs.callPackage ./zed-package.nix { };
+          import ./default.nix { inherit pkgs; };
 
         # CI uses the exact locked input as NIX_PATH for the legacy expression
         # canary; it never falls back to a mutable channel lookup.
         nixpkgsPath = nixpkgs.outPath;
       };
 
-      # Keep the reusable library's fail-closed argument contract executable.
-      # The existing Linux/macOS interop workflow invokes `nix flake check
-      # --no-build`, so these checks instantiate derivations without executing
-      # the dummy CLI or duplicating the full fixed-output canary.
+      # Ratchet the reusable public argument boundary without executing either
+      # bridge. Integration canaries remain the authority for fixed-output
+      # realization, recursive hashes, tamper rejection, and offline consumers.
       checks = forAllSystems (
         system:
         let
