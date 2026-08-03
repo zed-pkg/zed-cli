@@ -27,7 +27,7 @@ fn write_plan(root: &Path, platform: &str) {
                 "requirement": "2.47.0",
                 "resolved": "2.47.0",
                 "provider": "nixpkgs",
-                "package-ref": "gitFull",
+                "package_ref": "gitFull",
                 "checksums": [
                     {"algorithm": "sha256", "value": "b".repeat(64)}
                 ],
