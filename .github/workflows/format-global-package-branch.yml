@@ -39,19 +39,17 @@ jobs:
           from pathlib import Path
           path = Path('src/global.rs')
           text = path.read_text()
-          old = '''    let file = fs::OpenOptions::new()
-              .create(true)
-              .read(true)
-              .write(true)
-              .open(root.join(LOCK_FILE))?;'''
-          new = '''    let file = fs::OpenOptions::new()
-              .create(true)
-              .truncate(false)
-              .read(true)
-              .write(true)
-              .open(root.join(LOCK_FILE))?;'''
+          old = '''        .create(true)
+                  .read(true)
+                  .write(true)
+                  .open(root.join(LOCK_FILE))?;'''
+          new = '''        .create(true)
+                  .truncate(false)
+                  .read(true)
+                  .write(true)
+                  .open(root.join(LOCK_FILE))?;'''
           if old not in text:
-              raise SystemExit('expected lock-file OpenOptions block not found')
+              raise SystemExit('expected lock-file OpenOptions chain not found')
           path.write_text(text.replace(old, new, 1))
           PY
           cargo fmt --all
