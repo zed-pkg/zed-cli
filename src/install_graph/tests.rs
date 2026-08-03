@@ -356,7 +356,10 @@ fn conflicting_transitive_requirements_fail_in_deterministic_graph_order() {
 
     let error = prefetch(&project, &test_config(&registry, &home), false).unwrap_err();
     let message = format!("{error:#}");
-    assert!(message.contains("version conflict for test/leaf"), "{message}");
+    assert!(
+        message.contains("version conflict for test/leaf"),
+        "{message}"
+    );
     assert!(message.contains("resolved 1.0.0"), "{message}");
     assert!(message.contains("requires `^2`"), "{message}");
 }
@@ -374,19 +377,9 @@ fn frozen_prefetch_installs_every_locked_artifact_without_a_manifest() {
         ("leaf", vec![]),
         ("left", vec![("test/leaf", "^1")]),
         ("right", vec![("test/leaf", "^1")]),
-        (
-            "root",
-            vec![("test/left", "^1"), ("test/right", "^1")],
-        ),
+        ("root", vec![("test/left", "^1"), ("test/right", "^1")]),
     ] {
-        publish_fixture(
-            &registry,
-            &scratch,
-            "test",
-            name,
-            "1.0.0",
-            &dependencies,
-        );
+        publish_fixture(&registry, &scratch, "test", name, "1.0.0", &dependencies);
     }
 
     let source = format!("file://{}", registry.display());
@@ -405,11 +398,7 @@ fn frozen_prefetch_installs_every_locked_artifact_without_a_manifest() {
             source: source.clone(),
         });
     }
-    fs::write(
-        project.join(LOCKFILE_FILE),
-        lock.to_toml_string().unwrap(),
-    )
-    .unwrap();
+    fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();
 
     let report = prefetch(&project, &test_config(&registry, &home), true).unwrap();
     assert_eq!(report.resolved, 4);
