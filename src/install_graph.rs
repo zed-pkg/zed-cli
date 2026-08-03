@@ -292,6 +292,8 @@ impl WorkspaceGraph {
 }
 
 mod artifact;
+#[cfg(test)]
+mod hardening_tests;
 mod resolver;
 #[cfg(test)]
 mod tests;
