@@ -1067,7 +1067,7 @@ mod tests {
             size: 1,
             format: ArtifactFormat::TarGz,
             vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: None,
+            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             source: "file:///registry".to_string(),
         };
         write_unchecked_lock(project.path(), vec![package.clone(), package]);
@@ -1080,7 +1080,12 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(error.to_string().contains("duplicate package identity"));
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("duplicate locked package identity")
+                && message.contains("acme/duplicate"),
+            "unexpected duplicate diagnostic: {message}"
+        );
 
         let mut credentialed = LockedPackage {
             org: "acme".to_string(),
@@ -1090,7 +1095,7 @@ mod tests {
             size: 1,
             format: ArtifactFormat::TarGz,
             vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: None,
+            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             source: "https://person:super-secret@example.com/registry".to_string(),
         };
         write_unchecked_lock(project.path(), vec![credentialed.clone()]);
