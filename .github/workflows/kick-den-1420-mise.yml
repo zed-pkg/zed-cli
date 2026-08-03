@@ -18,8 +18,10 @@ jobs:
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
-      - name: Extract and apply reviewed patch
+      - name: Extract, verify, and apply reviewed patch
         shell: bash
         run: |
           set -euo pipefail
@@ -35,14 +37,59 @@ jobs:
           payload = ''.join(line.strip() for line in lines[start:end])
           Path('/tmp/den-1420.patch').write_bytes(gzip.decompress(base64.b64decode(payload)))
           PY
+
           printf '%s  %s\n' 'd0d0a867d249556a41322169483f27f9107a58d4131a2a92270e16d4967623bc' /tmp/den-1420.patch | sha256sum -c -
-          git apply --check /tmp/den-1420.patch
-          git apply /tmp/den-1420.patch
+          patch --batch --forward --fuzz=3 -p1 < /tmp/den-1420.patch
+
+          # One low-context assertion hunk can land beside the contract-parity
+          # test under GNU patch fuzz. Relocate it deterministically, then
+          # verify every product file against the reviewed pre-format blob.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/dev.rs')
+          text = path.read_text(encoding='utf-8')
+          block = '''        assert!(
+              develop
+                  .get_arguments()
+                  .any(|arg| arg.get_long() == Some("mise"))
+          );
+          '''
+          contract_marker = '        collect_contract_envs(&contract, &mut contract_envs);\n'
+          if contract_marker + block in text:
+              text = text.replace(contract_marker + block, contract_marker, 1)
+
+          nix_block = '''        assert!(
+              develop
+                  .get_arguments()
+                  .any(|arg| arg.get_long() == Some("nix"))
+          );
+          '''
+          if nix_block + block not in text:
+              if nix_block not in text:
+                  raise SystemExit('could not locate root-help nix assertion')
+              text = text.replace(nix_block, nix_block + block, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo 'patch left reject files:' >&2
+            find . -name '*.rej' -print -exec cat {} \; >&2
+            exit 1
+          fi
+
+          test "$(git hash-object src/dev.rs)" = 'ad55ef52dc4703afa7025bcba3c60de5d444cca1'
+          test "$(git hash-object .dev-cli-flags.toml)" = 'd4b6a979f3274a87370ef518d58a49705fcdc3af'
+          test "$(git hash-object docs/develop.md)" = 'a53eb8e6f35aaf84465149d1146d65166e6d12ff'
+          test "$(git hash-object .github/workflows/develop-shell.yml)" = '14c23135d931e20423084be1a698d67ac155e15e'
+
           rm .github/workflows/apply-den-1420-mise.yml
           rm .github/workflows/kick-den-1420-mise.yml
           cargo fmt --all
           git diff --check
           cargo test --locked
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
