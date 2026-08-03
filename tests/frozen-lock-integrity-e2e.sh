@@ -60,12 +60,24 @@ file_sha256() {
   sha256sum "$1" | awk '{print $1}'
 }
 
+# Publish a real immutable fixture rather than using --skip-vcs-checks. The
+# resulting consumer lock must carry genuine tag and commit provenance before
+# any adversarial field mutation begins.
+git -C "$fixture" init --quiet
+git -C "$fixture" config user.name zed-lock-integrity-fixture
+git -C "$fixture" config user.email zed-lock-integrity@users.noreply.github.com
+git -C "$fixture" add --all
+GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' \
+GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' \
+  git -C "$fixture" commit --quiet -m 'Create immutable polyglot fixture'
+git -C "$fixture" tag v0.2.0
+fixture_commit="$(git -C "$fixture" rev-parse HEAD)"
+
 (
   cd "$fixture"
   ZED_PKG_HOME="$author_home" \
     "$zed" publish \
-      --registry "$registry_url" \
-      --skip-vcs-checks
+      --registry "$registry_url"
 )
 
 test -d "$registry/packages/zed-pkg/poly-fixture-nodejs"
@@ -77,6 +89,10 @@ name = "consumer"
 version = "0.0.0"
 description = "Frozen lock integrity fixture"
 license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/lock-integrity/consumer"
 
 [dependencies]
 "zed-pkg/poly-fixture-nodejs" = "=0.2.0"
@@ -99,14 +115,15 @@ valid_manifest="$suite_root/valid.zpkg.toml"
 cp "$valid_root/.zpkg.lock" "$valid_lock"
 cp "$valid_root/.zpkg.toml" "$valid_manifest"
 
-python3 - "$valid_lock" "$registry_url" <<'PY'
-import pathlib
+python3 - "$valid_lock" "$registry_url" "$fixture_commit" <<'PY'
 import re
 import sys
 import tomllib
+from pathlib import Path
 
-path = pathlib.Path(sys.argv[1])
+path = Path(sys.argv[1])
 registry = sys.argv[2]
+fixture_commit = sys.argv[3]
 lock = tomllib.loads(path.read_text())
 assert lock.get("version") == 1
 packages = lock.get("package", [])
@@ -120,6 +137,7 @@ assert package["sha256"] != "0" * 64
 assert isinstance(package["size"], int) and package["size"] > 0
 assert package["format"] in {"tar.gz", "zip"}
 assert package["vcs_tag"] == "v0.2.0"
+assert package["vcs_commit"] == fixture_commit
 assert re.fullmatch(r"[0-9a-f]{40}", package["vcs_commit"])
 assert package["source"] == registry
 PY
@@ -189,11 +207,11 @@ assert_atomic_failure "$empty_root" "empty version-only lock"
 for field in sha256 size format vcs_tag vcs_commit source; do
   root="$(new_case "missing-$field")"
   python3 - "$root/.zpkg.lock" "$field" <<'PY'
-import pathlib
 import re
 import sys
+from pathlib import Path
 
-path = pathlib.Path(sys.argv[1])
+path = Path(sys.argv[1])
 field = sys.argv[2]
 text = path.read_text()
 pattern = re.compile(rf"^{re.escape(field)}\s*=.*(?:\n|$)", re.MULTILINE)
@@ -206,11 +224,18 @@ done
 
 malformed_root="$(new_case malformed-hash)"
 python3 - "$malformed_root/.zpkg.lock" <<'PY'
-import pathlib
 import re
 import sys
-path = pathlib.Path(sys.argv[1])
-text, count = re.subn(r'^sha256\s*=.*$', 'sha256 = "not-a-sha256"', path.read_text(), count=1, flags=re.MULTILINE)
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text, count = re.subn(
+    r'^sha256\s*=.*$',
+    'sha256 = "not-a-sha256"',
+    path.read_text(),
+    count=1,
+    flags=re.MULTILINE,
+)
 assert count == 1
 path.write_text(text)
 PY
@@ -218,11 +243,18 @@ assert_atomic_failure "$malformed_root" "malformed artifact hash"
 
 zero_root="$(new_case all-zero-hash)"
 python3 - "$zero_root/.zpkg.lock" <<'PY'
-import pathlib
 import re
 import sys
-path = pathlib.Path(sys.argv[1])
-text, count = re.subn(r'^sha256\s*=.*$', f'sha256 = "{"0" * 64}"', path.read_text(), count=1, flags=re.MULTILINE)
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text, count = re.subn(
+    r'^sha256\s*=.*$',
+    f'sha256 = "{"0" * 64}"',
+    path.read_text(),
+    count=1,
+    flags=re.MULTILINE,
+)
 assert count == 1
 path.write_text(text)
 PY
@@ -230,9 +262,10 @@ assert_atomic_failure "$zero_root" "all-zero artifact hash"
 
 drift_root="$(new_case manifest-lock-drift)"
 python3 - "$drift_root/.zpkg.toml" <<'PY'
-import pathlib
 import sys
-path = pathlib.Path(sys.argv[1])
+from pathlib import Path
+
+path = Path(sys.argv[1])
 text = path.read_text()
 old = '"zed-pkg/poly-fixture-nodejs" = "=0.2.0"'
 new = '"zed-pkg/poly-fixture-nodejs" = "=9.9.9"'
@@ -243,9 +276,10 @@ assert_atomic_failure "$drift_root" "manifest and lock requirement drift"
 
 duplicate_root="$(new_case duplicate-package-entry)"
 python3 - "$duplicate_root/.zpkg.lock" <<'PY'
-import pathlib
 import sys
-path = pathlib.Path(sys.argv[1])
+from pathlib import Path
+
+path = Path(sys.argv[1])
 text = path.read_text()
 marker = "[[package]]"
 index = text.index(marker)
