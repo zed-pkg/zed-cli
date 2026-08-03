@@ -1,0 +1,117 @@
+name: temporary FOD provenance workflow patch
+
+on:
+  push:
+    branches:
+      - agent/den-1477-nix-fetch-bundle-current
+    paths:
+      - .github/workflows/nix-fetch-bundle-patch.yml
+      - .github/workflows/nix-fetch-bundle.yml
+  pull_request:
+    paths:
+      - .github/workflows/nix-fetch-bundle-patch.yml
+      - .github/workflows/nix-fetch-bundle.yml
+
+permissions:
+  contents: read
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Replace the mutable provenance fixture with an immutable Git fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/nix-fetch-bundle.yml')
+          source = path.read_text(encoding='utf-8')
+          old_publish = '''          (
+            cd "$fixture_root/node-lib"
+            "$zed" --registry "file://$registry" publish --skip-vcs-checks
+          )
+
+          registry_store="$(nix store add-path "$registry")"'''
+          new_publish = '''          (
+            cd "$fixture_root/node-lib"
+            git init -q
+            git config user.name 'zed-pkg Nix canary'
+            git config user.email 'nix-canary@invalid.example'
+            git add .
+            GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' \\
+            GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \\
+              git commit -q -m 'deterministic zed-pkg fixture'
+            git tag v1.0.0
+            "$zed" --registry "file://$registry" publish
+          )
+
+          fixture_commit="$(git -C "$fixture_root/node-lib" rev-parse HEAD)"
+          registry_meta="$registry/packages/zed-pkg/docker-node-lib/versions/1.0.0.json"
+          python3 - "$registry_meta" "$fixture_commit" <<'PY_REGISTRY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          expected_commit = sys.argv[2]
+          assert metadata['vcs_tag'] == 'v1.0.0'
+          assert metadata['vcs_commit'] == expected_commit
+          PY_REGISTRY
+
+          registry_store="$(nix store add-path "$registry")"'''
+          if source.count(old_publish) != 1:
+              raise SystemExit('expected exactly one skip-vcs fixture publisher')
+          source = source.replace(old_publish, new_publish)
+
+          old_lock = '''          grep -F "source = \\\"file://$registry_store\\\"" "$consumer/.zpkg.lock"
+
+          printf 'version = 1\\n' > "$empty/.zpkg.lock"'''
+          new_lock = '''          grep -F "source = \\\"file://$registry_store\\\"" "$consumer/.zpkg.lock"
+          python3 - "$registry_meta" "$consumer/.zpkg.lock" <<'PY_LOCK'
+          import json
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          lock = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+          packages = lock.get('packages', [])
+          assert len(packages) == 1
+          package = packages[0]
+          assert package['org'] == metadata['org']
+          assert package['name'] == metadata['name']
+          assert package['version'] == metadata['version']
+          assert package['sha256'] == metadata['sha256']
+          assert package['size'] == metadata['size']
+          assert package['format'] == metadata['format']
+          assert package['vcs_tag'] == metadata['vcs_tag']
+          assert package['vcs_commit'] == metadata['vcs_commit']
+          PY_LOCK
+
+          printf 'version = 1\\n' > "$empty/.zpkg.lock"'''
+          if source.count(old_lock) != 1:
+              raise SystemExit('expected exactly one generated-lock source assertion')
+          source = source.replace(old_lock, new_lock)
+          path.write_text(source, encoding='utf-8')
+          PY
+          git diff --check
+          grep -F "git tag v1.0.0" .github/workflows/nix-fetch-bundle.yml
+          grep -F "assert package['vcs_commit'] == metadata['vcs_commit']" .github/workflows/nix-fetch-bundle.yml
+          ! grep -F -- '--skip-vcs-checks' .github/workflows/nix-fetch-bundle.yml
+
+      - name: Upload the complete patched workflow
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-nix-fetch-bundle-workflow-${{ github.sha }}
+          path: .github/workflows/nix-fetch-bundle.yml
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true
