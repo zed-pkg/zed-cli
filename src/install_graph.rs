@@ -293,6 +293,10 @@ impl WorkspaceGraph {
     }
 }
 
-include!("install_graph/resolver.rs");
-include!("install_graph/artifact.rs");
-include!("install_graph/tests.rs");
+mod artifact;
+mod resolver;
+#[cfg(test)]
+mod tests;
+
+use artifact::worker_loop;
+pub use resolver::prefetch;
