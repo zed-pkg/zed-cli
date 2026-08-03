@@ -47,16 +47,17 @@ jobs:
           cargo test --locked --lib install_graph::tests
           cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Commit validated code and remove bootstrap files
+      - name: Publish validated store implementation
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          rm -f \
-            .github/blocking_store_process_locks.py \
-            .github/workflows/apply-blocking-store-process-locks.yml
-          git add -A
+          git add src/store.rs
           git diff --cached --check
+          if git diff --cached --quiet; then
+            echo 'kernel-blocking store implementation is already published'
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'fix: block store locks in the kernel'
