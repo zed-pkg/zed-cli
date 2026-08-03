@@ -92,8 +92,42 @@ pub fn install(
     }
 
     if initial.has_manifest {
-        return manifestless::install(
-            requested_root,
+        if specs.is_empty() || !is_generated_manifest_path(&initial.root)? {
+            return manifestless::install(
+                requested_root,
+                cfg,
+                specs,
+                frozen,
+                mode,
+                adapter,
+                allow_build,
+                target,
+                false,
+                allow_ecosystem_mismatch,
+            );
+        }
+
+        // A generated consumer manifest may be visible before a second first-
+        // install process reaches this function. Serialize that path too; do
+        // not rely only on observing the file appear while already waiting.
+        let _project_lock = lock_project_manifest(cfg, &initial.root)?;
+        let selection = select_project(requested_root);
+        if selection.has_manifest {
+            return install_with_generated_manifest(
+                &selection.root,
+                cfg,
+                specs,
+                frozen,
+                mode,
+                adapter,
+                allow_build,
+                target,
+                allow_ecosystem_mismatch,
+            );
+        }
+
+        return create_manifest_and_install(
+            &selection.root,
             cfg,
             specs,
             frozen,
@@ -101,7 +135,6 @@ pub fn install(
             adapter,
             allow_build,
             target,
-            false,
             allow_ecosystem_mismatch,
         );
     }
@@ -123,7 +156,7 @@ pub fn install(
     // create or merge.
     let selection = select_project(requested_root);
     if selection.has_manifest {
-        return install_after_concurrent_manifest(
+        return install_with_generated_manifest(
             &selection.root,
             cfg,
             specs,
@@ -225,12 +258,12 @@ fn create_manifest_and_install(
     }
 }
 
-/// If two first installs race, the second process sees the generated manifest
-/// under the project lock. Merge distinct direct dependencies and run the
-/// normal installer once more; authored manifests keep the established rule
-/// that `zed add` is the mutation command.
+/// Merge package operands into a recognized generated consumer manifest and
+/// run the ordinary installer. This covers both concurrent first installs and
+/// a later explicit install before the inferred package identity is authored.
+/// Human-authored manifests retain the established `zed add` mutation rule.
 #[allow(clippy::too_many_arguments)]
-fn install_after_concurrent_manifest(
+fn install_with_generated_manifest(
     project: &Path,
     cfg: &Config,
     specs: &[String],
@@ -256,9 +289,9 @@ fn install_after_concurrent_manifest(
 
     let path = project.join(MANIFEST_FILE);
     let previous_text = fs::read_to_string(&path)
-        .with_context(|| format!("reading concurrently created {}", path.display()))?;
+        .with_context(|| format!("reading generated {}", path.display()))?;
     let mut manifest = Manifest::parse(&previous_text)
-        .with_context(|| format!("invalid concurrently created {}", path.display()))?;
+        .with_context(|| format!("invalid generated {}", path.display()))?;
     if !is_generated_consumer(&manifest) {
         bail!(
             "package operands on `zed install` are not used to edit an existing {MANIFEST_FILE}; use `zed add <org>/<name>[@requirement]`"
@@ -444,6 +477,15 @@ fn generated_manifest(
     manifest.install.target = target.map(str::to_owned);
     manifest.install.adapter = adapter_name(adapter).map(str::to_owned);
     manifest
+}
+
+fn is_generated_manifest_path(project: &Path) -> Result<bool> {
+    let path = project.join(MANIFEST_FILE);
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    let manifest = Manifest::parse(&text)
+        .with_context(|| format!("invalid {}", path.display()))?;
+    Ok(is_generated_consumer(&manifest))
 }
 
 fn is_generated_consumer(manifest: &Manifest) -> bool {
@@ -716,6 +758,32 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn generated_manifest_path_is_recognized_without_accepting_authored_files() {
+        let project = tempfile::tempdir().unwrap();
+        let generated = generated_manifest(
+            project.path(),
+            BTreeMap::from([("acme/http-kit".to_string(), "^1".to_string())]),
+            None,
+            Adapter::None,
+        );
+        fs::write(
+            project.path().join(MANIFEST_FILE),
+            generated.to_toml_string().unwrap(),
+        )
+        .unwrap();
+        assert!(is_generated_manifest_path(project.path()).unwrap());
+
+        let mut authored = generated;
+        authored.package.keywords.clear();
+        fs::write(
+            project.path().join(MANIFEST_FILE),
+            authored.to_toml_string().unwrap(),
+        )
+        .unwrap();
+        assert!(!is_generated_manifest_path(project.path()).unwrap());
     }
 
     #[test]
