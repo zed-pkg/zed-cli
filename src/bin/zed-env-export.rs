@@ -76,11 +76,18 @@ fn run_one(root: &Path, manager: ExportManager, args: ExportArgs) -> anyhow::Res
         println!(
             "{} environment {}: {}",
             result.manager.as_str(),
-            if result.changed { "exported" } else { "unchanged" },
+            if result.changed {
+                "exported"
+            } else {
+                "unchanged"
+            },
             result.output_path
         );
         println!("receipt: {}", result.receipt_path);
-        println!("environment-plan-sha256: {}", result.environment_plan_sha256);
+        println!(
+            "environment-plan-sha256: {}",
+            result.environment_plan_sha256
+        );
         println!("output-sha256: {}", result.output_sha256);
     }
     Ok(())
