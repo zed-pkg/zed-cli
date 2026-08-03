@@ -1,0 +1,380 @@
+name: nix-fetch-bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nix-fetch-bundle.yml"
+      - "nix/**"
+      - "tests/nix/fetch-bundle.nix"
+      - "tests/fixtures/docker-install/**"
+      - ".fetch-cli-flags.toml"
+      - "src/fetch.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/nix-fetch-bundle.yml"
+      - "nix/**"
+      - "tests/nix/fetch-bundle.nix"
+      - "tests/fixtures/docker-install/**"
+      - ".fetch-cli-flags.toml"
+      - "src/fetch.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-fetch-bundle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    name: Resolver-only bundle FOD on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Load the committed Nixpkgs input
+        shell: bash
+        run: |
+          set -euo pipefail
+          nixpkgs_path="$(
+            nix eval --raw ./nix#lib.nixpkgsPath --no-update-lock-file
+          )"
+          case "$nixpkgs_path" in
+            /nix/store/*) ;;
+            *)
+              echo "locked Nixpkgs input did not resolve to the Nix store" >&2
+              exit 1
+              ;;
+          esac
+          test -d "$nixpkgs_path"
+          printf 'NIX_PATH=nixpkgs=%s\n' "$nixpkgs_path" >> "$GITHUB_ENV"
+
+      - name: Build the exact Zed CLI under test
+        run: cargo build --release --locked --bin zed
+
+      - name: Create immutable registry, populated lock, and empty lock
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zed="$GITHUB_WORKSPACE/target/release/zed"
+          fixture_root="$RUNNER_TEMP/zed-nix-fetch-fixtures"
+          registry="$RUNNER_TEMP/zed-nix-fetch-registry"
+          zed_home="$RUNNER_TEMP/zed-nix-fetch-install-home"
+          consumer="$fixture_root/node-app"
+          empty="$fixture_root/empty"
+
+          mkdir -p "$fixture_root" "$registry" "$zed_home" "$empty"
+          cp -R tests/fixtures/docker-install/node-lib "$fixture_root/node-lib"
+          cp -R tests/fixtures/docker-install/node-app "$consumer"
+          chmod -R u+w "$fixture_root"
+
+          (
+            cd "$fixture_root/node-lib"
+            git init -q
+            git config user.name 'zed-pkg Nix canary'
+            git config user.email 'nix-canary@invalid.example'
+            git add .
+            GIT_AUTHOR_DATE='2000-01-01T00:00:00Z' \
+            GIT_COMMITTER_DATE='2000-01-01T00:00:00Z' \
+              git commit -q -m 'deterministic zed-pkg fixture'
+            git tag v1.0.0
+            "$zed" --registry "file://$registry" publish
+          )
+
+          fixture_commit="$(git -C "$fixture_root/node-lib" rev-parse HEAD)"
+          registry_meta="$registry/packages/zed-pkg/docker-node-lib/versions/1.0.0.json"
+          python3 - "$registry_meta" "$fixture_commit" <<'PY_REGISTRY'
+          import json
+          import sys
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          expected_commit = sys.argv[2]
+          assert metadata['vcs_tag'] == 'v1.0.0'
+          assert metadata['vcs_commit'] == expected_commit
+          PY_REGISTRY
+
+          registry_store="$(nix store add-path "$registry")"
+          (
+            cd "$consumer"
+            "$zed" \
+              --registry "file://$registry_store" \
+              --home "$zed_home" \
+              install --install-mode copy
+            node src/main.js
+            test ! -e .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt
+            "$zed" --home "$zed_home" uninstall
+          )
+
+          test -f "$consumer/.zpkg.lock"
+          test ! -e "$consumer/.vendor/.zed"
+          test ! -e "$consumer/node_modules/@zed-pkg/docker-node-lib"
+          grep -F "source = \"file://$registry_store\"" "$consumer/.zpkg.lock"
+          python3 - "$registry_meta" "$consumer/.zpkg.lock" <<'PY_LOCK'
+          import json
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          metadata = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          lock = tomllib.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
+          packages = lock.get('packages', [])
+          assert len(packages) == 1
+          package = packages[0]
+          assert package['org'] == metadata['org']
+          assert package['name'] == metadata['name']
+          assert package['version'] == metadata['version']
+          assert package['sha256'] == metadata['sha256']
+          assert package['size'] == metadata['size']
+          assert package['format'] == metadata['format']
+          assert package['vcs_tag'] == metadata['vcs_tag']
+          assert package['vcs_commit'] == metadata['vcs_commit']
+          PY_LOCK
+
+          printf 'version = 1\n' > "$empty/.zpkg.lock"
+
+          lock_sha256="$(
+            python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+              "$consumer/.zpkg.lock"
+          )"
+          empty_lock_sha256="$(
+            python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+              "$empty/.zpkg.lock"
+          )"
+          zed_store="$(nix store add-path "$zed")"
+          consumer_store="$(nix store add-path "$consumer")"
+          empty_store="$(nix store add-path "$empty")"
+
+          printf 'ZED_BINARY_STORE=%s\n' "$zed_store" >> "$GITHUB_ENV"
+          printf 'ZED_CONSUMER_STORE=%s\n' "$consumer_store" >> "$GITHUB_ENV"
+          printf 'ZED_EMPTY_STORE=%s\n' "$empty_store" >> "$GITHUB_ENV"
+          printf 'ZED_REGISTRY_STORE=%s\n' "$registry_store" >> "$GITHUB_ENV"
+          printf 'ZED_CONSUMER_WORK=%s\n' "$consumer" >> "$GITHUB_ENV"
+          printf 'ZED_LOCK_SHA256=%s\n' "$lock_sha256" >> "$GITHUB_ENV"
+          printf 'ZED_EMPTY_LOCK_SHA256=%s\n' "$empty_lock_sha256" >> "$GITHUB_ENV"
+
+      - name: Evaluate the combined flake library
+        run: >-
+          nix flake check ./nix
+          --no-build
+          --no-update-lock-file
+          --print-build-logs
+
+      - name: Bootstrap and replay the populated bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_bundle() {
+            local name="$1"
+            shift
+            nix-build tests/nix/fetch-bundle.nix \
+              --no-out-link \
+              --arg zedBinary "$ZED_BINARY_STORE" \
+              --arg consumerSrc "$ZED_CONSUMER_STORE" \
+              --argstr registryStore "$ZED_REGISTRY_STORE" \
+              --argstr name "$name" \
+              "$@"
+          }
+
+          set +e
+          bootstrap_output="$(build_bundle zed-nix-fetch-bootstrap 2>&1)"
+          bootstrap_status=$?
+          set -e
+          printf '%s\n' "$bootstrap_output"
+          if [[ $bootstrap_status -eq 0 ]]; then
+            echo "expected lib.fakeHash bootstrap to fail" >&2
+            exit 1
+          fi
+
+          output_hash="$(
+            printf '%s\n' "$bootstrap_output" |
+              python3 -c 'import re,sys; matches=re.findall(r"got:\s*(sha256-[A-Za-z0-9+/=]+)", sys.stdin.read()); print(matches[-1] if matches else "")'
+          )"
+          if [[ -z "$output_hash" ]]; then
+            echo "could not recover resolver-only recursive output hash" >&2
+            exit 1
+          fi
+          printf 'ZED_ARTIFACTS_HASH=%s\n' "$output_hash" >> "$GITHUB_ENV"
+
+          bundle_a="$(build_bundle zed-nix-fetch-a --argstr hash "$output_hash")"
+          bundle_b="$(build_bundle zed-nix-fetch-b --argstr hash "$output_hash")"
+
+          hash_a="$(nix hash path --type sha256 --sri "$bundle_a")"
+          hash_b="$(nix hash path --type sha256 --sri "$bundle_b")"
+          test "$hash_a" = "$hash_b"
+          test "$hash_a" = "$output_hash"
+
+          python3 - "$bundle_a" "$ZED_LOCK_SHA256" "$ZED_REGISTRY_STORE" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          bundle = pathlib.Path(sys.argv[1])
+          expected_lock = sys.argv[2]
+          forbidden_registry = sys.argv[3]
+          index_path = bundle / "metadata" / "index.json"
+          raw = index_path.read_text(encoding="utf-8")
+          assert forbidden_registry not in raw
+          assert "/nix/store/" not in raw
+          index = json.loads(raw)
+          assert index["schema"] == "zed.fetch/v1"
+          assert index["lock_sha256"] == expected_lock
+          assert len(index["packages"]) == 1
+          package = index["packages"][0]
+          assert package["org"] == "zed-pkg"
+          assert package["name"] == "docker-node-lib"
+          assert package["version"] == "1.0.0"
+          assert package["source_kind"] == "immutable-nix-store-input"
+          assert package["path"] == f"packages/{package['sha256']}/pkg"
+          payload = bundle / package["path"]
+          assert (payload / "package.json").is_file()
+          assert not (payload / "generated" / "output.txt").exists()
+          assert not (bundle / ".zpkg.lock").exists()
+          assert not (bundle / ".zpkg.toml").exists()
+          assert not (bundle / ".zpkg-staging").exists()
+          assert not (bundle / "zed_modules").exists()
+          assert not (bundle / "node_modules").exists()
+          PY
+
+          test "$(cat "$bundle_a/metadata/lock.sha256")" = "$ZED_LOCK_SHA256  .zpkg.lock"
+          if find "$bundle_a" -type l -print -quit | grep -q .; then
+            echo "resolver-only fixed output contains a symlink" >&2
+            exit 1
+          fi
+          references="$(nix-store --query --references "$bundle_a")"
+          if [[ -n "$references" ]]; then
+            echo "resolver-only fixed output retained Nix store references:" >&2
+            printf '%s\n' "$references" >&2
+            exit 1
+          fi
+
+      - name: Verify dependency-free bundle determinism
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build_empty() {
+            local name="$1"
+            shift
+            nix-build tests/nix/fetch-bundle.nix \
+              --no-out-link \
+              --arg zedBinary "$ZED_BINARY_STORE" \
+              --arg consumerSrc "$ZED_EMPTY_STORE" \
+              --argstr name "$name" \
+              "$@"
+          }
+
+          set +e
+          bootstrap_output="$(build_empty zed-nix-fetch-empty-bootstrap 2>&1)"
+          bootstrap_status=$?
+          set -e
+          printf '%s\n' "$bootstrap_output"
+          test $bootstrap_status -ne 0
+          empty_hash="$(
+            printf '%s\n' "$bootstrap_output" |
+              python3 -c 'import re,sys; matches=re.findall(r"got:\s*(sha256-[A-Za-z0-9+/=]+)", sys.stdin.read()); print(matches[-1] if matches else "")'
+          )"
+          test -n "$empty_hash"
+
+          empty_a="$(build_empty zed-nix-fetch-empty-a --argstr hash "$empty_hash")"
+          empty_b="$(build_empty zed-nix-fetch-empty-b --argstr hash "$empty_hash")"
+          test "$(nix hash path --type sha256 --sri "$empty_a")" = "$empty_hash"
+          test "$(nix hash path --type sha256 --sri "$empty_b")" = "$empty_hash"
+
+          python3 - "$empty_a" "$ZED_EMPTY_LOCK_SHA256" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          bundle = pathlib.Path(sys.argv[1])
+          index = json.loads((bundle / "metadata" / "index.json").read_text())
+          assert index == {
+              "schema": "zed.fetch/v1",
+              "lock_sha256": sys.argv[2],
+              "packages": [],
+          }
+          assert list((bundle / "packages").iterdir()) == []
+          PY
+          test -z "$(nix-store --query --references "$empty_a")"
+
+      - name: Reject an incorrect recursive output hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          if nix-build tests/nix/fetch-bundle.nix \
+            --no-out-link \
+            --arg zedBinary "$ZED_BINARY_STORE" \
+            --arg consumerSrc "$ZED_CONSUMER_STORE" \
+            --argstr registryStore "$ZED_REGISTRY_STORE" \
+            --argstr hash sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB= \
+            --argstr name zed-nix-fetch-bad-output-hash
+          then
+            echo "Nix accepted an incorrect resolver-only output hash" >&2
+            exit 1
+          fi
+
+      - name: Reject tampered frozen artifact provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          tampered="$RUNNER_TEMP/zed-nix-fetch-tampered-consumer"
+          cp -R "$ZED_CONSUMER_WORK" "$tampered"
+          chmod -R u+w "$tampered"
+          python3 - "$tampered/.zpkg.lock" <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+          text, count = re.subn(
+              r'^sha256 = "[0-9a-f]{64}"$',
+              'sha256 = "' + ('0' * 64) + '"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit("expected one artifact digest to tamper")
+          path.write_text(text, encoding="utf-8")
+          PY
+          tampered_store="$(nix store add-path "$tampered")"
+
+          if nix-build tests/nix/fetch-bundle.nix \
+            --no-out-link \
+            --arg zedBinary "$ZED_BINARY_STORE" \
+            --arg consumerSrc "$tampered_store" \
+            --argstr registryStore "$ZED_REGISTRY_STORE" \
+            --argstr hash "$ZED_ARTIFACTS_HASH" \
+            --argstr name zed-nix-fetch-tampered-lock
+          then
+            echo "tampered lock unexpectedly produced the trusted artifact bundle" >&2
+            exit 1
+          fi
