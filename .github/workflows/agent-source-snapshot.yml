@@ -1,0 +1,26 @@
+name: agent source snapshot
+
+on:
+  push:
+    branches:
+      - agent/nix-cross-build-contract
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Upload the complete checkout
+        uses: actions/upload-artifact@v4
+        with:
+          name: zed-cli-source
+          path: .
+          include-hidden-files: true
+          retention-days: 1
