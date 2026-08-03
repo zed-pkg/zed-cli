@@ -1,0 +1,77 @@
+name: one-shot auth Windows lint fix
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1439-mise-import-verify
+    paths:
+      - .github/workflows/one-shot-fix-auth-windows-lint.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-auth-windows-lint
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact foundation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: alexanderdmills/den-1439-mise-import-verify
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Apply the exact cross-platform lint fix
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/auth.rs")
+          source = path.read_text(encoding="utf-8")
+          before = '''fn secure_file_mode(path: &Path) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  use std::os::unix::fs::PermissionsExt as _;
+                  fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+              }
+              Ok(())
+          }
+          '''
+          after = '''fn secure_file_mode(_path: &Path) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  use std::os::unix::fs::PermissionsExt as _;
+                  fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
+              }
+              Ok(())
+          }
+          '''
+          if source.count(before) != 1:
+              raise SystemExit("expected exactly one secure_file_mode implementation")
+          path.write_text(source.replace(before, after), encoding="utf-8")
+          PY
+          git diff --check
+          git diff -- src/auth.rs
+
+      - name: Commit only the verified source fix
+        run: |
+          set -euo pipefail
+          test "$(git status --porcelain=v1 | wc -l | tr -d ' ')" = 1
+          git status --porcelain=v1 | grep -Fx ' M src/auth.rs'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- src/auth.rs
+          git commit -m 'fix(DEN-1439): keep secure file mode warning-free on Windows'
+          git push origin HEAD:alexanderdmills/den-1439-mise-import-verify
