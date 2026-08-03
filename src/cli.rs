@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::cli_oci::OciCmd;
+
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/oresoftware/flags-2-env).
 #[derive(Debug, Parser)]
@@ -257,6 +259,11 @@ pub enum Cmd {
     Release {
         #[command(subcommand)]
         cmd: ReleaseCmd,
+    },
+    /// Build an immutable OCI artifact plan without reading credentials or using the network
+    Oci {
+        #[command(subcommand)]
+        cmd: OciCmd,
     },
     /// Pack, verify VCS tag provenance, and upload to the registry
     Publish {
