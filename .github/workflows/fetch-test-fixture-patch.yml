@@ -7,6 +7,10 @@ on:
     paths:
       - .github/workflows/fetch-test-fixture-patch.yml
       - src/fetch.rs
+  pull_request:
+    paths:
+      - .github/workflows/fetch-test-fixture-patch.yml
+      - src/fetch.rs
 
 permissions:
   contents: read
