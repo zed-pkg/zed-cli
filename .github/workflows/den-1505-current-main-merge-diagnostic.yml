@@ -1,6 +1,9 @@
 name: DEN-1505 current-main merge diagnostic
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/den-1505-current-main-merge-diagnostic.yml'
   push:
     branches:
       - agent/den-1505-current-main-integration
@@ -58,9 +61,6 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-
-          for raw_path in Path('/tmp').glob('this-path-never-matches'):
-              raise AssertionError(raw_path)
 
           for name in ('src/lib.rs', 'src/ops.rs'):
               lines = Path(name).read_text(encoding='utf-8').splitlines()
