@@ -35,8 +35,8 @@ pub(super) fn run_fetch_task<F>(sequence: usize, key: &str, work: F) -> FetchMes
 where
     F: FnOnce() -> Result<FetchResult>,
 {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(
-        |payload| {
+    let result =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|payload| {
             let detail = payload
                 .downcast_ref::<&str>()
                 .copied()
@@ -48,8 +48,7 @@ where
                 sequence,
                 detail
             ))
-        },
-    );
+        });
     FetchMessage { sequence, result }
 }
 
