@@ -16,14 +16,22 @@ use crate::config::Config;
 mod implementation;
 
 pub use implementation::{
-    InstallOutcome, WorkspaceInfo, add, build_cmd, build_publish_meta, cache_clean, find, gc, init,
-    login, org_audit, org_claim, pack_cmd, publish, remove, run, split_key, store_prune,
-    store_status, uninstall, yank,
+    InstallOutcome, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean, find, gc, init,
+    login, org_audit, org_claim, pack_cmd, publish, run, split_key, store_prune, store_status,
+    uninstall, yank,
 };
 
 pub(crate) use implementation::{
     detect_adapter, detect_native_manifest_target, detect_structure_target, detect_target,
 };
+
+pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))
+}
+
+pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    crate::config::with_install_prefetch(cfg, || implementation::remove(project, cfg, spec))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn install(
