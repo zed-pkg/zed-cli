@@ -13,11 +13,11 @@ independent `zed-pkg` package manager and Nix.
 The fetcher consumes an existing `.zpkg.lock`, runs frozen copy installation in
 a recursive fixed-output derivation, and emits a materialized tree plus retained
 lock evidence and self-identified `zed.nix-fetch-bridge/v1` metadata. An
-immutable `registryPath` is mirrored into the builder's private workspace before
-Zed reads it, preserving the declared Nix input boundary across Linux and Darwin
-sandboxes. The bridge receipt is deliberately not the canonical
-`zed.nix-adapter/v1` publication record. The normal builder consumes the
-verified output offline.
+immutable `registryPath` remains an explicit Nix input and is addressed through
+its exact store identity, so the `file://` URL already frozen into `.zpkg.lock`
+does not drift during the sandbox build. The bridge receipt is deliberately not
+the canonical `zed.nix-adapter/v1` publication record. The normal builder
+consumes the verified output offline.
 
 See [`docs/nix-interop.md`](../docs/nix-interop.md) for the trust model, usage,
 publishing tiers, Nix-to-Zed import boundary, and CI contract.
