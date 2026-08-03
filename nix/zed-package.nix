@@ -148,7 +148,7 @@ rec {
         # Copy mode may preserve package-owned relative links, but the fixed
         # output must never retain an absolute or escaping dependency on the
         # temporary builder or another undeclared store path.
-        while IFS= read -r -d '' link; do
+        while IFS= read -r -d $'\0' link; do
           link_target="$(readlink "$link")"
           if [[ "$link_target" = /* ]]; then
             echo "zed-pkg Nix bridge: absolute symlink is not exportable: $link -> $link_target" >&2
