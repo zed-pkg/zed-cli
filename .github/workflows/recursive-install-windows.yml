@@ -79,3 +79,9 @@ jobs:
 
       - name: Prove failed downloads leave no cache publication
         run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib install_graph::tests::failed_downloads_remove_staging_files_and_never_publish_cache_entries -- --exact --nocapture
+
+      - name: Prove the lower-level store lock blocks across processes
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
+
+      - name: Prove owner termination releases the lower-level store lock
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
