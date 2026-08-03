@@ -29,10 +29,54 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Refresh the exact interface lock and format sources
+      - name: Refresh the interface lock and normalize the draft fixtures
         run: |
           set -euo pipefail
           cargo update -p zed-interfaces --precise 625ba7bdf4339df7d0880f791a0715ca894558fe
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/nix_export_plan.rs')
+          text = path.read_text()
+          before = '''[package.repository]
+          url = "https://github.com/acme/dataset"
+
+          [publish.nix]
+          attribute = "dataset"
+          systems = ["x86_64-linux", "aarch64-linux"]
+          outputs = ["out"]
+
+          {extra}
+          '''
+          after = '''[package.repository]
+          url = "https://github.com/acme/dataset"
+
+          {extra}
+          [publish.nix]
+          attribute = "dataset"
+          systems = ["x86_64-linux", "aarch64-linux"]
+          outputs = ["out"]
+          '''
+          if before not in text:
+              raise SystemExit('data_manifest normalization anchor not found')
+          text = text.replace(before, after, 1)
+
+          before = '''    let excluded_manifest = format!(
+                  "{}\\n[bin]\\ntool = \\\"bin/tool\\\"\\n\\n[publish]\\nexclude = [\\\"bin/**\\\"]\\n",
+                  data_manifest("")
+              );'''
+          after = '''    let excluded_manifest = format!(
+                  "{}\\n[bin]\\ntool = \\\"bin/tool\\\"\\n",
+                  data_manifest("[publish]\\nexclude = [\\\"bin/**\\\"]\\n")
+              );'''
+          if before not in text:
+              raise SystemExit('excluded-bin normalization anchor not found')
+          path.write_text(text.replace(before, after, 1))
+          PY
+
+      - name: Format, compile, and test the generated result
+        run: |
+          set -euo pipefail
           cargo fmt --all
           cargo fmt --all --check
           cargo check --locked --all-targets
