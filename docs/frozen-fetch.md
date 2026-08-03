@@ -52,6 +52,19 @@ the final output:
 - hardened archive extraction with traversal, symlink, special-file,
   decompression-size, and entry-count rejection.
 
+The shared lock parser owns structural integrity and therefore fails first for
+malformed versions, duplicate package identities, invalid package names,
+non-canonical digests, missing immutable VCS revisions, and inconsistent Nix
+adapter evidence. Fetch-specific verification starts only after that parser
+accepts the complete lock. Tests that need malformed lock bytes serialize those
+fixtures through an explicitly test-only unchecked helper; production writers
+continue to validate before emitting a lock.
+
+Error reporting preserves that layered boundary. The top-level context identifies
+which phase failed, while the complete error chain retains the actionable shared
+parser or fetch-verifier cause. Credential-bearing source literals, tokens,
+query values, and rejected secret material must never be echoed by either layer.
+
 Downloads and extraction use a temporary isolated Zed store beside the output.
 The command does not write `ZED_PKG_HOME`, `refs.json`, `zed_modules/`,
 `node_modules/`, `.zed/`, build-cache output, or project transaction state.
