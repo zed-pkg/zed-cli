@@ -8,10 +8,14 @@ This directory contains reproducible package boundaries between the independent
 - `zed-fetch-bundle.nix` exports `fetchZedArtifacts`, a resolver-only
   `zed.fetch/v1` bundle FOD.
 - `default.nix` combines both bridge families without changing their contracts.
-- `flake.nix` exposes `lib.makeZedPackageLib` for pinned flake consumers and the
-  locked Nixpkgs path used by CI.
+- `flake.nix` exposes `lib.makeZedPackageLib` for pinned flake consumers, the
+  locked Nixpkgs path used by CI, and per-system evaluation-contract checks.
 - `flake.lock` pins the reviewed Nixpkgs baseline shared with the merged
   `zed-interfaces` Nix intent, provenance, and schema contract.
+- `tests/evaluation-contract.nix` ratchets the public Nix function boundary:
+  accepted registry and route forms still evaluate, ambiguous registry inputs
+  and store-path metadata fail closed, and `mkZedPackage` preserves caller
+  passthrough data while exposing its verified dependency derivation.
 
 ## Install-shaped bridge
 
@@ -40,6 +44,25 @@ The two helpers are intentionally not interchangeable. Use `fetchZedDeps` when
 a normal Nix derivation needs an installation-shaped project tree. Use
 `fetchZedArtifacts` when the caller needs verified package content without
 project mutation.
+
+## Evaluation and execution gates
+
+The interop workflow first runs:
+
+```console
+nix flake check ./nix --no-build --no-update-lock-file
+```
+
+on Linux and macOS. The evaluation contract instantiates both public bridge
+families across x86_64/aarch64 Linux and Darwin without executing the dummy Zed
+CLI. It protects argument, registry, route, passthrough, and store-path
+boundaries while remaining separate from artifact realization.
+
+The install-shaped and resolver-only integration canaries remain authoritative
+for sandbox execution, recursive output hashing, offline consumer builds,
+deterministic NAR equality, tamper rejection, and retained-reference checks.
+Pure evaluation success is never treated as execution evidence, and execution
+checks do not replace the public argument-contract ratchet.
 
 See:
 

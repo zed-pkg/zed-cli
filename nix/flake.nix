@@ -9,8 +9,19 @@
 
   outputs =
     { self, nixpkgs }:
+    let
+      supportedSystems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
+    in
     {
       lib = {
+        # Expose both the install-shaped and resolver-only bridge families from
+        # one pinned library without collapsing their distinct output contracts.
         makeZedPackageLib = pkgs:
           import ./default.nix { inherit pkgs; };
 
@@ -18,5 +29,20 @@
         # canary; it never falls back to a mutable channel lookup.
         nixpkgsPath = nixpkgs.outPath;
       };
+
+      # Ratchet the reusable public argument boundary without executing either
+      # bridge. Integration canaries remain the authority for fixed-output
+      # realization, recursive hashes, tamper rejection, and offline consumers.
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          evaluation-contract = import ./tests/evaluation-contract.nix {
+            inherit pkgs;
+          };
+        }
+      );
     };
 }
