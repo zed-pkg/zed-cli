@@ -1,0 +1,95 @@
+name: apply DEN-1420 frozen ambient hardening
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1420-frozen-ambient-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'agent/den-1420-mise-dev-runtime' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1420-mise-dev-runtime
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Reject ambient mise state in frozen integrated mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/dev.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''    if options.mise == DevMiseMode::Never
+              || env::var_os(MISE_REENTRY_ENV).is_some()
+              || env::var_os("__MISE_DIFF").is_some()
+          {
+              return Ok(None);
+          }
+
+          let Some(config) = mise_config(root) else {
+              if options.mise == DevMiseMode::Required {
+                  bail!(
+                      "--mise required was requested, but no project-local `mise.toml` or `.mise.toml` was found inside the owning checkout for {}",
+                      root.display()
+                  );
+              }
+              return Ok(None);
+          };
+          '''
+          new = '''    if options.mise == DevMiseMode::Never || env::var_os(MISE_REENTRY_ENV).is_some() {
+              return Ok(None);
+          }
+
+          let Some(config) = mise_config(root) else {
+              if options.mise == DevMiseMode::Required {
+                  bail!(
+                      "--mise required was requested, but no project-local `mise.toml` or `.mise.toml` was found inside the owning checkout for {}",
+                      root.display()
+                  );
+              }
+              return Ok(None);
+          };
+
+          if env::var_os("__MISE_DIFF").is_some() {
+              if options.frozen {
+                  bail!(
+                      "--frozen mise composition cannot verify an ambient mise activation; run `zed dev --mise required --frozen` outside an activated mise shell, or use `--mise never` after an explicit `mise exec`"
+                  );
+              }
+              return Ok(None);
+          }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one runtime guard block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test --locked --test develop_edge_cases --test develop_help_contract
+          cargo test --locked dev::tests
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/dev.rs
+          git commit -m 'fix(DEN-1420): reject ambient mise state in frozen mode'
+          git push origin HEAD:agent/den-1420-mise-dev-runtime
