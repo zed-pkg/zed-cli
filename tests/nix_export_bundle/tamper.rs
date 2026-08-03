@@ -40,8 +40,7 @@ fn rejects_mutable_unsupported_or_multi_input_flake_locks() {
         .is_err()
     );
 
-    lock["nodes"]["nixpkgs"]["original"]["rev"] =
-        json!("e73de5be04e0eff4190a1432b946d469c794e7b4");
+    lock["nodes"]["nixpkgs"]["original"]["rev"] = json!("e73de5be04e0eff4190a1432b946d469c794e7b4");
     lock["nodes"]["nixpkgs"]["locked"]["narHash"] = json!("sha256-not-a-hash");
     assert!(
         render_nix_export_bundle(
@@ -110,8 +109,7 @@ fn rejects_non_executable_bins_unsafe_paths_archive_links_and_duplicates() {
     let unsafe_path_bins = BTreeMap::from([("sample".into(), "../secret".into())]);
     let unsafe_path_plan = plan(&unsafe_path_artifact, unsafe_path_bins);
     assert!(
-        render_nix_export_bundle(&unsafe_path_plan, &unsafe_path_artifact, &flake_lock())
-            .is_err()
+        render_nix_export_bundle(&unsafe_path_plan, &unsafe_path_artifact, &flake_lock()).is_err()
     );
 
     let linked_artifact = symlink_artifact();
@@ -124,9 +122,7 @@ fn rejects_non_executable_bins_unsafe_paths_archive_links_and_duplicates() {
         ("data/value.txt", &b"second"[..], 0o644),
     ]);
     let duplicate_plan = plan(&duplicate_artifact, BTreeMap::new());
-    assert!(
-        render_nix_export_bundle(&duplicate_plan, &duplicate_artifact, &flake_lock()).is_err()
-    );
+    assert!(render_nix_export_bundle(&duplicate_plan, &duplicate_artifact, &flake_lock()).is_err());
 }
 
 #[test]

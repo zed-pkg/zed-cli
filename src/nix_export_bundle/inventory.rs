@@ -5,9 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{
-    BUNDLE_INVENTORY_PATH, NIX_FLAKE_BUNDLE_SCHEMA_V1, NixFlakeBundleEntry,
-};
+use super::{BUNDLE_INVENTORY_PATH, NIX_FLAKE_BUNDLE_SCHEMA_V1, NixFlakeBundleEntry};
 use crate::nix_export_bundle::paths::validate_bundle_path;
 
 pub(super) fn inventory_entries(
@@ -84,9 +82,7 @@ fn canonicalize_json(value: Value) -> Value {
                     .collect(),
             )
         }
-        Value::Array(values) => {
-            Value::Array(values.into_iter().map(canonicalize_json).collect())
-        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
         other => other,
     }
 }

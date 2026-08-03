@@ -7,8 +7,8 @@ use zed_interfaces::nix::is_sha256_sri;
 use super::LockedNixpkgs;
 
 pub(super) fn validate_flake_lock(bytes: &[u8]) -> Result<LockedNixpkgs> {
-    let value: Value = serde_json::from_slice(bytes)
-        .context("approved Nixpkgs flake lock is not valid JSON")?;
+    let value: Value =
+        serde_json::from_slice(bytes).context("approved Nixpkgs flake lock is not valid JSON")?;
     let root = object(&value, "flake.lock root")?;
     require_exact_keys(root, &["nodes", "root", "version"], "flake.lock root")?;
 
@@ -26,7 +26,9 @@ pub(super) fn validate_flake_lock(bytes: &[u8]) -> Result<LockedNixpkgs> {
     require_exact_keys(nodes, &["nixpkgs", "root"], "flake.lock nodes")?;
 
     let root_node = object(
-        nodes.get("root").context("flake.lock is missing root node")?,
+        nodes
+            .get("root")
+            .context("flake.lock is missing root node")?,
         "flake.lock root node",
     )?;
     require_exact_keys(root_node, &["inputs"], "flake.lock root node")?;
@@ -76,11 +78,7 @@ pub(super) fn validate_flake_lock(bytes: &[u8]) -> Result<LockedNixpkgs> {
         "flake.lock nixpkgs original selector",
     )?;
 
-    for (field, expected) in [
-        ("type", "github"),
-        ("owner", "NixOS"),
-        ("repo", "nixpkgs"),
-    ] {
+    for (field, expected) in [("type", "github"), ("owner", "NixOS"), ("repo", "nixpkgs")] {
         if locked.get(field).and_then(Value::as_str) != Some(expected)
             || original.get(field).and_then(Value::as_str) != Some(expected)
         {
@@ -135,11 +133,7 @@ fn object<'a>(value: &'a Value, field: &str) -> Result<&'a Map<String, Value>> {
         .with_context(|| format!("{field} must be a JSON object"))
 }
 
-fn require_exact_keys(
-    object: &Map<String, Value>,
-    expected: &[&str],
-    field: &str,
-) -> Result<()> {
+fn require_exact_keys(object: &Map<String, Value>, expected: &[&str], field: &str) -> Result<()> {
     let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
     let expected = expected.iter().copied().collect::<BTreeSet<_>>();
     if actual != expected {

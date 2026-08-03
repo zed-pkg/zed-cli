@@ -10,7 +10,13 @@ use super::common::{artifact, flake_lock, plan};
 #[ignore = "requires a pinned Nix installation and one explicit archive preparation step"]
 fn generated_flake_checks_and_builds_offline_after_archive() {
     let current_system = Command::new("nix")
-        .args(["eval", "--impure", "--raw", "--expr", "builtins.currentSystem"])
+        .args([
+            "eval",
+            "--impure",
+            "--raw",
+            "--expr",
+            "builtins.currentSystem",
+        ])
         .output()
         .expect("querying builtins.currentSystem");
     assert!(current_system.status.success());
@@ -37,7 +43,11 @@ fn generated_flake_checks_and_builds_offline_after_archive() {
             )
             .status()
             .unwrap();
-        assert!(status.success(), "nix command failed: nix {}", args.join(" "));
+        assert!(
+            status.success(),
+            "nix command failed: nix {}",
+            args.join(" ")
+        );
     };
 
     // Network/store population is one explicit preparation step. The checks

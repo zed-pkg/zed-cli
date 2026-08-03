@@ -8,8 +8,8 @@ use zed_cli::nix_export_plan::{
     PlannedZedArtifact, ResolvedNixIntent,
 };
 use zed_interfaces::{
-    NixBuilderNetwork, NixExportMode, NixInteropArtifact, NixPackageIdentity,
-    NixPolicyEvidence, NixPolicyProfile,
+    NixBuilderNetwork, NixExportMode, NixInteropArtifact, NixPackageIdentity, NixPolicyEvidence,
+    NixPolicyProfile,
 };
 
 pub(crate) fn sha256(bytes: &[u8]) -> String {

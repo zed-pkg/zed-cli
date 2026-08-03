@@ -26,8 +26,7 @@ pub(super) fn render_flake(plan: &NixExportPlan, nixpkgs: &LockedNixpkgs) -> Str
     .expect("writing to String cannot fail");
     out.push_str("\n  outputs = { self, nixpkgs }:\n");
     out.push_str("    let\n");
-    writeln!(&mut out, "      systems = [ {systems} ];")
-        .expect("writing to String cannot fail");
+    writeln!(&mut out, "      systems = [ {systems} ];").expect("writing to String cannot fail");
     out.push_str("      forAllSystems = nixpkgs.lib.genAttrs systems;\n");
     out.push_str("    in\n");
     out.push_str("    {\n");
@@ -38,8 +37,7 @@ pub(super) fn render_flake(plan: &NixExportPlan, nixpkgs: &LockedNixpkgs) -> Str
     out.push_str("          package = pkgs.callPackage ./package.nix { };\n");
     out.push_str("        in\n");
     out.push_str("        {\n");
-    writeln!(&mut out, "          {attribute} = package;")
-        .expect("writing to String cannot fail");
+    writeln!(&mut out, "          {attribute} = package;").expect("writing to String cannot fail");
     out.push_str("          default = package;\n");
     out.push_str("        }\n");
     out.push_str("      );\n\n");
@@ -69,8 +67,12 @@ pub(super) fn render_package(plan: &NixExportPlan, plan_sha256: &str) -> String 
         nix_string(&format!("{}-{}", plan.package.org, plan.package.name))
     )
     .expect("writing to String cannot fail");
-    writeln!(&mut out, "  version = {};", nix_string(&plan.package.version))
-        .expect("writing to String cannot fail");
+    writeln!(
+        &mut out,
+        "  version = {};",
+        nix_string(&plan.package.version)
+    )
+    .expect("writing to String cannot fail");
     writeln!(&mut out, "  src = ./artifacts/{};", plan.source.file_name)
         .expect("writing to String cannot fail");
     out.push_str("  sourceRoot = \"package\";\n");

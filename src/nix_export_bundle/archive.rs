@@ -57,9 +57,7 @@ pub(super) fn inspect_artifact(bytes: &[u8]) -> Result<BTreeMap<String, ArchiveF
             .checked_add(size)
             .context("Zed artifact unpacked size overflow")?;
         if unpacked_bytes > MAX_UNPACKED_BYTES {
-            bail!(
-                "Zed artifact exceeds the {MAX_UNPACKED_BYTES}-byte unpacked rendering limit"
-            );
+            bail!("Zed artifact exceeds the {MAX_UNPACKED_BYTES}-byte unpacked rendering limit");
         }
         let mode = entry
             .header()
@@ -98,11 +96,7 @@ pub(super) fn verify_planned_bins(
 
 fn normalize_archive_path(raw: &str) -> Result<String> {
     let path = raw.strip_suffix('/').unwrap_or(raw);
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path.contains('\0')
-    {
+    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('\0') {
         bail!("unsafe Zed artifact path `{raw}`");
     }
     for component in path.split('/') {

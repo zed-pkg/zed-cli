@@ -50,9 +50,7 @@ fn renders_prebuilt_bin_symlinks_only_for_executable_payloads() {
     let rendered = render_nix_export_bundle(&plan, &artifact, &flake_lock()).unwrap();
     let package = String::from_utf8(rendered.files["package.nix"].clone()).unwrap();
     assert!(package.contains("mkdir -p \"$out/bin\""));
-    assert!(
-        package.contains("ln -s \"$payloadRoot/bin/sample\" \"$out/bin/sample\"")
-    );
+    assert!(package.contains("ln -s \"$payloadRoot/bin/sample\" \"$out/bin/sample\""));
 }
 
 #[test]
