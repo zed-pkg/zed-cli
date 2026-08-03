@@ -1,0 +1,76 @@
+name: DEN-1464 dependency retarget
+
+on:
+  push:
+    branches:
+      - agent/den-1464-frozen-lock-integrity
+    paths:
+      - '.github/workflows/den-1464-retarget.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1464-retarget
+  cancel-in-progress: false
+
+jobs:
+  retarget:
+    if: github.actor == 'ORESoftware'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OLD_INTERFACE_REV: dc0e0a0620b9462817950b552d3d334a184b1cb1
+      OLD_WORKFLOW_REV: 625ba7bdf4339df7d0880f791a0715ca894558fe
+      NEW_INTERFACE_REV: 2d397c60cdaa8fe0d331e98caba5202e61eaca4f
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: agent/den-1464-frozen-lock-integrity
+          persist-credentials: true
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+
+      - name: Retarget the exact interface source
+        shell: python
+        run: |
+          from pathlib import Path
+          import os
+
+          replacements = {
+              Path('Cargo.toml'): (os.environ['OLD_INTERFACE_REV'], os.environ['NEW_INTERFACE_REV']),
+              Path('.github/workflows/frozen-lock-integrity.yml'): (
+                  os.environ['OLD_WORKFLOW_REV'],
+                  os.environ['NEW_INTERFACE_REV'],
+              ),
+          }
+          for path, (old, new) in replacements.items():
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one {old}, found {count}')
+              path.write_text(text.replace(old, new, 1))
+
+      - name: Regenerate only the pinned interface lock entry
+        run: cargo update -p zed-interfaces --precise "$NEW_INTERFACE_REV"
+
+      - name: Verify the regenerated lock and binary
+        run: |
+          test "$(grep -c "$NEW_INTERFACE_REV" Cargo.toml)" -eq 1
+          test "$(grep -c "$NEW_INTERFACE_REV" Cargo.lock)" -eq 1
+          ! grep -q "$OLD_INTERFACE_REV" Cargo.toml
+          ! grep -q "$OLD_INTERFACE_REV" Cargo.lock
+          cargo check --locked --bin zed
+
+      - name: Commit the deterministic retarget
+        run: |
+          git config user.name 'ORESoftware'
+          git config user.email '11139560+ORESoftware@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock .github/workflows/frozen-lock-integrity.yml
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix(DEN-1464): consume strict lock metadata contract'
+          git push origin HEAD:agent/den-1464-frozen-lock-integrity
