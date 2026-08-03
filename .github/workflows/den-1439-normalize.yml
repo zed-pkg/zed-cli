@@ -3,9 +3,6 @@ name: harden DEN-1439 normalized mise state
 on:
   pull_request:
     paths:
-      - .github/scripts/den1439_normalize.py
-      - .github/scripts/den1439_require_checksums.py
-      - .github/scripts/den1439_fix_shadow.py
       - .github/workflows/den-1439-normalize.yml
       - tests/mise_environment_cli.rs
       - tests/e2e.rs
@@ -31,12 +28,9 @@ jobs:
         with:
           components: rustfmt,clippy
 
-      - name: Apply normalized-state and cross-platform hardening
+      - name: Apply cross-platform test hardening
         run: |
           set -euo pipefail
-          python3 .github/scripts/den1439_normalize.py
-          python3 .github/scripts/den1439_require_checksums.py
-          python3 .github/scripts/den1439_fix_shadow.py
           python3 - <<'PY'
           from pathlib import Path
 
@@ -76,6 +70,6 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/environment.rs tests/e2e.rs
+          git add tests/e2e.rs
           git commit -m "test(DEN-1439): gate Unix-only shell fixtures"
           git push origin "HEAD:${GITHUB_HEAD_REF}"
