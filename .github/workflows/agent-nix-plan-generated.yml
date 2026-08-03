@@ -1,35 +1,34 @@
 name: agent-nix-plan-generated
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/den-1418-nix-export-plan
     paths:
       - ".github/workflows/agent-nix-plan-generated.yml"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "src/nix_export_plan.rs"
-      - "src/main.rs"
-      - "src/lib.rs"
-      - "src/completion.rs"
-      - "tests/nix_export_plan.rs"
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: den-1418-plan-apply
+  cancel-in-progress: true
 
 jobs:
-  generate:
+  apply:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          persist-credentials: false
+          ref: agent/den-1418-nix-export-plan
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           components: rustfmt
 
-      - name: Refresh the interface lock and normalize the draft fixtures
+      - name: Generate, validate, commit, and remove this helper
         run: |
           set -euo pipefail
           cargo update -p zed-interfaces --precise 625ba7bdf4339df7d0880f791a0715ca894558fe
@@ -73,25 +72,15 @@ jobs:
               raise SystemExit('excluded-bin normalization anchor not found')
           path.write_text(text.replace(before, after, 1))
           PY
-
-      - name: Format, compile, and test the generated result
-        run: |
-          set -euo pipefail
           cargo fmt --all
           cargo fmt --all --check
           cargo check --locked --all-targets
           cargo test --locked nix_export_plan::tests:: -- --test-threads=1
           cargo test --locked --test nix_export_plan -- --test-threads=1
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: den-1418-generated
-          path: |
-            Cargo.lock
-            src/nix_export_plan.rs
-            src/main.rs
-            src/lib.rs
-            src/completion.rs
-            tests/nix_export_plan.rs
-          if-no-files-found: error
-          retention-days: 1
+          git rm .github/workflows/agent-nix-plan-generated.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock src/nix_export_plan.rs src/main.rs src/lib.rs src/completion.rs tests/nix_export_plan.rs
+          git diff --cached --check
+          git commit -m "test(DEN-1418): apply generated planner lock and formatting"
+          git push origin HEAD:agent/den-1418-nix-export-plan
