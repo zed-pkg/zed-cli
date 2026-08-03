@@ -5,10 +5,13 @@ on:
     paths:
       - ".github/workflows/release-plan-browser.yml"
       - "scripts/render-release-plan-html.mjs"
+      - "scripts/release-plan-integrity.mjs"
       - "tests/release_plan_report_test.mjs"
       - "tests/release_plan_accessibility_test.mjs"
+      - "tests/release_plan_integrity_test.mjs"
       - "tests/browser/test_release_plan_report.py"
       - "tests/browser/test_release_plan_cross_browser.py"
+      - "tests/browser/test_release_plan_integrity.py"
       - "tests/fixtures/release-report/**"
       - "docs/release-plan-report.md"
       - "src/release.rs"
@@ -21,10 +24,13 @@ on:
     paths:
       - ".github/workflows/release-plan-browser.yml"
       - "scripts/render-release-plan-html.mjs"
+      - "scripts/release-plan-integrity.mjs"
       - "tests/release_plan_report_test.mjs"
       - "tests/release_plan_accessibility_test.mjs"
+      - "tests/release_plan_integrity_test.mjs"
       - "tests/browser/test_release_plan_report.py"
       - "tests/browser/test_release_plan_cross_browser.py"
+      - "tests/browser/test_release_plan_integrity.py"
       - "tests/fixtures/release-report/**"
       - "docs/release-plan-report.md"
       - "src/release.rs"
@@ -76,12 +82,13 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Test the fail-closed renderer and accessibility structure
+      - name: Test renderer accessibility and integrity boundaries
         working-directory: zed-cli
         run: >-
           node --test
           tests/release_plan_report_test.mjs
           tests/release_plan_accessibility_test.mjs
+          tests/release_plan_integrity_test.mjs
 
       - name: Build the locked Rust CLI
         working-directory: zed-cli
@@ -106,6 +113,20 @@ jobs:
           --input build/release-plan.json
           --output build/release-plan.html
 
+      - name: Bind and verify release-report integrity
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-plan-integrity.mjs bind \
+            --plan build/release-plan.json \
+            --report build/release-plan.html \
+            --integrity build/release-plan.integrity.json
+          node scripts/release-plan-integrity.mjs verify \
+            --plan build/release-plan.json \
+            --report build/release-plan.html \
+            --integrity build/release-plan.integrity.json
+
       - name: Install pinned Playwright ${{ matrix.browser }}
         working-directory: zed-cli
         run: |
@@ -120,11 +141,20 @@ jobs:
           PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
         run: .venv-release-browser/bin/python tests/browser/test_release_plan_cross_browser.py
 
-      - name: Upload the reviewed offline report
+      - name: Exercise integrity provenance in the browser
+        working-directory: zed-cli
+        env:
+          PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
+        run: .venv-release-browser/bin/python tests/browser/test_release_plan_integrity.py
+
+      - name: Upload the reviewed release-plan artifact set
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: zed-release-plan-report-${{ matrix.browser }}
-          path: zed-cli/build/release-plan.html
+          path: |
+            zed-cli/build/release-plan.json
+            zed-cli/build/release-plan.html
+            zed-cli/build/release-plan.integrity.json
           if-no-files-found: error
           retention-days: 7
 
