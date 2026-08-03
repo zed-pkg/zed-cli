@@ -369,8 +369,9 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
 
 fn validate_source(source: &str) -> Result<()> {
     if source.starts_with("file:") {
-        let url = reqwest::Url::parse(source)
-            .map_err(|_| anyhow::anyhow!("frozen lockfile contains an invalid file registry source"))?;
+        let url = reqwest::Url::parse(source).map_err(|_| {
+            anyhow::anyhow!("frozen lockfile contains an invalid file registry source")
+        })?;
         if url.scheme() != "file" {
             bail!("frozen lockfile contains an unsupported registry source scheme");
         }
