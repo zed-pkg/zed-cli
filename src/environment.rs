@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zed_interfaces::environment::{
     ActivationPolicy, Checksum, ChecksumAlgorithm, EnvironmentManager, EnvironmentPlan,
@@ -26,7 +27,7 @@ pub struct ImportedMiseEnvironment {
     pub digest: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 struct ConfiguredTool {
     requirement: String,
     provider: Option<String>,
@@ -34,12 +35,33 @@ struct ConfiguredTool {
     platforms: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, Serialize)]
+struct MiseSettings {
+    lockfile: Option<bool>,
+    locked: Option<bool>,
+    lockfile_platforms: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LockedArtifact {
+    checksum: Option<Checksum>,
+    size: Option<u64>,
+    url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct LockedTool {
     version: String,
     backend: Option<String>,
-    checksums: Vec<Checksum>,
-    platforms: Vec<String>,
+    artifacts: BTreeMap<String, LockedArtifact>,
+}
+
+#[derive(Serialize)]
+struct NormalizedMiseInputs<'a> {
+    schema: u32,
+    settings: &'a MiseSettings,
+    tools: &'a BTreeMap<String, ConfiguredTool>,
+    lock: Option<&'a BTreeMap<String, LockedTool>>,
 }
 
 pub fn import_mise(
@@ -61,12 +83,26 @@ pub fn import_mise(
         .with_context(|| format!("{} is not UTF-8", config_path.display()))?;
     let config_relative = project_relative_path(&root, &config_path)?;
 
-    let configured =
+    let (configured, settings) =
         if config_path.file_name().and_then(|name| name.to_str()) == Some(".tool-versions") {
-            parse_tool_versions(config_text, &config_relative)?
+            (
+                parse_tool_versions(config_text, &config_relative)?,
+                MiseSettings::default(),
+            )
         } else {
             parse_mise_toml(config_text, &config_relative)?
         };
+
+    if settings.locked == Some(true) {
+        bail!(
+            "`settings.locked = true` in `{config_relative}` has global mise scope and cannot be verified without importing user-global tools; keep the Zed adapter project-local and use `zed env verify mise --frozen` instead"
+        );
+    }
+    if frozen && settings.lockfile == Some(false) {
+        bail!(
+            "frozen mise import cannot use `{config_relative}` because `settings.lockfile = false` explicitly disables the manager lock"
+        );
+    }
 
     let lock_path = resolve_lock_path(&root, &config_path, lock)?;
     if frozen && lock_path.is_none() {
@@ -75,27 +111,31 @@ pub fn import_mise(
         );
     }
 
-    let (locked, lock_bytes, lock_relative) = match lock_path {
+    let (locked, lock_relative) = match lock_path {
         Some(path) => {
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             let text = std::str::from_utf8(&bytes)
                 .with_context(|| format!("{} is not UTF-8", path.display()))?;
             let relative = project_relative_path(&root, &path)?;
-            (
-                parse_mise_lock(text, &relative)?,
-                Some(bytes),
-                Some(relative),
-            )
+            (parse_mise_lock(text, &relative)?, Some(relative))
         }
-        None => (BTreeMap::new(), None, None),
+        None => (BTreeMap::new(), None),
     };
 
     if frozen {
         verify_lock_coverage(&configured, &locked, lock_relative.as_deref())?;
+        verify_frozen_artifacts(&locked, lock_relative.as_deref())?;
     }
 
+    let source_digest = digest_manager_inputs(
+        &settings,
+        &configured,
+        lock_relative.as_ref().map(|_| &locked),
+    )?;
+
     let mut plan = EnvironmentPlan {
+        platforms: settings.lockfile_platforms.clone(),
         activation: ActivationPolicy::FrozenInstall,
         ..EnvironmentPlan::default()
     };
@@ -116,8 +156,10 @@ pub fn import_mise(
         let mut platforms = configured_tool.platforms;
         let mut checksums = Vec::new();
         let resolved = locked_tool.map(|tool| {
-            platforms.extend(tool.platforms.iter().cloned());
-            checksums.extend(tool.checksums.iter().cloned());
+            for (platform, artifact) in &tool.artifacts {
+                platforms.push(platform.clone());
+                checksums.extend(artifact.checksum.iter().cloned());
+            }
             tool.version.clone()
         });
 
@@ -135,7 +177,6 @@ pub fn import_mise(
         );
     }
 
-    let source_digest = digest_manager_inputs(&config_bytes, lock_bytes.as_deref());
     plan.sources.push(EnvironmentSource {
         manager: EnvironmentManager::Mise,
         path: config_relative.clone(),
@@ -298,7 +339,10 @@ fn project_relative_path(root: &Path, path: &Path) -> Result<String> {
     Ok(parts.join("/"))
 }
 
-fn parse_mise_toml(input: &str, path: &str) -> Result<BTreeMap<String, ConfiguredTool>> {
+fn parse_mise_toml(
+    input: &str,
+    path: &str,
+) -> Result<(BTreeMap<String, ConfiguredTool>, MiseSettings)> {
     let value: toml::Value = toml::from_str(input)
         .with_context(|| format!("failed to parse mise configuration `{path}`"))?;
     let root = value
@@ -312,7 +356,7 @@ fn parse_mise_toml(input: &str, path: &str) -> Result<BTreeMap<String, Configure
             );
         }
     }
-    validate_supported_settings(root.get("settings"), path)?;
+    let settings = parse_supported_settings(root.get("settings"), path)?;
 
     let tools = root
         .get("tools")
@@ -330,12 +374,12 @@ fn parse_mise_toml(input: &str, path: &str) -> Result<BTreeMap<String, Configure
             bail!("duplicate mise tool `{name}` in `{path}`");
         }
     }
-    Ok(parsed)
+    Ok((parsed, settings))
 }
 
-fn validate_supported_settings(value: Option<&toml::Value>, path: &str) -> Result<()> {
+fn parse_supported_settings(value: Option<&toml::Value>, path: &str) -> Result<MiseSettings> {
     let Some(value) = value else {
-        return Ok(());
+        return Ok(MiseSettings::default());
     };
     let settings = value
         .as_table()
@@ -347,7 +391,62 @@ fn validate_supported_settings(value: Option<&toml::Value>, path: &str) -> Resul
             );
         }
     }
-    Ok(())
+
+    let lockfile = settings
+        .get("lockfile")
+        .map(|value| {
+            value
+                .as_bool()
+                .with_context(|| format!("`settings.lockfile` in `{path}` must be a boolean"))
+        })
+        .transpose()?;
+    let locked = settings
+        .get("locked")
+        .map(|value| {
+            value
+                .as_bool()
+                .with_context(|| format!("`settings.locked` in `{path}` must be a boolean"))
+        })
+        .transpose()?;
+    let mut lockfile_platforms = settings
+        .get("lockfile_platforms")
+        .map(|value| {
+            value
+                .as_array()
+                .with_context(|| {
+                    format!("`settings.lockfile_platforms` in `{path}` must be a string array")
+                })?
+                .iter()
+                .enumerate()
+                .map(|(index, value)| {
+                    value.as_str().map(ToOwned::to_owned).with_context(|| {
+                        format!(
+                            "`settings.lockfile_platforms[{index}]` in `{path}` must be a string"
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    for platform in &lockfile_platforms {
+        if platform.trim().is_empty()
+            || platform.trim() != platform
+            || platform.chars().any(|character| character.is_control())
+        {
+            bail!(
+                "`settings.lockfile_platforms` in `{path}` contains invalid platform `{platform}`"
+            );
+        }
+    }
+    lockfile_platforms.sort();
+    lockfile_platforms.dedup();
+
+    Ok(MiseSettings {
+        lockfile,
+        locked,
+        lockfile_platforms,
+    })
 }
 
 fn parse_configured_tool(name: &str, value: &toml::Value, path: &str) -> Result<ConfiguredTool> {
@@ -516,14 +615,12 @@ fn parse_locked_tool(name: &str, value: &toml::Value, path: &str) -> Result<Lock
         })
         .transpose()?;
 
-    let mut checksums = Vec::new();
-    let mut platforms = Vec::new();
+    let mut artifacts = BTreeMap::new();
     if let Some(value) = table.get("platforms") {
         let platform_table = value.as_table().with_context(|| {
             format!("lock entry `tools.{name}.platforms` in `{path}` must be a table")
         })?;
         for (platform, metadata) in platform_table {
-            platforms.push(platform.clone());
             let metadata = metadata.as_table().with_context(|| {
                 format!("lock metadata `tools.{name}.platforms.{platform}` must be a table")
             })?;
@@ -534,22 +631,64 @@ fn parse_locked_tool(name: &str, value: &toml::Value, path: &str) -> Result<Lock
                     );
                 }
             }
-            if let Some(value) = metadata.get("checksum") {
-                let checksum = value.as_str().with_context(|| {
-                    format!(
-                        "lock checksum `tools.{name}.platforms.{platform}.checksum` in `{path}` must be a string"
-                    )
-                })?;
-                checksums.push(parse_checksum(checksum, name, platform, path)?);
-            }
+            let checksum = metadata
+                .get("checksum")
+                .map(|value| {
+                    let checksum = value.as_str().with_context(|| {
+                        format!(
+                            "lock checksum `tools.{name}.platforms.{platform}.checksum` in `{path}` must be a string"
+                        )
+                    })?;
+                    parse_checksum(checksum, name, platform, path)
+                })
+                .transpose()?;
+            let size = metadata
+                .get("size")
+                .map(|value| {
+                    let size = value.as_integer().with_context(|| {
+                        format!(
+                            "lock size `tools.{name}.platforms.{platform}.size` in `{path}` must be a non-negative integer"
+                        )
+                    })?;
+                    u64::try_from(size).with_context(|| {
+                        format!(
+                            "lock size `tools.{name}.platforms.{platform}.size` in `{path}` must be non-negative"
+                        )
+                    })
+                })
+                .transpose()?;
+            let url = metadata
+                .get("url")
+                .map(|value| {
+                    let url = value.as_str().with_context(|| {
+                        format!(
+                            "lock URL `tools.{name}.platforms.{platform}.url` in `{path}` must be a string"
+                        )
+                    })?;
+                    let url = url.trim();
+                    if url.is_empty() || url.chars().any(|character| character.is_control()) {
+                        bail!(
+                            "lock URL `tools.{name}.platforms.{platform}.url` in `{path}` must be non-empty and contain no control characters"
+                        );
+                    }
+                    Ok(url.to_string())
+                })
+                .transpose()?;
+            artifacts.insert(
+                platform.clone(),
+                LockedArtifact {
+                    checksum,
+                    size,
+                    url,
+                },
+            );
         }
     }
 
     Ok(LockedTool {
         version,
         backend,
-        checksums,
-        platforms,
+        artifacts,
     })
 }
 
@@ -608,23 +747,49 @@ fn verify_lock_coverage(
     Ok(())
 }
 
-fn digest_manager_inputs(config: &[u8], lock: Option<&[u8]>) -> Checksum {
+fn verify_frozen_artifacts(
+    locked: &BTreeMap<String, LockedTool>,
+    lock_path: Option<&str>,
+) -> Result<()> {
+    let lock_path = lock_path.unwrap_or("<missing lockfile>");
+    for (name, tool) in locked {
+        if tool.artifacts.is_empty() {
+            bail!(
+                "mise lock `{lock_path}` gives `{name}` an exact version but no platform artifact identity; frozen-portable verification requires at least one checksum or immutable URL"
+            );
+        }
+        for (platform, artifact) in &tool.artifacts {
+            if artifact.checksum.is_none() {
+                bail!(
+                    "mise lock `{lock_path}` has no cryptographic checksum for `{name}` on `{platform}`; a URL alone is provenance, not immutable artifact identity"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn digest_manager_inputs(
+    settings: &MiseSettings,
+    tools: &BTreeMap<String, ConfiguredTool>,
+    lock: Option<&BTreeMap<String, LockedTool>>,
+) -> Result<Checksum> {
+    let normalized = NormalizedMiseInputs {
+        schema: 1,
+        settings,
+        tools,
+        lock,
+    };
+    let bytes = serde_json::to_vec(&normalized)
+        .context("failed to serialize normalized mise manager state")?;
     let mut hasher = Sha256::new();
     hasher.update(b"zed-pkg:mise-input:v1\0");
-    hasher.update((config.len() as u64).to_be_bytes());
-    hasher.update(config);
-    match lock {
-        Some(lock) => {
-            hasher.update([1]);
-            hasher.update((lock.len() as u64).to_be_bytes());
-            hasher.update(lock);
-        }
-        None => hasher.update([0]),
-    }
-    Checksum {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+    Ok(Checksum {
         algorithm: ChecksumAlgorithm::Sha256,
         value: hex::encode(hasher.finalize()),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -740,5 +905,90 @@ checksum = "{}"
         assert_eq!(imported.plan.tools.len(), 2);
         assert!(imported.plan.tools["node"].resolved.is_none());
         assert!(import_mise(temp.path(), None, None, true).is_err());
+    }
+
+    #[test]
+    fn normalized_digest_ignores_toml_presentation_but_tracks_semantics() {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        for root in [first_dir.path(), second_dir.path()] {
+            fs::write(
+                root.join("mise.toml"),
+                if root == first_dir.path() {
+                    "[settings]\nlockfile_platforms = [\"macos-arm64\", \"linux-x64\"]\nlockfile = true\n[tools]\npython = \"3.12\"\nnode = \"22\"\n"
+                } else {
+                    "[tools]\nnode=\"22\"\npython=\"3.12\"\n\n[settings]\nlockfile=true\nlockfile_platforms=[\"linux-x64\",\"macos-arm64\"]\n"
+                },
+            )
+            .unwrap();
+        }
+        let first_lock = format!(
+            "[[tools.python]]\nbackend=\"core:python\"\nversion=\"3.12.4\"\n[tools.python.platforms.macos-arm64]\nchecksum=\"{}\"\nurl=\"https://example.invalid/python\"\n[[tools.node]]\nversion=\"22.4.0\"\nbackend=\"core:node\"\n[tools.node.platforms.linux-x64]\nurl=\"https://example.invalid/node\"\nchecksum=\"{}\"\n",
+            checksum('b'),
+            checksum('a')
+        );
+        let second_lock = format!(
+            "[[tools.node]]\nbackend = \"core:node\"\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nchecksum = \"{}\"\nurl = \"https://example.invalid/node\"\n\n[[tools.python]]\nversion = \"3.12.4\"\nbackend = \"core:python\"\n[tools.python.platforms.macos-arm64]\nurl = \"https://example.invalid/python\"\nchecksum = \"{}\"\n",
+            checksum('a'),
+            checksum('b')
+        );
+        fs::write(first_dir.path().join("mise.lock"), first_lock).unwrap();
+        fs::write(second_dir.path().join("mise.lock"), second_lock).unwrap();
+
+        let first_imported = import_mise(first_dir.path(), None, None, true).unwrap();
+        let second_imported = import_mise(second_dir.path(), None, None, true).unwrap();
+        assert_eq!(
+            first_imported.plan.sources[0].digest,
+            second_imported.plan.sources[0].digest
+        );
+        assert_eq!(first_imported.digest, second_imported.digest);
+
+        fs::write(
+            second_dir.path().join("mise.lock"),
+            format!(
+                "[[tools.node]]\nversion=\"22.4.0\"\nbackend=\"core:node\"\n[tools.node.platforms.linux-x64]\nurl=\"https://mirror.invalid/node\"\nchecksum=\"{}\"\n[[tools.python]]\nversion=\"3.12.4\"\nbackend=\"core:python\"\n[tools.python.platforms.macos-arm64]\nurl=\"https://example.invalid/python\"\nchecksum=\"{}\"\n",
+                checksum('a'),
+                checksum('b')
+            ),
+        )
+        .unwrap();
+        let changed = import_mise(second_dir.path(), None, None, true).unwrap();
+        assert_ne!(
+            first_imported.plan.sources[0].digest,
+            changed.plan.sources[0].digest
+        );
+    }
+
+    #[test]
+    fn lock_settings_are_typed_and_global_locked_mode_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("mise.toml"),
+            "[settings]\nlockfile = \"yes\"\n[tools]\nnode = \"22\"\n",
+        )
+        .unwrap();
+        let error = import_mise(temp.path(), None, None, false).unwrap_err();
+        assert!(error.to_string().contains("must be a boolean"));
+
+        fs::write(
+            temp.path().join("mise.toml"),
+            "[settings]\nlocked = true\n[tools]\nnode = \"22\"\n",
+        )
+        .unwrap();
+        let error = import_mise(temp.path(), None, None, false).unwrap_err();
+        assert!(error.to_string().contains("global mise scope"));
+    }
+
+    #[test]
+    fn frozen_mode_requires_artifact_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join("mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
+        fs::write(
+            temp.path().join("mise.lock"),
+            "[[tools.node]]\nversion = \"22.4.0\"\nbackend = \"core:node\"\n",
+        )
+        .unwrap();
+        let error = import_mise(temp.path(), None, None, true).unwrap_err();
+        assert!(error.to_string().contains("no platform artifact identity"));
     }
 }
