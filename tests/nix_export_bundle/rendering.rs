@@ -31,6 +31,18 @@ fn renders_byte_identical_sorted_bundles() {
 }
 
 #[test]
+fn preserves_approved_flake_lock_bytes_exactly() {
+    let artifact = artifact(&[("data/value.txt", b"payload\n", 0o644)]);
+    let plan = plan(&artifact, BTreeMap::new());
+    let mut lock = flake_lock();
+    lock.push(b'\n');
+
+    let rendered = render_nix_export_bundle(&plan, &artifact, &lock).unwrap();
+    assert_eq!(rendered.files["flake.lock"], lock);
+    rendered.validate().unwrap();
+}
+
+#[test]
 fn renders_prebuilt_bin_symlinks_only_for_executable_payloads() {
     let artifact = artifact(&[("bin/sample", b"#!/bin/sh\nexit 0\n", 0o755)]);
     let bins = BTreeMap::from([("sample".into(), "bin/sample".into())]);
