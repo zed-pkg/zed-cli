@@ -1,0 +1,49 @@
+name: oci-planner-bootstrap
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/oci.rs
+      - src/cli_oci.rs
+      - src/cli.rs
+      - src/main.rs
+      - src/lib.rs
+      - .cli-flags.toml
+      - .github/workflows/oci-bootstrap.yml
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Refresh the stacked interface lock entry
+        run: cargo update -p zed-interfaces
+      - name: Format
+        run: cargo fmt --all
+      - name: Check
+        run: cargo check --all-targets
+      - name: Test OCI contract and planner
+        run: cargo test oci --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Preserve generated lock and formatted sources
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oci-planner-bootstrap
+          if-no-files-found: error
+          path: |
+            Cargo.lock
+            src/oci.rs
+            src/cli_oci.rs
+            src/cli.rs
+            src/main.rs
+            src/lib.rs
