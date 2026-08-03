@@ -1,0 +1,65 @@
+name: apply blocking store process locks
+
+on:
+  pull_request:
+    branches:
+      - agent/recursive-lock-cross-platform
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-blocking-store-process-locks-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: Check out store-lock branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/blocking-store-process-locks
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Apply exact kernel-blocking lock patch
+        run: |
+          set -euo pipefail
+          python3 .github/blocking_store_process_locks.py
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate store and recursive lock contracts
+        run: |
+          set -euo pipefail
+          rustup component add rustfmt clippy
+          cargo fmt --all --check
+          cargo test --locked --lib \
+            store::tests::install_process_lock_blocks_without_polling_until_owner_release \
+            -- --exact --nocapture
+          cargo test --locked --lib store::tests
+          cargo test --locked --lib install_graph::tests
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit validated code and remove bootstrap files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/blocking_store_process_locks.py \
+            .github/workflows/apply-blocking-store-process-locks.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: block store locks in the kernel'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/blocking-store-process-locks
