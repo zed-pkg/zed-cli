@@ -51,6 +51,18 @@ fn rejects_mutable_unsupported_or_multi_input_flake_locks() {
         .is_err()
     );
 
+    let mut divergent_revision: serde_json::Value = serde_json::from_slice(&flake_lock()).unwrap();
+    divergent_revision["nodes"]["nixpkgs"]["original"]["rev"] =
+        json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert!(
+        render_nix_export_bundle(
+            &export_plan,
+            &artifact_bytes,
+            &serde_json::to_vec(&divergent_revision).unwrap(),
+        )
+        .is_err()
+    );
+
     let mut multi_input: serde_json::Value = serde_json::from_slice(&flake_lock()).unwrap();
     multi_input["nodes"]["extra"] = json!({
         "locked": {
