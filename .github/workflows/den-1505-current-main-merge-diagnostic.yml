@@ -1,9 +1,6 @@
 name: DEN-1505 current-main merge diagnostic
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/den-1505-current-main-merge-diagnostic.yml'
   push:
     branches:
       - agent/den-1505-current-main-integration
@@ -12,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,10 +17,11 @@ concurrency:
 
 env:
   CURRENT_MAIN_SHA: b82da352472e301425c175b78d9d2c1c0cd0f1db
+  INTEGRATION_BRANCH: agent/den-1505-current-main-integration
 
 jobs:
   conflict-map:
-    name: Map the exact semantic conflict blocks
+    name: Commit the bounded semantic conflict report
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -31,42 +29,55 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          persist-credentials: false
 
-      - name: Attempt the exact current-main merge without committing
-        id: merge
+      - name: Map conflicts in a disposable local clone
         shell: bash
         run: |
           set -euo pipefail
           git fetch --no-tags origin "$CURRENT_MAIN_SHA"
-          set +e
-          git -c merge.conflictStyle=diff3 merge --no-commit --no-ff "$CURRENT_MAIN_SHA"
-          status=$?
-          set -e
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          git status --short
-          git diff --name-only --diff-filter=U | sort > "$RUNNER_TEMP/conflicts.txt"
-          cat "$RUNNER_TEMP/conflicts.txt"
+          git clone --quiet --no-hardlinks . "$RUNNER_TEMP/merge-work"
+          git -C "$RUNNER_TEMP/merge-work" checkout --quiet --detach "$GITHUB_SHA"
 
-      - name: Require the bounded two-file conflict surface
-        shell: bash
-        run: |
-          set -euo pipefail
+          set +e
+          git -C "$RUNNER_TEMP/merge-work" \
+            -c merge.conflictStyle=diff3 \
+            merge --no-commit --no-ff "$CURRENT_MAIN_SHA"
+          merge_status=$?
+          set -e
+          test "$merge_status" -ne 0
+
+          git -C "$RUNNER_TEMP/merge-work" \
+            diff --name-only --diff-filter=U | sort \
+            > "$RUNNER_TEMP/conflicts.txt"
           printf '%s\n' src/lib.rs src/ops.rs > "$RUNNER_TEMP/expected.txt"
           cmp "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/conflicts.txt"
 
-      - name: Render every conflict block with bounded context
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
+          mkdir -p merge-diagnostics
+          python3 - "$RUNNER_TEMP/merge-work" "$CURRENT_MAIN_SHA" <<'PY'
           from pathlib import Path
+          import json
+          import sys
 
-          for name in ('src/lib.rs', 'src/ops.rs'):
-              lines = Path(name).read_text(encoding='utf-8').splitlines()
-              print(f'::group::{name} conflict blocks')
+          root = Path(sys.argv[1])
+          main_sha = sys.argv[2]
+          paths = ('src/lib.rs', 'src/ops.rs')
+          markdown = [
+              '# DEN-1505 current-main semantic conflict map',
+              '',
+              f'- installer-stack head: `{Path.cwd()}`',
+              f'- exact current main: `{main_sha}`',
+              '- expected conflicted paths: `src/lib.rs`, `src/ops.rs`',
+              '- generated from a disposable local clone; source files were not resolved or committed',
+              '',
+          ]
+          machine = {'currentMain': main_sha, 'conflicts': []}
+
+          for name in paths:
+              lines = (root / name).read_text(encoding='utf-8').splitlines()
               index = 0
-              block = 0
+              block_number = 0
+              blocks = []
+              markdown.extend([f'## `{name}`', ''])
               while index < len(lines):
                   if not lines[index].startswith('<<<<<<< '):
                       index += 1
@@ -84,24 +95,46 @@ jobs:
                       index += 1
                   if index >= len(lines):
                       raise SystemExit(f'unterminated conflict in {name}')
-                  block += 1
-                  lo = max(0, start - 12)
-                  hi = min(len(lines), index + 13)
-                  print(f'--- block {block}: lines {start + 1}-{index + 1} ---')
-                  for line_number in range(lo, hi):
-                      print(f'{line_number + 1:05d}: {lines[line_number]}')
+                  block_number += 1
+                  block_lines = lines[start:index + 1]
+                  if len(block_lines) > 400:
+                      raise SystemExit(f'conflict block too large in {name}: {len(block_lines)} lines')
+                  blocks.append({
+                      'number': block_number,
+                      'startLine': start + 1,
+                      'endLine': index + 1,
+                      'lines': block_lines,
+                  })
+                  markdown.extend([
+                      f'### Block {block_number} — lines {start + 1}–{index + 1}',
+                      '',
+                      '```diff',
+                      *block_lines,
+                      '```',
+                      '',
+                  ])
                   index += 1
-              print(f'conflict_blocks={block}')
-              print('::endgroup::')
+              if not blocks:
+                  raise SystemExit(f'expected at least one conflict block in {name}')
+              machine['conflicts'].append({'path': name, 'blocks': blocks})
+
+          Path('merge-diagnostics/den-1505-current-main-conflicts.md').write_text(
+              '\n'.join(markdown) + '\n', encoding='utf-8'
+          )
+          Path('merge-diagnostics/den-1505-current-main-conflicts.json').write_text(
+              json.dumps(machine, sort_keys=True, indent=2) + '\n', encoding='utf-8'
+          )
           PY
 
-      - name: Upload the bounded conflicted files
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: den-1505-current-main-conflicts
-          path: |
-            src/lib.rs
-            src/ops.rs
-            ${{ runner.temp }}/conflicts.txt
-          if-no-files-found: error
-          retention-days: 1
+      - name: Commit only the bounded diagnostic report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            merge-diagnostics/den-1505-current-main-conflicts.md \
+            merge-diagnostics/den-1505-current-main-conflicts.json
+          git diff --cached --check
+          git commit -m 'docs(DEN-1505): record exact current-main conflict blocks'
+          git push origin "HEAD:$INTEGRATION_BRANCH"
