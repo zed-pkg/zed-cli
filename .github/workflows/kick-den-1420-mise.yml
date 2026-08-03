@@ -42,35 +42,63 @@ jobs:
           patch --batch --forward --fuzz=3 -p1 < /tmp/den-1420.patch
 
           # One low-context assertion hunk can land beside the contract-parity
-          # test under GNU patch fuzz. Relocate it deterministically, then
-          # verify every product file against the reviewed pre-format blob.
+          # test under GNU patch fuzz. Relocate it structurally, then verify
+          # every product file against the reviewed pre-format blob.
           python3 - <<'PY'
           from pathlib import Path
 
           path = Path('src/dev.rs')
-          text = path.read_text(encoding='utf-8')
-          block = '''        assert!(
-              develop
-                  .get_arguments()
-                  .any(|arg| arg.get_long() == Some("mise"))
-          );
-          '''
-          contract_marker = '        collect_contract_envs(&contract, &mut contract_envs);\n'
-          if contract_marker + block in text:
-              text = text.replace(contract_marker + block, contract_marker, 1)
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
 
-          nix_block = '''        assert!(
-              develop
-                  .get_arguments()
-                  .any(|arg| arg.get_long() == Some("nix"))
-          );
-          '''
-          if nix_block + block not in text:
-              if nix_block not in text:
-                  raise SystemExit('could not locate root-help nix assertion')
-              text = text.replace(nix_block, nix_block + block, 1)
+          def assertion_bounds(index: int) -> tuple[int, int]:
+              start = index
+              while start >= 0 and lines[start].strip() != 'assert!(':
+                  start -= 1
+              if start < 0:
+                  raise SystemExit('could not locate assertion start')
+              end = index
+              while end < len(lines) and lines[end].strip() != ');':
+                  end += 1
+              if end == len(lines):
+                  raise SystemExit('could not locate assertion end')
+              return start, end + 1
 
-          path.write_text(text, encoding='utf-8')
+          help_index = next(
+              i for i, line in enumerate(lines)
+              if 'fn augmented_root_help_contains_the_command_and_alias()' in line
+          )
+
+          misplaced = [
+              i for i, line in enumerate(lines[:help_index])
+              if 'Some("mise")' in line
+          ]
+          for index in reversed(misplaced):
+              start, end = assertion_bounds(index)
+              del lines[start:end]
+
+          help_index = next(
+              i for i, line in enumerate(lines)
+              if 'fn augmented_root_help_contains_the_command_and_alias()' in line
+          )
+          next_test = next(
+              (i for i in range(help_index + 1, len(lines)) if lines[i].strip() == '#[test]'),
+              len(lines),
+          )
+          if not any('Some("mise")' in line for line in lines[help_index:next_test]):
+              nix_index = next(
+                  i for i in range(help_index, next_test)
+                  if 'Some("nix")' in lines[i]
+              )
+              _, insert_at = assertion_bounds(nix_index)
+              lines[insert_at:insert_at] = [
+                  '        assert!(\n',
+                  '            develop\n',
+                  '                .get_arguments()\n',
+                  '                .any(|arg| arg.get_long() == Some("mise"))\n',
+                  '        );\n',
+              ]
+
+          path.write_text(''.join(lines), encoding='utf-8')
           PY
 
           if find . -name '*.rej' -print -quit | grep -q .; then
