@@ -7,8 +7,10 @@ pub mod completion;
 pub mod config;
 pub mod dev;
 pub mod flags;
+pub mod install_graph;
 pub mod interactive;
 pub mod manifestless;
+#[path = "ops_entry.rs"]
 pub mod ops;
 pub mod pack;
 pub mod preflight;
