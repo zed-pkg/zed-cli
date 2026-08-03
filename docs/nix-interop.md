@@ -57,9 +57,9 @@ The fetch stage:
 - isolates `HOME`, XDG directories, and `ZED_PKG_HOME`;
 - removes token and password environment variables;
 - accepts only proxy variables as impure networking configuration;
-- mirrors an explicitly declared immutable `registryPath` into the builder's
-  private workspace before Zed reads it, preserving the same Nix input graph
-  across Linux and Darwin sandbox behavior;
+- keeps an explicitly declared immutable `registryPath` in the sandbox closure
+  and addresses that exact store identity, preserving the `file://` source
+  already frozen into `.zpkg.lock` across Linux and Darwin;
 - rejects transaction residue, absolute links, escaping links, and broken
   links; and
 - declares `outputHashMode = "recursive"`, `outputHashAlgo = "sha256"`, and
@@ -292,8 +292,8 @@ exported metadata must always include the evaluated system and output platform.
    points at an immutable URL;
 6. generating a real `.zpkg.lock` and uninstalling the project materialization;
 7. evaluating the standalone flake library with lock updates disabled;
-8. bootstrapping the recursive fixed-output hash while mirroring the declared
-   immutable registry input into the builder-private workspace;
+8. bootstrapping the recursive fixed-output hash while addressing the declared
+   registry input through the exact store identity recorded in the frozen lock;
 9. rebuilding the same graph under two derivation names and comparing SHA-256
    NAR hashes;
 10. checking the self-identified non-canonical bridge metadata and link policy;
