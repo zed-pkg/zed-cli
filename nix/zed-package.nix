@@ -35,6 +35,8 @@ rec {
       registryValue =
         if registryPath != null then "file://${toString registryPath}"
         else registry;
+      registryArgs = lib.optionalString (registryValue != null)
+        "--registry ${lib.escapeShellArg registryValue}";
       targetArgs = lib.optionalString (target != null)
         "--target ${lib.escapeShellArg target}";
       manifestArgs = lib.optionalString (manifestPath == null) "--skip-manifest";
@@ -58,8 +60,9 @@ rec {
       phases = [ "installPhase" ];
 
       # An explicit path-valued attribute keeps immutable file registries in
-      # the Linux sandbox closure. A URL string alone is not a reliable input
-      # edge across all Nix platforms and sandbox implementations.
+      # the sandbox closure. Callers that already registered a path with Nix
+      # should pass it through builtins.storePath so the URL frozen into the
+      # lock remains the exact store identity rather than a copied path.
       ZED_PKG_NIX_REGISTRY_INPUT =
         if registryPath == null then "" else registryPath;
 
@@ -96,25 +99,11 @@ rec {
           "$XDG_DATA_HOME" \
           "$ZED_PKG_HOME"
 
-        registry_args=()
         ${lib.optionalString (registryPath != null) ''
           if [[ ! -d "$ZED_PKG_NIX_REGISTRY_INPUT" ]]; then
             echo "zed-pkg Nix bridge: immutable file registry input is missing: $ZED_PKG_NIX_REGISTRY_INPUT" >&2
             exit 1
           fi
-
-          # Linux's sandbox is stricter than Darwin's about traversing store
-          # inputs through application-level file:// URLs. Mirror the already
-          # declared immutable input into this builder's private workspace and
-          # point Zed at the mirror. This does not mutate lock provenance or
-          # broaden the input graph: the only source remains registryPath.
-          local_registry="$TMPDIR/zed-registry"
-          mkdir -p "$local_registry"
-          cp -a "$ZED_PKG_NIX_REGISTRY_INPUT"/. "$local_registry"/
-          registry_args=(--registry "file://$local_registry")
-        ''}
-        ${lib.optionalString (registry != null) ''
-          registry_args=(--registry ${lib.escapeShellArg registry})
         ''}
 
         work="$TMPDIR/zed-project"
@@ -151,7 +140,7 @@ rec {
         ''}
 
         cd "$work"
-        ${zed}/bin/zed "''${registry_args[@]}" install \
+        ${zed}/bin/zed ${registryArgs} install \
           --frozen \
           --install-mode copy \
           --adapter ${lib.escapeShellArg adapter} \
