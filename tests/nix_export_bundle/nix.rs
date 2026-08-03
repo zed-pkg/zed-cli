@@ -7,7 +7,7 @@ use zed_cli::nix_export_bundle::render_nix_export_bundle;
 use super::common::{artifact, flake_lock, plan};
 
 #[test]
-#[ignore = "requires a pinned Nix installation and one explicit archive preparation step"]
+#[ignore = "requires a pinned Nix installation and one explicit closure-acquisition step"]
 fn generated_flake_checks_and_builds_offline_after_archive() {
     let current_system = Command::new("nix")
         .args([
@@ -33,39 +33,56 @@ fn generated_flake_checks_and_builds_offline_after_archive() {
         fs::write(path, bytes).unwrap();
     }
 
-    let run = |args: &[&str]| {
-        let status = Command::new("nix")
+    let command = |args: &[&str]| {
+        let output = Command::new("nix")
             .args(args)
             .current_dir(root.path())
             .env(
                 "NIX_CONFIG",
                 "experimental-features = nix-command flakes\naccept-flake-config = false",
             )
-            .status()
+            .output()
             .unwrap();
         assert!(
-            status.success(),
-            "nix command failed: nix {}",
-            args.join(" ")
+            output.status.success(),
+            "nix command failed: nix {}\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
         );
+        output
     };
 
-    // Network/store population is one explicit preparation step. The checks
-    // and build that follow must succeed offline with lock updates disabled.
-    run(&["flake", "archive", "--no-update-lock-file"]);
-    run(&[
+    // Input acquisition and output realization are explicit preparation
+    // boundaries. A fresh Nix store cannot replay stdenv offline until the
+    // immutable locked closure has been obtained once from configured caches.
+    command(&["flake", "archive", "--no-update-lock-file"]);
+    let primed = command(&[
+        "build",
+        "--no-update-lock-file",
+        "--no-link",
+        "--print-build-logs",
+        "--print-out-paths",
+        ".#sample",
+    ]);
+    let primed_path = String::from_utf8(primed.stdout).unwrap();
+
+    command(&[
         "flake",
         "check",
         "--offline",
         "--no-update-lock-file",
         "--print-build-logs",
     ]);
-    run(&[
+    let replay = command(&[
         "build",
         "--offline",
         "--no-update-lock-file",
         "--no-link",
         "--print-build-logs",
+        "--print-out-paths",
         ".#sample",
     ]);
+    let replay_path = String::from_utf8(replay.stdout).unwrap();
+    assert_eq!(primed_path.trim(), replay_path.trim());
 }
