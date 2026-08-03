@@ -2196,6 +2196,7 @@ command = '''echo overridden > overridden.txt'''
 /// hardcoding `zed_modules/` would silently look in the wrong place (bins
 /// unrunnable, removed deps left on disk).
 #[cfg(unix)]
+#[cfg(unix)]
 #[test]
 fn install_dir_is_honored_by_install_run_and_remove() {
     let tmp = tempfile::tempdir().unwrap();
