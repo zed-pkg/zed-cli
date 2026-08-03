@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
@@ -55,22 +55,18 @@ fn require_build_key(key: &str) -> Result<()> {
     Ok(())
 }
 
-/// An advisory (flock-based) process lock held for the life of the guard.
-/// CLI commands are highly concurrent — two `zed install` runs in different
-/// terminals, or N parallel CI runners — so store mutations that must not
-/// interleave (extracting the same artifact, rewriting refs.json) take a
-/// lock first. The OS releases it if the process dies, so a crash can't
-/// wedge the store.
+/// A descriptor-backed process lock held for the life of the guard.
+///
+/// Acquisition uses the operating system's blocking lock primitive directly:
+/// `flock`/`fcntl` semantics on Unix and `LockFileEx` semantics on Windows via
+/// `fs2`. Contended callers sleep in the kernel and wake when the owner drops
+/// the descriptor or exits. There is no retry timer, jitter loop, stale-file
+/// reclamation, or userspace polling.
 pub struct ProcessLock {
     _file: fs::File,
 }
 
 impl ProcessLock {
-    /// Three-phase acquisition tuned for CLI latency:
-    /// spin-wait at 50ms while young (catches sub-second releases with no
-    /// perceptible lag), then exponential backoff with full jitter so
-    /// parallel CI runners don't wake in lockstep, and after 3s tell the
-    /// user what they are waiting on instead of freezing silently.
     fn acquire(path: &Path, waiting_on: &str) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -83,52 +79,13 @@ impl ProcessLock {
             .open(path)
             .with_context(|| format!("opening lock file {}", path.display()))?;
 
-        let timeout = Duration::from_secs(
-            std::env::var("ZED_PKG_LOCK_TIMEOUT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(600),
-        );
-        let start = Instant::now();
-        let mut backoff_attempt: u32 = 0;
-        let mut notified = false;
-        loop {
-            match file.try_lock_exclusive() {
-                Ok(()) => return Ok(Self { _file: file }),
-                Err(_) if start.elapsed() >= timeout => {
-                    bail!(
-                        "timed out after {}s waiting for {waiting_on} (lock {}); \
-                         another zed process may be stuck — raise ZED_PKG_LOCK_TIMEOUT \
-                         or investigate",
-                        timeout.as_secs(),
-                        path.display()
-                    );
-                }
-                Err(_) => {}
-            }
-            let elapsed = start.elapsed();
-            if elapsed >= Duration::from_secs(3) && !notified {
-                eprintln!("waiting for {waiting_on} (held by another zed process)...");
-                notified = true;
-            }
-            let sleep = if elapsed < Duration::from_millis(500) {
-                Duration::from_millis(50)
-            } else {
-                backoff_attempt = backoff_attempt.saturating_add(1);
-                let cap_ms: u64 = 2000;
-                let exp_ms = 100u64
-                    .saturating_mul(1u64 << backoff_attempt.min(20))
-                    .min(cap_ms);
-                // Full jitter: uniform in [0, exp_ms] without pulling in an
-                // RNG dependency — subsec_nanos is plenty for de-syncing.
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.subsec_nanos() as u64)
-                    .unwrap_or(0);
-                Duration::from_millis(nanos % (exp_ms + 1))
-            };
-            std::thread::sleep(sleep);
-        }
+        file.lock_exclusive().with_context(|| {
+            format!(
+                "waiting for {waiting_on} through operating-system lock {}",
+                path.display()
+            )
+        })?;
+        Ok(Self { _file: file })
     }
 }
 
@@ -688,7 +645,89 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
     use super::*;
+
+    #[test]
+    fn install_process_lock_blocks_without_polling_until_owner_release() {
+        const CHILD_HOME: &str = "ZED_PKG_TEST_STORE_LOCK_CHILD_HOME";
+        const CHILD_ATTEMPTING: &str = "ZED_PKG_TEST_STORE_LOCK_CHILD_ATTEMPTING";
+        const CHILD_ACQUIRED: &str = "ZED_PKG_TEST_STORE_LOCK_CHILD_ACQUIRED";
+        const TEST_NAME: &str =
+            "store::tests::install_process_lock_blocks_without_polling_until_owner_release";
+
+        if let Some(home) = std::env::var_os(CHILD_HOME) {
+            let attempting = PathBuf::from(std::env::var_os(CHILD_ATTEMPTING).unwrap());
+            let acquired = PathBuf::from(std::env::var_os(CHILD_ACQUIRED).unwrap());
+            fs::write(attempting, b"attempting").unwrap();
+            let store = Store::new(Path::new(&home));
+            let _waiter = store.install_lock().unwrap();
+            fs::write(acquired, b"acquired").unwrap();
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path());
+        let owner = store.install_lock().unwrap();
+        let attempting = temp.path().join("store-lock-waiter-attempting");
+        let acquired = temp.path().join("store-lock-waiter-acquired");
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg(TEST_NAME)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(CHILD_HOME, temp.path())
+            .env(CHILD_ATTEMPTING, &attempting)
+            .env(CHILD_ACQUIRED, &acquired)
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+
+        let attempting_deadline = Instant::now() + Duration::from_secs(5);
+        while !attempting.is_file() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("store-lock waiter exited before attempting acquisition: {status}");
+            }
+            if Instant::now() >= attempting_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("store-lock waiter did not reach acquisition");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !acquired.exists(),
+            "a separate process acquired install.lock while the owner held it"
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "store-lock waiter exited before owner release"
+        );
+
+        drop(owner);
+        let release_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "store-lock waiter failed: {status}");
+                break;
+            }
+            if Instant::now() >= release_deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("store-lock waiter did not wake after owner release");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            acquired.is_file(),
+            "waiter exited without acquiring install.lock"
+        );
+    }
 
     #[test]
     fn gc_survives_hostile_max_age() {
