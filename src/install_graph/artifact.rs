@@ -1,4 +1,6 @@
-fn worker_loop(
+use super::*;
+
+pub(super) fn worker_loop(
     queue: Arc<TaskQueue>,
     results: mpsc::Sender<Result<FetchResult>>,
     registry_url: String,
@@ -132,7 +134,7 @@ fn download_atomic(
     }
 }
 
-fn split_key(key: &str) -> Result<(String, String)> {
+pub(super) fn split_key(key: &str) -> Result<(String, String)> {
     let mut parts = key.splitn(2, '/');
     match (parts.next(), parts.next()) {
         (Some(org), Some(name)) if !org.is_empty() && !name.is_empty() => {
@@ -142,7 +144,7 @@ fn split_key(key: &str) -> Result<(String, String)> {
     }
 }
 
-fn validate_version_identity(
+pub(super) fn validate_version_identity(
     version: &VersionMetadata,
     expected_org: &str,
     expected_name: &str,
@@ -170,7 +172,7 @@ fn validate_version_identity(
     Ok(())
 }
 
-fn resolve_version(
+pub(super) fn resolve_version(
     registry: &dyn Registry,
     org: &str,
     name: &str,
@@ -206,4 +208,3 @@ fn resolve_version(
         return Ok(version);
     }
 }
-
