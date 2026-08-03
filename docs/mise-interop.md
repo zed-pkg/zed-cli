@@ -98,10 +98,12 @@ The normalized plan retains the authored requirement, exact locked version, prov
 - exact one-to-one tool coverage between config and lock;
 - an exact non-moving resolved version for every tool;
 - at least one platform artifact identity per locked tool;
-- a checksum or immutable download URL for every represented platform artifact;
+- a cryptographic checksum for every represented platform artifact;
 - valid checksum algorithms and digest lengths;
 - safe project-relative config and lock paths;
 - no unsupported manager semantics that would be lost during normalization.
+
+A URL and byte size are retained as provenance and participate in drift detection, but a URL alone is not accepted as immutable artifact identity. The initial frozen adapter intentionally rejects a lock entry whose backend did not record a checksum rather than weakening verification or pretending that an exact version string proves the downloaded bytes.
 
 `settings.lockfile = false` is incompatible with frozen verification.
 
@@ -138,7 +140,7 @@ Human verification output reports the selected config, lock, tool count, and pla
 
 `zed env import mise --json` emits the normalized shared `EnvironmentPlan` itself.
 
-The manager-source digest is semantic rather than presentation-based: changing TOML whitespace or key order does not change it, while changing a resolved version, backend, platform artifact, checksum, URL, or supported setting does.
+The manager-source digest is semantic rather than presentation-based: changing TOML whitespace or key order does not change it, while changing a resolved version, backend, platform artifact, checksum, URL, byte size, or supported setting does.
 
 ## Lockfile naming
 
@@ -159,6 +161,7 @@ mise.test.toml   → mise.test.lock
 - Import and verification are read-only.
 - Unknown fields fail with their exact TOML path.
 - Lock/config drift reports missing and extra tool names.
+- Frozen artifact verification requires cryptographic identity rather than trusting a version label or mutable URL.
 - No arbitrary shell command is accepted as an activation policy; the shared plan exposes only the fixed `zed install --frozen` activation boundary.
 
 ## Planned follow-up
