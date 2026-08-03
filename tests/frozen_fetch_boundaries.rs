@@ -30,6 +30,7 @@ fn write_lock(project: &Path, source: Option<String>) {
     let lock = Lockfile {
         version: Lockfile::CURRENT_VERSION,
         packages,
+        nix_adapters: Vec::new(),
     };
     fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();
 }
