@@ -551,6 +551,7 @@ fn lock_project_manifest(cfg: &Config, project: &Path) -> Result<File> {
     let lock_path = lock_dir.join(format!("{key}.manifest.lock"));
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)
