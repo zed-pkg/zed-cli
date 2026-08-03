@@ -1,0 +1,95 @@
+name: frozen lock integrity
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/frozen-lock-integrity.yml'
+      - 'tests/frozen-lock-integrity-e2e.sh'
+      - 'tests/fixtures/polyglot/**'
+      - 'src/config.rs'
+      - 'src/ops.rs'
+      - 'src/manifestless.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/frozen-lock-integrity.yml'
+      - 'tests/frozen-lock-integrity-e2e.sh'
+      - 'tests/fixtures/polyglot/**'
+      - 'src/config.rs'
+      - 'src/ops.rs'
+      - 'src/manifestless.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integrity:
+    name: Empty, incomplete, malformed, and drifting locks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout zed-cli
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: zed-cli
+          persist-credentials: false
+
+      - name: Checkout the exact interface contract
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: 625ba7bdf4339df7d0880f791a0715ca894558fe
+          path: zed-interfaces
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: stable
+
+      - name: Restore bounded Rust cache
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: zed-cli
+
+      - name: Build the exact zed executable under test
+        working-directory: zed-cli
+        run: cargo build --locked --bin zed
+
+      - name: Check the binary-level harness syntax
+        working-directory: zed-cli
+        run: bash -n tests/frozen-lock-integrity-e2e.sh
+
+      - name: Prove frozen dependency locks fail closed and atomically
+        working-directory: zed-cli
+        env:
+          ZED_FROZEN_LOCK_E2E_ROOT: ${{ runner.temp }}/frozen-lock-integrity
+          ZED_FROZEN_LOCK_E2E_KEEP: '1'
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed" \
+            2>&1 | tee "$RUNNER_TEMP/frozen-lock-integrity.log"
+
+      - name: Upload bounded failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frozen-lock-integrity-diagnostics
+          path: |
+            ${{ runner.temp }}/frozen-lock-integrity.log
+            ${{ runner.temp }}/frozen-lock-integrity/negative-cases/*/frozen.log
+            ${{ runner.temp }}/frozen-lock-integrity/negative-cases/*/.zpkg.toml
+            ${{ runner.temp }}/frozen-lock-integrity/negative-cases/*/.zpkg.lock
+          if-no-files-found: warn
+          retention-days: 1
