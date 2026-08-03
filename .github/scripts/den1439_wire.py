@@ -6,10 +6,13 @@ NEW_REV = "19e6d74d9f9ff92d549d2072793ebe1116a25d90"
 for path in ["Cargo.toml", "Cargo.lock"]:
     file = Path(path)
     text = file.read_text()
-    count = text.count(OLD_REV)
-    if count == 0:
-        raise SystemExit(f"missing old zed-interfaces revision in {path}")
-    file.write_text(text.replace(OLD_REV, NEW_REV))
+    if OLD_REV in text:
+        text = text.replace(OLD_REV, NEW_REV)
+    elif NEW_REV not in text:
+        raise SystemExit(
+            f"{path} contains neither the old nor canonical zed-interfaces revision"
+        )
+    file.write_text(text)
 
 cli = Path("src/cli.rs")
 text = cli.read_text()
