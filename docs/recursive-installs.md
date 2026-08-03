@@ -58,6 +58,12 @@ the same absent content hash. The first download is held open while the second
 path attempts acquisition; the test proves that the second path never enters
 its registry download and that the aggregate download count remains one.
 
+A separate parent/child-process regression holds an artifact lock in the parent,
+proves that the child remains blocked after reaching acquisition, releases the
+owner descriptor, and then requires the child to wake and acquire successfully.
+The same contract runs on Windows together with the shared-home deduplication,
+mixed recursive/transactional acquisition, and failed-download cleanup tests.
+
 The companion end-to-end suite also runs multiple independent CLI processes
 against one shared Zed home, verifies the complete transitive lock graph, and
 checks that project packages are store-backed symlinks rather than copied
