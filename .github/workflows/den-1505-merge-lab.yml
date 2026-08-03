@@ -1,9 +1,6 @@
-name: DEN-1505 semantic merge laboratory
+name: DEN-1505 semantic current-main integration
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/den-1505-merge-lab.yml'
   push:
     branches:
       - agent/den-1505-merge-lab
@@ -12,174 +9,127 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-apply
+  cancel-in-progress: false
 
 env:
-  MERGE_BASE_SHA: 66009989605607e503a8061206c08db06ebd51f0
-  STACK_SHA: 8cc6745c75fd46dabf2e383cbcfc14db5ff933da
+  INTEGRATION_BRANCH: agent/den-1505-current-main-integration
+  INTEGRATION_HEAD_SHA: bed188e0915a22124d627f85af1453ca8c85dbf1
   CURRENT_MAIN_SHA: b82da352472e301425c175b78d9d2c1c0cd0f1db
 
 jobs:
-  conflict-lab:
-    name: Export exact three-way conflict stages
+  compose:
+    name: Compose, validate, and fast-forward the integration branch
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Check out the clean current-main laboratory branch
+      - name: Check out the merge laboratory with push credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
 
-      - name: Produce a bounded three-way merge artifact
+      - name: Verify immutable branch inputs
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "$STACK_SHA"
-          git clone --quiet --no-hardlinks . "$RUNNER_TEMP/merge-work"
-          git -C "$RUNNER_TEMP/merge-work" checkout --quiet --detach "$STACK_SHA"
-          git -C "$RUNNER_TEMP/merge-work" config user.name 'DEN-1505 merge laboratory'
-          git -C "$RUNNER_TEMP/merge-work" config user.email 'den-1505-merge-lab@users.noreply.github.com'
+          git fetch --no-tags origin \
+            "+refs/heads/$INTEGRATION_BRANCH:refs/remotes/origin/$INTEGRATION_BRANCH" \
+            "+refs/heads/main:refs/remotes/origin/main"
+          test "$(git rev-parse "refs/remotes/origin/$INTEGRATION_BRANCH")" = "$INTEGRATION_HEAD_SHA"
+          test "$(git rev-parse refs/remotes/origin/main)" = "$CURRENT_MAIN_SHA"
+
+      - name: Perform the exact two-parent merge and resolve the sole conflict
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout --detach "$INTEGRATION_HEAD_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           set +e
-          git -C "$RUNNER_TEMP/merge-work" \
-            -c merge.conflictStyle=diff3 \
-            merge --no-commit --no-ff "$CURRENT_MAIN_SHA"
+          git -c merge.conflictStyle=diff3 merge --no-commit --no-ff "$CURRENT_MAIN_SHA"
           merge_status=$?
           set -e
           test "$merge_status" -ne 0
 
-          artifact="$RUNNER_TEMP/den-1505-merge-lab"
-          mkdir -p "$artifact"
-          git -C "$RUNNER_TEMP/merge-work" \
-            diff --name-only --diff-filter=U | sort \
-            > "$artifact/conflicts.txt"
-          printf '%s\n' src/lib.rs > "$RUNNER_TEMP/expected.txt"
-          cmp "$RUNNER_TEMP/expected.txt" "$artifact/conflicts.txt"
+          git diff --name-only --diff-filter=U | sort > "$RUNNER_TEMP/conflicts.txt"
+          printf '%s\n' src/lib.rs > "$RUNNER_TEMP/expected-conflicts.txt"
+          cmp "$RUNNER_TEMP/expected-conflicts.txt" "$RUNNER_TEMP/conflicts.txt"
 
-          # lib.rs is the sole conflicted file. Export all three index stages,
-          # the diff3 worktree form, and an intentionally non-authoritative
-          # union candidate for bounded human/agent review.
-          git -C "$RUNNER_TEMP/merge-work" show ':1:src/lib.rs' > "$artifact/src__lib.rs.base"
-          git -C "$RUNNER_TEMP/merge-work" show ':2:src/lib.rs' > "$artifact/src__lib.rs.stack"
-          git -C "$RUNNER_TEMP/merge-work" show ':3:src/lib.rs' > "$artifact/src__lib.rs.main"
-          cp "$RUNNER_TEMP/merge-work/src/lib.rs" "$artifact/src__lib.rs.conflicted"
-          set +e
-          git merge-file -p --union \
-            "$artifact/src__lib.rs.stack" \
-            "$artifact/src__lib.rs.base" \
-            "$artifact/src__lib.rs.main" \
-            > "$artifact/src__lib.rs.union"
-          lib_union_status=$?
-          set -e
-          printf '%s\n' "$lib_union_status" > "$artifact/src__lib.rs.union-status"
+          cat > src/lib.rs <<'RS'
+          //! Library core of the `zed` CLI. The binary in `main.rs` is a thin
+          //! dispatcher over these modules; integration tests drive them directly.
 
-          # ops.rs auto-merges cleanly. Export its exact base, stack, main, and
-          # merged worktree result so the clean merge can still be audited.
-          git -C "$RUNNER_TEMP/merge-work" show "$MERGE_BASE_SHA:src/ops.rs" \
-            > "$artifact/src__ops.rs.base"
-          git -C "$RUNNER_TEMP/merge-work" show "$STACK_SHA:src/ops.rs" \
-            > "$artifact/src__ops.rs.stack"
-          git -C "$RUNNER_TEMP/merge-work" show "$CURRENT_MAIN_SHA:src/ops.rs" \
-            > "$artifact/src__ops.rs.main"
-          cp "$RUNNER_TEMP/merge-work/src/ops.rs" "$artifact/src__ops.rs.merged"
+          pub mod auth;
+          pub mod cli;
+          pub mod completion;
+          pub mod config;
+          pub mod dev;
+          pub mod fetch;
+          pub mod flags;
+          pub mod install_graph;
+          pub mod interactive;
+          pub mod manifestless;
+          pub mod nix_export_bundle;
+          pub mod nix_export_plan;
+          #[path = "ops_entry.rs"]
+          pub mod ops;
+          pub mod pack;
+          pub mod preflight;
+          pub mod r2g;
+          pub mod registry;
+          pub mod release;
+          pub mod store;
+          pub mod transaction;
+          pub mod update;
+          pub mod vcs;
 
-          python3 - "$artifact" "$MERGE_BASE_SHA" "$STACK_SHA" "$CURRENT_MAIN_SHA" <<'PY'
-          from pathlib import Path
-          import hashlib
-          import json
-          import sys
+          pub mod tool_versions;
+          RS
 
-          root = Path(sys.argv[1])
-          merge_base = sys.argv[2]
-          stack_sha = sys.argv[3]
-          main_sha = sys.argv[4]
-          conflicted = (root / 'src__lib.rs.conflicted').read_text(encoding='utf-8').splitlines()
-          blocks = []
-          index = 0
-          while index < len(conflicted):
-              if not conflicted[index].startswith('<<<<<<< '):
-                  index += 1
-                  continue
-              start = index
-              while index < len(conflicted) and not conflicted[index].startswith('>>>>>>> '):
-                  index += 1
-              if index >= len(conflicted):
-                  raise SystemExit('unterminated conflict in src/lib.rs')
-              block_lines = conflicted[start:index + 1]
-              if len(block_lines) > 500:
-                  raise SystemExit('src/lib.rs conflict block exceeds bounded review size')
-              blocks.append({
-                  'startLine': start + 1,
-                  'endLine': index + 1,
-                  'lines': block_lines,
-              })
-              index += 1
-          if not blocks:
-              raise SystemExit('expected at least one conflict block in src/lib.rs')
+          git add src/lib.rs
+          test -z "$(git diff --name-only --diff-filter=U)"
 
-          def digest(path: Path) -> str:
-              return hashlib.sha256(path.read_bytes()).hexdigest()
+          # Remove only the temporary diagnostic workflow introduced on the
+          # integration branch; it is not product or permanent CI surface.
+          rm -f .github/workflows/den-1505-current-main-merge-diagnostic.yml
+          git add -A
 
-          files = {
-              path.name: digest(path)
-              for path in sorted(root.iterdir())
-              if path.is_file() and path.name not in {'manifest.json', 'README.md'}
-          }
-          manifest = {
-              'mergeBaseSha': merge_base,
-              'stackSha': stack_sha,
-              'currentMainSha': main_sha,
-              'conflictedPaths': ['src/lib.rs'],
-              'cleanAutoMergedPaths': ['src/ops.rs'],
-              'libConflictBlocks': blocks,
-              'sha256': files,
-          }
-          (root / 'manifest.json').write_text(
-              json.dumps(manifest, sort_keys=True, indent=2) + '\n',
-              encoding='utf-8',
-          )
+      - name: Prove both conceptual sides survived
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'pub mod fetch;' src/lib.rs
+          grep -F 'pub mod install_graph;' src/lib.rs
+          grep -F 'pub mod nix_export_bundle;' src/lib.rs
+          grep -F 'pub mod nix_export_plan;' src/lib.rs
+          grep -F '#[path = "ops_entry.rs"]' src/lib.rs
+          grep -F 'pub mod tool_versions;' src/lib.rs
 
-          markdown = [
-              '# DEN-1505 semantic merge laboratory',
-              '',
-              f'- merge base: `{merge_base}`',
-              f'- cumulative installer stack: `{stack_sha}`',
-              f'- exact current main: `{main_sha}`',
-              '- sole conflict: `src/lib.rs`',
-              '- clean automatic merge: `src/ops.rs`',
-              '- merge direction: stack first parent, current main second input',
-              '- no repository branch was resolved or mutated by this job',
-              '',
-              '## `src/lib.rs` conflict blocks',
-              '',
-          ]
-          for number, block in enumerate(blocks, 1):
-              markdown.extend([
-                  f'### Block {number}: lines {block["startLine"]}–{block["endLine"]}',
-                  '',
-                  '```diff',
-                  *block['lines'],
-                  '```',
-                  '',
-              ])
-          markdown.extend([
-              '## `src/ops.rs`',
-              '',
-              'Git merged this file cleanly. The artifact includes exact base, stack, main, and merged files for semantic inspection.',
-              '',
-          ])
-          (root / 'README.md').write_text('\n'.join(markdown) + '\n', encoding='utf-8')
-          PY
+          grep -F 'fn write_resolved_lockfile' src/ops.rs
+          grep -F 'frozen_lock_write_preserves_exact_bytes' src/ops.rs
+          grep -F 'collect_workspace_links_for_frozen' src/ops.rs
+          grep -F 'crate::install_graph::ensure_artifact' src/ops.rs
+          test ! -e .github/workflows/den-1505-current-main-merge-diagnostic.yml
+          git diff --check
 
-      - name: Upload exact base, stack, main, conflict, and merged candidates
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: den-1505-semantic-merge-lab
-          path: ${{ runner.temp }}/den-1505-merge-lab
-          if-no-files-found: error
-          retention-days: 1
+      - name: Format and compile the resolved library contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked --lib
+
+      - name: Create the semantic merge commit and push without force
+        shell: bash
+        run: |
+          set -euo pipefail
+          git commit -m "merge(DEN-1505/DEN-1585): compose recursive installer stack with current Nix main" \
+            -m "Preserve the complete recursive, blocking-lock, resolver-hardening, workspace, frozen-repair, and uninstall history as the first parent while incorporating current strict-lock, frozen-fetch, Nix bundle/export, and pure-flake main as the second parent. Resolve only src/lib.rs by retaining all module surfaces; src/ops.rs merges cleanly. Remove the temporary diagnostic workflow."
+          test "$(git rev-parse HEAD^1)" = "$INTEGRATION_HEAD_SHA"
+          test "$(git rev-parse HEAD^2)" = "$CURRENT_MAIN_SHA"
+          git push origin "HEAD:refs/heads/$INTEGRATION_BRANCH"
