@@ -14,7 +14,10 @@ def verify_hashes(root: Path, generated: object) -> None:
             fail(f"generated file is missing or a symlink: {relative}")
         actual = sha256_file(path)
         if actual != expected:
-            fail(f"generated file hash mismatch for {relative}: expected {expected}, found {actual}")
+            fail(
+                f"generated file hash mismatch for {relative}: "
+                f"expected {expected}, found {actual}"
+            )
 
 
 def safe_tar_members(archive: tarfile.TarFile) -> list[tarfile.TarInfo]:
@@ -42,6 +45,8 @@ def verify_sealed(root: Path, bridge: Mapping[str, Any]) -> None:
     artifact_info = bridge.get("artifact")
     if not isinstance(artifact_info, Mapping):
         fail("sealed bridge has no artifact evidence")
+    if artifact_info.get("format") != "tar.gz":
+        fail("strict v1 sealed artifacts must use tar.gz")
     artifact_name = safe_relative(artifact_info.get("file"), "artifact file")
     artifact = root / artifact_name
     expected_hash = validate_hex(artifact_info.get("sha256"), "sealed artifact hash")
@@ -53,7 +58,7 @@ def verify_sealed(root: Path, bridge: Mapping[str, Any]) -> None:
         fail("sealed artifact size mismatch")
 
     embedded_adapter: bytes | None = None
-    manifest_found = False
+    manifest_bytes: bytes | None = None
     with tarfile.open(artifact, mode="r:gz") as archive:
         for member in safe_tar_members(archive):
             if member.isfile():
@@ -68,23 +73,47 @@ def verify_sealed(root: Path, bridge: Mapping[str, Any]) -> None:
                         f"{match.group(0).decode('ascii', errors='replace')}"
                     )
                 if member.name == ".zpkg.toml":
-                    manifest_found = True
+                    manifest_bytes = content
                     tomllib.loads(content.decode("utf-8"))
                 elif member.name == "zed-nix-adapter.json":
                     embedded_adapter = content
-    if not manifest_found or embedded_adapter is None:
+    if manifest_bytes is None or embedded_adapter is None:
         fail("sealed artifact lacks .zpkg.toml or zed-nix-adapter.json")
-    if sha256_bytes(embedded_adapter) != artifact_info.get("embedded_adapter_sha256"):
+    if sha256_bytes(manifest_bytes) != artifact_info.get("manifest_sha256"):
+        fail("sealed manifest digest mismatch")
+    if sha256_bytes(embedded_adapter) != artifact_info.get(
+        "embedded_adapter_sha256"
+    ):
         fail("embedded adapter digest mismatch")
+
     embedded = json.loads(embedded_adapter)
-    for key in ("schema", "schema_version", "direction", "package", "nix", "source", "policy"):
+    for key in ("schema", "schema_version", "direction", "package", "source", "policy"):
         if embedded.get(key) != bridge.get(key):
             fail(f"embedded adapter/sidecar mismatch for {key}")
+
+    sidecar_nix = bridge.get("nix")
+    embedded_nix = embedded.get("nix")
+    if not isinstance(sidecar_nix, Mapping) or not isinstance(embedded_nix, Mapping):
+        fail("embedded adapter and sidecar require Nix evidence objects")
+    store_path = sidecar_nix.get("store_path")
+    if not isinstance(store_path, str) or not store_path:
+        fail("external sidecar requires the exact selected store path")
+    store_path_hash = validate_hex(
+        sidecar_nix.get("store_path_sha256"), "selected store path"
+    )
+    if sha256_bytes(store_path.encode("utf-8")) != store_path_hash:
+        fail("external sidecar store path hash mismatch")
+    expected_embedded_nix = dict(sidecar_nix)
+    expected_embedded_nix.pop("store_path", None)
+    if dict(embedded_nix) != expected_embedded_nix:
+        fail("embedded adapter/sidecar mismatch for redacted Nix evidence")
+    if "store_path" in embedded_nix:
+        fail("embedded adapter must not retain the exact ephemeral Nix store path")
+
     if bridge.get("policy", {}).get("nix_required_at_zed_runtime") is not False:
         fail("sealed package must not require Nix at Zed runtime")
-    references = bridge.get("nix", {}).get("references")
-    store_path = bridge.get("nix", {}).get("store_path")
-    if not isinstance(references, list) or [item for item in references if item != store_path]:
+    references = sidecar_nix.get("references")
+    if not isinstance(references, list) or references:
         fail("sealed package provenance contains unresolved Nix references")
 
 
@@ -92,7 +121,9 @@ def command_verify(args: argparse.Namespace) -> None:
     root = args.directory.resolve()
     if (root / "zed-nix-adapter.json").is_file():
         adapter = read_json(root / "zed-nix-adapter.json")
-        if adapter.get("schema") != SCHEMA or adapter.get("schema_version") != SCHEMA_VERSION:
+        if adapter.get("schema") != SCHEMA or adapter.get(
+            "schema_version"
+        ) != SCHEMA_VERSION:
             fail("unknown Zed/Nix adapter schema")
         if adapter.get("direction") != "zed-to-nix":
             fail("directory adapter direction is not zed-to-nix")
@@ -102,7 +133,9 @@ def command_verify(args: argparse.Namespace) -> None:
         result = adapter
     elif (root / "bridge.json").is_file():
         bridge = read_json(root / "bridge.json")
-        if bridge.get("schema") != SCHEMA or bridge.get("schema_version") != SCHEMA_VERSION:
+        if bridge.get("schema") != SCHEMA or bridge.get(
+            "schema_version"
+        ) != SCHEMA_VERSION:
             fail("unknown Zed/Nix adapter schema")
         if bridge.get("direction") != "nix-to-zed":
             fail("sidecar bridge direction is not nix-to-zed")
