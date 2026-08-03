@@ -139,6 +139,7 @@ struct CountingRegistry {
     downloads: Arc<AtomicUsize>,
     started: Option<test_mpsc::Sender<()>>,
     release: Option<test_mpsc::Receiver<()>>,
+    fail_after_write: bool,
 }
 
 impl Registry for CountingRegistry {
@@ -159,6 +160,10 @@ impl Registry for CountingRegistry {
             release.recv_timeout(Duration::from_secs(5)).unwrap();
         }
         fs::create_dir_all(dest.parent().unwrap())?;
+        if self.fail_after_write {
+            fs::write(dest, b"partial fixture download")?;
+            bail!("injected artifact download failure");
+        }
         fs::copy(&self.artifact, dest)?;
         Ok(())
     }
@@ -227,12 +232,14 @@ fn legacy_and_recursive_acquisition_paths_share_one_download_lock() {
         downloads: Arc::clone(&downloads),
         started: Some(recursive_started_tx),
         release: Some(recursive_release_rx),
+        fail_after_write: false,
     };
     let legacy_registry = CountingRegistry {
         artifact,
         downloads: Arc::clone(&downloads),
         started: Some(legacy_started_tx),
         release: None,
+        fail_after_write: false,
     };
     let recursive_store = Store::new(&home);
     let legacy_store = Store::new(&home);
@@ -270,6 +277,54 @@ fn legacy_and_recursive_acquisition_paths_share_one_download_lock() {
     assert_eq!(downloads.load(Ordering::SeqCst), 1);
     assert_eq!(legacy_path, recursive_path);
     assert!(recursive_path.is_dir());
+}
+
+#[test]
+fn worker_panics_are_reported_without_losing_the_task_sequence() {
+    let message = super::artifact::run_fetch_task(17, "test/panic", || -> Result<FetchResult> {
+        panic!("fixture worker panic")
+    });
+
+    assert_eq!(message.sequence, 17);
+    let error = message.result.unwrap_err().to_string();
+    assert!(error.contains("test/panic"), "{error}");
+    assert!(error.contains("sequence 17"), "{error}");
+    assert!(error.contains("fixture worker panic"), "{error}");
+}
+
+#[test]
+fn failed_downloads_remove_staging_files_and_never_publish_cache_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry_root = temp.path().join("registry");
+    let scratch = temp.path().join("scratch");
+    let home = temp.path().join("home");
+
+    let sha = publish_fixture(&registry_root, &scratch, "test", "failure", "1.0.0", &[]);
+    let version = published_version(&registry_root, "test", "failure", "1.0.0");
+    let registry = CountingRegistry {
+        artifact: registry_root
+            .join("artifacts")
+            .join(format!("{sha}.tar.gz")),
+        downloads: Arc::new(AtomicUsize::new(0)),
+        started: None,
+        release: None,
+        fail_after_write: true,
+    };
+    let store = Store::new(&home);
+
+    let error = super::ensure_artifact(&registry, &store, &version)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("injected artifact download failure"),
+        "{error}"
+    );
+    assert!(!store.cached_artifact(&sha).exists());
+    assert!(!store.has(&sha));
+    let cache_entries = fs::read_dir(store.cache_dir())
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(cache_entries, 0, "failed staging directory leaked");
 }
 
 #[test]

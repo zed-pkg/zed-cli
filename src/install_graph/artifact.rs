@@ -11,7 +11,8 @@ pub(super) fn worker_loop(
 
     while let Some(task) = queue.pop() {
         let sequence = task.sequence;
-        let result = (|| -> Result<FetchResult> {
+        let key = task.key.clone();
+        let message = run_fetch_task(sequence, &key, || -> Result<FetchResult> {
             if registry.is_none() {
                 registry = Some(registry_for(&registry_url)?);
             }
@@ -19,11 +20,37 @@ pub(super) fn worker_loop(
                 .as_deref()
                 .context("recursive install worker has no registry")?;
             prefetch_one(registry, &store, task)
-        })();
-        if results.send(FetchMessage { sequence, result }).is_err() {
+        });
+        if results.send(message).is_err() {
             return;
         }
     }
+}
+
+/// Convert a task panic into the same sequenced result channel used for normal
+/// failures. Without this boundary, the worker would unwind after popping the
+/// task, permanently losing that sequence while the coordinator waited for a
+/// result that could never arrive.
+pub(super) fn run_fetch_task<F>(sequence: usize, key: &str, work: F) -> FetchMessage
+where
+    F: FnOnce() -> Result<FetchResult>,
+{
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(
+        |payload| {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .copied()
+                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                .unwrap_or("non-string panic payload");
+            Err(anyhow::anyhow!(
+                "recursive install worker panicked while processing {} (sequence {}): {}",
+                key,
+                sequence,
+                detail
+            ))
+        },
+    );
+    FetchMessage { sequence, result }
 }
 
 fn prefetch_one(registry: &dyn Registry, store: &Store, task: FetchTask) -> Result<FetchResult> {
