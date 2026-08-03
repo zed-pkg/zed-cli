@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn worker_loop(
     queue: Arc<TaskQueue>,
-    results: mpsc::Sender<Result<FetchResult>>,
+    results: mpsc::Sender<FetchMessage>,
     registry_url: String,
     home: PathBuf,
 ) {
@@ -10,6 +10,7 @@ pub(super) fn worker_loop(
     let mut registry: Option<Box<dyn Registry>> = None;
 
     while let Some(task) = queue.pop() {
+        let sequence = task.sequence;
         let result = (|| -> Result<FetchResult> {
             if registry.is_none() {
                 registry = Some(registry_for(&registry_url)?);
@@ -19,7 +20,7 @@ pub(super) fn worker_loop(
                 .context("recursive install worker has no registry")?;
             prefetch_one(registry, &store, &home, task)
         })();
-        if results.send(result).is_err() {
+        if results.send(FetchMessage { sequence, result }).is_err() {
             return;
         }
     }
