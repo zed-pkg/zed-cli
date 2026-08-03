@@ -3,6 +3,7 @@
 
 pub mod auth;
 pub mod cli;
+pub mod cli_oci;
 pub mod completion;
 pub mod config;
 pub mod dev;
