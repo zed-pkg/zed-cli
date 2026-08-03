@@ -1,4 +1,4 @@
-name: apply DEN-1420 frozen ambient hardening
+name: apply DEN-1420 runtime hardening
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: den-1420-frozen-ambient-${{ github.event.pull_request.number || github.ref }}
+  group: den-1420-runtime-hardening-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,47 +28,26 @@ jobs:
         with:
           components: rustfmt,clippy
 
-      - name: Reject ambient mise state in frozen integrated mode
+      - name: Apply runtime integrity and non-login shell fixes
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('src/dev.rs')
-          text = path.read_text(encoding='utf-8')
-          old = '''    if options.mise == DevMiseMode::Never
-              || env::var_os(MISE_REENTRY_ENV).is_some()
-              || env::var_os("__MISE_DIFF").is_some()
-          {
+          source = Path('src/dev.rs')
+          text = source.read_text(encoding='utf-8')
+
+          function_start = text.index('fn maybe_reenter_through_mise(')
+          guard_start = text.index('    if options.mise == DevMiseMode::Never', function_start)
+          config_start = text.index('    let Some(config) = mise_config(root) else {', guard_start)
+          program_start = text.index('    if !program_available("mise") {', config_start)
+          config_block = text[config_start:program_start]
+          replacement = '''    if options.mise == DevMiseMode::Never || env::var_os(MISE_REENTRY_ENV).is_some() {
               return Ok(None);
           }
 
-          let Some(config) = mise_config(root) else {
-              if options.mise == DevMiseMode::Required {
-                  bail!(
-                      "--mise required was requested, but no project-local `mise.toml` or `.mise.toml` was found inside the owning checkout for {}",
-                      root.display()
-                  );
-              }
-              return Ok(None);
-          };
-          '''
-          new = '''    if options.mise == DevMiseMode::Never || env::var_os(MISE_REENTRY_ENV).is_some() {
-              return Ok(None);
-          }
-
-          let Some(config) = mise_config(root) else {
-              if options.mise == DevMiseMode::Required {
-                  bail!(
-                      "--mise required was requested, but no project-local `mise.toml` or `.mise.toml` was found inside the owning checkout for {}",
-                      root.display()
-                  );
-              }
-              return Ok(None);
-          };
-
-          if env::var_os("__MISE_DIFF").is_some() {
+          ''' + config_block + '''    if env::var_os("__MISE_DIFF").is_some() {
               if options.frozen {
                   bail!(
                       "--frozen mise composition cannot verify an ambient mise activation; run `zed dev --mise required --frozen` outside an activated mise shell, or use `--mise never` after an explicit `mise exec`"
@@ -76,10 +55,72 @@ jobs:
               }
               return Ok(None);
           }
+
           '''
-          if text.count(old) != 1:
-              raise SystemExit(f'expected exactly one runtime guard block, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          text = text[:guard_start] + replacement + text[program_start:]
+
+          login_call = '            command.args(["-lc", script]);'
+          if text.count(login_call) != 1:
+              raise SystemExit(f'expected one POSIX login-shell call, found {text.count(login_call)}')
+          text = text.replace(login_call, '            command.args(["-c", script]);', 1)
+
+          test_anchor = '''    #[test]
+              fn routes_canonical_alias_and_help_spellings() {
+          '''
+          if test_anchor not in text:
+              raise SystemExit('could not locate the first dev unit test')
+          regression = '''    #[test]
+              fn noninteractive_posix_commands_do_not_use_login_shells() {
+                  let mut command = Command::new("/bin/bash");
+                  configure_shell_arguments(&mut command, Path::new("/bin/bash"), Some("true"));
+                  let arguments: Vec<OsString> = command
+                      .get_args()
+                      .map(OsStr::to_os_string)
+                      .collect();
+                  assert_eq!(
+                      arguments,
+                      vec![OsString::from("-c"), OsString::from("true")]
+                  );
+              }
+
+          '''
+          text = text.replace(test_anchor, regression + test_anchor, 1)
+          source.write_text(text, encoding='utf-8')
+
+          docs = Path('docs/develop.md')
+          documentation = docs.read_text(encoding='utf-8')
+          automation = '''An interactive invocation requires a terminal. Automation should always use
+          `-c` or `--print-env`.
+          '''
+          automation_replacement = automation + '''Non-interactive POSIX commands use `-c` rather than a login shell. This
+          preserves the exact PATH assembled by mise, Nix, and Zed instead of allowing login
+          startup files to overwrite it, including on macOS.
+          '''
+          if documentation.count(automation) != 1:
+              raise SystemExit('could not locate automation documentation')
+          documentation = documentation.replace(automation, automation_replacement, 1)
+
+          ambient = '''A shell already entered by `mise exec` is detected through mise's environment
+          diff marker and is not re-entered. `zed develop` does not require direnv and
+          does not source `.envrc` itself. A shell already entered through direnv or
+          `nix develop` is detected through `IN_NIX_SHELL` and is not re-entered. No
+          dotenv file, including production env files, is loaded automatically.
+          '''
+          ambient_replacement = '''A non-frozen shell already entered by `mise exec` is detected through mise's
+          environment diff marker and is not re-entered. Frozen integrated composition
+          fails closed when it detects ambient mise state because Zed cannot prove which
+          project configuration and lock produced that parent environment. Run the frozen
+          command outside the activated shell, or use `--mise never` after an explicit,
+          separately verified `mise exec`.
+
+          `zed develop` does not require direnv and does not source `.envrc` itself. A
+          shell already entered through direnv or `nix develop` is detected through
+          `IN_NIX_SHELL` and is not re-entered. No dotenv file, including production env
+          files, is loaded automatically.
+          '''
+          if documentation.count(ambient) != 1:
+              raise SystemExit('could not locate ambient mise documentation')
+          docs.write_text(documentation.replace(ambient, ambient_replacement, 1), encoding='utf-8')
           PY
 
           cargo fmt --all
@@ -90,6 +131,6 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/dev.rs
-          git commit -m 'fix(DEN-1420): reject ambient mise state in frozen mode'
+          git add src/dev.rs docs/develop.md
+          git commit -m 'fix(DEN-1420): preserve PATH and frozen mise integrity'
           git push origin HEAD:agent/den-1420-mise-dev-runtime
