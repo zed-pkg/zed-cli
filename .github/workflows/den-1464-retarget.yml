@@ -44,27 +44,19 @@ jobs:
           from pathlib import Path
           import os
 
-          new = os.environ['NEW_INTERFACE_REV']
-          replacements = {
-              Path('Cargo.toml'): [
-                  'dc0e0a0620b9462817950b552d3d334a184b1cb1',
-                  '2d397c60cdaa8fe0d331e98caba5202e61eaca4f',
-                  '50ff18ed934c9871920373403fff69b1dc1a0e0a',
-              ],
-              Path('.github/workflows/frozen-lock-integrity.yml'): [
-                  '625ba7bdf4339df7d0880f791a0715ca894558fe',
-                  '2d397c60cdaa8fe0d331e98caba5202e61eaca4f',
-                  '50ff18ed934c9871920373403fff69b1dc1a0e0a',
-              ],
-          }
-          for path, candidates in replacements.items():
-              text = path.read_text()
-              matches = [candidate for candidate in candidates if candidate in text]
-              if len(matches) != 1:
-                  raise SystemExit(
-                      f'{path}: expected exactly one prior interface revision, found {matches}'
-                  )
-              path.write_text(text.replace(matches[0], new, 1))
+          path = Path('Cargo.toml')
+          text = path.read_text()
+          candidates = [
+              'dc0e0a0620b9462817950b552d3d334a184b1cb1',
+              '2d397c60cdaa8fe0d331e98caba5202e61eaca4f',
+              '50ff18ed934c9871920373403fff69b1dc1a0e0a',
+          ]
+          matches = [candidate for candidate in candidates if candidate in text]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f'Cargo.toml: expected exactly one prior interface revision, found {matches}'
+              )
+          path.write_text(text.replace(matches[0], os.environ['NEW_INTERFACE_REV'], 1))
 
       - name: Regenerate only the pinned interface lock entry
         run: cargo update -p zed-interfaces --precise "$NEW_INTERFACE_REV"
@@ -73,25 +65,21 @@ jobs:
         run: |
           test "$(grep -c "$NEW_INTERFACE_REV" Cargo.toml)" -eq 1
           test "$(grep -c "$NEW_INTERFACE_REV" Cargo.lock)" -eq 1
-          test "$(grep -c "$NEW_INTERFACE_REV" .github/workflows/frozen-lock-integrity.yml)" -eq 1
           for old in \
             dc0e0a0620b9462817950b552d3d334a184b1cb1 \
             2d397c60cdaa8fe0d331e98caba5202e61eaca4f \
-            50ff18ed934c9871920373403fff69b1dc1a0e0a \
-            625ba7bdf4339df7d0880f791a0715ca894558fe; do
+            50ff18ed934c9871920373403fff69b1dc1a0e0a; do
             ! grep -q "$old" Cargo.toml
             ! grep -q "$old" Cargo.lock
-            ! grep -q "$old" .github/workflows/frozen-lock-integrity.yml
           done
           cargo build --locked --bin zed
           bash tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed"
 
-      - name: Remove the one-shot workflow and commit the deterministic retarget
+      - name: Commit only the dependency files
         run: |
-          git rm .github/workflows/den-1464-retarget.yml
           git config user.name 'ORESoftware'
           git config user.email '11139560+ORESoftware@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock .github/workflows/frozen-lock-integrity.yml
+          git add Cargo.toml Cargo.lock
           git diff --cached --check
           git commit -m 'fix(DEN-1464): consume strict lock metadata contract'
           git push origin HEAD:agent/den-1464-frozen-lock-integrity
