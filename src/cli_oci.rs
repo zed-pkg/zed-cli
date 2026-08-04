@@ -163,10 +163,7 @@ mod tests {
                     },
             } => {
                 assert_eq!(layout, PathBuf::from("dist/tool-layout"));
-                assert_eq!(
-                    destination,
-                    "oci://127.0.0.1:5000/acme/tool:1.2.3"
-                );
+                assert_eq!(destination, "oci://127.0.0.1:5000/acme/tool:1.2.3");
                 assert_eq!(oras, PathBuf::from("oras"));
                 assert_eq!(username.as_deref(), Some("acme-bot"));
                 assert!(password_stdin);

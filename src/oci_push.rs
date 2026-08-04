@@ -256,6 +256,12 @@ fn validate_transport_options(
     options: &OciPushOptions<'_>,
     destination: &OciReference,
 ) -> Result<()> {
+    if options.plain_http && (options.insecure_tls || options.ca_file.is_some()) {
+        bail!("--plain-http cannot be combined with --insecure-tls or --ca-file");
+    }
+    if options.insecure_tls && options.ca_file.is_some() {
+        bail!("--insecure-tls cannot be combined with --ca-file");
+    }
     if options.plain_http && !is_loopback_registry(&destination.registry) {
         bail!(
             "--plain-http is accepted only for loopback registries; `{}` is not loopback",
@@ -1136,6 +1142,108 @@ esac
         assert_eq!(
             fs::metadata(&prepared.path).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+    }
+
+    #[test]
+    fn runtime_auth_validation_rejects_missing_partial_and_conflicting_modes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let layout = workspace.path().join("unused-layout");
+        let oras = workspace.path().join("unused-oras");
+        let destination = parse_destination("oci://ghcr.io/acme/tool:1.2.3").unwrap();
+        let mut options = OciPushOptions {
+            layout: &layout,
+            destination: "oci://ghcr.io/acme/tool:1.2.3",
+            oras: &oras,
+            username: None,
+            password_stdin: false,
+            registry_config: None,
+            anonymous: false,
+            plain_http: false,
+            insecure_tls: false,
+            ca_file: None,
+            allow_tag_replacement: false,
+            interactive: false,
+            json: true,
+        };
+
+        let missing = prepare_registry_config(&options, &destination, None)
+            .err()
+            .unwrap();
+        assert!(
+            missing
+                .to_string()
+                .contains("choose exactly one OCI authentication mode")
+        );
+
+        options.username = Some("user");
+        let partial = prepare_registry_config(&options, &destination, None)
+            .err()
+            .unwrap();
+        assert!(partial.to_string().contains("did not yield a password"));
+
+        options.username = None;
+        options.password_stdin = true;
+        let partial = prepare_registry_config(&options, &destination, Some("pass"))
+            .err()
+            .unwrap();
+        assert!(partial.to_string().contains("--username is required"));
+
+        options.username = Some("user");
+        options.anonymous = true;
+        let conflicting = prepare_registry_config(&options, &destination, Some("pass"))
+            .err()
+            .unwrap();
+        assert!(
+            conflicting
+                .to_string()
+                .contains("choose exactly one OCI authentication mode")
+        );
+    }
+
+    #[test]
+    fn runtime_transport_validation_rejects_conflicting_security_modes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ca_file = workspace.path().join("registry-ca.pem");
+        fs::write(&ca_file, "test CA bytes").unwrap();
+        let layout = workspace.path().join("unused-layout");
+        let oras = workspace.path().join("unused-oras");
+        let destination = parse_destination("oci://127.0.0.1:5000/acme/tool:1.2.3").unwrap();
+        let mut options = OciPushOptions {
+            layout: &layout,
+            destination: "oci://127.0.0.1:5000/acme/tool:1.2.3",
+            oras: &oras,
+            username: None,
+            password_stdin: false,
+            registry_config: None,
+            anonymous: true,
+            plain_http: true,
+            insecure_tls: true,
+            ca_file: None,
+            allow_tag_replacement: false,
+            interactive: false,
+            json: true,
+        };
+
+        let plain_and_insecure = validate_transport_options(&options, &destination).unwrap_err();
+        assert!(
+            plain_and_insecure
+                .to_string()
+                .contains("--plain-http cannot")
+        );
+
+        options.insecure_tls = false;
+        options.ca_file = Some(&ca_file);
+        let plain_and_ca = validate_transport_options(&options, &destination).unwrap_err();
+        assert!(plain_and_ca.to_string().contains("--plain-http cannot"));
+
+        options.plain_http = false;
+        options.insecure_tls = true;
+        let insecure_and_ca = validate_transport_options(&options, &destination).unwrap_err();
+        assert!(
+            insecure_and_ca
+                .to_string()
+                .contains("--insecure-tls cannot")
         );
     }
 
