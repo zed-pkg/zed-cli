@@ -5,9 +5,13 @@ on:
     paths:
       - "src/asdf_environment.rs"
       - "src/bin/zed-asdf.rs"
+      - "src/cli.rs"
+      - "src/main.rs"
       - "src/lib.rs"
       - "tests/asdf_environment_cli.rs"
+      - "tests/asdf_main_cli.rs"
       - "docs/asdf-interop.md"
+      - "README.md"
       - ".github/workflows/asdf-interop.yml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -16,8 +20,13 @@ on:
     paths:
       - "src/asdf_environment.rs"
       - "src/bin/zed-asdf.rs"
+      - "src/cli.rs"
+      - "src/main.rs"
       - "src/lib.rs"
       - "tests/asdf_environment_cli.rs"
+      - "tests/asdf_main_cli.rs"
+      - "docs/asdf-interop.md"
+      - "README.md"
       - ".github/workflows/asdf-interop.yml"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -70,8 +79,12 @@ jobs:
           set -euo pipefail
           cargo test --locked --lib asdf_environment::tests
           cargo test --locked --test asdf_environment_cli
+          cargo test --locked --test asdf_main_cli
 
       - name: Clippy (strict)
         run: |
           set -euo pipefail
-          cargo clippy --locked --bin zed-asdf --test asdf_environment_cli -- -D warnings
+          cargo clippy --locked --bin zed --bin zed-asdf --test asdf_environment_cli --test asdf_main_cli -- -D warnings
+
+      - name: Prove import and verification did not mutate the checkout
+        run: git diff --exit-code
