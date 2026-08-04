@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
+use zed_interfaces::paths::ARCHIVE_ROOT;
 
 use crate::nix_export_plan::NixExportPlan;
 
@@ -20,6 +21,7 @@ pub(super) fn inspect_artifact(bytes: &[u8]) -> Result<BTreeMap<String, ArchiveF
     let mut seen_paths = BTreeSet::new();
     let mut files = BTreeMap::new();
     let mut unpacked_bytes = 0_u64;
+    let root_prefix = format!("{ARCHIVE_ROOT}/");
 
     for (index, entry) in archive
         .entries()
@@ -40,16 +42,18 @@ pub(super) fn inspect_artifact(bytes: &[u8]) -> Result<BTreeMap<String, ArchiveF
 
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
-            if path != "package" && !path.starts_with("package/") {
-                bail!("Zed artifact directory `{path}` is outside canonical `package/`");
+            if path != ARCHIVE_ROOT && !path.starts_with(&root_prefix) {
+                bail!(
+                    "Zed artifact directory `{path}` is outside canonical `{ARCHIVE_ROOT}/`"
+                );
             }
             continue;
         }
         if !entry_type.is_file() {
             bail!("Zed artifact path `{path}` is not a regular file or directory");
         }
-        if !path.starts_with("package/") {
-            bail!("Zed artifact file `{path}` is outside canonical `package/`");
+        if !path.starts_with(&root_prefix) {
+            bail!("Zed artifact file `{path}` is outside canonical `{ARCHIVE_ROOT}/`");
         }
 
         let size = entry.size();
@@ -80,7 +84,7 @@ pub(super) fn verify_planned_bins(
     archive: &BTreeMap<String, ArchiveFile>,
 ) -> Result<()> {
     for (name, relative) in &plan.bins {
-        let path = format!("package/{relative}");
+        let path = format!("{ARCHIVE_ROOT}/{relative}");
         let file = archive.get(&path).with_context(|| {
             format!("prebuilt bin `{name}` is absent from immutable artifact path `{path}`")
         })?;
