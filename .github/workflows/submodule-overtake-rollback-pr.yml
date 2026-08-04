@@ -1,0 +1,56 @@
+name: submodule overtake rollback materializer
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: submodule-overtake-rollback-materializer
+  cancel-in-progress: true
+
+jobs:
+  apply-and-publish:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/harden-submodule-overtake-rollback'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          ref: agent/harden-submodule-overtake-rollback
+
+      - name: Execute the reviewed bootstrap payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          source = Path('.github/workflows/submodule-overtake-rollback-bootstrap.yml').read_text().splitlines()
+          start = next(i for i, line in enumerate(source) if line == '        run: |') + 1
+          end = next(i for i in range(start, len(source)) if source[i].startswith('      - name: Commit verified product change'))
+          payload = []
+          for line in source[start:end]:
+              if line and not line.startswith('          '):
+                  raise SystemExit(f'unexpected bootstrap indentation: {line!r}')
+              payload.append(line[10:] if line else '')
+          Path('/tmp/apply-submodule-rollback.sh').write_text('\n'.join(payload) + '\n')
+          PY
+          bash /tmp/apply-submodule-rollback.sh
+          rm -f .github/workflows/submodule-overtake-rollback-pr.yml
+
+      - name: Commit the verified product change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "zed-pkg automation"
+          git config user.email "zed-pkg-automation@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: roll back failed submodule overtakes"
+          git push origin HEAD:agent/harden-submodule-overtake-rollback
