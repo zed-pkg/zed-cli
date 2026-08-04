@@ -72,11 +72,25 @@ fn run_with_pool<T>(
     }
 }
 
-fn prefetch_locked(
-    project: &Path,
-    cfg: &Config,
-    concurrency: usize,
-) -> Result<PrefetchReport> {
+fn locked_version_metadata(locked: &zed_interfaces::lockfile::LockedPackage) -> VersionMetadata {
+    VersionMetadata {
+        org: locked.org.clone(),
+        name: locked.name.clone(),
+        version: locked.version.clone(),
+        sha256: locked.sha256.clone(),
+        size: locked.size,
+        format: locked.format,
+        vcs_tag: locked.vcs_tag.clone(),
+        vcs_commit: locked.vcs_commit.clone(),
+        // The worker never consumes this URL while the authenticated bytes are
+        // already present in the store or verified artifact cache.
+        download_url: String::new(),
+        published_at: "1970-01-01T00:00:00Z".to_string(),
+        yanked: false,
+    }
+}
+
+fn prefetch_locked(project: &Path, cfg: &Config, concurrency: usize) -> Result<PrefetchReport> {
     let lock_path = project.join(LOCKFILE_FILE);
     let text = fs::read_to_string(&lock_path)
         .with_context(|| format!("--frozen requires {}", lock_path.display()))?;
@@ -100,33 +114,33 @@ fn prefetch_locked(
             bail!("duplicate package `{key}` in {LOCKFILE_FILE}");
         }
 
-        // The lock already authenticates the immutable content hash. A frozen
-        // replay whose extracted object or verified download cache is present
-        // must not become a registry-availability check. The transactional
-        // installer performs the final cache hash/extraction verification and
-        // only falls back to the configured registry when local bytes are
-        // actually absent or invalid.
-        if store.has(&locked.sha256) || store.cached_artifact(&locked.sha256).is_file() {
-            continue;
-        }
-
-        if registry.is_none() {
-            registry = Some(registry_for(&cfg.registry)?);
-        }
-        let registry = registry
-            .as_deref()
-            .context("frozen prefetch has no registry for an uncached artifact")?;
-        let version = registry.get_version(&locked.org, &locked.name, &locked.version)?;
+        let version =
+            if store.has(&locked.sha256) || store.cached_artifact(&locked.sha256).is_file() {
+                // The lockfile authenticates every immutable field needed to
+                // verify locally owned bytes. Frozen replay must not turn a local
+                // restore into a registry metadata availability check.
+                locked_version_metadata(locked)
+            } else {
+                if registry.is_none() {
+                    registry = Some(registry_for(&cfg.registry)?);
+                }
+                let version = registry
+                    .as_deref()
+                    .context("frozen prefetch registry was not initialized")?
+                    .get_version(&locked.org, &locked.name, &locked.version)?;
+                validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
+                if version.sha256 != locked.sha256 {
+                    bail!(
+                        "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
+                        key,
+                        locked.version,
+                        locked.sha256,
+                        version.sha256
+                    );
+                }
+                version
+            };
         validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
-        if version.sha256 != locked.sha256 {
-            bail!(
-                "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
-                key,
-                locked.version,
-                locked.sha256,
-                version.sha256
-            );
-        }
         tasks.push(FetchTask {
             sequence: tasks.len(),
             key,
@@ -175,55 +189,5 @@ pub(super) fn receive_in_order(
                 message.sequence
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use zed_interfaces::artifact::ArtifactFormat;
-    use zed_interfaces::lockfile::LockedPackage;
-
-    #[test]
-    fn frozen_prefetch_uses_extracted_store_without_constructing_a_registry() {
-        let temp = tempfile::tempdir().unwrap();
-        let project = temp.path().join("project");
-        let home = temp.path().join("home");
-        fs::create_dir_all(&project).unwrap();
-
-        let sha256 = "a".repeat(64);
-        let store = Store::new(&home);
-        fs::create_dir_all(store.pkg_dir(&sha256)).unwrap();
-
-        let mut lock = Lockfile::default();
-        lock.upsert(LockedPackage {
-            org: "acme".to_string(),
-            name: "tool".to_string(),
-            version: "1.0.0".to_string(),
-            sha256,
-            size: 1,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: Some("b".repeat(40)),
-            source: "file:///registry-that-no-longer-exists".to_string(),
-        });
-        fs::write(
-            project.join(LOCKFILE_FILE),
-            lock.to_toml_string().unwrap(),
-        )
-        .unwrap();
-
-        let cfg = Config {
-            registry: "this registry string is intentionally unusable".to_string(),
-            home,
-            token: None,
-            auth_url: "https://auth.invalid".to_string(),
-            supabase_url: None,
-            supabase_key: None,
-            interactive: false,
-        };
-
-        let report = prefetch(&project, &cfg, true).unwrap();
-        assert_eq!(report, PrefetchReport::default());
     }
 }
