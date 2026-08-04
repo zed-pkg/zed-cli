@@ -1,0 +1,379 @@
+name: semantically rebase OCI interop onto current main once
+
+on:
+  push:
+    branches:
+      - agent/oci-interop-main-sync-v1
+    paths:
+      - .github/workflows/oci-main-sync-once.yml
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/oci-main-sync-once.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oci-main-sync-once
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  TARGET_BRANCH: agent/oci-interop-main-sync-v1
+
+jobs:
+  sync:
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/agent/oci-interop-main-sync-v1') ||
+      (github.event_name == 'pull_request' &&
+       github.head_ref == 'agent/oci-interop-main-sync-v1' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact OCI candidate with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET_SHA }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install declared Rust validation tools
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+          cargo clippy --version
+
+      - name: Merge current main and resolve overlap in favor of current architecture
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          git merge --no-ff --no-commit origin/main || true
+
+          mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+          for path in "${conflicts[@]}"; do
+            case "$path" in
+              .cli-flags.toml|Cargo.lock|Cargo.toml|README.md|src/cli.rs|src/lib.rs|src/main.rs)
+                # Current main owns the evolving CLI, Nix/mise, submodule,
+                # lockfile, and documentation architecture. Reapply the OCI
+                # surface below rather than choosing the stale side wholesale.
+                git checkout --theirs -- "$path"
+                git add -- "$path"
+                ;;
+              *)
+                echo "unrecognized semantic merge conflict: $path" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+          if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+            echo 'unresolved merge conflicts remain' >&2
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+
+      - name: Reapply OCI routing to the current CLI architecture
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: Path, old: str, new: str, label: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one anchor, found {count}")
+              path.write_text(text.replace(old, new), encoding="utf-8")
+
+          cli = Path("src/cli.rs")
+          text = cli.read_text(encoding="utf-8")
+          import_line = "use crate::cli_oci::OciCmd;\n"
+          if import_line not in text:
+              anchor = "use clap::{Args, Parser, Subcommand, ValueEnum};\n"
+              if text.count(anchor) != 1:
+                  raise SystemExit("cli.rs: clap import anchor drifted")
+              text = text.replace(anchor, anchor + "\n" + import_line)
+          variant = '''    /// Plan, materialize, and distribute immutable Zed packages through OCI registries
+              Oci {
+                  #[command(subcommand)]
+                  cmd: OciCmd,
+              },
+          '''
+          if "    Oci {\n" not in text:
+              anchor = '''    /// Plan a coordinated Zed + native-registry release without credentials or uploads
+              Release {
+                  #[command(subcommand)]
+                  cmd: ReleaseCmd,
+              },
+          '''
+              if text.count(anchor) != 1:
+                  raise SystemExit("cli.rs: release command anchor drifted")
+              text = text.replace(anchor, anchor + variant)
+          cli.write_text(text, encoding="utf-8")
+
+          lib = Path("src/lib.rs")
+          text = lib.read_text(encoding="utf-8")
+          if "pub mod cli_oci;\n" not in text:
+              text = text.replace("pub mod cli;\n", "pub mod cli;\npub mod cli_oci;\n", 1)
+          if "pub mod oci;\n" not in text:
+              anchor = "pub mod nix_export_plan;\n"
+              if text.count(anchor) != 1:
+                  raise SystemExit("lib.rs: Nix export module anchor drifted")
+              text = text.replace(
+                  anchor,
+                  anchor + "pub mod oci;\npub mod oci_layout;\npub mod oci_push;\n",
+              )
+          lib.write_text(text, encoding="utf-8")
+
+          main = Path("src/main.rs")
+          text = main.read_text(encoding="utf-8")
+          imports = [
+              ("use zed_cli::cli::EnvCmd;\n", "use zed_cli::cli::EnvCmd;\nuse zed_cli::cli_oci::OciCmd;\n"),
+              ("use zed_cli::nix_export_plan;\n", "use zed_cli::nix_export_plan;\nuse zed_cli::oci;\nuse zed_cli::oci_layout;\nuse zed_cli::oci_push::{self, OciPushOptions};\n"),
+          ]
+          for old, new in imports:
+              if new not in text:
+                  if text.count(old) != 1:
+                      raise SystemExit(f"main.rs import anchor drifted: {old!r}")
+                  text = text.replace(old, new)
+
+          old_run = '''fn run(cli: Cli) -> anyhow::Result<()> {
+              let cfg = Config::from_globals(&cli.globals)?;
+              let cwd = std::env::current_dir()?;
+              if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+          '''
+          new_run = '''fn run(cli: Cli) -> anyhow::Result<()> {
+              let cwd = std::env::current_dir()?;
+
+              // OCI planning, local-layout materialization, and ORAS transport
+              // intentionally return before Zed registry configuration or
+              // project transaction recovery. Push credentials are selected
+              // explicitly by the OCI command and never inherited implicitly.
+              if let Cmd::Oci { cmd } = &cli.cmd {
+                  return match cmd {
+                      OciCmd::Plan {
+                          destination,
+                          target,
+                          out,
+                          json,
+                      } => {
+                          if let Some(out) = out {
+                              oci_layout::materialize(
+                                  &cwd,
+                                  destination,
+                                  target.as_deref(),
+                                  out,
+                                  *json,
+                              )
+                          } else {
+                              oci::plan(&cwd, destination, target.as_deref(), *json)
+                          }
+                      }
+                      OciCmd::Push {
+                          layout,
+                          destination,
+                          oras,
+                          username,
+                          password_stdin,
+                          registry_config,
+                          anonymous,
+                          plain_http,
+                          insecure_tls,
+                          ca_file,
+                          allow_tag_replacement,
+                          json,
+                      } => oci_push::push(OciPushOptions {
+                          layout,
+                          destination,
+                          oras,
+                          username: username.as_deref(),
+                          password_stdin: *password_stdin,
+                          registry_config: registry_config.as_deref(),
+                          anonymous: *anonymous,
+                          plain_http: *plain_http,
+                          insecure_tls: *insecure_tls,
+                          ca_file: ca_file.as_deref(),
+                          allow_tag_replacement: *allow_tag_replacement,
+                          interactive: cli.globals.interactive,
+                          json: *json,
+                      }),
+                  };
+              }
+
+              let cfg = Config::from_globals(&cli.globals)?;
+              if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+          '''
+          if "if let Cmd::Oci { cmd } = &cli.cmd" not in text:
+              if text.count(old_run) != 1:
+                  raise SystemExit("main.rs: run bootstrap anchor drifted")
+              text = text.replace(old_run, new_run)
+
+          if "Cmd::Oci { .. } => unreachable!" not in text:
+              anchor = '''        Cmd::Release { cmd } => match cmd {
+                  ReleaseCmd::Plan { json } => release::plan(&cwd, json),
+                  ReleaseCmd::Preflight => preflight::preflight(&cwd),
+              },
+          '''
+              arm = '''        Cmd::Oci { .. } => {
+                  unreachable!("OCI commands return before Config construction")
+              }
+          '''
+              if text.count(anchor) != 1:
+                  raise SystemExit("main.rs: release dispatch anchor drifted")
+              text = text.replace(anchor, anchor + arm)
+          main.write_text(text, encoding="utf-8")
+          PY
+
+      - name: Reapply flags and documentation contracts
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          flags = Path(".cli-flags.toml")
+          text = flags.read_text(encoding="utf-8")
+          if "[commands.oci]" not in text:
+              anchor = '''[commands.release.commands.preflight]
+          help = "Run fixed credential-free native package preflight adapters."
+
+          '''
+              block = '''[commands.oci]
+          help = "Plan, materialize, and distribute immutable Zed packages through OCI registries."
+
+          [commands.oci.commands.plan]
+          help = "Build the exact credential-free OCI publication plan."
+
+          [commands.oci.commands.plan.flags.oci_json]
+          env = "ZED_PKG_OCI_JSON"
+          aliases = ["json"]
+          type = "bool"
+          default = "false"
+          help = "Emit the OCI publication plan as JSON."
+
+          [commands.oci.commands.push]
+          help = "Verify a local OCI image layout and copy it to a registry through ORAS."
+
+          [commands.oci.commands.push.flags.oci_oras]
+          env = "ZED_PKG_OCI_ORAS"
+          aliases = ["oras"]
+          type = "string"
+          default = "oras"
+          help = "ORAS executable path."
+
+          [commands.oci.commands.push.flags.oci_username]
+          env = "ZED_PKG_OCI_USERNAME"
+          aliases = ["username"]
+          type = "string"
+          help = "OCI registry username; pair with --password-stdin."
+
+          [commands.oci.commands.push.flags.oci_password_stdin]
+          env = "ZED_PKG_OCI_PASSWORD_STDIN"
+          aliases = ["password-stdin"]
+          type = "bool"
+          default = "false"
+          help = "Read one OCI registry password or token from stdin."
+
+          [commands.oci.commands.push.flags.oci_registry_config]
+          env = "ZED_PKG_OCI_REGISTRY_CONFIG"
+          aliases = ["registry-config"]
+          type = "string"
+          help = "Explicit Docker/ORAS registry config path."
+
+          [commands.oci.commands.push.flags.oci_anonymous]
+          env = "ZED_PKG_OCI_ANONYMOUS"
+          aliases = ["anonymous"]
+          type = "bool"
+          default = "false"
+          help = "Push without registry credentials."
+
+          [commands.oci.commands.push.flags.oci_plain_http]
+          env = "ZED_PKG_OCI_PLAIN_HTTP"
+          aliases = ["plain-http"]
+          type = "bool"
+          default = "false"
+          help = "Use plain HTTP for a loopback registry only."
+
+          [commands.oci.commands.push.flags.oci_insecure_tls]
+          env = "ZED_PKG_OCI_INSECURE_TLS"
+          aliases = ["insecure-tls"]
+          type = "bool"
+          default = "false"
+          help = "Disable destination TLS certificate verification."
+
+          [commands.oci.commands.push.flags.oci_ca_file]
+          env = "ZED_PKG_OCI_CA_FILE"
+          aliases = ["ca-file"]
+          type = "string"
+          help = "Custom destination registry CA certificate."
+
+          [commands.oci.commands.push.flags.oci_allow_tag_replacement]
+          env = "ZED_PKG_OCI_ALLOW_TAG_REPLACEMENT"
+          aliases = ["allow-tag-replacement"]
+          type = "bool"
+          default = "false"
+          help = "Explicitly replace a destination tag whose digest differs."
+
+          [commands.oci.commands.push.flags.oci_json]
+          env = "ZED_PKG_OCI_PUSH_JSON"
+          aliases = ["json"]
+          type = "bool"
+          default = "false"
+          help = "Emit the OCI push result as JSON."
+
+          '''
+              if text.count(anchor) != 1:
+                  raise SystemExit(".cli-flags.toml: release preflight anchor drifted")
+              text = text.replace(anchor, anchor + block)
+          flags.write_text(text, encoding="utf-8")
+
+          readme = Path("README.md")
+          text = readme.read_text(encoding="utf-8")
+          plan_row = '| `zed oci plan <oci://registry/repository:version> [--target <name>] [--out <layout>] [--json]` | Derive exact OCI identities and optionally materialize a verified local image layout without credentials or network transport |\n'
+          push_row = '| `zed oci push <layout> <oci://registry/repository:version>` | Verify a local OCI layout, copy it through ORAS using one explicit authentication mode, and require the remote tag to resolve to the expected digest |\n'
+          if plan_row not in text:
+              anchor = '| `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |\n'
+              if text.count(anchor) != 1:
+                  raise SystemExit("README.md: release preflight command-table anchor drifted")
+              text = text.replace(anchor, anchor + plan_row + push_row)
+          elif push_row not in text:
+              text = text.replace(plan_row, plan_row + push_row)
+          readme.write_text(text, encoding="utf-8")
+          PY
+
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate merged OCI interoperability surface
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-targets oci
+          cargo test --locked --all-targets cli_oci
+          cargo test --locked cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked readme_documents_every_command
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo build --locked --release --bin zed
+
+      - name: Remove one-shot workflow and publish semantic merge
+        run: |
+          set -euo pipefail
+          rm .github/workflows/oci-main-sync-once.yml
+          git add -A
+          git diff --cached --check
+          git status --short
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "feat: consolidate OCI interoperability on current main"
+          git push origin HEAD:${TARGET_BRANCH}
