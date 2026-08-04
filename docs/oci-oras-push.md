@@ -92,6 +92,12 @@ zed oci push \
 
 Omitting every authentication mode fails closed.
 
+Authentication and transport combinations are checked after flags-to-environment
+normalization. This prevents generated `false` boolean defaults from being
+mistaken for explicitly supplied conflicting flags while still rejecting
+missing, partial, or conflicting modes before any credential file or network
+transport is used.
+
 ## Local development registries
 
 Unencrypted HTTP is accepted only for `localhost`, a `*.localhost` name, or an
