@@ -10,6 +10,7 @@ on:
       - src/lib.rs
       - src/main.rs
       - src/completion.rs
+      - src/ops.rs
       - tests/global_cli.rs
       - .github/workflows/global-packages.yml
   push:
@@ -22,6 +23,7 @@ on:
       - src/lib.rs
       - src/main.rs
       - src/completion.rs
+      - src/ops.rs
       - tests/global_cli.rs
       - .github/workflows/global-packages.yml
 
@@ -44,7 +46,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Check out exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,12 +61,26 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Verify formatting and global profile tests
+      - name: Check formatting
+        id: formatting
+        continue-on-error: true
         run: |
           set -euo pipefail
           cargo fmt --all --check
+
+      - name: Run global profile unit tests
+        run: |
+          set -euo pipefail
           cargo test --locked --lib global::tests
+
+      - name: Run compiled global CLI tests
+        run: |
+          set -euo pipefail
           cargo test --locked --test global_cli
+
+      - name: Run strict Clippy
+        run: |
+          set -euo pipefail
           cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Build and invoke the packaged command
@@ -82,3 +98,68 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --all-targets --all-features --locked
+
+      - name: Produce exact rustfmt evidence
+        if: always() && runner.os == 'Linux' && steps.formatting.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          python3 - <<'PY'
+          import pathlib
+          import shutil
+          import subprocess
+
+          allowed = {
+              'src/completion.rs',
+              'src/global.rs',
+              'src/lib.rs',
+              'src/main.rs',
+              'src/ops.rs',
+              'tests/global_cli.rs',
+          }
+          changed = {
+              line.strip()
+              for line in subprocess.check_output(
+                  ['git', 'diff', '--name-only'], text=True
+              ).splitlines()
+              if line.strip()
+          }
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(
+                  'rustfmt changed files outside the reviewed feature boundary: '
+                  + ', '.join(sorted(unexpected))
+              )
+          if not changed:
+              raise SystemExit('format check failed but rustfmt produced no changed files')
+          root = pathlib.Path('format-evidence')
+          for name in sorted(changed):
+              destination = root / name
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(name, destination)
+          (root / 'changed-files.txt').write_text('\n'.join(sorted(changed)) + '\n')
+          PY
+          git diff --binary -- \
+            src/completion.rs \
+            src/global.rs \
+            src/lib.rs \
+            src/main.rs \
+            src/ops.rs \
+            tests/global_cli.rs \
+            > format-evidence/rustfmt.patch
+          find format-evidence -type f -print0 | sort -z | xargs -0 sha256sum > format-evidence/SHA256SUMS
+
+      - name: Upload rustfmt evidence
+        if: always() && runner.os == 'Linux' && steps.formatting.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: global-package-rustfmt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: format-evidence/
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce formatting result
+        if: always() && steps.formatting.outcome == 'failure'
+        run: |
+          echo 'cargo fmt --all --check failed; see the Linux rustfmt evidence artifact.' >&2
+          exit 1
