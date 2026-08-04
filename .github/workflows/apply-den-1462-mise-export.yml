@@ -14,26 +14,13 @@ on:
       - tests/mise_export_cli.rs
       - docs/mise-export.md
       - .github/workflows/mise-export.yml
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/apply-den-1462-mise-export.yml
-      - scripts/apply_den1462_mise_export.py
-      - scripts/harden_den1462_export.py
-      - scripts/fix_den1462_flags_contract.py
-      - scripts/fix_den1462_selector_paths.py
-      - src/mise_export.rs
-      - tests/mise_export_cli.rs
-      - docs/mise-export.md
-      - .github/workflows/mise-export.yml
 
 permissions:
   contents: write
 
 concurrency:
   group: materialize-den-1462-mise-export
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 defaults:
   run:
@@ -41,7 +28,7 @@ defaults:
 
 jobs:
   materialize:
-    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/den-1462-mise-export'))
+    if: github.actor != 'github-actions[bot]'
     runs-on: macos-15
     timeout-minutes: 40
     steps:
