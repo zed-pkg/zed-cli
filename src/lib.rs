@@ -3,13 +3,20 @@
 
 pub mod auth;
 pub mod cli;
+pub mod cli_model;
 pub mod completion;
 pub mod config;
 pub mod dev;
 pub mod environment;
+pub mod fetch;
 pub mod flags;
+pub mod install_graph;
 pub mod interactive;
+pub mod managed_install;
 pub mod manifestless;
+pub mod nix_export_bundle;
+pub mod nix_export_plan;
+#[path = "ops_entry.rs"]
 pub mod ops;
 pub mod pack;
 pub mod preflight;
@@ -20,3 +27,5 @@ pub mod store;
 pub mod transaction;
 pub mod update;
 pub mod vcs;
+
+pub mod tool_versions;

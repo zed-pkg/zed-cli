@@ -38,6 +38,21 @@ mise exec -- zed dev -c 'npm test'
 
 This workflow does not require `zed env import`. mise remains responsible for evaluating its complete configuration, environment, tasks, and trust policy.
 
+## Integrated runtime activation
+
+Current `zed dev` can compose a project-local mise toolchain directly:
+
+```sh
+zed dev --mise required --nix never --frozen -c 'npm test'
+```
+
+Use `--mise auto` to activate mise only when `mise.toml` or `.mise.toml`
+exists inside the owning checkout, or `--mise never` after entering a
+separately verified `mise exec` environment yourself. Integrated frozen
+activation requires adjacent `mise.lock` evidence, ignores `.tool-versions`,
+isolates user and system mise configuration, and rejects unverifiable ambient
+mise activation. Nix remains the outer environment when both adapters are used.
+
 ## Read-only plan import and verification
 
 The first native interoperability slice exposes:
@@ -166,4 +181,4 @@ mise.test.toml   → mise.test.lock
 
 ## Planned follow-up
 
-The remaining mise-parity work includes deterministic export and three-way merge planning, typed environment values and trust, task-DAG execution, native tool backends, activation in `zed dev`, offline replay, tamper tests, and cross-platform certification in `zed-pkg-test` and `zed-e2e`.
+The remaining mise-parity work includes deterministic export and three-way merge planning, typed environment values and trust, task-DAG execution, native tool backends, broader offline replay, and additional tamper certification.

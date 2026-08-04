@@ -1,0 +1,141 @@
+name: nix-export-plan
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nix-export-plan.yml"
+      - ".nix-interop-cli-flags.toml"
+      - "docs/nix-export-plan.md"
+      - "src/nix_export_plan.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "src/pack.rs"
+      - "tests/nix_export_plan.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  pull_request:
+    paths:
+      - ".github/workflows/nix-export-plan.yml"
+      - ".nix-interop-cli-flags.toml"
+      - "docs/nix-export-plan.md"
+      - "src/nix_export_plan.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "src/pack.rs"
+      - "tests/nix_export_plan.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-export-plan-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Frozen export plan on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Verify immutable interface pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'rev = "625ba7bdf4339df7d0880f791a0715ca894558fe"' Cargo.toml
+          grep -F '#625ba7bdf4339df7d0880f791a0715ca894558fe' Cargo.lock
+
+      - name: Check formatting and warnings
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run planner unit tests
+        run: cargo test --locked nix_export_plan::tests:: -- --test-threads=1
+
+      - name: Run black-box planner conformance
+        run: cargo test --locked --test nix_export_plan -- --test-threads=1
+
+      - name: Verify generated completion coverage
+        run: cargo test --locked completion::tests:: -- --test-threads=1
+
+      - name: Verify modular help and credential-free JSON
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed
+          zed="$GITHUB_WORKSPACE/target/debug/zed"
+          help="$($zed interop nix plan export --help)"
+          grep -F -- '--frozen' <<<"$help"
+          grep -F -- '--json' <<<"$help"
+          grep -F -- '--target' <<<"$help"
+
+          project="$RUNNER_TEMP/nix-plan-smoke"
+          mkdir -p "$project/data"
+          cat > "$project/.zpkg.toml" <<'TOML'
+          [package]
+          org = "ci"
+          name = "data"
+          version = "1.0.0"
+
+          [package.repository]
+          url = "https://github.com/zed-pkg/zed-cli"
+
+          [publish.nix]
+          systems = ["x86_64-linux", "aarch64-linux"]
+          outputs = ["out"]
+          TOML
+          printf 'version = 1\n' > "$project/.zpkg.lock"
+          printf 'payload\n' > "$project/data/value.txt"
+
+          output="$(
+            cd "$project"
+            ZED_PKG_TOKEN='must-not-appear' \
+            ZED_PKG_HOME="$RUNNER_TEMP/must-not-exist" \
+            "$zed" interop nix plan export --frozen --json
+          )"
+          python3 - "$output" "$project" "$RUNNER_TEMP" <<'PY'
+          import json
+          import sys
+
+          raw, project, runner_temp = sys.argv[1:]
+          plan = json.loads(raw)
+          assert plan["schema"] == "zed.nix-export-plan/v1"
+          assert plan["intent"]["systems"] == ["aarch64-linux", "x86_64-linux"]
+          assert "must-not-appear" not in raw
+          assert project not in raw
+          assert runner_temp not in raw
+          PY
+          test ! -e "$RUNNER_TEMP/must-not-exist"
+
+      - name: Prove the workflow is read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/nix-export-plan.yml').read_text()
+          assert 'contents: read' in workflow
+          assert 'persist-credentials: false' in workflow
+          for forbidden in ('contents: write', 'git push', 'pull_request_target:'):
+              assert forbidden not in workflow, forbidden
+          PY

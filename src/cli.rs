@@ -164,9 +164,10 @@ pub enum Cmd {
     /// Resolve and install dependencies into the selected project
     #[command(alias = "i")]
     Install {
-        /// Transient package specs (`org/name[@requirement]`). With no manifest
-        /// these form the in-memory consumer plan; an existing manifest is
-        /// never edited by this command (`zed add` persists dependencies).
+        /// Package specs (`org/name[@requirement]`). When no manifest exists,
+        /// these become direct dependencies in a generated consumer manifest
+        /// by default. A human-authored manifest is never edited here; use
+        /// `zed add` to persist dependencies in an authored project.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
         /// Install exactly what .zpkg.lock pins; fail on any drift
@@ -194,10 +195,12 @@ pub enum Cmd {
         /// omitted = infer from the project
         #[arg(long, env = "ZED_PKG_TARGET")]
         target: Option<String>,
-        /// Proceed without prompting when no .zpkg.toml can be found.
+        /// Do not create a new .zpkg.toml when installing into a project that
+        /// does not have one. The lockfile, integrity checks, materialization,
+        /// adapters, frozen policy, and explicitly allowed builds still run.
         #[arg(
-            long,
-            visible_alias = "skip-manifest",
+            long = "do-not-write-new-manifest",
+            visible_aliases = ["allow-no-manifest", "skip-manifest"],
             env = "ZED_PKG_ALLOW_NO_MANIFEST"
         )]
         allow_no_manifest: bool,
@@ -592,8 +595,12 @@ mod tests {
     }
 
     #[test]
-    fn install_accepts_specs_and_both_manifestless_bypass_spellings() {
-        for bypass in ["--allow-no-manifest", "--skip-manifest"] {
+    fn install_accepts_specs_and_canonical_and_legacy_manifest_spellings() {
+        for bypass in [
+            "--do-not-write-new-manifest",
+            "--allow-no-manifest",
+            "--skip-manifest",
+        ] {
             let cli = Cli::try_parse_from(["zed", "install", "acme/http-kit@^1", bypass]).unwrap();
             match cli.cmd {
                 Cmd::Install {
@@ -606,14 +613,6 @@ mod tests {
                 }
                 other => panic!("unexpected command: {other:?}"),
             }
-        }
-    }
-
-    #[test]
-    fn completion_shells_are_typed_positionals() {
-        for shell in ["bash", "zsh"] {
-            let cli = Cli::try_parse_from(["zed", "completions", shell]).unwrap();
-            assert!(matches!(cli.cmd, Cmd::Completions { .. }));
         }
     }
 
@@ -634,6 +633,14 @@ mod tests {
             ])
             .unwrap();
             assert!(matches!(cli.cmd, Cmd::Env { .. }));
+        }
+    }
+
+    #[test]
+    fn completion_shells_are_typed_positionals() {
+        for shell in ["bash", "zsh"] {
+            let cli = Cli::try_parse_from(["zed", "completions", shell]).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Completions { .. }));
         }
     }
 

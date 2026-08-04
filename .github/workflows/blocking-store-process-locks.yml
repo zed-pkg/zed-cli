@@ -1,0 +1,70 @@
+name: blocking store process locks
+
+on:
+  pull_request:
+    paths:
+      - src/store.rs
+      - src/install_graph.rs
+      - src/install_graph/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/blocking-store-process-locks.yml
+  push:
+    branches: [main]
+    paths:
+      - src/store.rs
+      - src/install_graph.rs
+      - src/install_graph/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/blocking-store-process-locks.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blocking-store-process-locks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux-kernel-lock:
+    name: Linux process-lock and recursive-cache contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust with formatting and lint support
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Prove a separate process blocks until orderly release
+        run: cargo test --locked --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
+
+      - name: Prove owner termination releases the descriptor lock
+        run: cargo test --locked --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
+
+      - name: Run all store process-lock tests
+        run: cargo test --locked --lib store::tests
+
+      - name: Run recursive acquisition and cache-race tests
+        run: cargo test --locked --lib install_graph::tests
+
+      - name: Deny Rust warnings
+        run: cargo clippy --locked --all-targets -- -D warnings

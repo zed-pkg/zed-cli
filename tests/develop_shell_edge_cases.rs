@@ -1,7 +1,5 @@
-#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::env;
-#[cfg(unix)]
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,8 +55,6 @@ fn clean_command(root: &Path) -> Command {
     command
 }
 
-#[cfg(unix)]
-#[cfg(unix)]
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -73,8 +69,6 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-#[cfg(unix)]
-#[cfg(unix)]
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
@@ -862,8 +856,8 @@ fn shell_dispatch_covers_posix_fish_powershell_cmd_and_generic_shells() {
     let project = package_project();
     let script = "echo shell-matrix";
     let cases: Vec<(&str, Vec<&str>)> = vec![
-        ("bash", vec!["-lc", script]),
-        ("fish", vec!["-lc", script]),
+        ("bash", vec!["-c", script]),
+        ("fish", vec!["-c", script]),
         ("PwSh.ExE", vec!["-NoLogo", "-Command", script]),
         ("CMD.EXE", vec!["/D", "/S", "/C", script]),
         ("custom-shell", vec!["-c", script]),

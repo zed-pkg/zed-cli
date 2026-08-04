@@ -1,11 +1,12 @@
-use clap::Parser;
 use zed_cli::auth;
 use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, EnvCmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
 use zed_cli::environment;
-use zed_cli::manifestless;
+use zed_cli::fetch;
+use zed_cli::managed_install;
+use zed_cli::nix_export_plan;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -15,9 +16,30 @@ use zed_cli::update;
 
 fn main() {
     let args = std::env::args_os().collect::<Vec<_>>();
+    zed_cli::cli_model::prepare_environment(&args);
     if let Err(error) = zed_cli::flags::normalize_global_boolean_environment(&args) {
         eprintln!("error: {error:#}");
         std::process::exit(2);
+    }
+    if let Some(result) = nix_export_plan::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = fetch::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Some(result) = dev::dispatch(args) {
         match result {
@@ -34,7 +56,7 @@ fn main() {
         eprintln!("error: {error:#}");
         std::process::exit(2);
     }
-    let cli = Cli::parse();
+    let cli = zed_cli::cli_model::parse();
     if let Err(error) = run(cli) {
         eprintln!("error: {error:#}");
         std::process::exit(1);
@@ -44,7 +66,14 @@ fn main() {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
     let cwd = std::env::current_dir()?;
-    zed_cli::transaction::recover_pending(&cwd)?;
+    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+        // Every live project transaction already owns this kernel-backed
+        // install lock. Recover under the same lock so a concurrent process
+        // cannot mistake an in-flight rollback journal for an abandoned one.
+        let store = Store::new(&cfg.home);
+        let _recovery_lock = store.install_lock()?;
+        zed_cli::transaction::recover_pending(&cwd)?;
+    }
     match cli.cmd {
         Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
@@ -58,7 +87,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             allow_no_manifest,
             allow_ecosystem_mismatch,
-        } => manifestless::install(
+        } => managed_install::install(
             &cwd,
             &cfg,
             &specs,
@@ -119,7 +148,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             dry_run,
             allow_dirty,
             skip_vcs_checks,
-        } => ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks),
+        } => {
+            managed_install::ensure_publishable(&cwd)?;
+            ops::publish(&cwd, &cfg, dry_run, allow_dirty, skip_vcs_checks)
+        }
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
         Cmd::R2g {
             docker,

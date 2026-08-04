@@ -101,12 +101,16 @@ aliases = ["target"]
 type = "string"
 help = "Polyglot package target."
 
-[flags.allow_no_manifest]
+# flags2env treats aliases as public option spellings, so the canonical CLI
+# spelling is listed explicitly. The old environment key and aliases remain
+# during the compatibility window so existing scripts keep working while
+# receiving a deprecation warning at runtime.
+[flags.do_not_write_new_manifest]
 env = "ZED_PKG_ALLOW_NO_MANIFEST"
-aliases = ["allow-no-manifest", "skip-manifest"]
+aliases = ["do-not-write-new-manifest", "allow-no-manifest", "skip-manifest"]
 type = "bool"
 default = "false"
-help = "Proceed non-interactively when no .zpkg.toml is present."
+help = "Do not create a new .zpkg.toml when installing into a project without one."
 
 [flags.allow_ecosystem_mismatch]
 env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"

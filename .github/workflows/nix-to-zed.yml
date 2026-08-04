@@ -1,0 +1,149 @@
+name: nix-to-zed
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nix-to-zed.yml"
+      - "docs/nix-to-zed.md"
+      - "tools/nix_to_zed.py"
+      - "tools/test_nix_to_zed.py"
+      - "tests/fixtures/nix-to-zed/**"
+  pull_request:
+    paths:
+      - ".github/workflows/nix-to-zed.yml"
+      - "docs/nix-to-zed.md"
+      - "tools/nix_to_zed.py"
+      - "tools/test_nix_to_zed.py"
+      - "tests/fixtures/nix-to-zed/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-to-zed-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Compile the sealing oracle
+        run: python3 -m py_compile tools/nix_to_zed.py tools/test_nix_to_zed.py
+
+      - name: Run fail-closed sealing tests
+        working-directory: tools
+        run: python3 -m unittest -v test_nix_to_zed.py
+
+  portable-output:
+    name: Closure-free output on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Nix
+        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+            allow-import-from-derivation = false
+
+      - name: Realize one explicit closure-free output
+        id: realize
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$PWD/tests/fixtures/nix-to-zed"
+          nix flake check \
+            --no-update-lock-file \
+            --show-trace \
+            "$fixture"
+          output="$(
+            nix build \
+              --no-write-lock-file \
+              --no-update-lock-file \
+              "$fixture#portable" \
+              --no-link \
+              --print-out-paths \
+              --print-build-logs
+          )"
+          nix path-info --json "$output" > "$RUNNER_TEMP/path-info.json"
+          derivation="$(nix-store --query --deriver "$output")"
+          nix derivation show "$derivation" > "$RUNNER_TEMP/derivation.json"
+          system="$(nix eval --raw --impure --expr builtins.currentSystem)"
+          printf 'output=%s\n' "$output" >> "$GITHUB_OUTPUT"
+          printf 'system=%s\n' "$system" >> "$GITHUB_OUTPUT"
+
+      - name: Seal twice and verify deterministic canonical evidence
+        shell: bash
+        env:
+          OUTPUT: ${{ steps.realize.outputs.output }}
+          SYSTEM: ${{ steps.realize.outputs.system }}
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          for destination in "$RUNNER_TEMP/sealed-a" "$RUNNER_TEMP/sealed-b"; do
+            python3 tools/nix_to_zed.py seal \
+              --store-path "$OUTPUT" \
+              --path-info "$RUNNER_TEMP/path-info.json" \
+              --derivation-json "$RUNNER_TEMP/derivation.json" \
+              --flake-lock tests/fixtures/nix-to-zed/flake.lock \
+              --locked-ref "github:zed-pkg/zed-cli/$SOURCE_SHA?dir=tests/fixtures/nix-to-zed" \
+              --attribute "packages.$SYSTEM.portable" \
+              --system "$SYSTEM" \
+              --output out \
+              --as-package zed-pkg-test/nix-portable@1.0.0 \
+              --bin zed-nix-portable=bin/zed-nix-portable \
+              --repository https://github.com/zed-pkg/zed-cli \
+              --source-revision "$SOURCE_SHA" \
+              --license MIT \
+              --description 'Closure-free Nix output sealed for Zed' \
+              --nix-version "$(nix --version)" \
+              --out-dir "$destination"
+            python3 tools/nix_to_zed.py verify --directory "$destination"
+          done
+          cmp \
+            "$RUNNER_TEMP/sealed-a/nix-portable-1.0.0.tar.gz" \
+            "$RUNNER_TEMP/sealed-b/nix-portable-1.0.0.tar.gz"
+          cmp \
+            "$RUNNER_TEMP/sealed-a/zed-nix-adapter.json" \
+            "$RUNNER_TEMP/sealed-b/zed-nix-adapter.json"
+
+      - name: Prove normal Zed runtime independence
+        shell: bash
+        run: |
+          set -euo pipefail
+          sealed="$RUNNER_TEMP/sealed-a"
+          unpacked="$RUNNER_TEMP/unpacked-zed-package"
+          mkdir -p "$unpacked"
+          tar -xzf "$sealed/nix-portable-1.0.0.tar.gz" -C "$unpacked"
+          env -i PATH=/usr/bin:/bin HOME="$RUNNER_TEMP" \
+            "$unpacked/bin/zed-nix-portable" \
+            | grep -Fx 'portable Nix output sealed for Zed'
+          if grep -R -a -E '/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-' "$unpacked"; then
+            echo 'sealed package retained a concrete Nix store reference' >&2
+            exit 1
+          fi
+          test -f "$unpacked/.zpkg.toml"
+          test -f "$unpacked/zed-nix-runtime.json"
+          test -f "$sealed/zed-nix-adapter.json"
+          test -f "$sealed/bridge.json"
