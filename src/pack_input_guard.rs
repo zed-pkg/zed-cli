@@ -81,7 +81,7 @@ pub(crate) fn preflight_ignored_inputs(project: &Path, manifest: &Manifest) -> R
                 continue;
             }
             if !views.iter().any(|view| view.includes(&absolute))
-                && !(manifest.is_polygot() && is_root_legal_file(&project, &absolute))
+                && !(manifest.is_polyglot() && is_root_legal_file(&project, &absolute))
             {
                 continue;
             }
@@ -165,8 +165,8 @@ fn artifact_views(project: &Path, manifest: &Manifest) -> Result<Vec<ArtifactVie
     extra.push(format!("{}/**", crate::transaction::STAGING_DIR));
     let ignore_file = project.join(IGNORE_FILE);
     if ignore_file.is_file() {
-        for line in fs:read_to_string(&ignore_file)
-            .with_context(|| format!("reading {}", ignore_file.display())?
+        for line in fs::read_to_string(&ignore_file)
+            .with_context(|| format!("reading {}", ignore_file.display()))?
             .lines()
         {
             let line = line.trim();
