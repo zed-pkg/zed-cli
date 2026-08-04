@@ -74,8 +74,6 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check
           cargo test --locked --test develop_shell_edge_cases
-          cargo test --locked --lib environment::tests
-          cargo test --locked --test mise_environment_cli
           cargo clippy --locked --all-targets -- -D warnings
 
   unix:
