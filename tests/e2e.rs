@@ -1770,6 +1770,7 @@ fn traversal_artifacts_are_refused() {
 // build-cache hit semantics, consumer overrides (merged from the parallel
 // feature branch)
 
+#[cfg(unix)]
 fn write_executable(path: &Path, contents: &str) {
     use std::os::unix::fs::PermissionsExt;
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -1779,6 +1780,7 @@ fn write_executable(path: &Path, contents: &str) {
     fs::set_permissions(path, perms).unwrap();
 }
 
+#[cfg(unix)]
 fn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {
     let dir = root.join(format!("binf-{name}"));
     fs::create_dir_all(&dir).unwrap();
@@ -1806,6 +1808,7 @@ url = "https://github.com/acme/{name}"
     dir
 }
 
+#[cfg(unix)]
 fn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {
     let mut map = BTreeMap::new();
     for d in deps {
@@ -1814,6 +1817,7 @@ fn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {
     fixture_package(root, "consumerorg", name, "0.0.1", &map, None, &[])
 }
 
+#[cfg(unix)]
 #[test]
 fn hoisted_bins_are_container_safe_in_copy_mode() {
     let tmp = tempfile::tempdir().unwrap();
@@ -2192,6 +2196,7 @@ command = '''echo overridden > overridden.txt'''
 /// hoisted bins in it, and `zed remove` unlinks from it. A command still
 /// hardcoding `zed_modules/` would silently look in the wrong place (bins
 /// unrunnable, removed deps left on disk).
+#[cfg(unix)]
 #[test]
 fn install_dir_is_honored_by_install_run_and_remove() {
     let tmp = tempfile::tempdir().unwrap();
