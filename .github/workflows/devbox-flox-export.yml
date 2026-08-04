@@ -1,0 +1,81 @@
+name: Devbox and Flox environment export
+
+on:
+  pull_request:
+    paths:
+      - "src/nix_environment_export.rs"
+      - "src/bin/zed-env-export.rs"
+      - "tests/nix_environment_export_cli.rs"
+      - "docs/devbox-flox-interop.md"
+      - ".github/workflows/devbox-flox-export.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - "src/nix_environment_export.rs"
+      - "src/bin/zed-env-export.rs"
+      - "tests/nix_environment_export_cli.rs"
+      - "docs/devbox-flox-interop.md"
+      - ".github/workflows/devbox-flox-export.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: devbox-flox-export-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deterministic-export:
+    name: deterministic export / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2025
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Unit tests
+        run: cargo test --locked --bin zed-env-export
+
+      - name: Black-box CLI tests
+        run: cargo test --locked --test nix_environment_export_cli
+
+      - name: Clippy (strict)
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --bin zed-env-export --test nix_environment_export_cli -- -D warnings
+
+      - name: Prove no generated files leaked into checkout
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
