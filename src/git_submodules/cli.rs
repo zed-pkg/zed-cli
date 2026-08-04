@@ -104,7 +104,7 @@ fn print_root_help() -> Result<()> {
 }
 
 fn run_cli(args: Vec<OsString>) -> Result<i32> {
-    normalize_boolean_environment()?;
+    normalize_boolean_environment(&args)?;
     let cli = match OvertakeCli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
@@ -133,8 +133,15 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
     }
 }
 
-fn normalize_boolean_environment() -> Result<()> {
+fn normalize_boolean_environment(args: &[OsString]) -> Result<()> {
     let key = "ZED_PKG_GIT_SUBMODULES";
+    let explicitly_supplied = args.iter().skip(1).any(|value| {
+        let value = value.to_string_lossy();
+        value == "--git-submodules" || value.starts_with("--git-submodules=")
+    });
+    if explicitly_supplied {
+        return Ok(());
+    }
     let Some(raw) = env::var_os(key) else {
         return Ok(());
     };
