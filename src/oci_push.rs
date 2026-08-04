@@ -865,7 +865,7 @@ fn bounded_diagnostic(value: &str) -> String {
 
 fn is_missing_manifest(value: &str) -> bool {
     let value = value.to_ascii_lowercase();
-    [
+    if [
         "manifest unknown",
         "manifest not found",
         "no such manifest",
@@ -875,6 +875,14 @@ fn is_missing_manifest(value: &str) -> bool {
     ]
     .iter()
     .any(|needle| value.contains(needle))
+    {
+        return true;
+    }
+
+    let value = value.trim_end();
+    value.contains("error response from registry:")
+        && value.contains("failed to resolve digest:")
+        && value.ends_with(": not found")
 }
 
 fn registry_target(destination: &OciReference) -> Result<String> {
@@ -1013,7 +1021,7 @@ case "${1:-}" in
     elif [ -f "$root/state" ]; then
       cat "$root/state"
     else
-      echo 'manifest unknown' >&2
+      echo 'Error response from registry: failed to resolve digest: localhost:5000/acme/tool:1.2.3: not found' >&2
       exit 1
     fi
     ;;
@@ -1045,6 +1053,24 @@ esac
             interactive: false,
             json: true,
         }
+    }
+
+    #[test]
+    fn recognizes_registry_missing_tags_without_masking_unrelated_errors() {
+        assert!(is_missing_manifest(
+            "Error response from registry: failed to resolve digest: registry.example/acme/tool:1.2.3: not found
+"
+        ));
+        assert!(is_missing_manifest("MANIFEST_UNKNOWN: manifest unknown"));
+        assert!(!is_missing_manifest(
+            "open /tmp/registry-config.json: no such file or directory"
+        ));
+        assert!(!is_missing_manifest(
+            "Error response from registry: failed to resolve digest: registry.example/acme/tool:1.2.3: unauthorized"
+        ));
+        assert!(!is_missing_manifest(
+            "dial tcp registry.example:443: connect: network is unreachable"
+        ));
     }
 
     #[cfg(unix)]
