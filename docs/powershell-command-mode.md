@@ -33,7 +33,7 @@ The Windows regression suite creates current-user profile files under a temporar
 - identifies a project root that owns the fixture manifest; and
 - returns the child PowerShell exit code unchanged.
 
-Using project ownership rather than textual path equality is intentional on Windows: equivalent paths may be rendered with normal drive-letter syntax or the Win32 verbatim `\\?\` prefix. The security assertion concerns the selected project and profile behavior, not one display spelling of the same directory.
+`ZED_DEV_PROJECT_ROOT` retains the canonical filesystem identity used for project selection and evidence, which may include the Win32 verbatim `\\?\` or `\\?\UNC\` prefix. Before launching a Windows child process, Zed converts only that prefix to the equivalent drive or UNC spelling accepted reliably as a process current directory. The child therefore starts at the selected project root while the managed environment keeps its canonical identity path. The conversion operates on UTF-16 code units and is lossless for Unicode paths.
 
 ## Exact-head validation ownership
 
