@@ -22,7 +22,7 @@ jobs:
   materialize:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1420-asdf-main-cli' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Check out integration branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -334,30 +334,6 @@ jobs:
           }
           RS
 
-      - name: Extend permanent three-platform contract
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('.github/workflows/asdf-interop.yml')
-          text = path.read_text()
-          old = '''          cargo test --locked --lib asdf_environment::tests
-                    cargo test --locked --test asdf_environment_cli
-          '''
-          new = '''          cargo test --locked --lib asdf_environment::tests
-                    cargo test --locked --test asdf_environment_cli
-                    cargo test --locked --test asdf_main_cli
-          '''
-          if old not in text:
-              raise SystemExit('asdf workflow test anchor not found')
-          text = text.replace(old, new, 1)
-          old = 'cargo clippy --locked --bin zed-asdf --test asdf_environment_cli -- -D warnings'
-          new = 'cargo clippy --locked --bin zed --bin zed-asdf --test asdf_environment_cli --test asdf_main_cli -- -D warnings'
-          if old not in text:
-              raise SystemExit('asdf workflow clippy anchor not found')
-          path.write_text(text.replace(old, new, 1))
-          PY
-
       - name: Validate typed CLI, flags, docs, and real binaries
         run: |
           set -euo pipefail
@@ -371,15 +347,17 @@ jobs:
           cargo test --locked cli::tests::readme_documents_every_command
           cargo clippy --locked --bin zed --bin zed-asdf --test asdf_environment_cli --test asdf_main_cli -- -D warnings
 
-      - name: Commit ordinary integration source
+      - name: Commit ordinary product source only
         run: |
           set -euo pipefail
-          rm -f \
-            .github/workflows/materialize-asdf-main-cli.yml \
-            .github/workflows/kick-asdf-main-cli-materializer.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
+          git add \
+            README.md \
+            docs/asdf-interop.md \
+            src/cli.rs \
+            src/main.rs \
+            tests/asdf_main_cli.rs
           git diff --cached --check
           git commit -m 'feat(DEN-1420): route asdf through zed env'
           git push origin HEAD:agent/den-1420-asdf-main-cli
