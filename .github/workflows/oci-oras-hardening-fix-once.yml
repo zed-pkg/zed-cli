@@ -1,0 +1,100 @@
+name: apply OCI push hardening integration fixes once
+
+on:
+  push:
+    branches:
+      - agent/oci-oras-push-v1
+    paths:
+      - .github/workflows/oci-oras-hardening-fix-once.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: oci-oras-hardening-fix-once
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact triggering commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install declared Rust tools
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+
+      - name: Add OCI push to the command table
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("README.md")
+          text = path.read_text(encoding="utf-8")
+          anchor = '| `zed oci plan <oci://registry/repository:version> [--target <name>] [--json]` | Pack in a temporary directory and print exact OCI config, layer, manifest, and resolved digest identities without credentials, network, or uploads |\n'
+          row = '| `zed oci push <layout> <oci://registry/repository:version>` | Verify an immutable local OCI layout, copy it through ORAS with one explicit authentication mode, and require the remote tag to resolve to the verified manifest digest |\n'
+          if text.count(anchor) != 1:
+              raise SystemExit("expected exactly one OCI plan row in README command table")
+          if row in text:
+              raise SystemExit("OCI push row already exists; refusing a duplicate")
+          text = text.replace(anchor, anchor + row)
+          path.write_text(text, encoding="utf-8")
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate flags and README integration gates
+        run: |
+          set -euo pipefail
+          cargo test --locked cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked readme_documents_every_command
+          cargo test --locked oci_json_environment_keys_are_command_scoped
+          cargo test --locked --all-targets cli_oci
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Remove workflow and publish validated integration fix
+        run: |
+          set -euo pipefail
+          rm .github/workflows/oci-oras-hardening-fix-once.yml
+
+          mapfile -t changed < <(git status --short | sed -E 's/^.. //')
+          allowed=(
+            .cli-flags.toml
+            .github/workflows/oci-oras-hardening-fix-once.yml
+            README.md
+            src/cli_oci.rs
+          )
+          for changed_path in "${changed[@]}"; do
+            permitted=false
+            for candidate in "${allowed[@]}"; do
+              if [[ "$changed_path" == "$candidate" ]]; then
+                permitted=true
+                break
+              fi
+            done
+            if [[ "$permitted" != true ]]; then
+              echo "hardening fix changed an unexpected path: $changed_path" >&2
+              exit 1
+            fi
+          done
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- "${allowed[@]}"
+          git commit -m "fix: satisfy OCI push flags and README contracts"
+          git push origin HEAD:agent/oci-oras-push-v1
