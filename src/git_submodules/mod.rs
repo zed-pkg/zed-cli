@@ -87,6 +87,15 @@ fn sync_root(project: &Path) -> Result<usize> {
     Ok(configured.len())
 }
 
+fn submodule_manifest_present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => bail!("{} exists but is not a regular file", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("inspecting {}", path.display())),
+    }
+}
+
 /// Import every top-level `.gitmodules` entry that contains a valid Zed
 /// package. Entries without a `.zpkg.toml` remain under Git authority, so mixed
 /// Zed/non-Zed submodule repositories can migrate incrementally. The root
@@ -144,7 +153,13 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
         }
 
         let child_manifest = child.join(MANIFEST_FILE);
-        if !child_manifest.is_file() {
+        if !submodule_manifest_present(&child_manifest).with_context(|| {
+            format!(
+                "validating {MANIFEST_FILE} for submodule `{}` at {}",
+                module.name,
+                child.display()
+            )
+        })? {
             eprintln!(
                 "overtake: leaving non-Zed submodule `{}` at `{}` under Git authority (no {MANIFEST_FILE})",
                 module.name, module.path
@@ -353,4 +368,41 @@ fn restore_manifest_if_unchanged(
         fs::write(path, previous).with_context(|| format!("restoring {}", path.display()))?;
     }
     transaction.commit()
+}
+
+#[cfg(test)]
+mod manifest_kind_tests {
+    use std::fs;
+
+    use super::submodule_manifest_present;
+
+    #[test]
+    fn only_a_missing_manifest_is_skippable() {
+        let project = tempfile::tempdir().unwrap();
+        let manifest = project.path().join(".zpkg.toml");
+
+        assert!(!submodule_manifest_present(&manifest).unwrap());
+        fs::write(&manifest, "[package]\n").unwrap();
+        assert!(submodule_manifest_present(&manifest).unwrap());
+        fs::remove_file(&manifest).unwrap();
+        fs::create_dir(&manifest).unwrap();
+
+        let error = submodule_manifest_present(&manifest).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_manifests_fail_closed() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let target = project.path().join("actual.toml");
+        let manifest = project.path().join(".zpkg.toml");
+        fs::write(&target, "[package]\n").unwrap();
+        symlink(&target, &manifest).unwrap();
+
+        let error = submodule_manifest_present(&manifest).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"));
+    }
 }
