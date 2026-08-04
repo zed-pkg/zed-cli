@@ -6,13 +6,15 @@ on:
       - fix/windows-git-submodule-test-cfg
     paths:
       - .github/workflows/apply-windows-git-submodule-format.yml
+  pull_request:
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
 
 concurrency:
-  group: windows-git-submodule-test-format-${{ github.ref }}
-  cancel-in-progress: false
+  group: windows-git-submodule-test-format-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -20,7 +22,7 @@ defaults:
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/windows-git-submodule-test-cfg')
     runs-on: windows-2025
     timeout-minutes: 35
     steps:
@@ -46,20 +48,22 @@ jobs:
 
           path = Path('src/git_submodules/tests.rs')
           text = path.read_text(encoding='utf-8')
-          old = '''use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};
-          use super::lock::{
-              GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,
-          };
-          #[cfg(unix)]
-          use super::lock::prepare_install;
-          '''
-          new = '''use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};
-          #[cfg(unix)]
-          use super::lock::prepare_install;
-          use super::lock::{
-              GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,
-          };
-          '''
+          old = (
+              'use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};\n'
+              'use super::lock::{\n'
+              '    GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,\n'
+              '};\n'
+              '#[cfg(unix)]\n'
+              'use super::lock::prepare_install;\n'
+          )
+          new = (
+              'use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};\n'
+              '#[cfg(unix)]\n'
+              'use super::lock::prepare_install;\n'
+              'use super::lock::{\n'
+              '    GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,\n'
+              '};\n'
+          )
           if text.count(old) != 1:
               raise SystemExit(f'expected one stale import block, found {text.count(old)}')
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
