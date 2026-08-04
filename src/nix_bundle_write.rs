@@ -296,7 +296,8 @@ fn repack_planned_artifact(requested_root: &Path, plan: &NixExportPlan) -> Resul
     let bytes = fs::read(&packed.path)
         .with_context(|| format!("reading repacked artifact {}", packed.path.display()))?;
     let actual_sha256 = hex::encode(Sha256::digest(&bytes));
-    if actual_sha256 != plan.source.artifact.sha256 || bytes.len() as u64 != plan.source.artifact.size
+    if actual_sha256 != plan.source.artifact.sha256
+        || bytes.len() as u64 != plan.source.artifact.size
     {
         bail!(
             "deterministic repack does not match frozen Nix export plan (expected {} bytes at {}, got {} bytes at {})",
@@ -589,9 +590,9 @@ mod tests {
     #[test]
     fn augmented_command_contains_plan_and_bundle_write() {
         let command = augment_root_command(crate::nix_export_plan::augment_root_command(
-            crate::fetch::augment_root_command(
-                crate::dev::augment_root_command(crate::cli::Cli::command()),
-            ),
+            crate::fetch::augment_root_command(crate::dev::augment_root_command(
+                crate::cli::Cli::command(),
+            )),
         ));
         let interop = command.find_subcommand("interop").unwrap();
         let nix = interop.find_subcommand("nix").unwrap();
@@ -599,7 +600,11 @@ mod tests {
         let bundle = nix.find_subcommand("bundle").unwrap();
         let write = bundle.find_subcommand("write").unwrap();
         for option in ["frozen", "target", "flake_lock", "out", "json"] {
-            assert!(write.get_arguments().any(|argument| argument.get_id() == option));
+            assert!(
+                write
+                    .get_arguments()
+                    .any(|argument| argument.get_id() == option)
+            );
         }
     }
 
