@@ -296,9 +296,7 @@ fn ensure_manifest_unchanged(path: &Path, expected: Option<&[u8]>) -> Result<()>
 }
 
 fn install_committed_before_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| cause.to_string() == crate::ops::GIT_LOCK_FINALIZE_CONTEXT)
+    error.is::<crate::ops::GitLockFinalizeError>()
 }
 
 fn restore_manifest_if_unchanged(
