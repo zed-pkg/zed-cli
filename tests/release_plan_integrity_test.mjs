@@ -1,5 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -136,6 +144,35 @@ test("plan report and integrity paths must be distinct", async () => {
     await rm(paths.root, { recursive: true, force: true });
   }
 });
+
+test(
+  "existing filesystem aliases are refused before report mutation",
+  { skip: process.platform === "win32" },
+  async () => {
+    const paths = await setup();
+    try {
+      const targetPlan = join(paths.root, "plan-target.json");
+      await rename(paths.planPath, targetPlan);
+      await symlink(targetPlan, paths.planPath);
+      const originalPlan = await readFile(targetPlan, "utf8");
+      const originalReport = await readFile(paths.reportPath, "utf8");
+
+      await assert.rejects(
+        bindReleasePlanIntegrity({
+          planPath: paths.planPath,
+          reportPath: paths.reportPath,
+          integrityPath: targetPlan,
+        }),
+        /must be distinct/,
+      );
+
+      assert.equal(await readFile(targetPlan, "utf8"), originalPlan);
+      assert.equal(await readFile(paths.reportPath, "utf8"), originalReport);
+    } finally {
+      await rm(paths.root, { recursive: true, force: true });
+    }
+  },
+);
 
 test(
   "integrity output symlinks are refused before report mutation",
