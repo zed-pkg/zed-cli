@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
+use zed_interfaces::paths::ARCHIVE_ROOT;
 
 use crate::nix_export_plan::NixExportPlan;
 
@@ -20,6 +21,7 @@ pub(super) fn inspect_artifact(bytes: &[u8]) -> Result<BTreeMap<String, ArchiveF
     let mut seen_paths = BTreeSet::new();
     let mut files = BTreeMap::new();
     let mut unpacked_bytes = 0_u64;
+    let archive_root_prefix = format!("{ARCHIVE_ROOT}/");
 
     for (index, entry) in archive
         .entries()
@@ -40,16 +42,18 @@ pub(super) fn inspect_artifact(bytes: &[u8]) -> Result<BTreeMap<String, ArchiveF
 
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
-            if path != "package" && !path.starts_with("package/") {
-                bail!("Zed artifact directory `{path}` is outside canonical `package/`");
+            if path != ARCHIVE_ROOT && !path.starts_with(&archive_root_prefix) {
+                bail!(
+                    "Zed artifact directory `{path}` is outside canonical `{ARCHIVE_ROOT}/`"
+                );
             }
             continue;
         }
         if !entry_type.is_file() {
             bail!("Zed artifact path `{path}` is not a regular file or directory");
         }
-        if !path.starts_with("package/") {
-            bail!("Zed artifact file `{path}` is outside canonical `package/`");
+        if !path.starts_with(&archive_root_prefix) {
+            bail!("Zed artifact file `{path}` is outside canonical `{ARCHIVE_ROOT}/`");
         }
 
         let size = entry.size();
@@ -80,7 +84,7 @@ pub(super) fn verify_planned_bins(
     archive: &BTreeMap<String, ArchiveFile>,
 ) -> Result<()> {
     for (name, relative) in &plan.bins {
-        let path = format!("package/{relative}");
+        let path = format!("{ARCHIVE_ROOT}/{relative}");
         let file = archive.get(&path).with_context(|| {
             format!("prebuilt bin `{name}` is absent from immutable artifact path `{path}`")
         })?;
@@ -105,4 +109,50 @@ fn normalize_archive_path(raw: &str) -> Result<String> {
         }
     }
     Ok(path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    use super::*;
+
+    fn artifact(path: &str, mode: u32, data: &[u8]) -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(mode);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        builder
+            .append_data(&mut header, path, data)
+            .expect("fixture archive entry should be valid");
+        let encoder = builder
+            .into_inner()
+            .expect("fixture tar should finish cleanly");
+        encoder.finish().expect("fixture gzip should finish cleanly")
+    }
+
+    #[test]
+    fn shared_zed_archive_root_is_accepted() {
+        let path = format!("{ARCHIVE_ROOT}/.zpkg.toml");
+        let files = inspect_artifact(&artifact(&path, 0o644, b"[package]\n")).unwrap();
+        assert!(files.contains_key(&path));
+    }
+
+    #[test]
+    fn a_different_archive_root_fails_closed() {
+        let alternate = if ARCHIVE_ROOT == "package" {
+            "pkg/.zpkg.toml"
+        } else {
+            "package/.zpkg.toml"
+        };
+        let error = inspect_artifact(&artifact(alternate, 0o644, b"[package]\n"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("canonical `{ARCHIVE_ROOT}/`")));
+    }
 }
