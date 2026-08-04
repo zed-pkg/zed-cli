@@ -125,6 +125,14 @@ impl SolverWorkspace {
     }
 }
 
+fn constraint_depth(constraints: &[Constraint]) -> usize {
+    constraints
+        .iter()
+        .map(|constraint| constraint.path.len())
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
 #[derive(Debug, Clone, Default)]
 struct SolveState {
     constraints: BTreeMap<String, Vec<Constraint>>,
@@ -144,11 +152,30 @@ impl SolveState {
         Ok(true)
     }
 
+    fn unresolved_depth(&self) -> Option<usize> {
+        self.constraints
+            .iter()
+            .filter(|(key, _)| {
+                !self.registry.contains_key(*key) && !self.workspace.contains_key(*key)
+            })
+            .map(|(_, constraints)| constraint_depth(constraints))
+            .min()
+    }
+
     fn unresolved_key(&self) -> Option<String> {
         self.constraints
-            .keys()
-            .find(|key| !self.registry.contains_key(*key) && !self.workspace.contains_key(*key))
-            .cloned()
+            .iter()
+            .filter(|(key, _)| {
+                !self.registry.contains_key(*key) && !self.workspace.contains_key(*key)
+            })
+            .min_by(
+                |(left_key, left_constraints), (right_key, right_constraints)| {
+                    constraint_depth(left_constraints)
+                        .cmp(&constraint_depth(right_constraints))
+                        .then_with(|| left_key.cmp(right_key))
+                },
+            )
+            .map(|(key, _)| key.clone())
     }
 }
 
@@ -488,11 +515,15 @@ impl<S: SolveSource> GraphSolver<'_, S> {
     }
 
     fn prefetch_frontier(&mut self, state: &SolveState) -> Result<()> {
+        let Some(frontier_depth) = state.unresolved_depth() else {
+            return Ok(());
+        };
         let mut requests = Vec::new();
         for (key, constraints) in &state.constraints {
             if state.registry.contains_key(key)
                 || state.workspace.contains_key(key)
                 || self.workspace.members.contains_key(key)
+                || constraint_depth(constraints) != frontier_depth
             {
                 continue;
             }
@@ -517,10 +548,11 @@ impl<S: SolveSource> GraphSolver<'_, S> {
             });
         }
 
-        // Submit one best candidate for every currently active coordinate
-        // before waiting. This preserves deterministic graph search and avoids
-        // downloading alternate versions eagerly while still saturating the
-        // bounded worker pool on wide dependency frontiers.
+        // Submit one best candidate for every coordinate in the shallowest
+        // active provenance wave before waiting. Shallower packages can add
+        // constraints to deeper coordinates, so delaying those deeper fetches
+        // avoids acquiring a version that a still-unresolved parent will make
+        // ineligible. Equal-depth breadth still saturates the bounded pool.
         self.source.prefetch(&requests)
     }
 
@@ -818,6 +850,41 @@ mod tests {
             }),
             SearchOutcome::Unsatisfiable(failure) => bail!(failure.render()),
         }
+    }
+
+    #[test]
+    fn unresolved_selection_finishes_shallower_provenance_before_deeper_keys() {
+        let mut state = SolveState::default();
+        state
+            .add_constraint(
+                "test/a-deep".to_string(),
+                Constraint {
+                    requirement: "^1".to_string(),
+                    path: vec![
+                        "consumer/app@0.1.0".to_string(),
+                        "test/parent@1.0.0".to_string(),
+                        "test/a-deep".to_string(),
+                    ],
+                    propagate: true,
+                },
+            )
+            .unwrap();
+        state
+            .add_constraint(
+                "test/z-shallow".to_string(),
+                Constraint {
+                    requirement: "^1".to_string(),
+                    path: vec![
+                        "consumer/app@0.1.0".to_string(),
+                        "test/z-shallow".to_string(),
+                    ],
+                    propagate: true,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(state.unresolved_depth(), Some(2));
+        assert_eq!(state.unresolved_key().as_deref(), Some("test/z-shallow"));
     }
 
     #[test]
