@@ -119,7 +119,10 @@ fn branch_metadata_can_change_without_floating_the_locked_gitlink_commit() {
         ],
     );
     git(root.path(), &["add", "."]);
-    git(root.path(), &["commit", "-m", "root with stable transport branch"]);
+    git(
+        root.path(),
+        &["commit", "-m", "root with stable transport branch"],
+    );
 
     let home = tempfile::tempdir().expect("Zed home");
     let config = Config {
