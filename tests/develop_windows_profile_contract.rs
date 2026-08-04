@@ -35,13 +35,15 @@ fn normalize(path: &Path) -> String {
     path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
 }
 
-fn run_powershell(
-    executable: &Path,
-    source_home: &Path,
-    script: &str,
-) -> Output {
+fn run_powershell(executable: &Path, source_home: &Path, script: &str) -> Output {
     Command::new(executable)
-        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script])
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            script,
+        ])
         .env("HOME", source_home)
         .env("USERPROFILE", source_home)
         .env_remove(PROFILE_ENV)
@@ -68,10 +70,17 @@ $PROFILE.CurrentUserCurrentHost
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .collect();
-    assert!(lines.len() >= 3, "unexpected profile discovery output: {lines:?}");
+    assert!(
+        lines.len() >= 3,
+        "unexpected profile discovery output: {lines:?}"
+    );
 
     let expected_home = normalize(source_home);
-    assert_eq!(normalize(&lines[0]), expected_home, "PowerShell HOME was not isolated");
+    assert_eq!(
+        normalize(&lines[0]),
+        expected_home,
+        "PowerShell HOME was not isolated"
+    );
     let mut profiles = Vec::new();
     for profile in &lines[1..] {
         assert!(
@@ -119,11 +128,12 @@ fn powershell_command_mode_does_not_load_profiles_and_propagates_exit() {
     }
 
     let script = format!(
-        "$ErrorActionPreference = 'Stop'; "
-            + "if (Test-Path Env:{PROFILE_ENV}) {{ throw 'PowerShell profile was loaded' }}; "
-            + "if ($env:ZED_DEV -ne '1') {{ throw 'managed environment missing' }}; "
-            + "if ([IO.Path]::GetFullPath((Get-Location).Path) -ne [IO.Path]::GetFullPath($env:ZED_DEV_PROJECT_ROOT)) {{ throw 'project root mismatch' }}; "
-            + "Write-Output 'windows-powershell-profile-safe'; exit 29"
+        "$ErrorActionPreference = 'Stop'; \
+         if (Test-Path Env:{profile_env}) {{ throw 'PowerShell profile was loaded' }}; \
+         if ($env:ZED_DEV -ne '1') {{ throw 'managed environment missing' }}; \
+         if ([IO.Path]::GetFullPath((Get-Location).Path) -ne [IO.Path]::GetFullPath($env:ZED_DEV_PROJECT_ROOT)) {{ throw 'project root mismatch' }}; \
+         Write-Output 'windows-powershell-profile-safe'; exit 29",
+        profile_env = PROFILE_ENV,
     );
 
     let output = Command::new(zed_bin())
@@ -160,6 +170,12 @@ fn powershell_command_mode_does_not_load_profiles_and_propagates_exit() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(combined.contains("windows-powershell-profile-safe"), "{combined}");
-    assert!(!combined.contains(PROFILE_CANARY), "profile canary leaked: {combined}");
+    assert!(
+        combined.contains("windows-powershell-profile-safe"),
+        "{combined}"
+    );
+    assert!(
+        !combined.contains(PROFILE_CANARY),
+        "profile canary leaked: {combined}"
+    );
 }
