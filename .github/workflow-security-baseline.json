@@ -1,7 +1,7 @@
 {
   "version": 1,
   "legacy_workflow_blobs": {
-    ".github/workflows/ci.yml": "c3f43f937221244f3b0385249820fab9dd2332ba",
+    ".github/workflows/ci.yml": "76a87a0515771db0443ed3f260b964e9d94b8f6f",
     ".github/workflows/develop-shell.yml": "b534588382c1220566d970e706f379d0dafde4ad",
     ".github/workflows/manifestless-polyglot.yml": "973eb84e54ab155b9b6a09cb21d88bb1fb2be3ae",
     ".github/workflows/polyglot.yml": "c94b7196f897159dcebbc6690fe2ed802b8dfc67"
