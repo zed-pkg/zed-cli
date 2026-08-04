@@ -2,15 +2,14 @@
 
 use std::io;
 
-use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 
-use crate::cli::Cli;
+use crate::cli_model;
 use crate::{dev, fetch, nix_export_plan};
 
 fn root_command() -> clap::Command {
     nix_export_plan::augment_root_command(fetch::augment_root_command(dev::augment_root_command(
-        Cli::command(),
+        cli_model::command(),
     )))
 }
 
@@ -35,7 +34,7 @@ mod tests {
     use super::render;
 
     #[test]
-    fn bash_completion_contains_commands_aliases_and_manifestless_flags() {
+    fn bash_completion_contains_commands_aliases_and_manifest_flags() {
         let script = render(Shell::Bash);
         assert!(
             script.contains("_zed"),
@@ -62,6 +61,7 @@ mod tests {
             assert!(script.contains(command), "missing command {command:?}");
         }
         for option in [
+            "--do-not-write-new-manifest",
             "--allow-no-manifest",
             "--skip-manifest",
             "--install-mode",
@@ -77,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn zsh_completion_contains_registration_commands_and_manifestless_flags() {
+    fn zsh_completion_contains_registration_commands_and_manifest_flags() {
         let script = render(Shell::Zsh);
         assert!(
             script.contains("#compdef zed"),
@@ -101,6 +101,7 @@ mod tests {
             assert!(script.contains(command), "missing command {command:?}");
         }
         for option in [
+            "--do-not-write-new-manifest",
             "--allow-no-manifest",
             "--skip-manifest",
             "--install-mode",

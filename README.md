@@ -65,9 +65,11 @@ zed install
 zed uninstall                          # remove files; keep the exact lock
 zed install --frozen                   # restore the same artifacts
 
-# or install transiently in a folder with no .zpkg.toml
-zed install acme/http-kit@^1            # confirms in an interactive terminal
-zed install acme/http-kit@^1 --skip-manifest  # intentional automation
+# first dependency install in a project with no .zpkg.toml
+zed install acme/http-kit@^1            # creates a basic durable .zpkg.toml
+
+# explicit one-shot/ephemeral install: keep the project manifestless
+zed install acme/http-kit@^1 --do-not-write-new-manifest
 zed find http
 
 # opt into a confirmation at every mutating lifecycle step
@@ -77,8 +79,11 @@ zed publish --interactive
 ```
 
 Every authored package is `<org>/<name>`, declared in a `.zpkg.toml` manifest
-at the repo root (TOML only). Consumers may also install positional package specs
-through a transient in-memory manifest. See `zed init` output for the annotated
+at the repo root (TOML only). A dependency-bearing first install also creates a
+deterministic local consumer manifest when one is missing, so direct dependency
+intent survives the shell invocation. The explicit
+`--do-not-write-new-manifest` flag preserves the older in-memory consumer path
+for throwaway or lock-only workflows. See `zed init` output for the annotated
 authoring template.
 
 ## Versioning
@@ -109,8 +114,8 @@ registry hosts both on S3/Cloudflare R2.
 | `zed init` | Write a `.zpkg.toml` template |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
-| `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install manifest or transient dependencies |
-| `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers, including manifestless locked reinstalls) |
+| `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
+| `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
@@ -189,10 +194,9 @@ accepts npm and Maven routes. Cargo and pub.dev remain canonical-native plus
 Zed destinations because those forges do not expose matching registry
 protocols.
 
-### Installing without `.zpkg.toml`
+### First install without `.zpkg.toml`
 
-`zed install` accepts transient package specs in an existing repository or
-folder:
+`zed install` accepts package specs in an existing repository or folder:
 
 ```sh
 zed install oresoftware/flags-2-env@^0.1
@@ -205,19 +209,55 @@ shell containing exactly one clear nested app such as `apps/web/package.json`,
 that app becomes the install root. Ambiguous monorepos stay at the requested
 root and use the safe universal `zed_modules/` layout rather than guessing.
 
-A real interactive terminal prints the selected root, inferred target, adapter,
-and dependencies, then accepts only `y` or `yes`. EOF and every other answer
-cancel before files are written. Automation must opt in with
-`--allow-no-manifest`, its visible alias `--skip-manifest`, or
-`ZED_PKG_ALLOW_NO_MANIFEST=1`.
+By default, a dependency-bearing first install writes a deterministic basic
+`.zpkg.toml` at that selected root. It records the requested packages as direct
+dependencies, records supported inferred target/adapter values, writes no
+timestamps or machine-specific paths, and then runs the ordinary resolver,
+integrity checks, lockfile transaction, store, materializer, adapters, and
+build-hook policy. A failed install removes the exact generated manifest rather
+than leaving a half-adopted project.
 
-No synthetic `.zpkg.toml` is written. The normal installer still writes
-`.zpkg.lock`, `zed_modules/`, hoisted bins, and supported ecosystem adapter
-outputs. `zed install --frozen --skip-manifest` can reconstruct a no-manifest
-install from an existing lockfile without package operands. In a project that
-already has a manifest, use `zed add` to persist a dependency; positional
-package operands on `zed install` are rejected rather than silently creating a
-non-persistent manifest override.
+The generated manifest uses a local `zed-local/<directory-name>` identity,
+version `0.0.0`, a non-authoritative localhost repository URL, and the
+`zed-generated-consumer` marker. It is immediately suitable for dependency
+management but `zed publish` rejects it until a maintainer reviews the real
+package identity/repository metadata and removes the marker. `--skip-vcs-checks`
+does not bypass that guard.
+
+Use the canonical escape hatch when the project must remain manifestless:
+
+```sh
+zed install oresoftware/flags-2-env@^0.1 --do-not-write-new-manifest
+```
+
+This preserves the established in-memory consumer plan. The normal installer
+can still write `.zpkg.lock`, `zed_modules/`, hoisted bins, and supported
+ecosystem adapter outputs; only creation of a missing `.zpkg.toml` is
+suppressed. The canonical environment equivalent is
+`ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=1`.
+
+`--allow-no-manifest`, `--skip-manifest`, and
+`ZED_PKG_ALLOW_NO_MANIFEST=1` remain compatibility spellings for one migration
+window and emit deprecation guidance. When a manifest already exists, the new
+flag is an informational no-op and never changes a managed project into an
+ephemeral one.
+
+A generated consumer manifest may accept additional package operands, which
+lets two concurrent first installs retain both direct dependencies under the
+project-scoped manifest lock. Conflicting requirements fail without replacing
+the file. A human-authored existing manifest keeps the stricter rule: use
+`zed add` to persist a dependency; positional operands on `zed install` are
+rejected rather than silently editing authored package metadata.
+
+A lockfile alone does not identify which packages were direct versus
+transitive. Therefore an explicit lock-only restoration is:
+
+```sh
+zed install --frozen --do-not-write-new-manifest
+```
+
+Without the flag, Zed fails instead of inventing a misleading manifest from the
+whole locked graph.
 
 ### Where dependencies land (`[install].dir`)
 
@@ -315,7 +355,8 @@ actual CLI never drift, so it is always authoritative:
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
-| `--allow-no-manifest` / `--skip-manifest` (install) | `ZED_PKG_ALLOW_NO_MANIFEST` | off; otherwise a real-terminal confirmation is required |
+| `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
+| deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
@@ -432,11 +473,13 @@ If the smoke test passes here, it will pass for your users.
 ## Concurrency
 
 `zed install` is safe to run from many processes at once (two terminals,
-parallel CI runners). It takes an advisory `flock` on `~/.zed-pkg/locks/`
-around store extraction (per-artifact) and the refs/lockfile writes
-(per-install), so concurrent runs share one store without corrupting it, and
-a crashed process never wedges the store (the OS drops the lock). See the
-`concurrent_installs_share_the_store_safely` test.
+parallel CI runners). Store extraction and reference updates retain their
+existing advisory locks. A dependency-bearing first install also takes a
+project-scoped manifest lock under `~/.zed-pkg/locks/projects/`, keyed by the
+canonical project path. Two simultaneous first installs therefore create one
+valid manifest and merge distinct direct dependencies instead of losing one
+caller's intent. Exact conflicting requirements fail rather than choosing a
+winner, and the OS releases every lock if a process dies.
 
 ## Platforms
 
@@ -452,6 +495,7 @@ Linux (arm64 + x64, gnu and musl), and Windows via
   store/v1/<aa>/<sha256>/pkg/          extracted source artifacts (content-addressed, immutable)
   builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
   cache/<sha256>.tar.gz                downloaded archives
+  locks/projects/<hash>.manifest.lock  project-scoped first-install serialization
   locks/                               advisory flocks (per-artifact, per-install, per-build)
   auth/sessions.toml                   shared-auth + Supabase token pairs (0600)
   refs.json                            project -> artifact references (for prune/gc)
@@ -475,6 +519,9 @@ Artifacts arrive over the network, so the client treats them as untrusted:
   be https (or loopback/http only when the registry itself is http).
 - **No install-time code execution.** Installing a dependency never runs its
   scripts; `[build]` steps run only with explicit `--allow-build`.
+- **Generated identities fail closed.** A first-install consumer manifest
+  cannot be published until its inferred local package identity is reviewed
+  and the generated marker is removed.
 - **Recoverable project mutations.** Install and uninstall stage old paths in
   UUID-v4 transaction directories and restore interrupted work before the
   next lifecycle operation.
