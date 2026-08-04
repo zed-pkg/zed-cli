@@ -1,0 +1,91 @@
+name: Format current-main Nix bundle evidence
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/format-current-main-nix-bundle-evidence.yml
+      - .github/workflows/format-current-main-nix-bundle-once.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: format-current-main-nix-bundle-evidence-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  format-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact feature branch without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/format-current-main-nix-bundle
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned formatter
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Produce constrained formatting evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              'src/nix_bundle_write.rs',
+              'tests/nix_bundle_write_boundaries.rs',
+              'tests/nix_bundle_write_cli.rs',
+          }
+          changed = {
+              line.strip()
+              for line in subprocess.check_output(
+                  ['git', 'diff', '--name-only'], text=True
+              ).splitlines()
+              if line.strip()
+          }
+          if changed != allowed:
+              raise SystemExit(
+                  'expected exactly the three reviewed formatting files; got: '
+                  + ', '.join(sorted(changed))
+              )
+          PY
+
+          cargo fmt --all --check
+          cargo test --locked --test nix_bundle_write_cli --no-run
+          cargo test --locked --test nix_bundle_write_boundaries --no-run
+
+          mkdir -p evidence/src evidence/tests
+          cp src/nix_bundle_write.rs evidence/src/
+          cp tests/nix_bundle_write_boundaries.rs evidence/tests/
+          cp tests/nix_bundle_write_cli.rs evidence/tests/
+          git diff --binary -- \
+            src/nix_bundle_write.rs \
+            tests/nix_bundle_write_boundaries.rs \
+            tests/nix_bundle_write_cli.rs \
+            > evidence/rustfmt.patch
+          sha256sum \
+            evidence/src/nix_bundle_write.rs \
+            evidence/tests/nix_bundle_write_boundaries.rs \
+            evidence/tests/nix_bundle_write_cli.rs \
+            evidence/rustfmt.patch \
+            > evidence/SHA256SUMS
+
+      - name: Upload exact formatted bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nix-bundle-rustfmt-files
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 3
