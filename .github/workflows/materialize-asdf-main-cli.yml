@@ -1,0 +1,383 @@
+name: materialize typed asdf env routing
+
+on:
+  pull_request:
+    branches:
+      - agent/den-1420-asdf-current-main
+    paths:
+      - .github/workflows/materialize-asdf-main-cli.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-asdf-main-cli
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1420-asdf-main-cli' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1420-asdf-main-cli
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Wire asdf through the canonical typed dispatcher
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cli = Path('src/cli.rs')
+          text = cli.read_text()
+          old = '''pub enum EnvironmentManagerArg {
+              /// Import or verify project-local mise configuration.
+              Mise,
+          }
+          '''
+          new = '''pub enum EnvironmentManagerArg {
+              /// Import or verify project-local mise configuration.
+              Mise,
+              /// Import or verify project-local asdf configuration and Zed-owned provenance.
+              Asdf,
+          }
+          '''
+          if old not in text:
+              raise SystemExit('EnvironmentManagerArg anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''    fn environment_import_and_verify_are_typed() {
+                  for action in ["import", "verify"] {
+                      let cli = Cli::try_parse_from([
+                          "zed",
+                          "env",
+                          action,
+                          "mise",
+                          "--config",
+                          "mise.toml",
+                          "--lock",
+                          "mise.lock",
+                          "--frozen",
+                          "--json",
+                      ])
+                      .unwrap();
+                      assert!(matches!(cli.cmd, Cmd::Env { .. }));
+                  }
+              }
+          '''
+          new = '''    fn environment_import_and_verify_are_typed() {
+                  for manager in ["mise", "asdf"] {
+                      for action in ["import", "verify"] {
+                          let cli = Cli::try_parse_from([
+                              "zed",
+                              "env",
+                              action,
+                              manager,
+                              "--config",
+                              if manager == "mise" { "mise.toml" } else { ".tool-versions" },
+                              "--lock",
+                              if manager == "mise" { "mise.lock" } else { ".zed/asdf.lock.toml" },
+                              "--frozen",
+                              "--json",
+                          ])
+                          .unwrap();
+                          assert!(matches!(cli.cmd, Cmd::Env { .. }));
+                      }
+                  }
+              }
+          '''
+          if old not in text:
+              raise SystemExit('typed environment test anchor not found')
+          cli.write_text(text.replace(old, new, 1))
+
+          main = Path('src/main.rs')
+          text = main.read_text()
+          old = 'use zed_cli::auth;\n'
+          new = 'use zed_cli::asdf_environment;\nuse zed_cli::auth;\n'
+          if old not in text:
+              raise SystemExit('main import anchor not found')
+          text = text.replace(old, new, 1)
+          old = 'use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};'
+          new = 'use zed_cli::cli::{\n    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,\n};'
+          if old not in text:
+              raise SystemExit('main cli import anchor not found')
+          text = text.replace(old, new, 1)
+
+          old = '''        Cmd::Env { cmd } => match cmd {
+                      EnvCmd::Import {
+                          manager: _,
+                          config,
+                          lock,
+                          frozen,
+                          json,
+                      } => {
+                          let imported =
+                              environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                          environment::print_import(&imported, json)
+                      }
+                      EnvCmd::Verify {
+                          manager: _,
+                          config,
+                          lock,
+                          frozen,
+                          json,
+                      } => {
+                          let imported =
+                              environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                          environment::print_verification(&imported, json)
+                      }
+                  },
+          '''
+          new = '''        Cmd::Env { cmd } => match cmd {
+                      EnvCmd::Import {
+                          manager,
+                          config,
+                          lock,
+                          frozen,
+                          json,
+                      } => match manager {
+                          EnvironmentManagerArg::Mise => {
+                              let imported = environment::import_mise(
+                                  &cwd,
+                                  config.as_deref(),
+                                  lock.as_deref(),
+                                  frozen,
+                              )?;
+                              environment::print_import(&imported, json)
+                          }
+                          EnvironmentManagerArg::Asdf => {
+                              let imported = asdf_environment::import_asdf(
+                                  &cwd,
+                                  config.as_deref(),
+                                  lock.as_deref(),
+                                  frozen,
+                              )?;
+                              asdf_environment::print_import(&imported, json)
+                          }
+                      },
+                      EnvCmd::Verify {
+                          manager,
+                          config,
+                          lock,
+                          frozen,
+                          json,
+                      } => match manager {
+                          EnvironmentManagerArg::Mise => {
+                              let imported = environment::import_mise(
+                                  &cwd,
+                                  config.as_deref(),
+                                  lock.as_deref(),
+                                  frozen,
+                              )?;
+                              environment::print_verification(&imported, json)
+                          }
+                          EnvironmentManagerArg::Asdf => {
+                              let imported = asdf_environment::import_asdf(
+                                  &cwd,
+                                  config.as_deref(),
+                                  lock.as_deref(),
+                                  frozen,
+                              )?;
+                              asdf_environment::print_verification(&imported, json)
+                          }
+                      },
+                  },
+          '''
+          if old not in text:
+              raise SystemExit('main env dispatch anchor not found')
+          main.write_text(text.replace(old, new, 1))
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          mise_verify = '| `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |\n'
+          asdf_rows = '| `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |\n| `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |\n'
+          if asdf_rows not in text:
+              if mise_verify not in text:
+                  raise SystemExit('README mise verification row not found')
+              text = text.replace(mise_verify, mise_verify + asdf_rows, 1)
+          readme.write_text(text)
+
+          docs = Path('docs/asdf-interop.md')
+          text = docs.read_text()
+          marker = '## Commands\n'
+          section = '''## Canonical `zed env` commands
+
+```console
+zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]
+zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]
+```
+
+The staged `zed-asdf` executable remains a focused adapter-test surface, but the supported user interface is the typed `zed env` dispatcher. Both routes call the same Rust module and preserve the same read-only, project-local, no-execution contract.
+
+'''
+          if section not in text:
+              if marker not in text:
+                  text = section + text
+              else:
+                  text = text.replace(marker, section + marker, 1)
+          docs.write_text(text)
+          PY
+
+      - name: Add real main-binary regressions
+        run: |
+          cat > tests/asdf_main_cli.rs <<'RS'
+          use std::fs;
+          use std::path::{Path, PathBuf};
+          use std::process::Command;
+
+          fn binary() -> PathBuf {
+              PathBuf::from(env!("CARGO_BIN_EXE_zed"))
+          }
+
+          fn checksum(digit: char) -> String {
+              digit.to_string().repeat(64)
+          }
+
+          fn revision(digit: char) -> String {
+              digit.to_string().repeat(40)
+          }
+
+          fn write_fixture(root: &Path) {
+              fs::write(root.join(".tool-versions"), "nodejs 22.11.0\npython 3.12.4\n")
+                  .unwrap();
+              fs::create_dir_all(root.join(".zed")).unwrap();
+              fs::write(
+                  root.join(".zed/asdf.lock.toml"),
+                  format!(
+                      r#"schema = 1
+
+          [plugins.nodejs]
+          version = "22.11.0"
+          url = "https://github.com/asdf-vm/asdf-nodejs.git"
+          revision = "{}"
+          sha256 = "{}"
+          platforms = ["x86_64-linux"]
+
+          [plugins.python]
+          version = "3.12.4"
+          url = "https://github.com/danhper/asdf-python.git"
+          revision = "{}"
+          sha256 = "{}"
+          "#,
+                      revision('1'),
+                      checksum('a'),
+                      revision('2'),
+                      checksum('b'),
+                  ),
+              )
+              .unwrap();
+          }
+
+          #[test]
+          fn canonical_env_dispatch_imports_and_verifies_asdf_read_only() {
+              let temp = tempfile::tempdir().unwrap();
+              write_fixture(temp.path());
+              let config_before = fs::read(temp.path().join(".tool-versions")).unwrap();
+              let lock_before = fs::read(temp.path().join(".zed/asdf.lock.toml")).unwrap();
+
+              for action in ["import", "verify"] {
+                  let output = Command::new(binary())
+                      .current_dir(temp.path())
+                      .env("PATH", "")
+                      .args(["env", action, "asdf", "--frozen", "--json"])
+                      .output()
+                      .unwrap();
+                  assert!(
+                      output.status.success(),
+                      "{action} stderr: {}",
+                      String::from_utf8_lossy(&output.stderr)
+                  );
+                  let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                  if action == "verify" {
+                      assert_eq!(value["manager"], "asdf");
+                      assert_eq!(value["verified"], true);
+                  } else {
+                      assert_eq!(value["tools"].as_object().unwrap().len(), 2);
+                  }
+              }
+
+              assert_eq!(fs::read(temp.path().join(".tool-versions")).unwrap(), config_before);
+              assert_eq!(
+                  fs::read(temp.path().join(".zed/asdf.lock.toml")).unwrap(),
+                  lock_before
+              );
+          }
+
+          #[test]
+          fn canonical_env_dispatch_fails_closed_without_frozen_provenance() {
+              let temp = tempfile::tempdir().unwrap();
+              fs::write(temp.path().join(".tool-versions"), "nodejs 22.11.0\n").unwrap();
+              let output = Command::new(binary())
+                  .current_dir(temp.path())
+                  .env("PATH", "")
+                  .args(["env", "verify", "asdf", "--frozen"])
+                  .output()
+                  .unwrap();
+              assert!(!output.status.success());
+              assert!(String::from_utf8_lossy(&output.stderr)
+                  .contains("frozen asdf import requires `.zed/asdf.lock.toml`"));
+          }
+          RS
+
+      - name: Extend permanent three-platform contract
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/asdf-interop.yml')
+          text = path.read_text()
+          old = '''          cargo test --locked --lib asdf_environment::tests
+                    cargo test --locked --test asdf_environment_cli
+          '''
+          new = '''          cargo test --locked --lib asdf_environment::tests
+                    cargo test --locked --test asdf_environment_cli
+                    cargo test --locked --test asdf_main_cli
+          '''
+          if old not in text:
+              raise SystemExit('asdf workflow test anchor not found')
+          text = text.replace(old, new, 1)
+          old = 'cargo clippy --locked --bin zed-asdf --test asdf_environment_cli -- -D warnings'
+          new = 'cargo clippy --locked --bin zed --bin zed-asdf --test asdf_environment_cli --test asdf_main_cli -- -D warnings'
+          if old not in text:
+              raise SystemExit('asdf workflow clippy anchor not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Validate typed CLI, flags, docs, and real binaries
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib asdf_environment::tests
+          cargo test --locked --test asdf_environment_cli
+          cargo test --locked --test asdf_main_cli
+          cargo test --locked cli::tests::environment_import_and_verify_are_typed
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
+          cargo clippy --locked --bin zed --bin zed-asdf --test asdf_environment_cli --test asdf_main_cli -- -D warnings
+
+      - name: Commit ordinary integration source
+        run: |
+          set -euo pipefail
+          rm .github/workflows/materialize-asdf-main-cli.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat(DEN-1420): route asdf through zed env'
+          git push origin HEAD:agent/den-1420-asdf-main-cli
