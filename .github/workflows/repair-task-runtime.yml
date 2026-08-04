@@ -1,12 +1,11 @@
-# Trigger the one-shot repair after the workflow exists on the branch.
 name: repair native task runtime
 
 on:
-  push:
-    branches:
-      - agent/den-1444-native-task-runtime
+  pull_request:
+    branches: [main]
     paths:
       - .github/workflows/repair-task-runtime.yml
+      - src/task_runtime.rs
 
 permissions:
   contents: write
@@ -21,11 +20,11 @@ defaults:
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1444-native-task-runtime'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - name: Check out exact task-runtime branch
+      - name: Check out exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: agent/den-1444-native-task-runtime
@@ -47,108 +46,49 @@ jobs:
           path = Path('src/task_runtime.rs')
           text = path.read_text()
 
-          old = '''        let (states, ready) = &*self.states;
-                  let mut states = states.lock().expect("task state mutex poisoned");
-                  loop {
-                      match states.get(&identity) {
-                          None => {
-                              states.insert(identity.clone(), ExecutionState::Running);
-                              break;
-                          }
-                          Some(ExecutionState::Running) => {
-                              states = ready.wait(states).expect("task state mutex poisoned");
-                          }
-                          Some(ExecutionState::Completed) | Some(ExecutionState::Skipped) => {
-                              return Ok(TaskOutcome::AlreadyCompleted);
-                          }
-                          Some(ExecutionState::Failed(message)) => bail!("task `{name}` previously failed: {message}"),
-                      }
-                  }
-                  drop(states);
+          text = text.replace(
+              'let (states, ready) = &*self.states;\n        let mut states = states.lock().expect("task state mutex poisoned");',
+              'let (state_mutex, ready) = &*self.states;\n        let mut state_guard = state_mutex.lock().expect("task state mutex poisoned");',
+              1,
+          )
+          text = text.replace('match states.get(&identity) {', 'match state_guard.get(&identity) {', 1)
+          text = text.replace('states.insert(identity.clone(), ExecutionState::Running);', 'state_guard.insert(identity.clone(), ExecutionState::Running);', 1)
+          text = text.replace(
+              'states = ready.wait(states).expect("task state mutex poisoned");',
+              'state_guard = ready\n                        .wait(state_guard)\n                        .expect("task state mutex poisoned");',
+              1,
+          )
+          text = text.replace('drop(states);', 'drop(state_guard);', 1)
+          text = text.replace(
+              'let mut states = states.lock().expect("task state mutex poisoned");',
+              'let mut state_guard = state_mutex.lock().expect("task state mutex poisoned");',
+              1,
+          )
+          text = text.replace('states.insert(identity, ExecutionState::Skipped);', 'state_guard.insert(identity, ExecutionState::Skipped);', 1)
+          text = text.replace('states.insert(identity, ExecutionState::Completed);', 'state_guard.insert(identity, ExecutionState::Completed);', 1)
+          text = text.replace('states.insert(identity, ExecutionState::Failed(format!("{error:#}")));', 'state_guard.insert(identity, ExecutionState::Failed(format!("{error:#}")));', 1)
 
-                  let result = self.execute_task_inner(&name, invocation_env, args);
-                  let mut states = states.lock().expect("task state mutex poisoned");
-                  match &result {
-                      Ok(TaskOutcome::Skipped) => {
-                          states.insert(identity, ExecutionState::Skipped);
-                      }
-                      Ok(_) => {
-                          states.insert(identity, ExecutionState::Completed);
-                      }
-                      Err(error) => {
-                          states.insert(identity, ExecutionState::Failed(format!("{error:#}")));
-                      }
-                  }
-                  ready.notify_all();
-          '''
-          new = '''        let (state_mutex, ready) = &*self.states;
-                  let mut state_guard = state_mutex.lock().expect("task state mutex poisoned");
-                  loop {
-                      match state_guard.get(&identity) {
-                          None => {
-                              state_guard.insert(identity.clone(), ExecutionState::Running);
-                              break;
-                          }
-                          Some(ExecutionState::Running) => {
-                              state_guard = ready
-                                  .wait(state_guard)
-                                  .expect("task state mutex poisoned");
-                          }
-                          Some(ExecutionState::Completed) | Some(ExecutionState::Skipped) => {
-                              return Ok(TaskOutcome::AlreadyCompleted);
-                          }
-                          Some(ExecutionState::Failed(message)) => {
-                              bail!("task `{name}` previously failed: {message}")
-                          }
-                      }
-                  }
-                  drop(state_guard);
-
-                  let result = self.execute_task_inner(&name, invocation_env, args);
-                  let mut state_guard = state_mutex.lock().expect("task state mutex poisoned");
-                  match &result {
-                      Ok(TaskOutcome::Skipped) => {
-                          state_guard.insert(identity, ExecutionState::Skipped);
-                      }
-                      Ok(_) => {
-                          state_guard.insert(identity, ExecutionState::Completed);
-                      }
-                      Err(error) => {
-                          state_guard.insert(identity, ExecutionState::Failed(format!("{error:#}")));
-                      }
-                  }
-                  ready.notify_all();
-          '''
-          if old not in text:
-              raise SystemExit('task state mutex anchor not found')
-          text = text.replace(old, new, 1)
-
-          old = '''fn contains_glob(value: &str) -> bool {
-              value.contains(['*', '?', '['])
-          }
-          '''
-          new = '''fn contains_glob(value: &str) -> bool {
-              value.contains('*') || value.contains('?') || value.contains('[')
-          }
-          '''
-          if old not in text:
-              raise SystemExit('contains_glob anchor not found')
-          text = text.replace(old, new, 1)
-
+          text = text.replace(
+              "value.contains(['*', '?', '['])",
+              "value.contains('*') || value.contains('?') || value.contains('[')",
+              1,
+          )
           text = text.replace('depends-post = ["cleanup"]', 'depends_post = ["cleanup"]', 1)
 
-          old = '''            outputs = ["output.txt"]
-                      run = ["cat input.txt > output.txt"]
-                      "#,
-          '''
-          new = '''            outputs = ["output.txt"]
-                      run = ["cat input.txt > output.txt"]
-                      run_windows = ["type input.txt > output.txt"]
-                      "#,
-          '''
-          if old not in text:
-              raise SystemExit('cache cross-platform command anchor not found')
-          text = text.replace(old, new, 1)
+          cache_anchor = '            outputs = ["output.txt"]\n            run = ["cat input.txt > output.txt"]\n            "#,'
+          cache_replacement = '            outputs = ["output.txt"]\n            run = ["cat input.txt > output.txt"]\n            run_windows = ["type input.txt > output.txt"]\n            "#,'
+          if cache_anchor in text:
+              text = text.replace(cache_anchor, cache_replacement, 1)
+
+          required = [
+              'let (state_mutex, ready) = &*self.states;',
+              'let mut state_guard = state_mutex.lock()',
+              "value.contains('*') || value.contains('?') || value.contains('[')",
+              'depends_post = ["cleanup"]',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f'missing repaired fragments: {missing}')
 
           path.write_text(text)
           PY
