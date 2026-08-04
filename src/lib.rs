@@ -9,6 +9,7 @@ pub mod config;
 pub mod dev;
 pub mod fetch;
 pub mod flags;
+pub mod git_submodules;
 pub mod install_graph;
 pub mod interactive;
 pub mod managed_install;
