@@ -16,8 +16,7 @@ jobs:
   apply:
     if: >-
       github.repository == 'zed-pkg/zed-cli' &&
-      github.ref == 'refs/heads/agent/den-1553-complete-constraint-solver' &&
-      github.actor == 'ORESoftware'
+      github.ref == 'refs/heads/agent/den-1553-complete-constraint-solver'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
