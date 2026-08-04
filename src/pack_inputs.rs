@@ -42,7 +42,10 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
         }
 
         let candidate = fs::canonicalize(&candidate).with_context(|| {
-            format!("canonicalizing ignored package input {}", candidate.display())
+            format!(
+                "canonicalizing ignored package input {}",
+                candidate.display()
+            )
         })?;
         let artifacts = views
             .iter()
@@ -230,7 +233,10 @@ fn git_ignored_untracked(project: &Path) -> Result<Vec<PathBuf>> {
         }
         Err(error) => {
             return Err(error).with_context(|| {
-                format!("enumerating ignored package inputs in {}", project.display())
+                format!(
+                    "enumerating ignored package inputs in {}",
+                    project.display()
+                )
             });
         }
     };
@@ -367,11 +373,7 @@ exclude = ["secret.env"]
             "clients/ts/private.key\n",
         )
         .unwrap();
-        fs::write(
-            project.path().join("clients/ts/private.key"),
-            "private\n",
-        )
-        .unwrap();
+        fs::write(project.path().join("clients/ts/private.key"), "private\n").unwrap();
 
         let error = preflight_git_ignored(
             project.path(),
@@ -404,11 +406,7 @@ adapter = "node"
             "private.key\n",
         )
         .unwrap();
-        fs::write(
-            project.path().join("clients/ts/private.key"),
-            "private\n",
-        )
-        .unwrap();
+        fs::write(project.path().join("clients/ts/private.key"), "private\n").unwrap();
 
         let error = preflight_git_ignored(
             project.path(),
