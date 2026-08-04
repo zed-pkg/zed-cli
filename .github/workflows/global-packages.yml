@@ -69,9 +69,28 @@ jobs:
           cargo fmt --all --check
 
       - name: Run global profile unit tests
+        id: unit
+        continue-on-error: true
         run: |
           set -euo pipefail
-          cargo test --locked --lib global::tests
+          mkdir -p diagnostics
+          cargo test --quiet --locked --lib global::tests -- --nocapture \
+            2>&1 | tee "diagnostics/global-unit-tests-${RUNNER_OS}.log"
+
+      - name: Upload focused unit-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: global-unit-tests-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce global profile unit tests
+        if: always() && steps.unit.outcome == 'failure'
+        run: |
+          echo 'focused global profile unit tests failed; see retained diagnostics.' >&2
+          exit 1
 
       - name: Run compiled global CLI tests
         run: |
