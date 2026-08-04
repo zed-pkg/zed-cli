@@ -65,10 +65,7 @@ fn main() {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
     let cwd = std::env::current_dir()?;
-    if cwd
-        .join(zed_cli::transaction::STAGING_DIR)
-        .is_dir()
-    {
+    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Every live project transaction already owns this kernel-backed
         // install lock. Recover under the same lock so a concurrent process
         // cannot mistake an in-flight rollback journal for an abandoned one.
