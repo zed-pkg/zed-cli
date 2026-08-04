@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Temporary materializer for DEN-1462 export ownership/security boundaries."""
+"""Temporary residual hardener applied after the base DEN-1462 materializer."""
 
 from pathlib import Path
 
@@ -14,97 +14,80 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 source = Path("src/mise_export.rs")
 text = source.read_text(encoding="utf-8")
 
-if "ensure_export_path_separation(&plan_relative, &output_relative)?;" not in text:
-    anchor = '''    let (output_path, output_relative) =
-        resolve_project_path(&root, output_arg, "mise output", false)?;
-
-    let plan = read_plan(&plan_path)?;
-'''
-    replacement = '''    let (output_path, output_relative) =
-        resolve_project_path(&root, output_arg, "mise output", false)?;
-    ensure_export_path_separation(&plan_relative, &output_relative)?;
-
-    let plan = read_plan(&plan_path)?;
-'''
-    text = replace_once(text, anchor, replacement, "path separation call")
-
-if "ensure_no_symlink_existing_prefix(root, Path::new(EXPORT_STATE_PATH)" not in text:
-    anchor = '''    let state_path = root.join(EXPORT_STATE_PATH);
-    let mut state = load_state(&state_path)?;
-'''
-    replacement = '''    let state_path = root.join(EXPORT_STATE_PATH);
-    ensure_no_symlink_existing_prefix(
-        root,
-        Path::new(EXPORT_STATE_PATH),
-        "mise export state",
-    )?;
-    let mut state = load_state(&state_path)?;
-'''
-    text = replace_once(text, anchor, replacement, "state symlink boundary")
-
-# Recursively retain the sensitive-key policy through arrays/tables and tool options.
-text = text.replace(
-    'environment_value_to_toml(value, &format!("{field}.options.{name}"), true)?',
-    'environment_value_to_toml(value, &format!("{field}.options.{name}"), true, true)?',
-)
-text = text.replace(
-    'environment_value_to_toml(value, &format!("{field}.{name}"), allow_complex)?',
-    'environment_value_to_toml(\n                value,\n                &format!("{field}.{name}"),\n                allow_complex,\n                reject_sensitive,\n            )?',
-)
-if "reject_sensitive: bool," not in text[text.index("fn environment_value_to_toml(") : text.index("fn insert_optional_string")]:
-    text = replace_once(
-        text,
-        '''fn environment_value_to_toml(
-    value: &EnvironmentValue,
-    field: &str,
-    allow_complex: bool,
-) -> Result<toml::Value> {
-''',
-        '''fn environment_value_to_toml(
-    value: &EnvironmentValue,
-    field: &str,
-    allow_complex: bool,
-    reject_sensitive: bool,
-) -> Result<toml::Value> {
-''',
-        "environment value signature",
-    )
-text = text.replace(
-    'environment_value_to_toml(value, &format!("{field}[{index}]"), true)',
-    'environment_value_to_toml(\n                            value,\n                            &format!("{field}[{index}]"),\n                            true,\n                            reject_sensitive,\n                        )',
-)
-text = text.replace(
-    'toml::Value::Table(export_value_map(values, field, true, false)?)',
-    'toml::Value::Table(export_value_map(\n                values,\n                field,\n                true,\n                reject_sensitive,\n            )?)',
-)
-
-if "fn ensure_export_path_separation(" not in text:
-    anchor = "fn validate_sha256(value: &str, field: &str) -> Result<()> {\n"
-    helpers = '''fn ensure_export_path_separation(plan: &str, output: &str) -> Result<()> {
+# The base PR rejects exact aliases and transaction staging. Strengthen that
+# contract for portable case-insensitive filesystems and reserve the state path
+# for both input and output.
+old_relationships = '''fn validate_export_path_relationships(
+    plan_path: &Path,
+    plan_relative: &str,
+    output_path: &Path,
+    output_relative: &str,
+) -> Result<()> {
     ensure!(
-        !portable_path_eq(plan, output),
-        "mise output `{output}` must be different from environment plan `{plan}`"
+        output_relative != plan_relative,
+        "mise output `{output_relative}` cannot overwrite its source environment plan"
     );
     ensure!(
-        !portable_path_eq(output, EXPORT_STATE_PATH),
-        "mise output path `{output}` is reserved for Zed export ownership state"
+        output_relative != EXPORT_STATE_PATH,
+        "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
     );
+    let staging_prefix = format!("{STAGING_DIR}/");
+    for (kind, relative) in [
+        ("environment plan", plan_relative),
+        ("mise output", output_relative),
+    ] {
+        ensure!(
+            relative != STAGING_DIR && !relative.starts_with(&staging_prefix),
+            "{kind} cannot target reserved transaction staging `{STAGING_DIR}`: `{relative}`"
+        );
+    }
+'''
+new_relationships = '''fn validate_export_path_relationships(
+    plan_path: &Path,
+    plan_relative: &str,
+    output_path: &Path,
+    output_relative: &str,
+) -> Result<()> {
     ensure!(
-        !portable_path_eq(plan, EXPORT_STATE_PATH),
-        "environment plan path `{plan}` is reserved for Zed export ownership state"
+        !portable_path_eq(output_relative, plan_relative),
+        "mise output `{output_relative}` cannot overwrite its source environment plan"
     );
-    Ok(())
-}
+    for (kind, relative) in [
+        ("environment plan", plan_relative),
+        ("mise output", output_relative),
+    ] {
+        ensure!(
+            !portable_path_eq(relative, EXPORT_STATE_PATH),
+            "{kind} cannot target reserved export state `{EXPORT_STATE_PATH}`"
+        );
+        ensure!(
+            !reserved_path_or_child(relative, STAGING_DIR),
+            "{kind} cannot target reserved transaction staging `{STAGING_DIR}`: `{relative}`"
+        );
+    }
+'''
+if "!portable_path_eq(output_relative, plan_relative)" not in text:
+    text = replace_once(text, old_relationships, new_relationships, "portable path relationships")
 
-fn portable_path_eq(left: &str, right: &str) -> bool {
+if "fn portable_path_eq(" not in text:
+    anchor = "fn read_plan(path: &Path) -> Result<EnvironmentPlanV2> {\n"
+    helpers = '''fn portable_path_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
-'''
-    text = replace_once(text, anchor, helpers + anchor, "path separation helpers")
+fn reserved_path_or_child(path: &str, reserved: &str) -> bool {
+    portable_path_eq(path, reserved)
+        || path
+            .get(..reserved.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(reserved))
+            && path.as_bytes().get(reserved.len()) == Some(&b'/')
+}
 
-# For generated output/state, reject symlinks in every existing prefix but allow
-# a missing suffix to be created atomically by the transaction.
+'''
+    text = replace_once(text, anchor, helpers + anchor, "portable path helpers")
+
+# Protect every existing prefix of generated files, while allowing a missing
+# safe suffix to be created within the project transaction.
 if "fn ensure_no_symlink_existing_prefix(" not in text:
     anchor = "fn ensure_no_symlink_components(\n"
     helper = '''fn ensure_no_symlink_existing_prefix(
@@ -152,7 +135,7 @@ if "fn ensure_no_symlink_existing_prefix(" not in text:
 }
 
 '''
-    text = replace_once(text, anchor, helper + anchor, "existing-prefix helper")
+    text = replace_once(text, anchor, helper + anchor, "existing-prefix symlink helper")
 
 old_resolve = '''    let relative = validate_relative_argument(requested, kind)?;
     ensure_no_symlink_components(root, &relative, kind, must_exist)?;
@@ -169,24 +152,27 @@ new_resolve = '''    let relative = validate_relative_argument(requested, kind)?
 if old_resolve in text:
     text = replace_once(text, old_resolve, new_resolve, "generated path prefix validation")
 
-# Unit regressions.
-if "fn nested_sensitive_fields_fail_closed()" not in text:
+state_anchor = '''    let state_path = root.join(EXPORT_STATE_PATH);
+    let mut state = load_state(&state_path)?;
+'''
+state_replacement = '''    let state_path = root.join(EXPORT_STATE_PATH);
+    ensure_no_symlink_existing_prefix(
+        root,
+        Path::new(EXPORT_STATE_PATH),
+        "mise export state",
+    )?;
+    let mut state = load_state(&state_path)?;
+'''
+if "Path::new(EXPORT_STATE_PATH),\n        \"mise export state\"" not in text:
+    text = replace_once(text, state_anchor, state_replacement, "state prefix validation")
+
+# Add residual regressions not present in the base hardening.
+if "fn nested_tool_option_secrets_fail_closed()" not in text:
     anchor = '''    #[test]
     fn task_invocations_and_shell_argument_vectors_fail_closed() {
 '''
     tests = '''    #[test]
-    fn nested_sensitive_fields_fail_closed() {
-        let mut plan = simple_plan();
-        plan.vars.insert(
-            "release".to_string(),
-            EnvironmentValue::Table(BTreeMap::from([(
-                "api_token".to_string(),
-                EnvironmentValue::String("plaintext".to_string()),
-            )])),
-        );
-        let error = render_mise_config(&plan).unwrap_err();
-        assert!(error.to_string().contains("vars.release.api_token"));
-
+    fn nested_tool_option_secrets_fail_closed() {
         let mut plan = simple_plan();
         plan.tools.get_mut("node").unwrap().versions_mut()[0]
             .options
@@ -241,17 +227,17 @@ if "fn nested_sensitive_fields_fail_closed()" not in text:
     }
 
 '''
-    text = replace_once(text, anchor, tests + anchor, "security unit tests")
+    text = replace_once(text, anchor, tests + anchor, "residual security unit tests")
 
 source.write_text(text, encoding="utf-8")
 
 integration = Path("tests/mise_export_cli.rs")
 text = integration.read_text(encoding="utf-8")
-if "fn reserved_and_alias_paths_fail_before_mutation()" not in text:
+if "fn case_only_reserved_paths_fail_before_mutation()" not in text:
     addition = r'''
 
 #[test]
-fn reserved_and_alias_paths_fail_before_mutation() {
+fn case_only_reserved_paths_fail_before_mutation() {
     let temp = tempfile::tempdir().unwrap();
     let home = temp.path().join("home");
     let project = temp.path().join("project");
@@ -269,12 +255,12 @@ fn reserved_and_alias_paths_fail_before_mutation() {
             "--plan",
             "zed-env.json",
             "--output",
-            "zed-env.json",
+            "ZED-ENV.JSON",
             "--write",
         ],
     );
     assert!(!alias.status.success());
-    assert!(String::from_utf8_lossy(&alias.stderr).contains("must be different"));
+    assert!(String::from_utf8_lossy(&alias.stderr).contains("cannot overwrite"));
     assert_eq!(fs::read(project.join("zed-env.json")).unwrap(), original_plan);
 
     let reserved = run_zed(
@@ -292,7 +278,7 @@ fn reserved_and_alias_paths_fail_before_mutation() {
         ],
     );
     assert!(!reserved.status.success());
-    assert!(String::from_utf8_lossy(&reserved.stderr).contains("reserved"));
+    assert!(String::from_utf8_lossy(&reserved.stderr).contains("reserved export state"));
     assert!(!project.join(".zed/mise-export-state.json").exists());
     assert!(!project.join(".ZED/MISE-EXPORT-STATE.JSON").exists());
 }
@@ -302,14 +288,14 @@ integration.write_text(text, encoding="utf-8")
 
 docs = Path("docs/mise-export.md")
 text = docs.read_text(encoding="utf-8")
-if "## Reserved paths and recursive secret checks" not in text:
+if "case-only aliases" not in text:
     anchor = "## Fail-closed boundary\n"
-    section = '''## Reserved paths and recursive secret checks
+    section = '''## Portable ownership boundaries
 
-The output must be distinct from the input plan and cannot use the reserved `.zed/mise-export-state.json` ownership path, including case-only aliases that would collide on common Windows filesystems. Export state and generated output paths reject symlinks in every existing parent component; missing safe parent directories may be created inside the project transaction.
+Plan, output, export-state, and transaction-staging paths are compared case-insensitively so a candidate that is safe on Linux cannot collide when checked out on a typical Windows filesystem. Generated output and export-state paths reject symlinks in every existing parent component; safe missing parent directories may still be created inside the project transaction.
 
-Secret-like key detection is recursive through nested vars, task values, arrays/tables, and tool options. A nested key such as `release.api_token` or `options.config.password` is rejected with its exact field path rather than being committed as plaintext.
+Sensitive-key validation remains recursive through nested vars and tool-option tables. Exact diagnostics identify the rejected nested field instead of committing plaintext.
 
 '''
-    text = replace_once(text, anchor, section + anchor, "security documentation")
+    text = replace_once(text, anchor, section + anchor, "portable ownership documentation")
 docs.write_text(text, encoding="utf-8")
