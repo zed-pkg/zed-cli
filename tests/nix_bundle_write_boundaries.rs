@@ -62,12 +62,7 @@ outputs = ["out"]
     fs::write(root.join("data/value.txt"), b"immutable payload\n").unwrap();
 }
 
-fn run_bundle(
-    cwd: &Path,
-    lock: &Path,
-    output: &Path,
-    additional_env: &[(&str, &str)],
-) -> Output {
+fn run_bundle(cwd: &Path, lock: &Path, output: &Path, additional_env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(zed());
     command
         .current_dir(cwd)
