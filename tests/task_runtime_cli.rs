@@ -163,7 +163,10 @@ run_windows = ["type input.txt > output.txt"]
 
     let first = run(root.path(), &["run", "copy"]);
     assert_success(&first);
-    assert_eq!(fs::read_to_string(root.path().join("output.txt")).unwrap(), "one");
+    assert_eq!(
+        fs::read_to_string(root.path().join("output.txt")).unwrap(),
+        "one"
+    );
 
     let second = run(root.path(), &["run", "copy"]);
     assert_success(&second);
@@ -172,7 +175,10 @@ run_windows = ["type input.txt > output.txt"]
     fs::write(root.path().join("input.txt"), "two").unwrap();
     let third = run(root.path(), &["run", "copy"]);
     assert_success(&third);
-    assert_eq!(fs::read_to_string(root.path().join("output.txt")).unwrap(), "two");
+    assert_eq!(
+        fs::read_to_string(root.path().join("output.txt")).unwrap(),
+        "two"
+    );
 }
 
 #[test]

@@ -2,9 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, ensure};
 use clap::{Args, Parser, Subcommand};
-use zed_cli::task_runtime::{
-    TaskEvent, TaskObserver, TaskRunOptions, TaskRuntime,
-};
+use zed_cli::task_runtime::{TaskEvent, TaskObserver, TaskRunOptions, TaskRuntime};
 
 #[derive(Debug, Parser)]
 #[command(

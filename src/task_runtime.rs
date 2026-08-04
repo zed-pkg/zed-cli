@@ -59,8 +59,13 @@ impl Default for TaskRunOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum TaskEvent {
-    TaskStarted { task: String },
-    TaskSkipped { task: String, reason: String },
+    TaskStarted {
+        task: String,
+    },
+    TaskSkipped {
+        task: String,
+        reason: String,
+    },
     CommandStarted {
         task: String,
         index: usize,
@@ -72,7 +77,9 @@ pub enum TaskEvent {
         index: usize,
         code: i32,
     },
-    TaskFinished { task: String },
+    TaskFinished {
+        task: String,
+    },
 }
 
 /// Observer used for human streaming output while retaining a deterministic
@@ -145,11 +152,14 @@ pub struct TaskRuntime {
 
 impl TaskRuntime {
     pub fn load(root: impl AsRef<Path>, plan: Option<&Path>) -> Result<Self> {
-        let root = root
-            .as_ref()
-            .canonicalize()
-            .with_context(|| format!("canonicalizing project root `{}`", root.as_ref().display()))?;
-        ensure!(root.is_dir(), "project root `{}` is not a directory", root.display());
+        let root = root.as_ref().canonicalize().with_context(|| {
+            format!("canonicalizing project root `{}`", root.as_ref().display())
+        })?;
+        ensure!(
+            root.is_dir(),
+            "project root `{}` is not a directory",
+            root.display()
+        );
 
         let plan_relative = match plan {
             Some(path) => validate_project_relative(path, "environment plan")?,
@@ -378,7 +388,11 @@ impl<'a> Runner<'a> {
             requested: requested.to_string(),
             resolved: resolved.to_string(),
             dry_run: self.options.dry_run,
-            events: self.events.lock().expect("task event mutex poisoned").clone(),
+            events: self
+                .events
+                .lock()
+                .expect("task event mutex poisoned")
+                .clone(),
             executed_tasks: self
                 .executed
                 .lock()
@@ -412,8 +426,8 @@ impl<'a> Runner<'a> {
     ) -> Result<TaskOutcome> {
         let name = self.runtime.resolve_name(requested)?.to_string();
         let identity = invocation_identity(&name, invocation_env, args)?;
-        let (states, ready) = &*self.states;
-        let mut states = states.lock().expect("task state mutex poisoned");
+        let (state_mutex, ready) = &*self.states;
+        let mut states = state_mutex.lock().expect("task state mutex poisoned");
         loop {
             match states.get(&identity) {
                 None => {
@@ -426,13 +440,15 @@ impl<'a> Runner<'a> {
                 Some(ExecutionState::Completed) | Some(ExecutionState::Skipped) => {
                     return Ok(TaskOutcome::AlreadyCompleted);
                 }
-                Some(ExecutionState::Failed(message)) => bail!("task `{name}` previously failed: {message}"),
+                Some(ExecutionState::Failed(message)) => {
+                    bail!("task `{name}` previously failed: {message}")
+                }
             }
         }
         drop(states);
 
         let result = self.execute_task_inner(&name, invocation_env, args);
-        let mut states = states.lock().expect("task state mutex poisoned");
+        let mut states = state_mutex.lock().expect("task state mutex poisoned");
         match &result {
             Ok(TaskOutcome::Skipped) => {
                 states.insert(identity, ExecutionState::Skipped);
@@ -467,9 +483,7 @@ impl<'a> Runner<'a> {
         }
 
         if confirmation_required(task) && !self.options.assume_yes && !self.options.dry_run {
-            bail!(
-                "task `{name}` requires confirmation; rerun with `--yes` or use `--dry-run`"
-            );
+            bail!("task `{name}` requires confirmation; rerun with `--yes` or use `--dry-run`");
         }
 
         let environment = self.task_environment(name, task, invocation_env, args)?;
@@ -565,9 +579,7 @@ impl<'a> Runner<'a> {
             thread::scope(|scope| {
                 let handles = chunk
                     .iter()
-                    .map(|task| {
-                        scope.spawn(move || self.execute_task(task, &BTreeMap::new(), &[]))
-                    })
+                    .map(|task| scope.spawn(move || self.execute_task(task, &BTreeMap::new(), &[])))
                     .collect::<Vec<_>>();
                 for handle in handles {
                     match handle.join() {
@@ -604,10 +616,7 @@ impl<'a> Runner<'a> {
             OsString::from(serde_json::to_string(args)?),
         );
         for (index, argument) in args.iter().enumerate() {
-            environment.insert(
-                format!("ZED_TASK_ARG_{index}"),
-                OsString::from(argument),
-            );
+            environment.insert(format!("ZED_TASK_ARG_{index}"), OsString::from(argument));
         }
         Ok(environment)
     }
@@ -731,7 +740,11 @@ fn task_working_directory(root: &Path, task: &TaskSpec) -> Result<PathBuf> {
         "task directory `{}` escapes the project through a symlink",
         relative.display()
     );
-    ensure!(canonical.is_dir(), "task directory `{}` is not a directory", relative.display());
+    ensure!(
+        canonical.is_dir(),
+        "task directory `{}` is not a directory",
+        relative.display()
+    );
     Ok(canonical)
 }
 
@@ -769,7 +782,10 @@ fn wait_for_child(child: &mut std::process::Child, timeout: Option<&str>) -> Res
         if started.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
-            bail!("task command exceeded timeout `{}`", format_duration(timeout));
+            bail!(
+                "task command exceeded timeout `{}`",
+                format_duration(timeout)
+            );
         }
         thread::sleep(Duration::from_millis(20));
     }
@@ -826,9 +842,15 @@ impl CommandLimiter {
     }
 
     fn acquire(&self) -> CommandPermit<'_> {
-        let mut available = self.available.lock().expect("command limiter mutex poisoned");
+        let mut available = self
+            .available
+            .lock()
+            .expect("command limiter mutex poisoned");
         while *available == 0 {
-            available = self.ready.wait(available).expect("command limiter mutex poisoned");
+            available = self
+                .ready
+                .wait(available)
+                .expect("command limiter mutex poisoned");
         }
         *available -= 1;
         CommandPermit { limiter: self }
@@ -978,7 +1000,9 @@ fn read_cache_record(path: &Path) -> Result<Option<TaskCacheRecord>> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).with_context(|| format!("opening task cache `{}`", path.display())),
+        Err(error) => {
+            return Err(error).with_context(|| format!("opening task cache `{}`", path.display()));
+        }
     };
     let record = serde_json::from_reader(BufReader::new(file))
         .with_context(|| format!("parsing task cache `{}`", path.display()))?;
@@ -1031,17 +1055,25 @@ fn ensure_safe_cache_directory(root: &Path, cache_root: &Path) -> Result<()> {
                 current.display()
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&current)
-                    .with_context(|| format!("creating task cache directory `{}`", current.display()))?;
+                fs::create_dir(&current).with_context(|| {
+                    format!("creating task cache directory `{}`", current.display())
+                })?;
             }
-            Err(error) => return Err(error).with_context(|| format!("inspecting task cache `{}`", current.display())),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspecting task cache `{}`", current.display()));
+            }
         }
     }
     ensure!(current == cache_root, "task cache path mismatch");
     Ok(())
 }
 
-fn expand_patterns(root: &Path, patterns: &[String], require_every_pattern: bool) -> Result<Vec<PathBuf>> {
+fn expand_patterns(
+    root: &Path,
+    patterns: &[String],
+    require_every_pattern: bool,
+) -> Result<Vec<PathBuf>> {
     let mut paths = BTreeSet::new();
     for pattern in patterns {
         let portable = pattern.replace('\\', "/");
@@ -1079,7 +1111,10 @@ fn expand_patterns(root: &Path, patterns: &[String], require_every_pattern: bool
                     matched = true;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).with_context(|| format!("inspecting task cache path `{portable}`")),
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspecting task cache path `{portable}`"));
+                }
             }
         }
         if require_every_pattern && !matched {
@@ -1100,22 +1135,34 @@ fn hash_paths(root: &Path, paths: &[PathBuf]) -> Result<String> {
     let mut byte_count = 0_u64;
     for relative in entries {
         entry_count += 1;
-        ensure!(entry_count <= MAX_HASHED_ENTRIES, "task cache exceeds {MAX_HASHED_ENTRIES} entries");
+        ensure!(
+            entry_count <= MAX_HASHED_ENTRIES,
+            "task cache exceeds {MAX_HASHED_ENTRIES} entries"
+        );
         let path = root.join(&relative);
         let metadata = fs::symlink_metadata(&path)?;
-        ensure!(!metadata.file_type().is_symlink(), "task cache path `{relative}` became a symlink");
+        ensure!(
+            !metadata.file_type().is_symlink(),
+            "task cache path `{relative}` became a symlink"
+        );
         digest.update(relative.as_bytes());
         digest.update([0]);
         if metadata.is_dir() {
             digest.update(b"directory\0");
             continue;
         }
-        ensure!(metadata.is_file(), "task cache path `{relative}` is not a regular file or directory");
+        ensure!(
+            metadata.is_file(),
+            "task cache path `{relative}` is not a regular file or directory"
+        );
         digest.update(b"file\0");
         byte_count = byte_count
             .checked_add(metadata.len())
             .context("task cache byte count overflow")?;
-        ensure!(byte_count <= MAX_HASHED_BYTES, "task cache exceeds {MAX_HASHED_BYTES} bytes");
+        ensure!(
+            byte_count <= MAX_HASHED_BYTES,
+            "task cache exceeds {MAX_HASHED_BYTES} bytes"
+        );
         let mut file = File::open(&path)?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
@@ -1206,7 +1253,10 @@ fn validate_project_relative(path: &Path, kind: &str) -> Result<PathBuf> {
             }
         }
     }
-    ensure!(!output.as_os_str().is_empty(), "{kind} path cannot be the project root");
+    ensure!(
+        !output.as_os_str().is_empty(),
+        "{kind} path cannot be the project root"
+    );
     Ok(output)
 }
 
@@ -1220,12 +1270,21 @@ fn resolve_existing_project_file(root: &Path, relative: &Path, kind: &str) -> Re
         "{kind} `{}` escapes the project through a symlink",
         relative.display()
     );
-    ensure!(canonical.is_file(), "{kind} `{}` is not a file", relative.display());
+    ensure!(
+        canonical.is_file(),
+        "{kind} `{}` is not a file",
+        relative.display()
+    );
     Ok(canonical)
 }
 
 fn discover_plan(root: &Path) -> Result<PathBuf> {
-    for candidate in ["zed-env.toml", "zed-env.json", ".zed/environment.toml", ".zed/environment.json"] {
+    for candidate in [
+        "zed-env.toml",
+        "zed-env.json",
+        ".zed/environment.toml",
+        ".zed/environment.json",
+    ] {
         if root.join(candidate).is_file() {
             return Ok(PathBuf::from(candidate));
         }
@@ -1276,7 +1335,7 @@ mod tests {
             [tasks.build]
             aliases = ["b"]
             depends = ["prepare"]
-            depends-post = ["cleanup"]
+            depends_post = ["cleanup"]
             run = ["echo build"]
 
             [tasks.cleanup]
@@ -1381,7 +1440,10 @@ mod tests {
             .run("copy", TaskRunOptions::default(), &NullTaskObserver)
             .unwrap();
         assert_eq!(third.executed_tasks, ["copy"]);
-        assert_eq!(fs::read_to_string(root.path().join("output.txt")).unwrap(), "two");
+        assert_eq!(
+            fs::read_to_string(root.path().join("output.txt")).unwrap(),
+            "two"
+        );
     }
 
     #[test]
