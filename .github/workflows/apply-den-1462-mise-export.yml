@@ -9,6 +9,7 @@ on:
       - scripts/apply_den1462_mise_export.py
       - scripts/harden_den1462_export.py
       - scripts/fix_den1462_flags_contract.py
+      - scripts/fix_den1462_selector_paths.py
       - src/mise_export.rs
       - tests/mise_export_cli.rs
       - docs/mise-export.md
@@ -21,6 +22,7 @@ on:
       - scripts/apply_den1462_mise_export.py
       - scripts/harden_den1462_export.py
       - scripts/fix_den1462_flags_contract.py
+      - scripts/fix_den1462_selector_paths.py
       - src/mise_export.rs
       - tests/mise_export_cli.rs
       - docs/mise-export.md
@@ -63,6 +65,7 @@ jobs:
           python3 scripts/apply_den1462_mise_export.py
           python3 scripts/harden_den1462_export.py
           python3 scripts/fix_den1462_flags_contract.py
+          python3 scripts/fix_den1462_selector_paths.py
           cargo fmt --all
           cargo fmt --all --check
           git diff --check
@@ -79,7 +82,8 @@ jobs:
             .github/workflows/apply-den-1462-mise-export.yml \
             scripts/apply_den1462_mise_export.py \
             scripts/harden_den1462_export.py \
-            scripts/fix_den1462_flags_contract.py
+            scripts/fix_den1462_flags_contract.py \
+            scripts/fix_den1462_selector_paths.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
