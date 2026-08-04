@@ -32,7 +32,9 @@ fn powershell() -> PathBuf {
 }
 
 fn normalize(path: &Path) -> String {
-    path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
 }
 
 fn run_powershell(executable: &Path, source_home: &Path, script: &str) -> Output {
@@ -102,9 +104,7 @@ fn write_profile(path: &Path) {
     }
     fs::write(
         path,
-        format!(
-            "$env:{PROFILE_ENV} = '{PROFILE_CANARY}'\nWrite-Output '{PROFILE_CANARY}'\n"
-        ),
+        format!("$env:{PROFILE_ENV} = '{PROFILE_CANARY}'\nWrite-Output '{PROFILE_CANARY}'\n"),
     )
     .unwrap_or_else(|error| panic!("writing {}: {error}", path.display()));
 }

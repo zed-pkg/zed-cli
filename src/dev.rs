@@ -1265,7 +1265,13 @@ fn configure_shell_arguments(command: &mut Command, shell: &Path, script: Option
             command.args(["/D", "/S", "/C", script]);
         }
         "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe" => {
-            command.args(["-NoLogo", "-Command", script]);
+            command.args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ]);
         }
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => {
             command.args(["-c", script]);
@@ -1307,6 +1313,54 @@ mod tests {
             arguments,
             vec![OsString::from("-c"), OsString::from("true")]
         );
+    }
+
+    #[test]
+    fn powershell_command_mode_disables_profiles_and_interaction() {
+        let script = "Write-Output profile-safe";
+        for shell in ["pwsh.exe", "powershell.exe"] {
+            let mut command = Command::new(shell);
+            configure_shell_arguments(&mut command, Path::new(shell), Some(script));
+            let arguments: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+            assert_eq!(
+                arguments,
+                vec![
+                    OsString::from("-NoLogo"),
+                    OsString::from("-NoProfile"),
+                    OsString::from("-NonInteractive"),
+                    OsString::from("-Command"),
+                    OsString::from(script),
+                ],
+                "unexpected command-mode arguments for {shell}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_powershell_retains_native_startup_semantics() {
+        let mut command = Command::new("pwsh.exe");
+        configure_shell_arguments(&mut command, Path::new("pwsh.exe"), None);
+        assert_eq!(command.get_args().count(), 0);
+    }
+
+    #[test]
+    fn cmd_command_mode_disables_autorun() {
+        let script = "echo profile-safe";
+        for shell in ["cmd", "cmd.exe"] {
+            let mut command = Command::new(shell);
+            configure_shell_arguments(&mut command, Path::new(shell), Some(script));
+            let arguments: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+            assert_eq!(
+                arguments,
+                vec![
+                    OsString::from("/D"),
+                    OsString::from("/S"),
+                    OsString::from("/C"),
+                    OsString::from(script),
+                ],
+                "unexpected command-mode arguments for {shell}"
+            );
+        }
     }
 
     #[test]
