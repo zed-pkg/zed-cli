@@ -1,17 +1,17 @@
 name: repair native task runtime
 
 on:
-  push:
+  pull_request:
     branches:
       - agent/den-1444-native-task-runtime
     paths:
-      - .github/workflows/repair-task-runtime.yml
+      - .github/task-runtime-repair-trigger
 
 permissions:
   contents: read
 
 concurrency:
-  group: repair-native-task-runtime-${{ github.ref }}
+  group: repair-native-task-runtime-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 defaults:
@@ -20,7 +20,7 @@ defaults:
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
