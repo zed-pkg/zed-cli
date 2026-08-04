@@ -145,6 +145,12 @@ Zed resolves the destination tag before copying:
 | tag has a different digest | fail closed |
 | different digest plus `--allow-tag-replacement` | copy, verify, return `replaced` |
 
+ORAS and registries may report an absent tag as a registry error ending in
+`failed to resolve digest: …: not found` rather than an OCI error code such as
+`MANIFEST_UNKNOWN`. Zed recognizes that registry-shaped response as a missing
+tag. Unrelated file, authentication, authorization, DNS, TLS, and transport
+“not found” errors remain fatal.
+
 After every copy, Zed resolves the tag again and requires the exact verified
 local manifest digest.
 
