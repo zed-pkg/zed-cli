@@ -120,8 +120,14 @@ fn parent_traversal_output_is_rejected_without_escape_or_project_mutation() {
         stderr(&output)
     );
     assert!(!escaped.exists());
-    assert_eq!(fs::read(project.join(".zpkg.toml")).unwrap(), manifest_before);
-    assert_eq!(fs::read(project.join(".zpkg.lock")).unwrap(), zed_lock_before);
+    assert_eq!(
+        fs::read(project.join(".zpkg.toml")).unwrap(),
+        manifest_before
+    );
+    assert_eq!(
+        fs::read(project.join(".zpkg.lock")).unwrap(),
+        zed_lock_before
+    );
 }
 
 #[test]
