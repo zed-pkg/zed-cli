@@ -26,7 +26,7 @@ fn write_plan(project: &Path) {
     "prepare": {"run": ["echo prepare"]},
     "setup": {
       "description": "Restore dependencies",
-      "alias": ["bootstrap"],
+      "aliases": ["bootstrap"],
       "depends": ["prepare"],
       "run": ["zed install --frozen", "cargo check"]
     }
