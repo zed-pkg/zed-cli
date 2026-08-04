@@ -6,6 +6,12 @@ on:
       - agent/oci-oras-push-v1
     paths:
       - .github/workflows/oci-oras-bootstrap.yml
+  pull_request:
+    branches:
+      - agent/oci-local-layout-v1
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/oci-oras-bootstrap.yml
 
 permissions:
   contents: write
@@ -18,16 +24,24 @@ defaults:
   run:
     shell: bash
 
+env:
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  TARGET_BRANCH: agent/oci-oras-push-v1
+
 jobs:
   bootstrap:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/agent/oci-oras-push-v1') ||
+      (github.event_name == 'pull_request' &&
+       github.head_ref == 'agent/oci-oras-push-v1' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-22.04
     timeout-minutes: 35
     steps:
-      - name: Check out the exact triggering commit
+      - name: Check out the exact candidate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.TARGET_SHA }}
           fetch-depth: 0
           persist-credentials: true
           show-progress: false
@@ -64,6 +78,50 @@ jobs:
           if count != 1:
               raise SystemExit(f'expected one Unix test import, found {count}')
           text = text.replace(unix_old, unix_new)
+
+          duplicate_old = '''    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size)
+              && previous_size != descriptor.size
+          {
+              bail!(
+                  "OCI digest `{digest}` is declared with conflicting sizes {previous_size} and {}",
+                  descriptor.size
+              );
+          }
+          '''
+          duplicate_new = '''    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size) {
+              bail!(
+                  "OCI digest `{digest}` is declared more than once (sizes {previous_size} and {})",
+                  descriptor.size
+              );
+          }
+          '''
+          count = text.count(duplicate_old)
+          if count != 1:
+              raise SystemExit(f'expected one duplicate-descriptor block, found {count}')
+          text = text.replace(duplicate_old, duplicate_new)
+
+          missing_old = '''    [
+              "manifest unknown",
+              "manifest not found",
+              "not found",
+              "404",
+              "no such manifest",
+              "name unknown",
+          ]
+          '''
+          missing_new = '''    [
+              "manifest unknown",
+              "manifest not found",
+              "no such manifest",
+              "name unknown",
+              "response status code 404",
+              "404 not found",
+          ]
+          '''
+          count = text.count(missing_old)
+          if count != 1:
+              raise SystemExit(f'expected one missing-manifest diagnostic block, found {count}')
+          text = text.replace(missing_old, missing_new)
 
           path.write_text(text, encoding='utf-8')
           PY
@@ -108,4 +166,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -- "${allowed[@]}"
           git commit -m "style: validate ORAS push implementation"
-          git push origin HEAD:agent/oci-oras-push-v1
+          git push origin HEAD:${TARGET_BRANCH}
