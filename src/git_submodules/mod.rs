@@ -97,8 +97,9 @@ impl PackSubmodules {
                     child.display()
                 );
             }
-            verify_checkout(&self.root, relative, &child)
-                .with_context(|| format!("verifying included submodule `{relative}` for packing"))?;
+            verify_checkout(&self.root, relative, &child).with_context(|| {
+                format!("verifying included submodule `{relative}` for packing")
+            })?;
         }
         Ok(())
     }
