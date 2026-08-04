@@ -4,17 +4,19 @@ on:
   push:
     branches:
       - fix/windows-develop-shell-test-cfg
+  pull_request:
+    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
 
 concurrency:
-  group: windows-develop-shell-test-cfg-${{ github.ref }}
-  cancel-in-progress: false
+  group: windows-develop-shell-test-cfg-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   apply:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || github.event.pull_request.head.ref == 'fix/windows-develop-shell-test-cfg')
     runs-on: windows-2025
     timeout-minutes: 35
     defaults:
