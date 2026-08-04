@@ -1,10 +1,15 @@
 name: validate OCI push option combinations once
 
-# This update triggers the workflow after GitHub has registered it on the branch.
 on:
   push:
     branches:
       - agent/oci-oras-push-v1
+    paths:
+      - .github/workflows/oci-push-runtime-validation-once.yml
+  pull_request:
+    branches:
+      - agent/oci-local-layout-v1
+    types: [opened, synchronize, reopened]
     paths:
       - .github/workflows/oci-push-runtime-validation-once.yml
 
@@ -19,16 +24,24 @@ defaults:
   run:
     shell: bash
 
+env:
+  TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  TARGET_BRANCH: agent/oci-oras-push-v1
+
 jobs:
   validate:
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/agent/oci-oras-push-v1') ||
+      (github.event_name == 'pull_request' &&
+       github.head_ref == 'agent/oci-oras-push-v1' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-22.04
     timeout-minutes: 35
     steps:
       - name: Check out exact triggering commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ env.TARGET_SHA }}
           fetch-depth: 0
           persist-credentials: true
           show-progress: false
@@ -212,4 +225,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -- "${allowed[@]}"
           git commit -m "fix: validate OCI push option combinations at runtime"
-          git push origin HEAD:agent/oci-oras-push-v1
+          git push origin HEAD:${TARGET_BRANCH}
