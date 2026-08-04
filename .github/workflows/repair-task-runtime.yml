@@ -39,7 +39,7 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Install a portable positive-jobs parser and regression
+      - name: Install positive-jobs parsing and repair task state locking
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -78,6 +78,31 @@ struct HumanObserver;
               text = text.replace(marker, '\n' + replacement, 1)
           binary.write_text(text)
 
+          runtime = Path('src/task_runtime.rs')
+          runtime_text = runtime.read_text()
+          old = '''        let (states, ready) = &*self.states;
+                  let mut states = states.lock().expect("task state mutex poisoned");
+          '''
+          new = '''        let (state_mutex, ready) = &*self.states;
+                  let mut states = state_mutex.lock().expect("task state mutex poisoned");
+          '''
+          if old in runtime_text:
+              runtime_text = runtime_text.replace(old, new, 1)
+          elif 'let (state_mutex, ready) = &*self.states;' not in runtime_text:
+              raise SystemExit('task state mutex binding anchor not found')
+
+          old = '''        let result = self.execute_task_inner(&name, invocation_env, args);
+                  let mut states = states.lock().expect("task state mutex poisoned");
+          '''
+          new = '''        let result = self.execute_task_inner(&name, invocation_env, args);
+                  let mut states = state_mutex.lock().expect("task state mutex poisoned");
+          '''
+          if old in runtime_text:
+              runtime_text = runtime_text.replace(old, new, 1)
+          elif 'let mut states = state_mutex.lock().expect("task state mutex poisoned");' not in runtime_text:
+              raise SystemExit('task state finalization lock anchor not found')
+          runtime.write_text(runtime_text)
+
           tests = Path('tests/task_runtime_cli.rs')
           test_text = tests.read_text()
           test_name = 'zero_jobs_is_rejected_before_plan_discovery'
@@ -108,17 +133,15 @@ fn zero_jobs_is_rejected_before_plan_discovery() {
           cargo test --locked --test task_runtime_cli
           cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
 
-      - name: Commit ordinary repaired source
+      - name: Commit ordinary repaired source only
         run: |
           set -euo pipefail
-          rm .github/workflows/repair-task-runtime.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
             src/bin/zed-task.rs \
             src/task_runtime.rs \
-            tests/task_runtime_cli.rs \
-            .github/workflows/repair-task-runtime.yml
+            tests/task_runtime_cli.rs
           git diff --cached --check
           git commit -m 'fix(DEN-1444): validate and format native task runtime'
           git push origin HEAD:agent/den-1444-native-task-runtime
