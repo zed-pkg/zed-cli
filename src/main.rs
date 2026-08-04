@@ -65,7 +65,17 @@ fn main() {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
     let cwd = std::env::current_dir()?;
-    zed_cli::transaction::recover_pending(&cwd)?;
+    if cwd
+        .join(zed_cli::transaction::STAGING_DIR)
+        .is_dir()
+    {
+        // Every live project transaction already owns this kernel-backed
+        // install lock. Recover under the same lock so a concurrent process
+        // cannot mistake an in-flight rollback journal for an abandoned one.
+        let store = Store::new(&cfg.home);
+        let _recovery_lock = store.install_lock()?;
+        zed_cli::transaction::recover_pending(&cwd)?;
+    }
     match cli.cmd {
         Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
