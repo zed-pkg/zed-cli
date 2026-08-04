@@ -119,6 +119,8 @@ registry hosts both on S3/Cloudflare R2.
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed oci plan <oci://registry/repository:version> [--target <name>] [--out <layout>] [--json]` | Derive exact OCI identities and optionally materialize a verified local image layout without credentials or network transport |
+| `zed oci push <layout> <oci://registry/repository:version>` | Verify a local OCI layout, copy it through ORAS using one explicit authentication mode, and require the remote tag to resolve to the expected digest |
 | `zed oci plan <oci://registry/repository:version> [--target <name>] [--json]` | Pack in a temporary directory and print exact OCI config, layer, manifest, and resolved digest identities without credentials, network, or uploads |
 | `zed oci push <layout> <oci://registry/repository:version>` | Verify an immutable local OCI layout, copy it through ORAS with one explicit authentication mode, and require the remote tag to resolve to the verified manifest digest |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
