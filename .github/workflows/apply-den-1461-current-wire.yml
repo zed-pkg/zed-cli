@@ -1,53 +1,21 @@
-name: apply DEN-1461 current mise wire
+name: superseded DEN-1461 current wire materializer
 
 on:
-  push:
-    branches:
-      - feat/den-1461-mise-lock-contract
-    paths:
-      - scripts/apply_den1461_current_wire.py
   pull_request:
     types: [opened, reopened, synchronize]
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: den-1461-current-wire-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  apply:
-    if: github.actor != 'github-actions[bot]'
+  superseded:
+    if: github.head_ref == 'feat/den-1461-mise-lock-contract'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 2
     steps:
-      - name: Check out contract branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: feat/den-1461-mise-lock-contract
-          fetch-depth: 0
-          persist-credentials: true
-          show-progress: false
-
-      - name: Install validation toolchain
-        run: |
-          set -euo pipefail
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
-
-      - name: Apply and validate current wire-format support
-        run: |
-          set -euo pipefail
-          python3 scripts/apply_den1461_current_wire.py
-          cargo fmt --all
-          git diff --check
-          cargo test --locked --lib mise_lock::tests
-          cargo test --locked --test mise_lock_contract
-          cargo clippy --locked --all-targets -- -D warnings
-
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/mise_lock.rs tests/mise_lock_contract.rs docs/mise-lock-contract.md
-          git commit -m 'fix(DEN-1461): preserve current quoted platform keys'
-          git push origin HEAD:feat/den-1461-mise-lock-contract
+      - name: Defer to unified materializer
+        run: echo 'Current-wire support is now applied by materialize DEN-1461 lock contract.'
