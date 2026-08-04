@@ -9,8 +9,8 @@ use zed_interfaces::manifest::{
     Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
 };
 use zed_interfaces::paths::MANIFEST_FILE;
-use zed_interfaces::version::{self, VersionScheme};
 use zed_interfaces::vcs::Vcs;
+use zed_interfaces::version::{self, VersionScheme};
 
 use crate::config::read_manifest;
 
@@ -44,8 +44,8 @@ pub(super) struct WorkspaceMember {
 
 pub(super) fn verify_checkout(project: &Path, relative: &str, child: &Path) -> Result<String> {
     let parent_commit = gitlink_commit(project, relative)?;
-    let child_commit = git_line(child, &["rev-parse", "HEAD"])
-        .context("reading submodule checkout commit")?;
+    let child_commit =
+        git_line(child, &["rev-parse", "HEAD"]).context("reading submodule checkout commit")?;
     if parent_commit != child_commit {
         bail!(
             "submodule `{relative}` is checked out at {child_commit}, but the superproject HEAD pins {parent_commit}; run `zed install --git-submodules`"
@@ -70,7 +70,8 @@ pub(super) fn verify_checkout(project: &Path, relative: &str, child: &Path) -> R
     }
 
     let nested = checked_git(child, &["submodule", "status", "--recursive"])?;
-    let nested = String::from_utf8(nested.stdout).context("nested submodule status is not UTF-8")?;
+    let nested =
+        String::from_utf8(nested.stdout).context("nested submodule status is not UTF-8")?;
     for line in nested.lines().filter(|line| !line.trim().is_empty()) {
         if matches!(line.as_bytes().first().copied(), Some(b'-' | b'+' | b'U')) {
             bail!(
@@ -299,9 +300,8 @@ pub(super) fn collect_workspace_members(
             if !root.join(MANIFEST_FILE).is_file() {
                 continue;
             }
-            let member_manifest = read_manifest(&root).with_context(|| {
-                format!("reading workspace member manifest {}", root.display())
-            })?;
+            let member_manifest = read_manifest(&root)
+                .with_context(|| format!("reading workspace member manifest {}", root.display()))?;
             let package = member_manifest.full_name();
             let relative = root
                 .strip_prefix(project)

@@ -31,7 +31,7 @@ use git::{
 };
 
 pub use cli::{OvertakeArgs, augment_root_command, dispatch};
-pub(crate) use lock::{prepare_install, preflight_mutation, refresh_lock_extensions};
+pub(crate) use lock::{preflight_mutation, prepare_install, refresh_lock_extensions};
 
 #[derive(Debug)]
 pub struct OvertakeReport {
@@ -63,7 +63,10 @@ pub fn sync(requested: &Path) -> Result<usize> {
 fn sync_root(project: &Path) -> Result<usize> {
     let configured = configured_submodules(project)?;
     if configured.is_empty() {
-        eprintln!("{} contains no configured Git submodules", project.display());
+        eprintln!(
+            "{} contains no configured Git submodules",
+            project.display()
+        );
         return Ok(0);
     }
 
@@ -73,13 +76,7 @@ fn sync_root(project: &Path) -> Result<usize> {
     // procedure from being selected through repository configuration.
     checked_git(
         project,
-        &[
-            "submodule",
-            "update",
-            "--init",
-            "--recursive",
-            "--checkout",
-        ],
+        &["submodule", "update", "--init", "--recursive", "--checkout"],
     )
     .context("initializing Git submodules")?;
     println!(
@@ -103,7 +100,10 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     sync_root(&project)?;
     let modules = configured_submodules(&project)?;
     if modules.is_empty() {
-        bail!("{} contains no Git submodules to overtake", project.display());
+        bail!(
+            "{} contains no Git submodules to overtake",
+            project.display()
+        );
     }
     verify_gitmodules_committed(&project)?;
 
@@ -195,7 +195,8 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     }
     workspace.members.sort();
     workspace.members.dedup();
-    root.validate().context("validating overtaken root manifest")?;
+    root.validate()
+        .context("validating overtaken root manifest")?;
 
     let mut transaction = ProjectTransaction::begin(&project)?;
     transaction.backup(&manifest_path)?;

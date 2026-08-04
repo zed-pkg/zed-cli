@@ -10,8 +10,8 @@ use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 
 use super::git::{
     SubmoduleConfig, WorkspaceMember, checked_git, collect_workspace_members,
-    configured_submodules, is_git_object_id, origin_url, validate_relative_path,
-    verify_checkout, verify_gitmodules_committed,
+    configured_submodules, is_git_object_id, origin_url, validate_relative_path, verify_checkout,
+    verify_gitmodules_committed,
 };
 use crate::config::read_manifest;
 use crate::pack;
@@ -158,10 +158,7 @@ fn current_lock_entries(
     Ok(entries)
 }
 
-fn compare_frozen_entries(
-    locked: &[GitSubmoduleLock],
-    current: &[GitSubmoduleLock],
-) -> Result<()> {
+fn compare_frozen_entries(locked: &[GitSubmoduleLock], current: &[GitSubmoduleLock]) -> Result<()> {
     validate_lock_entries(locked)?;
     if locked == current {
         return Ok(());
@@ -185,9 +182,9 @@ fn compare_frozen_entries(
             locked_by_package.get(package),
             current_by_package.get(package),
         ) {
-            (None, Some(_)) => bail!(
-                "--frozen: adopted Git submodule `{package}` is missing from {LOCKFILE_FILE}"
-            ),
+            (None, Some(_)) => {
+                bail!("--frozen: adopted Git submodule `{package}` is missing from {LOCKFILE_FILE}")
+            }
             (Some(_), None) => bail!(
                 "--frozen: {LOCKFILE_FILE} contains stale Git submodule `{package}` that is not active in the workspace graph"
             ),
@@ -204,7 +201,10 @@ fn compare_frozen_entries(
     bail!("--frozen: Git submodule lock metadata drifted")
 }
 
-fn changed_lock_fields(expected: &GitSubmoduleLock, actual: &GitSubmoduleLock) -> Vec<&'static str> {
+fn changed_lock_fields(
+    expected: &GitSubmoduleLock,
+    actual: &GitSubmoduleLock,
+) -> Vec<&'static str> {
     let mut fields = Vec::new();
     if expected.name != actual.name {
         fields.push("name");
@@ -430,7 +430,10 @@ fn validate_lock_entries(entries: &[GitSubmoduleLock]) -> Result<()> {
             bail!("Git submodule `{}` has a zero-byte artifact", entry.package);
         }
         if !packages.insert(entry.package.clone()) {
-            bail!("duplicate Git submodule package `{}` in lock", entry.package);
+            bail!(
+                "duplicate Git submodule package `{}` in lock",
+                entry.package
+            );
         }
         if !paths.insert(entry.path.clone()) {
             bail!("duplicate Git submodule path `{}` in lock", entry.path);

@@ -71,16 +71,14 @@ fn route_recognizes_overtake_and_help_with_global_options() {
 
 #[test]
 fn boolish_overtake_flag_supports_bare_and_explicit_off() {
-    let cli =
-        OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
+    let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
     assert!(matches!(
         cli.command,
         OvertakeCommand::Overtake(OvertakeArgs {
             git_submodules: true
         })
     ));
-    let cli =
-        OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
+    let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
     assert!(matches!(
         cli.command,
         OvertakeCommand::Overtake(OvertakeArgs {
@@ -274,10 +272,7 @@ fn overtake_imports_manifest_workspace_and_git_lock() {
     assert!(gitmodules.contains(child_url));
     fs::write(
         &gitmodules_path,
-        gitmodules.replace(
-            child_url,
-            "https://example.invalid/acme/client-mirror.git",
-        ),
+        gitmodules.replace(child_url, "https://example.invalid/acme/client-mirror.git"),
     )
     .unwrap();
     git(root.path(), &["add", ".gitmodules"]);

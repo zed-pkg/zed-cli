@@ -109,7 +109,9 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
         Ok(cli) => cli,
         Err(error) => {
             let code = error.exit_code();
-            error.print().context("printing zed overtake argument error")?;
+            error
+                .print()
+                .context("printing zed overtake argument error")?;
             return Ok(code);
         }
     };
@@ -151,9 +153,9 @@ fn normalize_boolean_environment(args: &[OsString]) -> Result<()> {
     let normalized = match raw.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => "true",
         "false" | "0" | "no" | "off" => "false",
-        _ => bail!(
-            "boolean environment variable `{key}` must be true/false, 1/0, yes/no, or on/off"
-        ),
+        _ => {
+            bail!("boolean environment variable `{key}` must be true/false, 1/0, yes/no, or on/off")
+        }
     };
     if raw != normalized {
         // SAFETY: modular dispatch runs at process startup before worker threads.

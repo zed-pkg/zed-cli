@@ -583,13 +583,8 @@ mod tests {
 
     #[test]
     fn install_git_submodule_switch_is_boolish_and_does_not_consume_specs() {
-        let cli = Cli::try_parse_from([
-            "zed",
-            "install",
-            "--git-submodules",
-            "acme/http-kit@^1",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["zed", "install", "--git-submodules", "acme/http-kit@^1"])
+            .unwrap();
         match cli.cmd {
             Cmd::Install {
                 specs,
