@@ -186,12 +186,12 @@ fn install_transport_is_recursive_and_obeys_cli_environment_precedence() {
 
     let explicit_on = zed(root.path(), home.path())
         .env("ZED_PKG_GIT_SUBMODULES", "0")
-        .args(["install", "--git-submodules"])
+        .args(["--git-submodules", "install"])
         .output()
         .unwrap();
     assert_success(
         &explicit_on,
-        "explicit --git-submodules overriding an inherited false value",
+        "global --git-submodules overriding an inherited false value",
     );
     assert!(root.path().join(SUBMODULE_PAYLOAD).is_file());
     assert!(root.path().join(NESTED_PAYLOAD).is_file());
@@ -216,10 +216,10 @@ fn overtake_is_idempotent_and_keeps_git_as_an_unchanged_transport_mirror() {
     let home = tempfile::tempdir().unwrap();
 
     let first = zed(root.path(), home.path())
-        .args(["overtake", "--git-submodules"])
+        .args(["--git-submodules", "overtake"])
         .output()
         .unwrap();
-    assert_success(&first, "first zed overtake --git-submodules");
+    assert_success(&first, "first zed --git-submodules overtake");
 
     let manifest_once = fs::read(root.path().join(MANIFEST_FILE)).unwrap();
     let lock_once = fs::read(root.path().join(LOCKFILE_FILE)).unwrap();

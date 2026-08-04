@@ -55,6 +55,13 @@ type = "bool"
 default = "false"
 help = "Global lifecycle confirmation mode; fetch remains non-interactive."
 
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Global Git submodule compatibility mode; frozen fetch remains read-only."
+
 [commands.fetch]
 help = "Verify and export exactly the artifact graph pinned by .zpkg.lock."
 
