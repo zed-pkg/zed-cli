@@ -1,0 +1,134 @@
+name: nix-bundle-write
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/nix-bundle-write.yml"
+      - ".nix-interop-cli-flags.toml"
+      - "docs/nix-bundle-write.md"
+      - "src/nix_bundle_write.rs"
+      - "src/nix_export_bundle/**"
+      - "src/nix_export_plan.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "tests/nix_bundle_write_cli.rs"
+      - "tests/nix_bundle_write_boundaries.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nix-bundle-write.yml"
+      - ".nix-interop-cli-flags.toml"
+      - "docs/nix-bundle-write.md"
+      - "src/nix_bundle_write.rs"
+      - "src/nix_export_bundle/**"
+      - "src/nix_export_plan.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/completion.rs"
+      - "tests/nix_bundle_write_cli.rs"
+      - "tests/nix_bundle_write_boundaries.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-bundle-write-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  command:
+    name: command, no-clobber, and offline Nix / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+
+    steps:
+      - name: Check out exact command candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Rust toolchain action
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Install pinned Nix action
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = false
+
+      - name: Verify immutable shared-contract pin
+        run: |
+          set -euo pipefail
+          grep -F 'rev = "c2e049006453c26ca8ca291783f681fce75cb01f"' Cargo.toml
+          grep -F '#c2e049006453c26ca8ca291783f681fce75cb01f' Cargo.lock
+
+      - name: Verify formatting and strict warnings
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run process-level command contracts
+        run: |
+          cargo test --locked --test nix_bundle_write_cli -- --nocapture --test-threads=1
+          cargo test --locked --test nix_bundle_write_boundaries -- --nocapture --test-threads=1
+
+      - name: Verify combined help and completions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed
+          target/debug/zed interop nix --help | grep -F 'bundle'
+          target/debug/zed interop nix bundle write --help | grep -F -- '--flake-lock'
+          target/debug/zed interop nix bundle write --help | grep -F -- '--out'
+          cargo test --locked --lib completion::tests -- --test-threads=1
+
+      - name: Certify command-produced flake online then offline
+        run: >-
+          cargo test --locked --test nix_bundle_write_cli --
+          --ignored --exact persisted_command_bundle_checks_and_builds_offline
+          --nocapture --test-threads=1
+
+      - name: Prove workflow and command stay credential-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/nix-bundle-write.yml').read_text()
+          command = Path('src/nix_bundle_write.rs').read_text()
+          assert 'permissions:\n  contents: read' in workflow
+          assert 'persist-credentials: false' in workflow
+          assert 'ubuntu-24.04' in workflow and 'macos-15' in workflow
+          action_token = 'us' + 'es'
+          pattern = rf'^\s*{action_token}:\s*([^\s]+)$'
+          for match in re.finditer(pattern, workflow, re.MULTILINE):
+              assert re.search(r'@[0-9a-f]{40}$', match.group(1)), match.group(1)
+          for forbidden in (
+              'contents' + ': write',
+              'pull_request' + '_target:',
+              'git' + ' push',
+              'ZED_PKG' + '_TOKEN',
+              'CACHIX' + '_AUTH_TOKEN',
+              'ATTIC' + '_TOKEN',
+              'Command' + '::new("nix")',
+              'reqwest' + '::',
+              'registry_for' + '(',
+          ):
+              assert forbidden not in workflow + '\n' + command, forbidden
+          PY
