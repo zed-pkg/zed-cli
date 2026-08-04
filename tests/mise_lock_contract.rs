@@ -68,10 +68,10 @@ fn public_normalization_expands_compact_platform_checksums() {
     )
     .unwrap();
     let normalized = parsed.normalized();
-    assert!(matches!(
-        normalized.tools["python"][0].platforms["linux-x64"],
-        MisePlatformInfo::Detail(_)
-    ));
+    assert!(normalized.tools["python"][0]
+        .platforms
+        .get("linux-x64")
+        .is_some_and(|info| matches!(info, MisePlatformInfo::Detail(_))));
 }
 
 #[test]
@@ -92,5 +92,7 @@ conda_deps = ["ncurses"]
         MiseLockValidationMode::FrozenPortable,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("conda-packages.linux-x64.ncurses.checksum"));
+    assert!(error
+        .to_string()
+        .contains("conda-packages.linux-x64.ncurses.checksum"));
 }
