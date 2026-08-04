@@ -289,20 +289,18 @@ fn route(args: &[OsString]) -> Route {
 
     match command.as_str() {
         "global" => Route::Global,
-        "install" | "i" => global_flag(args).map_or(Route::Existing, |global_index| {
-            Route::Alias {
-                command_index,
-                global_index,
-                action: "install",
-            }
+        "install" | "i" => global_flag(args).map_or(Route::Existing, |global_index| Route::Alias {
+            command_index,
+            global_index,
+            action: "install",
         }),
-        "uninstall" | "un" => global_flag(args).map_or(Route::Existing, |global_index| {
-            Route::Alias {
+        "uninstall" | "un" => {
+            global_flag(args).map_or(Route::Existing, |global_index| Route::Alias {
                 command_index,
                 global_index,
                 action: "uninstall",
-            }
-        }),
+            })
+        }
         "help" => match next_positional(args, command_index + 1) {
             Some((target_index, target)) if target == "global" => Route::GlobalHelp {
                 help_index: command_index,
@@ -427,7 +425,9 @@ fn parse_package_spec(spec: &str) -> Result<(String, Option<String>)> {
     let (org, name) = key
         .split_once('/')
         .filter(|(org, name)| !org.is_empty() && !name.is_empty())
-        .with_context(|| format!("invalid package spec `{spec}` (expected org/name[@requirement])"))?;
+        .with_context(|| {
+            format!("invalid package spec `{spec}` (expected org/name[@requirement])")
+        })?;
     if name.contains('/') || !is_slug(org) || !is_slug(name) {
         bail!("invalid package identity `{key}`; expected lowercase slug org/name");
     }
@@ -730,7 +730,10 @@ fn stage_profile_replacement(root: &Path) -> Result<StagedProfile> {
 
 fn stage_profile_removal(root: &Path) -> Result<StagedProfile> {
     if !path_present(root) {
-        bail!("global profile disappeared before removal: {}", root.display());
+        bail!(
+            "global profile disappeared before removal: {}",
+            root.display()
+        );
     }
     let backup = unique_sibling(root, "profile-removal")?;
     fs::rename(root, &backup).with_context(|| {
@@ -1020,10 +1023,7 @@ fn stage_executable(source: &Path, destination: &Path) -> Result<PathBuf> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("global executable name is not valid UTF-8")?;
-    let temporary = parent.join(format!(
-        ".{file_name}.zed-stage-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temporary = parent.join(format!(".{file_name}.zed-stage-{}", uuid::Uuid::new_v4()));
     fs::copy(source, &temporary).with_context(|| {
         format!(
             "staging global executable {} at {}",
@@ -1071,7 +1071,10 @@ fn rollback_bin_transaction(
     if failures.is_empty() {
         Ok(())
     } else {
-        bail!("rolling back global executable transaction: {}", failures.join("; "))
+        bail!(
+            "rolling back global executable transaction: {}",
+            failures.join("; ")
+        )
     }
 }
 
@@ -1082,10 +1085,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("managed file name is not valid UTF-8")?;
-    let temporary = parent.join(format!(
-        ".{file_name}.zed-tmp-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let temporary = parent.join(format!(".{file_name}.zed-tmp-{}", uuid::Uuid::new_v4()));
     fs::write(&temporary, bytes)?;
 
     let backup = if path_present(path) {
@@ -1123,10 +1123,7 @@ fn unique_sibling(path: &Path, kind: &str) -> Result<PathBuf> {
         .file_name()
         .and_then(|name| name.to_str())
         .context("managed path name is not valid UTF-8")?;
-    Ok(parent.join(format!(
-        ".{name}.zed-{kind}-{}",
-        uuid::Uuid::new_v4()
-    )))
+    Ok(parent.join(format!(".{name}.zed-{kind}-{}", uuid::Uuid::new_v4())))
 }
 
 fn path_present(path: &Path) -> bool {
@@ -1178,8 +1175,7 @@ fn print_path_guidance(bin_dir: &Path) {
 fn path_contains(bin_dir: &Path) -> bool {
     let expected = fs::canonicalize(bin_dir).unwrap_or_else(|_| bin_dir.to_path_buf());
     env::var_os("PATH").is_some_and(|value| {
-        env::split_paths(&value)
-            .any(|entry| fs::canonicalize(&entry).unwrap_or(entry) == expected)
+        env::split_paths(&value).any(|entry| fs::canonicalize(&entry).unwrap_or(entry) == expected)
     })
 }
 
@@ -1236,11 +1232,8 @@ mod tests {
 
     #[test]
     fn duplicate_install_specs_fail_before_profile_mutation() {
-        let error = parse_install_specs(&[
-            "acme/tool@1".to_string(),
-            "acme/tool@2".to_string(),
-        ])
-        .unwrap_err();
+        let error = parse_install_specs(&["acme/tool@1".to_string(), "acme/tool@2".to_string()])
+            .unwrap_err();
         assert!(error.to_string().contains("requested more than once"));
     }
 

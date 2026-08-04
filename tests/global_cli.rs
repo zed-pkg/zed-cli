@@ -211,12 +211,7 @@ fn uninstall_global_alias_rejects_versioned_selectors() {
 fn uninstall_removes_an_unchanged_zed_owned_command() {
     let home = tempfile::tempdir().expect("temporary home");
     let bin_dir = home.path().join("bin");
-    let profile = add_profile(
-        home.path(),
-        "acme/tool",
-        "acme-tool",
-        b"profile command",
-    );
+    let profile = add_profile(home.path(), "acme/tool", "acme-tool", b"profile command");
     let destination_name = destination_name("acme-tool");
     let destination = bin_dir.join(&destination_name);
     let owned = b"installed command";
@@ -224,11 +219,7 @@ fn uninstall_removes_an_unchanged_zed_owned_command() {
     fs::write(&destination, owned).unwrap();
     write_managed_state(home.path(), &destination_name, owned);
 
-    let output = run(
-        &["global", "uninstall", "acme/tool"],
-        home.path(),
-        &bin_dir,
-    );
+    let output = run(&["global", "uninstall", "acme/tool"], home.path(), &bin_dir);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!profile.exists());
     assert!(!destination.exists());
@@ -238,23 +229,14 @@ fn uninstall_removes_an_unchanged_zed_owned_command() {
 fn uninstall_preserves_a_command_modified_after_installation() {
     let home = tempfile::tempdir().expect("temporary home");
     let bin_dir = home.path().join("bin");
-    let profile = add_profile(
-        home.path(),
-        "acme/tool",
-        "acme-tool",
-        b"profile command",
-    );
+    let profile = add_profile(home.path(), "acme/tool", "acme-tool", b"profile command");
     let destination_name = destination_name("acme-tool");
     let destination = bin_dir.join(&destination_name);
     fs::create_dir_all(&bin_dir).unwrap();
     fs::write(&destination, b"user replacement").unwrap();
     write_managed_state(home.path(), &destination_name, b"original zed bytes");
 
-    let output = run(
-        &["global", "uninstall", "acme/tool"],
-        home.path(),
-        &bin_dir,
-    );
+    let output = run(&["global", "uninstall", "acme/tool"], home.path(), &bin_dir);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(!profile.exists());
     assert_eq!(fs::read(&destination).unwrap(), b"user replacement");

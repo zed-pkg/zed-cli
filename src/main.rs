@@ -38,9 +38,7 @@ fn main() {
         let argument = argument.as_os_str();
         argument == OsStr::new("global") || argument == OsStr::new("--global")
     });
-    if global_requested
-        && let Some(result) = global::dispatch(args.clone())
-    {
+    if global_requested && let Some(result) = global::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
