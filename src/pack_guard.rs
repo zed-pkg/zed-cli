@@ -208,6 +208,7 @@ fn validate_globs(patterns: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    #[cfg(unix)]
     use std::process::Command;
 
     use flate2::read::GzDecoder;
