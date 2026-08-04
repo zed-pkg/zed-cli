@@ -1,3 +1,5 @@
+use std::ffi::{OsStr, OsString};
+
 use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
@@ -10,6 +12,7 @@ use zed_cli::dev;
 use zed_cli::environment;
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
+use zed_cli::global;
 use zed_cli::managed_install;
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
@@ -26,6 +29,27 @@ fn main() {
     if let Err(error) = zed_cli::flags::normalize_global_boolean_environment(&args) {
         eprintln!("error: {error:#}");
         std::process::exit(2);
+    }
+    if root_help_requested(&args) {
+        if let Err(error) = completion::print_root_help() {
+            eprintln!("error: {error:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let global_requested = args.iter().skip(1).any(|argument| {
+        let argument = argument.as_os_str();
+        argument == OsStr::new("global") || argument == OsStr::new("--global")
+    });
+    if global_requested && let Some(result) = global::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Some(result) = submodules::dispatch(args.clone()) {
         match result {
@@ -87,6 +111,50 @@ fn main() {
         eprintln!("error: {error:#}");
         std::process::exit(1);
     }
+}
+
+fn root_help_requested(args: &[OsString]) -> bool {
+    let mut index = 1;
+    while index < args.len() {
+        let token = args[index].to_string_lossy();
+        if token == "--help" || token == "-h" {
+            return true;
+        }
+        if token == "help" {
+            return args
+                .iter()
+                .skip(index + 1)
+                .all(|argument| argument.to_string_lossy().starts_with('-'));
+        }
+        if root_global_option_takes_value(&token) {
+            index += if token.contains('=') { 1 } else { 2 };
+            continue;
+        }
+        if token.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return false;
+    }
+    false
+}
+
+fn root_global_option_takes_value(token: &str) -> bool {
+    const OPTIONS: &[&str] = &[
+        "--registry",
+        "--home",
+        "--token",
+        "--auth-url",
+        "--supabase-url",
+        "--supabase-key",
+        "--global-bin-dir",
+    ];
+    OPTIONS.iter().any(|option| {
+        token == *option
+            || token
+                .strip_prefix(option)
+                .is_some_and(|remainder| remainder.starts_with('='))
+    })
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
