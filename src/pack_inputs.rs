@@ -207,10 +207,18 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
-fn git_ignored_untracked(project: &Path) -> Result<Vec<PathBuf>> {
-    let output = match Command::new("git")
+fn git_ignored_command(project: &Path) -> Result<Command> {
+    let project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing package worktree {}", project.display()))?;
+    let mut command = Command::new("git");
+    command
+        // Containerized copies can retain host ownership and trigger Git's
+        // dubious-ownership protection. Trust only this exact canonical tree
+        // for this read-only process; never mutate user or repository config.
+        .arg("-c")
+        .arg(format!("safe.directory={}", project.display()))
         .arg("-C")
-        .arg(project)
+        .arg(&project)
         .args([
             "ls-files",
             "--others",
@@ -220,9 +228,12 @@ fn git_ignored_untracked(project: &Path) -> Result<Vec<PathBuf>> {
             "--",
             ".",
         ])
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .output()
-    {
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    Ok(command)
+}
+
+fn git_ignored_untracked(project: &Path) -> Result<Vec<PathBuf>> {
+    let output = match git_ignored_command(project)?.output() {
         Ok(output) => output,
         Err(error) if error.kind() == ErrorKind::NotFound => {
             if looks_like_git_worktree(project) {
@@ -315,6 +326,26 @@ url = "https://example.invalid/acme/pack-inputs.git"
             args,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn git_query_trusts_only_the_canonical_project_path() {
+        let project = tempfile::tempdir().unwrap();
+        let canonical = fs::canonicalize(project.path()).unwrap();
+        let command = git_ignored_command(project.path()).unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(args.first().map(String::as_str), Some("-c"));
+        assert_eq!(
+            args.get(1),
+            Some(&format!("safe.directory={}", canonical.display()))
+        );
+        assert_eq!(args.get(2).map(String::as_str), Some("-C"));
+        assert_eq!(args.get(3), Some(&canonical.to_string_lossy().into_owned()));
+        assert!(!args.iter().any(|arg| arg == "safe.directory=*"));
     }
 
     #[cfg(unix)]
