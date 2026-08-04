@@ -62,101 +62,130 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('src/oci_push.rs')
-          text = path.read_text(encoding='utf-8')
+          path = Path("src/oci_push.rs")
+          text = path.read_text(encoding="utf-8")
 
-          import_old = "use std::io::{self, BufRead, IsTerminal, Read, Write};"
-          import_new = "use std::io::{self, BufRead, IsTerminal, Read};"
-          count = text.count(import_old)
-          if count != 1:
-              raise SystemExit(f'expected one global Write import, found {count}')
-          text = text.replace(import_old, import_new)
+          def replace_exact(old: str, new: str, expected: int, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{label}: expected {expected} occurrence(s), found {count}")
+              text = text.replace(old, new)
 
-          unix_write_old = "        use std::os::unix::fs::OpenOptionsExt;"
-          unix_write_new = "        use std::io::Write;\n        use std::os::unix::fs::OpenOptionsExt;"
-          count = text.count(unix_write_old)
-          if count != 1:
-              raise SystemExit(f'expected one Unix OpenOptions import, found {count}')
-          text = text.replace(unix_write_old, unix_write_new)
+          replace_exact(
+              "use std::io::{self, BufRead, IsTerminal, Read, Write};",
+              "use std::io::{self, BufRead, IsTerminal, Read};",
+              1,
+              "global Write import",
+          )
+          replace_exact(
+              "        use std::os::unix::fs::OpenOptionsExt;",
+              "        use std::io::Write;\n        use std::os::unix::fs::OpenOptionsExt;",
+              1,
+              "Unix secure-file imports",
+          )
+          replace_exact(
+              "while password.ends_with(['\\n', '\\r']) {",
+              "while password.ends_with('\\n') || password.ends_with('\\r') {",
+              2,
+              "password newline trimming",
+          )
+          replace_exact(
+              "    use std::os::unix::fs::PermissionsExt;",
+              "    #[cfg(unix)]\n    use std::os::unix::fs::PermissionsExt;",
+              1,
+              "Unix test import",
+          )
 
-          newline_old = "while password.ends_with(['\\n', '\\r']) {"
-          newline_new = "while password.ends_with('\\n') || password.ends_with('\\r') {"
-          count = text.count(newline_old)
-          if count != 2:
-              raise SystemExit(f'expected two newline-trimming loops, found {count}')
-          text = text.replace(newline_old, newline_new)
+          lines = text.splitlines()
 
-          unix_old = "    use std::os::unix::fs::PermissionsExt;"
-          unix_new = "    #[cfg(unix)]\n    use std::os::unix::fs::PermissionsExt;"
-          count = text.count(unix_old)
-          if count != 1:
-              raise SystemExit(f'expected one Unix test import, found {count}')
-          text = text.replace(unix_old, unix_new)
+          def unique_line(fragment: str, label: str, start: int = 0) -> int:
+              matches = [index for index, line in enumerate(lines[start:], start) if fragment in line]
+              if len(matches) != 1:
+                  raise SystemExit(f"{label}: expected one matching line, found {len(matches)}")
+              return matches[0]
 
-          duplicate_old = '''    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size)
-              && previous_size != descriptor.size
-          {
-              bail!(
-                  "OCI digest `{digest}` is declared with conflicting sizes {previous_size} and {}",
-                  descriptor.size
-              );
-          }
-          '''
-          duplicate_new = '''    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size) {
-              bail!(
-                  "OCI digest `{digest}` is declared more than once (sizes {previous_size} and {})",
-                  descriptor.size
-              );
-          }
-          '''
-          count = text.count(duplicate_old)
-          if count != 1:
-              raise SystemExit(f'expected one duplicate-descriptor block, found {count}')
-          text = text.replace(duplicate_old, duplicate_new)
-
-          missing_old = '''    [
-              "manifest unknown",
-              "manifest not found",
-              "not found",
-              "404",
-              "no such manifest",
-              "name unknown",
+          duplicate_start = unique_line(
+              "if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size)",
+              "duplicate descriptor block",
+          )
+          duplicate_end = next(
+              (
+                  index
+                  for index in range(duplicate_start + 1, len(lines))
+                  if lines[index] == "    }"
+              ),
+              None,
+          )
+          if duplicate_end is None:
+              raise SystemExit("duplicate descriptor block: closing brace not found")
+          lines[duplicate_start : duplicate_end + 1] = [
+              "    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size) {",
+              "        bail!(",
+              "            \"OCI digest `{digest}` is declared more than once (sizes {previous_size} and {})\",",
+              "            descriptor.size",
+              "        );",
+              "    }",
           ]
-          '''
-          missing_new = '''    [
-              "manifest unknown",
-              "manifest not found",
-              "no such manifest",
-              "name unknown",
-              "response status code 404",
-              "404 not found",
+
+          missing_fn = unique_line("fn is_missing_manifest", "missing-manifest function")
+          missing_start = next(
+              (
+                  index
+                  for index in range(missing_fn + 1, len(lines))
+                  if lines[index].strip() == "["
+              ),
+              None,
+          )
+          if missing_start is None:
+              raise SystemExit("missing-manifest function: diagnostic array not found")
+          missing_end = next(
+              (
+                  index
+                  for index in range(missing_start + 1, len(lines))
+                  if lines[index].strip() == "]"
+              ),
+              None,
+          )
+          if missing_end is None:
+              raise SystemExit("missing-manifest function: diagnostic array end not found")
+          lines[missing_start : missing_end + 1] = [
+              "    [",
+              "        \"manifest unknown\",",
+              "        \"manifest not found\",",
+              "        \"no such manifest\",",
+              "        \"name unknown\",",
+              "        \"response status code 404\",",
+              "        \"404 not found\",",
+              "    ]",
           ]
-          '''
-          count = text.count(missing_old)
-          if count != 1:
-              raise SystemExit(f'expected one missing-manifest diagnostic block, found {count}')
-          text = text.replace(missing_old, missing_new)
 
-          truncation_old = '''    if value.len() > MAX_DIAGNOSTIC_BYTES {
-              value.truncate(MAX_DIAGNOSTIC_BYTES);
-              value.push_str("…");
-          }
-          '''
-          truncation_new = '''    if value.len() > MAX_DIAGNOSTIC_BYTES {
-              let mut end = MAX_DIAGNOSTIC_BYTES;
-              while !value.is_char_boundary(end) {
-                  end -= 1;
-              }
-              value.truncate(end);
-              value.push_str("…");
-          }
-          '''
-          count = text.count(truncation_old)
-          if count != 1:
-              raise SystemExit(f'expected one diagnostic truncation block, found {count}')
-          text = text.replace(truncation_old, truncation_new)
+          truncation_start = unique_line(
+              "if value.len() > MAX_DIAGNOSTIC_BYTES",
+              "diagnostic truncation block",
+          )
+          truncation_end = next(
+              (
+                  index
+                  for index in range(truncation_start + 1, len(lines))
+                  if lines[index] == "    }"
+              ),
+              None,
+          )
+          if truncation_end is None:
+              raise SystemExit("diagnostic truncation block: closing brace not found")
+          lines[truncation_start : truncation_end + 1] = [
+              "    if value.len() > MAX_DIAGNOSTIC_BYTES {",
+              "        let mut end = MAX_DIAGNOSTIC_BYTES;",
+              "        while !value.is_char_boundary(end) {",
+              "            end -= 1;",
+              "        }",
+              "        value.truncate(end);",
+              "        value.push_str(\"…\");",
+              "    }",
+          ]
 
-          path.write_text(text, encoding='utf-8')
+          path.write_text("\n".join(lines) + "\n", encoding="utf-8")
           PY
           cargo fmt --all
           git diff --check
@@ -181,16 +210,16 @@ jobs:
             src/main.rs
             src/oci_push.rs
           )
-          for path in "${changed[@]}"; do
+          for changed_path in "${changed[@]}"; do
             permitted=false
             for candidate in "${allowed[@]}"; do
-              if [[ "$path" == "$candidate" ]]; then
+              if [[ "$changed_path" == "$candidate" ]]; then
                 permitted=true
                 break
               fi
             done
             if [[ "$permitted" != true ]]; then
-              echo "validation changed an unexpected path: $path" >&2
+              echo "validation changed an unexpected path: $changed_path" >&2
               exit 1
             fi
           done
