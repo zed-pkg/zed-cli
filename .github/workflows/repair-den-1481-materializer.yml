@@ -1,0 +1,67 @@
+name: repair DEN-1481 materializer
+
+on:
+  push:
+    branches:
+      - feat/den-1481-mise-frozen-identity
+    paths:
+      - .github/workflows/repair-den-1481-materializer.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-den-1481-materializer
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/den-1481-mise-frozen-identity
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Replace stale whitespace anchor with structural insertion
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/apply-den-1481-mise-frozen-identity.yml')
+          text = path.read_text(encoding='utf-8')
+          start = text.index("          old_frozen = '''")
+          end = text.index("          helper_anchor =", start)
+          replacement = '''          frozen_anchor = "        verify_frozen_artifacts(&locked, lock_relative.as_deref())?;\\n"
+          if 'verify_frozen_identity(' not in text:
+              frozen_insert = """        verify_frozen_identity(
+                  &settings,
+                  &configured,
+                  &locked,
+                  lock_relative.as_deref(),
+              )?;
+              verify_frozen_artifacts(&locked, lock_relative.as_deref())?;
+          """
+              text = replace_once(
+                  text,
+                  frozen_anchor,
+                  frozen_insert,
+                  'frozen validation call',
+              )
+
+'''
+          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          PY
+          rm .github/workflows/repair-den-1481-materializer.yml
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/apply-den-1481-mise-frozen-identity.yml .github/workflows/repair-den-1481-materializer.yml
+          git diff --cached --check
+          git commit -m 'ci(DEN-1481): repair current-main materializer anchor'
+          git push origin HEAD:feat/den-1481-mise-frozen-identity
