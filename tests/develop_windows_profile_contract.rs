@@ -131,7 +131,9 @@ fn powershell_command_mode_does_not_load_profiles_and_propagates_exit() {
         "$ErrorActionPreference = 'Stop'; \
          if (Test-Path Env:{profile_env}) {{ throw 'PowerShell profile was loaded' }}; \
          if ($env:ZED_DEV -ne '1') {{ throw 'managed environment missing' }}; \
-         if ([IO.Path]::GetFullPath((Get-Location).Path) -ne [IO.Path]::GetFullPath($env:ZED_DEV_PROJECT_ROOT)) {{ throw 'project root mismatch' }}; \
+         $actual = (Get-Item -LiteralPath '.').FullName.TrimEnd('\\'); \
+         $expected = (Get-Item -LiteralPath $env:ZED_DEV_PROJECT_ROOT).FullName.TrimEnd('\\'); \
+         if (-not [String]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {{ throw \"project root mismatch: $actual != $expected\" }}; \
          Write-Output 'windows-powershell-profile-safe'; exit 29",
         profile_env = PROFILE_ENV,
     );
