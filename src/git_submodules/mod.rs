@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use zed_interfaces::manifest::WorkspaceSection;
+use zed_interfaces::manifest::{Manifest, WorkspaceSection};
 use zed_interfaces::paths::MANIFEST_FILE;
 
 use crate::cli::{Adapter, InstallMode};
@@ -156,10 +156,21 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     }
 
     let manifest_path = project.join(MANIFEST_FILE);
-    let mut root = if manifest_path.is_file() {
-        read_manifest(&project)?
-    } else {
-        generated_consumer_manifest(&project)
+    let previous_manifest = match fs::read(&manifest_path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| format!("reading {}", manifest_path.display()));
+        }
+    };
+    let mut root = match previous_manifest.as_deref() {
+        Some(contents) => {
+            let text = std::str::from_utf8(contents)
+                .with_context(|| format!("{} is not UTF-8", manifest_path.display()))?;
+            Manifest::parse(text)
+                .with_context(|| format!("invalid manifest {}", manifest_path.display()))?
+        }
+        None => generated_consumer_manifest(&project),
     };
     let root_package = root.full_name();
     let existing_members = collect_workspace_members(&project, &root)?;
@@ -201,10 +212,12 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     workspace.members.dedup();
     root.validate()
         .context("validating overtaken root manifest")?;
+    let manifest_text = root.to_toml_string()?;
 
+    ensure_manifest_unchanged(&manifest_path, previous_manifest.as_deref())?;
     let mut transaction = ProjectTransaction::begin(&project)?;
     transaction.backup(&manifest_path)?;
-    fs::write(&manifest_path, root.to_toml_string()?)
+    fs::write(&manifest_path, manifest_text.as_bytes())
         .with_context(|| format!("writing {}", manifest_path.display()))?;
     transaction.commit()?;
 
@@ -212,7 +225,7 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     // are workspace members, the complete solver never asks the registry for
     // them. The installer facade adds exact Git provenance to the resulting
     // lockfile after its normal transaction commits.
-    crate::managed_install::install(
+    if let Err(error) = crate::managed_install::install(
         &project,
         cfg,
         &[],
@@ -223,7 +236,27 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
         None,
         false,
         false,
-    )?;
+    ) {
+        // The ordinary installer is transactional. Its only post-commit fallible
+        // step is the additive Git-lock finalizer; in that case the adopted
+        // manifest must remain aligned with the already committed install.
+        if install_committed_before_error(&error) {
+            return Err(error.context(
+                "package installation committed; retained the overtaken manifest for reconciliation",
+            ));
+        }
+        if let Err(rollback) = restore_manifest_if_unchanged(
+            &project,
+            &manifest_path,
+            manifest_text.as_bytes(),
+            previous_manifest.as_deref(),
+        ) {
+            return Err(error.context(format!(
+                "overtake installation failed and the root manifest could not be rolled back: {rollback:#}"
+            )));
+        }
+        return Err(error.context("overtake installation failed; restored the prior root manifest"));
+    }
 
     println!(
         "retained {} as a reversible Git transport mirror; Zed now owns dependency and lock authority",
@@ -233,4 +266,48 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
         project,
         adopted: imported.len(),
     })
+}
+
+fn ensure_manifest_unchanged(path: &Path, expected: Option<&[u8]>) -> Result<()> {
+    let current = match fs::read(path) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
+    if current.as_deref() != expected {
+        bail!(
+            "{} changed while takeover was being planned; retry without overwriting another writer's content",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn install_committed_before_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string() == crate::ops::GIT_LOCK_FINALIZE_CONTEXT)
+}
+
+fn restore_manifest_if_unchanged(
+    project: &Path,
+    path: &Path,
+    expected: &[u8],
+    previous: Option<&[u8]>,
+) -> Result<()> {
+    let current = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    if current != expected {
+        bail!(
+            "{} changed during takeover; refusing to overwrite another writer's content",
+            path.display()
+        );
+    }
+
+    let mut transaction = ProjectTransaction::begin(project)?;
+    transaction.backup(path)?;
+    if let Some(previous) = previous {
+        fs::write(path, previous)
+            .with_context(|| format!("restoring {}", path.display()))?;
+    }
+    transaction.commit()
 }
