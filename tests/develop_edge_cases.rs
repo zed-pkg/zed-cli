@@ -677,7 +677,16 @@ fn shell_name_controls_the_command_argument_protocol() {
     let cases: &[(&str, &[&str])] = &[
         ("bash", &["-c", script]),
         ("fish", &["-c", script]),
-        ("pwsh", &["-NoLogo", "-Command", script]),
+        (
+            "pwsh",
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+        ),
         ("cmd.exe", &["/D", "/S", "/C", script]),
         ("custom-shell", &["-c", script]),
     ];
