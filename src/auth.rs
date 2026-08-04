@@ -896,11 +896,11 @@ fn secure_open(path: &Path, truncate: bool) -> Result<fs::File> {
     Ok(file)
 }
 
-fn secure_file_mode(path: &Path) -> Result<()> {
+fn secure_file_mode(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
 }
