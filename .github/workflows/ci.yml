@@ -15,8 +15,8 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-develop-shell-edge-cfg
-  cancel-in-progress: false
+  group: windows-develop-shell-edge-cfg-${{ github.sha }}
+  cancel-in-progress: true
 
 defaults:
   run:
