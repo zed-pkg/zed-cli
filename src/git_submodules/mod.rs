@@ -11,6 +11,7 @@ mod git;
 mod lock;
 
 #[cfg(test)]
+#[cfg_attr(not(unix), allow(dead_code, unused_imports))]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
