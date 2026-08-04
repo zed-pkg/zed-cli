@@ -43,23 +43,14 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('src/nix_environment_export.rs')
           text = path.read_text()
 
-          replacements = [
+          transforms = [
               (
-                  '''        if let Some(existing) =
-                      output_packages.insert(package.package_ref.clone(), candidate.clone())
-                  {
-                      if existing != candidate {
-                          bail!(
-                              "Devbox package `{}` is requested with conflicting versions or platforms",
-                              package.package_ref
-                          );
-                      }
-                  }
-                  ''',
+                  r'''        if let Some\(existing\) =\s*\n            output_packages\.insert\(package\.package_ref\.clone\(\), candidate\.clone\(\)\)\s*\n        \{\s*\n            if existing != candidate \{\s*\n                bail!\(\s*\n                    "Devbox package `\{\}` is requested with conflicting versions or platforms",\s*\n                    package\.package_ref\s*\n                \);\s*\n            \}\s*\n        \}''',
                   '''        if let Some(existing) =
                       output_packages.insert(package.package_ref.clone(), candidate.clone())
                       && existing != candidate
@@ -68,33 +59,20 @@ jobs:
                           "Devbox package `{}` is requested with conflicting versions or platforms",
                           package.package_ref
                       );
-                  }
-                  ''',
+                  }''',
+                  'Devbox conflict let-chain',
               ),
               (
-                  '''    if let Ok(metadata) = fs::symlink_metadata(&joined) {
-                      if metadata.file_type().is_symlink() {
-                          bail!("{kind} `{relative}` must not be a symlink");
-                      }
-                  }
-                  ''',
+                  r'''    if let Ok\(metadata\) = fs::symlink_metadata\(&joined\) \{\s*\n        if metadata\.file_type\(\)\.is_symlink\(\) \{\s*\n            bail!\("\{kind\} `\{relative\}` must not be a symlink"\);\s*\n        \}\s*\n    \}''',
                   '''    if let Ok(metadata) = fs::symlink_metadata(&joined)
                       && metadata.file_type().is_symlink()
                   {
                       bail!("{kind} `{relative}` must not be a symlink");
-                  }
-                  ''',
+                  }''',
+                  'symlink let-chain',
               ),
               (
-                  '''    if receipt_state == FileDisposition::Missing {
-                      if let Err(error) = persist_new_file(root, receipt_path, receipt, "export receipt") {
-                          if wrote_output {
-                              let _ = fs::remove_file(output_path);
-                          }
-                          return Err(error);
-                      }
-                  }
-                  ''',
+                  r'''    if receipt_state == FileDisposition::Missing \{\s*\n        if let Err\(error\) = persist_new_file\(root, receipt_path, receipt, "export receipt"\) \{\s*\n            if wrote_output \{\s*\n                let _ = fs::remove_file\(output_path\);\s*\n            \}\s*\n            return Err\(error\);\s*\n        \}\s*\n    \}''',
                   '''    if receipt_state == FileDisposition::Missing
                       && let Err(error) = persist_new_file(root, receipt_path, receipt, "export receipt")
                   {
@@ -102,15 +80,16 @@ jobs:
                           let _ = fs::remove_file(output_path);
                       }
                       return Err(error);
-                  }
-                  ''',
+                  }''',
+                  'receipt rollback let-chain',
               ),
           ]
 
-          for old, new in replacements:
-              if old not in text:
-                  raise SystemExit(f'expected lint source fragment not found:\n{old}')
-              text = text.replace(old, new, 1)
+          for pattern, replacement, label in transforms:
+              text, count = re.subn(pattern, replacement, text, count=1)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+
           path.write_text(text)
           PY
 
