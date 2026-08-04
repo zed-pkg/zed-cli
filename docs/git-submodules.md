@@ -47,7 +47,10 @@ zed install --git-submodules --frozen
 
 All configured Git submodules are synchronized and initialized in this mode,
 including submodules that are not Zed packages. Only adopted Zed packages
-participate in `.zpkg.toml` and `.zpkg.lock` authority.
+participate in `.zpkg.toml` and `.zpkg.lock` authority. Before Zed parses
+`.gitmodules`, its worktree entry must be a regular file and any indexed entry
+must be a stage-zero regular Git blob; symlinked, conflicted, directory, or other
+indirect metadata fails closed.
 
 ## Overtaking submodules
 
@@ -191,7 +194,8 @@ materialized submodule to be embedded as ordinary runtime source.
 
 Zed refuses takeover or lock refresh when:
 
-- `.gitmodules` has uncommitted changes;
+- `.gitmodules` is indirect, non-regular, conflicted in the index, or has
+  uncommitted changes;
 - a configured path escapes the project or targets `.git`/Zed recovery state;
 - a workspace member resolves outside the superproject;
 - two adopted submodules declare the same package identity or path;
