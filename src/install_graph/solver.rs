@@ -28,8 +28,18 @@ impl PreparedInstall {
 #[derive(Debug, Clone)]
 struct Candidate {
     version: VersionMetadata,
+    scheme: VersionScheme,
     dependencies: BTreeMap<String, String>,
     exact_requirement: String,
+}
+
+#[derive(Debug, Clone)]
+struct CandidateRequest {
+    key: String,
+    org: String,
+    name: String,
+    version: String,
+    scheme: VersionScheme,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,6 +52,7 @@ struct Constraint {
 #[derive(Debug, Clone)]
 struct WorkspaceMember {
     version: String,
+    scheme: VersionScheme,
     dependencies: BTreeMap<String, String>,
 }
 
@@ -103,6 +114,7 @@ impl SolverWorkspace {
                         member.full_name(),
                         WorkspaceMember {
                             version: member.package.version,
+                            scheme: member.package.version_scheme,
                             dependencies: member.dependencies,
                         },
                     );
@@ -168,13 +180,17 @@ impl SolveFailure {
 
     fn render_into(&self, depth: usize, lines: &mut Vec<String>) {
         let indent = "  ".repeat(depth);
-        match &self.selected {
+        match self.selected.as_deref() {
+            Some("all matching versions are yanked") => lines.push(format!(
+                "{indent}version conflict for {}: all matching versions are yanked; use an existing lock with `zed install --frozen` to replay a previously selected version",
+                self.key
+            )),
             Some(version) => lines.push(format!(
                 "{indent}version conflict for {}: selected {version}, but it does not satisfy every active requirement",
                 self.key
             )),
             None => lines.push(format!(
-                "{indent}version conflict for {}: no single published version satisfies every active requirement",
+                "{indent}version conflict for {}: no version satisfies every active requirement",
                 self.key
             )),
         }
@@ -225,6 +241,20 @@ trait SolveSource {
         version: &str,
         scheme: VersionScheme,
     ) -> Result<Candidate>;
+
+    fn prefetch(&mut self, requests: &[CandidateRequest]) -> Result<()> {
+        for request in requests {
+            self.candidate(
+                &request.key,
+                &request.org,
+                &request.name,
+                &request.version,
+                request.scheme,
+            )?;
+        }
+        Ok(())
+    }
+
     fn downloaded(&self) -> usize;
 }
 
@@ -283,24 +313,77 @@ impl SolveSource for RegistrySource<'_> {
             return Ok(candidate.clone());
         }
 
-        let metadata = self.registry.get_version(org, name, version)?;
-        validate_version_identity(&metadata, org, name, version)?;
-        let sequence = self.next_sequence;
-        self.next_sequence += 1;
-        self.pool.submit(FetchTask {
-            sequence,
+        let request = CandidateRequest {
             key: key.to_string(),
-            version: metadata.clone(),
-        })?;
-        let fetched = super::resolver::receive_in_order(self.pool, &mut self.buffered, sequence)?;
-        self.downloaded += usize::from(fetched.downloaded);
-        let candidate = Candidate {
-            exact_requirement: exact_requirement(scheme, version),
-            version: metadata,
-            dependencies: fetched.dependencies,
+            org: org.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            scheme,
         };
-        self.candidates.insert(cache_key, candidate.clone());
-        Ok(candidate)
+        self.prefetch(std::slice::from_ref(&request))?;
+        self.candidates
+            .get(&cache_key)
+            .cloned()
+            .with_context(|| format!("candidate prefetch produced no result for {key}@{version}"))
+    }
+
+    fn prefetch(&mut self, requests: &[CandidateRequest]) -> Result<()> {
+        let mut pending = Vec::new();
+        for request in requests {
+            let cache_key = (request.key.clone(), request.version.clone());
+            if self.candidates.contains_key(&cache_key) {
+                continue;
+            }
+
+            let metadata =
+                self.registry
+                    .get_version(&request.org, &request.name, &request.version)?;
+            validate_version_identity(&metadata, &request.org, &request.name, &request.version)?;
+            let exact_requirement = exact_requirement(request.scheme, &request.version);
+            if metadata.yanked {
+                self.candidates.insert(
+                    cache_key,
+                    Candidate {
+                        exact_requirement,
+                        version: metadata,
+                        scheme: request.scheme,
+                        dependencies: BTreeMap::new(),
+                    },
+                );
+                continue;
+            }
+
+            let sequence = self.next_sequence;
+            self.next_sequence += 1;
+            self.pool.submit(FetchTask {
+                sequence,
+                key: request.key.clone(),
+                version: metadata.clone(),
+            })?;
+            pending.push((
+                sequence,
+                cache_key,
+                metadata,
+                request.scheme,
+                exact_requirement,
+            ));
+        }
+
+        for (sequence, cache_key, metadata, scheme, exact_requirement) in pending {
+            let fetched =
+                super::resolver::receive_in_order(self.pool, &mut self.buffered, sequence)?;
+            self.downloaded += usize::from(fetched.downloaded);
+            self.candidates.insert(
+                cache_key,
+                Candidate {
+                    exact_requirement,
+                    version: metadata,
+                    scheme,
+                    dependencies: fetched.dependencies,
+                },
+            );
+        }
+        Ok(())
     }
 
     fn downloaded(&self) -> usize {
@@ -318,6 +401,15 @@ fn exact_requirement(scheme: VersionScheme, raw: &str) -> String {
     }
 }
 
+fn requirement_matches(scheme: VersionScheme, requirement: &str, published: &str) -> bool {
+    match scheme {
+        VersionScheme::Opaque => requirement == published,
+        VersionScheme::Semver | VersionScheme::Calver => {
+            Requirement::parse(requirement).matches(published)
+        }
+    }
+}
+
 struct GraphSolver<'a, S> {
     source: &'a mut S,
     workspace: &'a SolverWorkspace,
@@ -328,6 +420,7 @@ impl<S: SolveSource> GraphSolver<'_, S> {
         if let Some(failure) = self.propagate(&mut state)? {
             return Ok(SearchOutcome::Unsatisfiable(failure));
         }
+        self.prefetch_frontier(&state)?;
 
         let Some(key) = state.unresolved_key() else {
             return Ok(SearchOutcome::Solved(state));
@@ -336,7 +429,7 @@ impl<S: SolveSource> GraphSolver<'_, S> {
 
         if let Some(member) = self.workspace.members.get(&key) {
             if constraints.iter().any(|constraint| {
-                !Requirement::parse(&constraint.requirement).matches(&member.version)
+                !requirement_matches(member.scheme, &constraint.requirement, &member.version)
             }) {
                 return Ok(SearchOutcome::Unsatisfiable(SolveFailure {
                     key,
@@ -358,10 +451,9 @@ impl<S: SolveSource> GraphSolver<'_, S> {
         let mut matching = false;
 
         for published in &versions {
-            if constraints
-                .iter()
-                .any(|constraint| !Requirement::parse(&constraint.requirement).matches(published))
-            {
+            if constraints.iter().any(|constraint| {
+                !requirement_matches(package.version_scheme, &constraint.requirement, published)
+            }) {
                 continue;
             }
             matching = true;
@@ -395,12 +487,53 @@ impl<S: SolveSource> GraphSolver<'_, S> {
         }))
     }
 
+    fn prefetch_frontier(&mut self, state: &SolveState) -> Result<()> {
+        let mut requests = Vec::new();
+        for (key, constraints) in &state.constraints {
+            if state.registry.contains_key(key)
+                || state.workspace.contains_key(key)
+                || self.workspace.members.contains_key(key)
+            {
+                continue;
+            }
+
+            let (org, name) = split_key(key)?;
+            let package = self.source.package(&org, &name)?;
+            let mut versions = package.versions.clone();
+            version::sort_desc(&mut versions);
+            let Some(published) = versions.into_iter().find(|published| {
+                constraints.iter().all(|constraint| {
+                    requirement_matches(package.version_scheme, &constraint.requirement, published)
+                })
+            }) else {
+                continue;
+            };
+            requests.push(CandidateRequest {
+                key: key.clone(),
+                org,
+                name,
+                version: published,
+                scheme: package.version_scheme,
+            });
+        }
+
+        // Submit one best candidate for every currently active coordinate
+        // before waiting. This preserves deterministic graph search and avoids
+        // downloading alternate versions eagerly while still saturating the
+        // bounded worker pool on wide dependency frontiers.
+        self.source.prefetch(&requests)
+    }
+
     fn propagate(&self, state: &mut SolveState) -> Result<Option<SolveFailure>> {
         loop {
             for (key, candidate) in &state.registry {
                 let constraints = state.constraints.get(key).cloned().unwrap_or_default();
                 if constraints.iter().any(|constraint| {
-                    !Requirement::parse(&constraint.requirement).matches(&candidate.version.version)
+                    !requirement_matches(
+                        candidate.scheme,
+                        &constraint.requirement,
+                        &candidate.version.version,
+                    )
                 }) {
                     return Ok(Some(SolveFailure::selected(
                         key,
@@ -412,7 +545,7 @@ impl<S: SolveSource> GraphSolver<'_, S> {
             for (key, member) in &state.workspace {
                 let constraints = state.constraints.get(key).cloned().unwrap_or_default();
                 if constraints.iter().any(|constraint| {
-                    !Requirement::parse(&constraint.requirement).matches(&member.version)
+                    !requirement_matches(member.scheme, &constraint.requirement, &member.version)
                 }) {
                     return Ok(Some(SolveFailure::selected(
                         key,
@@ -576,6 +709,7 @@ mod tests {
                 Candidate {
                     exact_requirement: format!("={version_text}"),
                     version: metadata,
+                    scheme: VersionScheme::Semver,
                     dependencies: dependencies
                         .iter()
                         .map(|(key, requirement)| ((*key).to_string(), (*requirement).to_string()))
@@ -599,6 +733,29 @@ mod tests {
             package.versions.push(version_text.to_string());
             version::sort_desc(&mut package.versions);
             package.latest = package.versions.first().cloned();
+        }
+
+        fn publish_with_scheme(
+            &mut self,
+            key: &str,
+            version_text: &str,
+            scheme: VersionScheme,
+            yanked: bool,
+            dependencies: &[(&str, &str)],
+        ) {
+            self.publish(key, version_text, dependencies);
+            let cache_key = (key.to_string(), version_text.to_string());
+            let candidate = self
+                .candidates
+                .get_mut(&cache_key)
+                .expect("published candidate must exist");
+            candidate.scheme = scheme;
+            candidate.exact_requirement = exact_requirement(scheme, version_text);
+            candidate.version.yanked = yanked;
+            self.packages
+                .get_mut(key)
+                .expect("published package must exist")
+                .version_scheme = scheme;
         }
     }
 
@@ -738,6 +895,48 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert_eq!(error, second);
+    }
+
+    #[test]
+    fn opaque_versions_accept_only_exact_requirements() {
+        let mut source = MemorySource::default();
+        source.publish_with_scheme(
+            "test/opaque",
+            "legacy-api",
+            VersionScheme::Opaque,
+            false,
+            &[],
+        );
+        source.publish_with_scheme(
+            "test/opaque",
+            "release-candidate-1",
+            VersionScheme::Opaque,
+            false,
+            &[],
+        );
+
+        let solved = solve_memory(&mut source, &[("test/opaque", "legacy-api")]).unwrap();
+        assert_eq!(solved.selected_version("test/opaque"), Some("legacy-api"));
+
+        let error = solve_memory(&mut source, &[("test/opaque", "^1")])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no version"), "{error}");
+    }
+
+    #[test]
+    fn yanked_only_matches_are_rejected_with_frozen_guidance() {
+        let mut source = MemorySource::default();
+        source.publish_with_scheme("test/yanked", "1.0.0", VersionScheme::Semver, true, &[]);
+
+        let error = solve_memory(&mut source, &[("test/yanked", "^1")])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("all matching versions are yanked"),
+            "{error}"
+        );
+        assert!(error.contains("--frozen"), "{error}");
     }
 
     #[test]
