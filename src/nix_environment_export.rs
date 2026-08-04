@@ -271,13 +271,12 @@ pub fn generate_devbox(packages: &[ManagerPackage]) -> Result<Vec<u8>> {
         };
         if let Some(existing) =
             output_packages.insert(package.package_ref.clone(), candidate.clone())
+            && existing != candidate
         {
-            if existing != candidate {
-                bail!(
-                    "Devbox package `{}` is requested with conflicting versions or platforms",
-                    package.package_ref
-                );
-            }
+            bail!(
+                "Devbox package `{}` is requested with conflicting versions or platforms",
+                package.package_ref
+            );
         }
     }
 
@@ -549,10 +548,10 @@ fn resolve_project_input(root: &Path, requested: &Path, kind: &str) -> Result<(P
 fn resolve_project_output(root: &Path, requested: &Path, kind: &str) -> Result<(PathBuf, String)> {
     let relative = normalized_relative_path(requested, kind)?;
     let joined = root.join(path_from_slash(&relative));
-    if let Ok(metadata) = fs::symlink_metadata(&joined) {
-        if metadata.file_type().is_symlink() {
-            bail!("{kind} `{relative}` must not be a symlink");
-        }
+    if let Ok(metadata) = fs::symlink_metadata(&joined)
+        && metadata.file_type().is_symlink()
+    {
+        bail!("{kind} `{relative}` must not be a symlink");
     }
     let parent = joined
         .parent()
@@ -636,13 +635,13 @@ fn write_pair_fail_closed(
         persist_new_file(root, output_path, output, "manager output")?;
         wrote_output = true;
     }
-    if receipt_state == FileDisposition::Missing {
-        if let Err(error) = persist_new_file(root, receipt_path, receipt, "export receipt") {
-            if wrote_output {
-                let _ = fs::remove_file(output_path);
-            }
-            return Err(error);
+    if receipt_state == FileDisposition::Missing
+        && let Err(error) = persist_new_file(root, receipt_path, receipt, "export receipt")
+    {
+        if wrote_output {
+            let _ = fs::remove_file(output_path);
         }
+        return Err(error);
     }
     Ok(true)
 }
