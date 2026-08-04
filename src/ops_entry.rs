@@ -74,12 +74,14 @@ pub fn publish(
 }
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    crate::git_submodules::preflight_gitmodules_metadata(project)?;
     crate::git_submodules::preflight_mutation(project)?;
     crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))?;
     crate::git_submodules::refresh_lock_extensions(project)
 }
 
 pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    crate::git_submodules::preflight_gitmodules_metadata(project)?;
     crate::git_submodules::preflight_mutation(project)?;
     crate::config::with_install_prefetch(cfg, || implementation::remove(project, cfg, spec))?;
     crate::git_submodules::refresh_lock_extensions(project)
@@ -96,6 +98,7 @@ pub fn install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    crate::git_submodules::preflight_gitmodules_metadata(project)?;
     let git_lock = crate::git_submodules::prepare_install(project, frozen)?;
     let outcome = if frozen {
         crate::install_graph::prefetch(project, cfg, true)?;
@@ -140,6 +143,7 @@ pub(crate) fn install_frozen_lock_only(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    crate::git_submodules::preflight_gitmodules_metadata(project)?;
     let git_lock = crate::git_submodules::prepare_install(project, true)?;
     crate::install_graph::prefetch(project, cfg, true)?;
     let outcome = implementation::install_frozen_lock_only(
