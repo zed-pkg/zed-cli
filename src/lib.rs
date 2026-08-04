@@ -17,12 +17,14 @@ pub mod install_graph;
 pub mod interactive;
 pub mod managed_install;
 pub mod manifestless;
+pub mod mise_lock;
 pub mod nix_bundle_write;
 pub mod nix_export_bundle;
 pub mod nix_export_plan;
 #[path = "ops_entry.rs"]
 pub mod ops;
 pub mod pack;
+pub(crate) mod pack_guard;
 pub mod preflight;
 pub mod r2g;
 pub mod registry;
