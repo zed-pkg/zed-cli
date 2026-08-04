@@ -142,6 +142,12 @@ impl From<CompletionShell> for clap_complete::Shell {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EnvironmentManagerArg {
+    /// Import or verify project-local mise configuration.
+    Mise,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
     /// Create a .zpkg.toml manifest in the current directory
@@ -213,6 +219,11 @@ pub enum Cmd {
         /// packages currently pinned by the lockfile.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
+    },
+    /// Import or verify project-local developer-environment configuration.
+    Env {
+        #[command(subcommand)]
+        cmd: EnvCmd,
     },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {
@@ -379,6 +390,44 @@ pub enum Cmd {
     Cache {
         #[command(subcommand)]
         cmd: CacheCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EnvCmd {
+    /// Import the supported project-local manager state as an EnvironmentPlan.
+    Import {
+        #[arg(value_enum)]
+        manager: EnvironmentManagerArg,
+        /// Project-local manager config; auto-detected only when unambiguous.
+        #[arg(long, env = "ZED_PKG_ENV_CONFIG")]
+        config: Option<PathBuf>,
+        /// Project-local manager lockfile; otherwise derived from the config name.
+        #[arg(long, env = "ZED_PKG_ENV_LOCK")]
+        lock: Option<PathBuf>,
+        /// Require complete locked identities and portable frozen validation.
+        #[arg(long, env = "ZED_PKG_FROZEN")]
+        frozen: bool,
+        /// Emit the normalized EnvironmentPlan as JSON.
+        #[arg(long, env = "ZED_PKG_ENV_JSON")]
+        json: bool,
+    },
+    /// Verify manager config/lock coverage and the normalized plan digest.
+    Verify {
+        #[arg(value_enum)]
+        manager: EnvironmentManagerArg,
+        /// Project-local manager config; auto-detected only when unambiguous.
+        #[arg(long, env = "ZED_PKG_ENV_CONFIG")]
+        config: Option<PathBuf>,
+        /// Project-local manager lockfile; otherwise derived from the config name.
+        #[arg(long, env = "ZED_PKG_ENV_LOCK")]
+        lock: Option<PathBuf>,
+        /// Require complete locked identities and portable frozen validation.
+        #[arg(long, env = "ZED_PKG_FROZEN")]
+        frozen: bool,
+        /// Emit a machine-readable verification result.
+        #[arg(long, env = "ZED_PKG_ENV_JSON")]
+        json: bool,
     },
 }
 
@@ -564,6 +613,26 @@ mod tests {
                 }
                 other => panic!("unexpected command: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn environment_import_and_verify_are_typed() {
+        for action in ["import", "verify"] {
+            let cli = Cli::try_parse_from([
+                "zed",
+                "env",
+                action,
+                "mise",
+                "--config",
+                "mise.toml",
+                "--lock",
+                "mise.lock",
+                "--frozen",
+                "--json",
+            ])
+            .unwrap();
+            assert!(matches!(cli.cmd, Cmd::Env { .. }));
         }
     }
 

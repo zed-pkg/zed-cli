@@ -7,6 +7,7 @@ pub mod cli_model;
 pub mod completion;
 pub mod config;
 pub mod dev;
+pub mod environment;
 pub mod fetch;
 pub mod flags;
 pub mod install_graph;
