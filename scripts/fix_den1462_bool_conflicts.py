@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Avoid Clap presence-conflicts caused by flags-2-env boolean defaults.
+"""Finish current-main mise export integration after env normalization.
 
-flags-2-env exports explicit false defaults for both mode flags. Clap correctly
-parses those values as false, but `conflicts_with` reasons about argument
-presence rather than the parsed boolean value. Validate the two true booleans
-at the dispatcher boundary instead, where CLI and environment inputs have
-already been normalized.
+flags-2-env exports explicit false defaults for both mode flags. Clap parses
+those values correctly, but `conflicts_with` reasons about argument presence.
+The current dispatcher also supports both mise and asdf import/verify routes,
+so this repair inserts export semantically without replacing either route.
 """
 
 from pathlib import Path
@@ -80,16 +79,59 @@ replace_once(
 )
 
 main = Path("src/main.rs")
-replace_once(
-    main,
-    '''            } => {
+text = main.read_text(encoding="utf-8")
+if "            EnvCmd::Export {" not in text:
+    verify_anchor = '''            EnvCmd::Verify {
+                manager,
+                config,
+                lock,
+                frozen,
+                json,
+            } => match manager {
+'''
+    export_dispatch = '''            EnvCmd::Export {
+                manager: EnvironmentManagerArg::Mise,
+                plan,
+                output,
+                check,
+                write,
+                json,
+            } => {
+                if check && write {
+                    anyhow::bail!("the arguments '--check' and '--write' cannot be used together");
+                }
+                let mode = if check {
+                    MiseExportMode::Check
+                } else if write {
+                    MiseExportMode::Write
+                } else {
+                    MiseExportMode::Print
+                };
+                let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
+                mise_export::print_export(&exported, json)
+            }
+            EnvCmd::Export {
+                manager: EnvironmentManagerArg::Asdf,
+                ..
+            } => anyhow::bail!(
+                "asdf export is not implemented; use `zed env export mise`"
+            ),
+''' + verify_anchor
+    count = text.count(verify_anchor)
+    if count != 1:
+        raise SystemExit(f"current-main export dispatcher: expected one anchor, found {count}")
+    main.write_text(text.replace(verify_anchor, export_dispatch, 1), encoding="utf-8")
+else:
+    replace_once(
+        main,
+        '''            } => {
                 let mode = if check {
 ''',
-    '''            } => {
+        '''            } => {
                 if check && write {
                     anyhow::bail!("the arguments '--check' and '--write' cannot be used together");
                 }
                 let mode = if check {
 ''',
-    "runtime export mode conflict",
-)
+        "runtime export mode conflict",
+    )
