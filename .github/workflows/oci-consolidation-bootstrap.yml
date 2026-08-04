@@ -1,6 +1,6 @@
 name: validate consolidated OCI interop once
 
-# Validate on the latest main containing Nix bundle and complete mise.lock contracts.
+# Rerun after moving all Nix export fixtures to the shared Zed archive root.
 on:
   push:
     branches:
@@ -96,9 +96,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked --test nix_bundle_write_boundaries
-          cargo test --locked --lib nix_export_bundle
+          cargo test --locked --test nix_export_bundle
           grep -F 'use zed_interfaces::paths::ARCHIVE_ROOT;' src/nix_export_bundle/archive.rs
           grep -F 'nix_string(ARCHIVE_ROOT)' src/nix_export_bundle/templates.rs
+          grep -F 'format!("{ARCHIVE_ROOT}/{path}")' tests/nix_export_bundle/common.rs
+          if git grep -n 'package/' -- tests/nix_export_bundle; then
+            echo 'Nix export fixture still hardcodes the retired archive root' >&2
+            exit 1
+          fi
 
       - name: Format and run the full Rust validation surface
         run: |
@@ -125,7 +130,7 @@ jobs:
           mapfile -t changed < <(git status --short | sed -E 's/^.. //')
           for path in "${changed[@]}"; do
             case "$path" in
-              Cargo.lock|src/cli_oci.rs|src/oci_command.rs|src/oci.rs|src/oci_layout.rs|src/oci_push.rs|src/main.rs|src/lib.rs|src/completion.rs|src/nix_export_bundle/archive.rs|src/nix_export_bundle/templates.rs|.github/workflows/*.yml|.github/workflows/*.yaml)
+              Cargo.lock|src/cli_oci.rs|src/oci_command.rs|src/oci.rs|src/oci_layout.rs|src/oci_push.rs|src/main.rs|src/lib.rs|src/completion.rs|src/nix_export_bundle/archive.rs|src/nix_export_bundle/templates.rs|tests/nix_export_bundle/common.rs|.github/workflows/*.yml|.github/workflows/*.yaml)
                 ;;
               *)
                 echo "validation changed an unexpected path: $path" >&2
