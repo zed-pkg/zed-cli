@@ -1063,6 +1063,52 @@ version = 1
     assert_eq!(fs::read(&lock_path).unwrap(), original);
 }
 
+fn locked_version_metadata(locked: &LockedPackage) -> VersionMetadata {
+    VersionMetadata {
+        org: locked.org.clone(),
+        name: locked.name.clone(),
+        version: locked.version.clone(),
+        sha256: locked.sha256.clone(),
+        size: locked.size,
+        format: locked.format,
+        vcs_tag: locked.vcs_tag.clone(),
+        vcs_commit: locked.vcs_commit.clone(),
+        // Never consumed while the store or verified cache owns the
+        // bytes. If local verification fails, ensure_artifact falls
+        // back to the configured registry and reports that failure.
+        download_url: String::new(),
+        published_at: "1970-01-01T00:00:00Z".to_string(),
+        yanked: false,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn frozen_local_metadata_preserves_lock_identity_and_provenance() {
+    let locked = LockedPackage {
+        org: "acme".to_string(),
+        name: "tool".to_string(),
+        version: "1.2.3".to_string(),
+        sha256: "a".repeat(64),
+        size: 42,
+        format: zed_interfaces::artifact::ArtifactFormat::TarGz,
+        vcs_tag: "v1.2.3".to_string(),
+        vcs_commit: Some("b".repeat(40)),
+        source: "https://registry.invalid".to_string(),
+    };
+    let metadata = locked_version_metadata(&locked);
+    assert_eq!(metadata.org, locked.org);
+    assert_eq!(metadata.name, locked.name);
+    assert_eq!(metadata.version, locked.version);
+    assert_eq!(metadata.sha256, locked.sha256);
+    assert_eq!(metadata.size, locked.size);
+    assert_eq!(metadata.format, locked.format);
+    assert_eq!(metadata.vcs_tag, locked.vcs_tag);
+    assert_eq!(metadata.vcs_commit, locked.vcs_commit);
+    assert!(metadata.download_url.is_empty());
+    assert!(!metadata.yanked);
+}
+
 /// Install body, called with the store lock already held. Split out so the
 /// build-hook path can install `[build-dependencies]` into a staging dir
 /// under the same lock without deadlocking on a re-acquire.
@@ -1130,16 +1176,25 @@ fn install_locked(
                 );
             }
             require_sha256(&locked.sha256)?;
-            let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
-            if vm.sha256 != locked.sha256 {
-                bail!(
-                    "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
-                    locked.full_name(),
-                    locked.version,
-                    locked.sha256,
-                    vm.sha256
-                );
-            }
+            let vm = if store.has(&locked.sha256) || store.cached_artifact(&locked.sha256).is_file()
+            {
+                // The lock already carries every immutable field needed
+                // to authenticate locally cached bytes. Avoid turning an
+                // exact frozen replay into a registry availability check.
+                locked_version_metadata(locked)
+            } else {
+                let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
+                if vm.sha256 != locked.sha256 {
+                    bail!(
+                        "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
+                        locked.full_name(),
+                        locked.version,
+                        locked.sha256,
+                        vm.sha256
+                    );
+                }
+                vm
+            };
             validate_version_metadata(&vm)?;
             resolved.insert(locked.full_name(), vm);
         }
