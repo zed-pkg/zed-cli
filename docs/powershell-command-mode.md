@@ -35,4 +35,8 @@ The Windows regression suite creates current-user profile files under a temporar
 
 Using project ownership rather than textual path equality is intentional on Windows: equivalent paths may be rendered with normal drive-letter syntax or the Win32 verbatim `\\?\` prefix. The security assertion concerns the selected project and profile behavior, not one display spelling of the same directory.
 
+## Exact-head validation ownership
+
+The source correction, shared shell matrices, native Windows canary, and this trust-boundary note are reviewed as one immutable CLI candidate. The independent `zed-pkg/zed-e2e` contract pins that exact commit; it does not follow the branch or assume that a later `main` still represents the reviewed candidate. A candidate change requires a new explicit pin and a complete Windows replay.
+
 The companion independent acceptance is tracked by [DEN-1614](https://linear.app/denman/issue/DEN-1614/zed-e2e-add-windows-clean-room-certification-for-zed-develop). The implementation correction is tracked by [DEN-1616](https://linear.app/denman/issue/DEN-1616/zed-cli-suppress-powershell-profiles-in-zed-develop-command-mode).
