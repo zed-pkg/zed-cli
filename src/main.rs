@@ -88,6 +88,7 @@ fn main() {
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
+    let git_submodules = cli.globals.git_submodules;
     let cwd = std::env::current_dir()?;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Every live project transaction already owns this kernel-backed
@@ -109,7 +110,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_build,
             target,
             allow_no_manifest,
-            git_submodules,
             allow_ecosystem_mismatch,
         } => {
             if git_submodules {

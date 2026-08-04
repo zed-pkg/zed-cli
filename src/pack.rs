@@ -489,7 +489,12 @@ adapter = "node"
         assert_eq!(repository.manifest.package.name, "clients");
         assert!(!repository.manifest.is_polyglot());
         assert_eq!(
-            repository.packed.path.file_name().unwrap().to_string_lossy(),
+            repository
+                .packed
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
             "acme-clients-1.2.3.tar.gz"
         );
 
