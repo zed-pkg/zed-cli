@@ -124,7 +124,7 @@ pub fn install(
                 adapter,
                 allow_build,
                 target,
-                allow_ecystem_mismatch,
+                allow_ecosystem_mismatch,
             )
         })?
     };
