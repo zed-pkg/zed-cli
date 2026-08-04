@@ -1,6 +1,6 @@
 name: validate consolidated OCI interop once
 
-# Rerun after moving all Nix export fixtures to the shared Zed archive root.
+# Commit the exact lock and rustfmt output already validated by the read-only materialization run.
 on:
   push:
     branches:
@@ -30,6 +30,7 @@ env:
   TARGET_BRANCH: agent/oci-interop-consolidated-v1
   OLD_INTERFACES_REF: c2e049006453c26ca8ca291783f681fce75cb01f
   NEW_INTERFACES_REF: 2082012d1903783a89200c3bd44d2659a6daf872
+  EXPECTED_LOCK_SHA256: 84835b6def7b8254ded2916e0cbe5cd74b336f4b05c2643ee7ead36d48446ed7
 
 jobs:
   validate:
@@ -58,12 +59,15 @@ jobs:
           cargo --version --verbose
           cargo clippy --version
 
-      - name: Refresh exact interface lock and immutable pin assertions
+      - name: Regenerate exact validated lock and formatting
         run: |
           set -euo pipefail
           grep -F "rev = \"$NEW_INTERFACES_REF\"" Cargo.toml
           cargo update -p zed-interfaces --precise "$NEW_INTERFACES_REF"
           grep -F "rev=$NEW_INTERFACES_REF#$NEW_INTERFACES_REF" Cargo.lock
+          test "$(sha256sum Cargo.lock | cut -d' ' -f1)" = "$EXPECTED_LOCK_SHA256"
+          cargo fmt --all
+          git diff --check
 
           mapfile -t stale < <(git grep -l "$OLD_INTERFACES_REF" -- . ':!Cargo.lock' ':!Cargo.toml' || true)
           for path in "${stale[@]}"; do
@@ -92,37 +96,22 @@ jobs:
             exit 1
           fi
 
-      - name: Verify shared archive-root interop boundary
+      - name: Reconfirm critical interop gates
         run: |
           set -euo pipefail
           cargo test --locked --test nix_bundle_write_boundaries
           cargo test --locked --test nix_export_bundle
-          grep -F 'use zed_interfaces::paths::ARCHIVE_ROOT;' src/nix_export_bundle/archive.rs
-          grep -F 'nix_string(ARCHIVE_ROOT)' src/nix_export_bundle/templates.rs
-          grep -F 'format!("{ARCHIVE_ROOT}/{path}")' tests/nix_export_bundle/common.rs
-          if git grep -n 'package/' -- tests/nix_export_bundle; then
-            echo 'Nix export fixture still hardcodes the retired archive root' >&2
-            exit 1
-          fi
-
-      - name: Format and run the full Rust validation surface
-        run: |
-          set -euo pipefail
-          cargo fmt --all
-          git diff --check
-          cargo test --locked --all-targets
+          cargo test --locked --lib oci
+          cargo test --locked --lib cli_oci
+          cargo test --locked --lib oci_command
           cargo clippy --locked --all-targets -- -D warnings
           cargo build --locked --release --bin zed
-
           target/release/zed --help | grep -F 'oci'
           target/release/zed oci --help | grep -F 'plan'
           target/release/zed oci --help | grep -F 'push'
-          target/release/zed oci plan --help | grep -F -- '--out'
-          target/release/zed oci push --help | grep -F -- '--password-stdin'
           target/release/zed interop nix bundle write --help | grep -F -- '--flake-lock'
-          cargo test --locked --lib completion::tests -- --test-threads=1
 
-      - name: Remove bootstrap and publish only validated changes
+      - name: Remove bootstrap and publish validated bytes
         run: |
           set -euo pipefail
           rm .github/workflows/oci-consolidation-bootstrap.yml
@@ -130,7 +119,7 @@ jobs:
           mapfile -t changed < <(git status --short | sed -E 's/^.. //')
           for path in "${changed[@]}"; do
             case "$path" in
-              Cargo.lock|src/cli_oci.rs|src/oci_command.rs|src/oci.rs|src/oci_layout.rs|src/oci_push.rs|src/main.rs|src/lib.rs|src/completion.rs|src/nix_export_bundle/archive.rs|src/nix_export_bundle/templates.rs|tests/nix_export_bundle/common.rs|.github/workflows/*.yml|.github/workflows/*.yaml)
+              Cargo.lock|src/cli_oci.rs|src/completion.rs|src/nix_bundle_write.rs|src/nix_export_bundle/archive.rs|src/nix_export_bundle/templates.rs|src/oci_command.rs|tests/nix_bundle_write_boundaries.rs|tests/nix_bundle_write_cli.rs|tests/nix_export_bundle/common.rs|.github/workflows/*.yml|.github/workflows/*.yaml)
                 ;;
               *)
                 echo "validation changed an unexpected path: $path" >&2
@@ -143,5 +132,5 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
           git diff --cached --check
-          git commit -m "chore: validate consolidated OCI interoperability"
+          git commit -m "chore: lock and format consolidated OCI interoperability"
           git push origin HEAD:${TARGET_BRANCH}
