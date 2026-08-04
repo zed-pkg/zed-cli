@@ -85,3 +85,6 @@ jobs:
         run: |
           set -euo pipefail
           cargo clippy --locked --bin zed --bin zed-asdf --test asdf_environment_cli --test asdf_main_cli -- -D warnings
+
+      - name: Prove import and verification did not mutate the checkout
+        run: git diff --exit-code
