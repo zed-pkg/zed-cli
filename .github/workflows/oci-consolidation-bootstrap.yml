@@ -32,7 +32,7 @@ env:
 jobs:
   publish:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Check out exact candidate with branch credentials
