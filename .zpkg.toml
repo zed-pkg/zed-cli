@@ -11,6 +11,9 @@ language = "rust"
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
 
+[dependencies]
+"zed-pkg/zed-interfaces" = "^0.1.0"
+
 [build]
 command = "cargo build --release --locked"
 outputs = ["target/release/zed"]
@@ -33,10 +36,6 @@ exclude = [
   "**/*.log",
   ".DS_Store",
 ]
-
-[publish.native]
-registry = "crates-io"
-package = "zed-cli"
 
 [install]
 adapter = "none"
