@@ -77,12 +77,8 @@ pub(super) fn render_package(plan: &NixExportPlan, plan_sha256: &str) -> String 
     .expect("writing to String cannot fail");
     writeln!(&mut out, "  src = ./artifacts/{};", plan.source.file_name)
         .expect("writing to String cannot fail");
-    writeln!(
-        &mut out,
-        "  sourceRoot = {};",
-        nix_string(ARCHIVE_ROOT)
-    )
-    .expect("writing to String cannot fail");
+    writeln!(&mut out, "  sourceRoot = {};", nix_string(ARCHIVE_ROOT))
+        .expect("writing to String cannot fail");
     out.push_str("  outputs = [ \"out\" ];\n");
     out.push_str("  strictDeps = true;\n");
     out.push_str("  dontConfigure = true;\n");

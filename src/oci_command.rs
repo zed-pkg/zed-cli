@@ -311,13 +311,23 @@ mod tests {
             .get_subcommands()
             .find(|command| command.get_name() == "oci")
             .expect("OCI command must be present");
-        assert!(oci.get_subcommands().any(|command| command.get_name() == "plan"));
-        assert!(oci.get_subcommands().any(|command| command.get_name() == "push"));
+        assert!(
+            oci.get_subcommands()
+                .any(|command| command.get_name() == "plan")
+        );
+        assert!(
+            oci.get_subcommands()
+                .any(|command| command.get_name() == "push")
+        );
         let interop = command
             .get_subcommands()
             .find(|command| command.get_name() == "interop")
             .expect("Nix interop command must remain present");
-        assert!(interop.get_subcommands().any(|command| command.get_name() == "nix"));
+        assert!(
+            interop
+                .get_subcommands()
+                .any(|command| command.get_name() == "nix")
+        );
     }
 
     #[test]

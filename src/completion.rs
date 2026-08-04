@@ -5,9 +5,7 @@ use std::io;
 use clap_complete::{Shell, generate};
 
 use crate::cli_model;
-use crate::{
-    dev, fetch, git_submodules, nix_bundle_write, nix_export_plan, oci_command,
-};
+use crate::{dev, fetch, git_submodules, nix_bundle_write, nix_export_plan, oci_command};
 
 fn root_command() -> clap::Command {
     oci_command::augment_root_command(git_submodules::augment_root_command(

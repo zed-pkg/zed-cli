@@ -43,9 +43,7 @@ pub(super) fn inspect_artifact(bytes: &[u8]) -> Result<BTreeMap<String, ArchiveF
         let entry_type = entry.header().entry_type();
         if entry_type.is_dir() {
             if path != ARCHIVE_ROOT && !path.starts_with(&root_prefix) {
-                bail!(
-                    "Zed artifact directory `{path}` is outside canonical `{ARCHIVE_ROOT}/`"
-                );
+                bail!("Zed artifact directory `{path}` is outside canonical `{ARCHIVE_ROOT}/`");
             }
             continue;
         }
