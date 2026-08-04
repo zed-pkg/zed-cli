@@ -1,0 +1,112 @@
+name: materialize global package profiles on current main
+
+on:
+  push:
+    branches:
+      - agent/global-zed-packages-post-env-exports
+    paths:
+      - .github/workflows/materialize-global-zed-packages-current-main.yml
+      - .github/global-zed-packages-trigger
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/materialize-global-zed-packages-current-main.yml
+      - .github/global-zed-packages-trigger
+
+permissions:
+  contents: read
+
+concurrency:
+  group: materialize-global-zed-packages-current-main
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Check out current-main successor branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/global-zed-packages-post-env-exports
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Materialize reviewed global-profile product files
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin agent/global-zed-packages-final
+          source_ref=origin/agent/global-zed-packages-final
+          for path in \
+            .github/workflows/global-packages.yml \
+            .zpkg.lock \
+            .zpkg.toml \
+            docs/global-packages.md \
+            src/completion.rs \
+            src/global.rs \
+            src/install_graph/resolver.rs \
+            src/lib.rs \
+            src/main.rs \
+            src/ops.rs \
+            tests/frozen_offline_prefetch.rs \
+            tests/global_cli.rs; do
+            mkdir -p "$(dirname "$path")"
+            git show "$source_ref:$path" > "$path"
+          done
+          git diff --check
+
+      - name: Validate product and newly merged environment routes together
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --test frozen_offline_prefetch
+          cargo test --locked --lib global::tests
+          cargo test --locked --test global_cli
+          cargo test --locked --test asdf_main_cli
+          cargo test --locked --test nix_environment_export_cli
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo build --release --locked --bin zed
+
+      - name: Commit validated ordinary product files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            .github/workflows/global-packages.yml \
+            .zpkg.lock \
+            .zpkg.toml \
+            docs/global-packages.md \
+            src/completion.rs \
+            src/global.rs \
+            src/install_graph/resolver.rs \
+            src/lib.rs \
+            src/main.rs \
+            src/ops.rs \
+            tests/frozen_offline_prefetch.rs \
+            tests/global_cli.rs
+          git diff --cached --check
+          git commit -m 'feat: compose hardened global package profiles on current main'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/global-zed-packages-post-env-exports
