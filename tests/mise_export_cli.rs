@@ -53,6 +53,9 @@ fn run_zed(project: &Path, home: &Path, args: &[&str]) -> Output {
         .env_remove("ZED_PKG_ENV_PLAN")
         .env_remove("ZED_PKG_ENV_OUTPUT")
         .env_remove("ZED_PKG_ENV_JSON")
+        .env_remove("ZED_PKG_ENV_CHECK")
+        .env_remove("ZED_PKG_ENV_WRITE")
+        .env_remove("ZED_PKG_UPDATE_CHECK")
         .output()
         .unwrap()
 }
