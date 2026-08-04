@@ -16,6 +16,7 @@ mod archive;
 mod inventory;
 mod lock;
 mod paths;
+pub mod persist;
 mod templates;
 
 use archive::{inspect_artifact, verify_planned_bins};
@@ -23,6 +24,10 @@ use inventory::{bundle_sha256, canonical_json_bytes, insert_bundle_file, invento
 use lock::validate_flake_lock;
 use paths::{validate_bundle_path, validate_renderable_plan};
 use templates::{render_flake, render_package, render_readme};
+
+pub use persist::{
+    PersistNixExportBundleOutcome, persist_nix_export_bundle, verify_persisted_bundle,
+};
 
 pub const NIX_FLAKE_BUNDLE_SCHEMA_V1: &str = "zed.nix-flake-bundle/v1";
 

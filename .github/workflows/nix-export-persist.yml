@@ -1,0 +1,87 @@
+name: nix-export-persist
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/nix-export-persist.yml"
+      - "src/nix_export_bundle/mod.rs"
+      - "src/nix_export_bundle/persist.rs"
+      - "tests/nix_export_persist.rs"
+      - "docs/nix-export-persistence.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nix-export-persist.yml"
+      - "src/nix_export_bundle/mod.rs"
+      - "src/nix_export_bundle/persist.rs"
+      - "tests/nix_export_persist.rs"
+      - "docs/nix-export-persistence.md"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-export-persist-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  persist:
+    name: Atomic persistence on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Verify formatting and strict warnings
+        run: |
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Run atomic persistence contract
+        run: cargo test --locked --test nix_export_persist -- --nocapture --test-threads=1
+
+      - name: Prove workflow and persistence boundary stay credential-free
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          workflow = Path('.github/workflows/nix-export-persist.yml').read_text()
+          persistence = Path('src/nix_export_bundle/persist.rs').read_text()
+          assert 'permissions:\n  contents: read' in workflow
+          assert 'persist-credentials: false' in workflow
+          assert 'ubuntu-24.04' in workflow and 'macos-15' in workflow
+          action_pattern = r'^\s*' + 'uses' + r':\s*([^\s]+)$'
+          for match in re.finditer(action_pattern, workflow, re.MULTILINE):
+              assert re.search(r'@[0-9a-f]{40}$', match.group(1)), match.group(1)
+          for forbidden in (
+              'contents' + ': write',
+              'pull_request' + '_target:',
+              'git' + ' push',
+              'ZED_PKG' + '_TOKEN',
+              'CACHIX' + '_AUTH_TOKEN',
+              'ATTIC' + '_TOKEN',
+              'Command' + '::new',
+              'reqwest' + '::',
+          ):
+              assert forbidden not in workflow + '\n' + persistence, forbidden
+          PY
