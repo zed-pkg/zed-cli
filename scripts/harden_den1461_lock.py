@@ -5,12 +5,12 @@ from pathlib import Path
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
-    if new in text:
-        return text
     count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"{label}: expected one anchor, found {count}")
-    return text.replace(old, new, 1)
+    if count == 1:
+        return text.replace(old, new, 1)
+    if count == 0 and new in text:
+        return text
+    raise SystemExit(f"{label}: expected one old anchor or an applied replacement, found {count}")
 
 
 source = Path("src/mise_lock.rs")
