@@ -1,3 +1,6 @@
+# This second commit intentionally triggers the push workflow after the file
+# already exists on the branch; the workflow removes itself after arming the
+# reviewed ordinary-source materializer.
 name: arm stacked asdf main-CLI materializer
 
 on:
