@@ -1,6 +1,6 @@
 name: validate consolidated OCI interop once
 
-# Rerun after aligning Nix bundle validation with the shared Zed archive root.
+# Validate on the latest main containing Nix bundle and complete mise.lock contracts.
 on:
   push:
     branches:
