@@ -181,7 +181,7 @@ jobs:
               "            end -= 1;",
               "        }",
               "        value.truncate(end);",
-              "        value.push_str(\"…\");",
+              "        value.push('…');",
               "    }",
           ]
 
