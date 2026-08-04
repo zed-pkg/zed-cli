@@ -1,0 +1,196 @@
+use std::ffi::OsString;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use clap::Parser;
+use zed_interfaces::artifact::ArtifactFormat;
+use zed_interfaces::lockfile::Lockfile;
+use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
+
+use crate::config::{Config, read_manifest};
+
+use super::cli::{OvertakeArgs, OvertakeCli, OvertakeCommand, Route, route};
+use super::lock::{GitSubmoduleLock, read_lock_extensions, write_lock_extensions};
+use super::*;
+
+fn git(project: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Zed Test")
+        .env("GIT_AUTHOR_EMAIL", "zed@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Zed Test")
+        .env("GIT_COMMITTER_EMAIL", "zed@example.invalid")
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {:?} failed", args);
+}
+
+fn write_package(project: &Path, org: &str, name: &str, repository: &str) {
+    fs::write(
+        project.join(MANIFEST_FILE),
+        format!(
+            r#"[package]
+org = "{org}"
+name = "{name}"
+version = "1.2.3"
+
+[package.repository]
+vcs = "git"
+url = "{repository}"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn route_recognizes_overtake_and_help_with_global_options() {
+    let words = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
+    assert_eq!(
+        route(&words(&["zed", "overtake", "--git-submodules"])),
+        Route::Overtake
+    );
+    assert!(matches!(
+        route(&words(&[
+            "zed",
+            "--home",
+            "/tmp/zed-home",
+            "help",
+            "overtake"
+        ])),
+        Route::OvertakeHelp { .. }
+    ));
+}
+
+#[test]
+fn boolish_overtake_flag_supports_bare_and_explicit_off() {
+    let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        OvertakeCommand::Overtake(OvertakeArgs {
+            git_submodules: true
+        })
+    ));
+    let cli =
+        OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
+    assert!(matches!(
+        cli.command,
+        OvertakeCommand::Overtake(OvertakeArgs {
+            git_submodules: false
+        })
+    ));
+}
+
+#[test]
+fn additive_lock_tables_remain_readable_by_canonical_parser() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(LOCKFILE_FILE), "version = 1\n").unwrap();
+    let entry = GitSubmoduleLock {
+        name: "client".to_string(),
+        path: "vendor/client".to_string(),
+        package: "acme/client".to_string(),
+        version: "1.2.3".to_string(),
+        url: "https://example.invalid/acme/client.git".to_string(),
+        commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+        sha256: "1".repeat(64),
+        size: 10,
+        format: ArtifactFormat::TarGz,
+        branch: None,
+    };
+    write_lock_extensions(dir.path(), std::slice::from_ref(&entry)).unwrap();
+    let text = fs::read_to_string(dir.path().join(LOCKFILE_FILE)).unwrap();
+    assert!(text.contains("[[git-submodule]]"));
+    Lockfile::parse(&text).unwrap();
+    assert_eq!(read_lock_extensions(dir.path()).unwrap(), [entry]);
+}
+
+#[test]
+fn empty_extension_refresh_preserves_standard_lock_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = b"# keep formatting\nversion = 1\n";
+    fs::write(dir.path().join(LOCKFILE_FILE), original).unwrap();
+    write_lock_extensions(dir.path(), &[]).unwrap();
+    assert_eq!(fs::read(dir.path().join(LOCKFILE_FILE)).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn overtake_imports_manifest_workspace_and_git_lock() {
+    let child = tempfile::tempdir().unwrap();
+    git(child.path(), &["init"]);
+    write_package(
+        child.path(),
+        "acme",
+        "client",
+        "https://example.invalid/acme/client.git",
+    );
+    fs::write(child.path().join("lib.txt"), "hello\n").unwrap();
+    git(child.path(), &["add", "."]);
+    git(child.path(), &["commit", "-m", "child"]);
+
+    let root = tempfile::tempdir().unwrap();
+    git(root.path(), &["init"]);
+    git(root.path(), &["config", "protocol.file.allow", "always"]);
+    write_package(
+        root.path(),
+        "acme",
+        "root",
+        "https://example.invalid/acme/root.git",
+    );
+    let child_url = child.path().to_str().unwrap();
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(root.path())
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            child_url,
+            "vendor/client",
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    git(root.path(), &["add", "."]);
+    git(root.path(), &["commit", "-m", "root"]);
+    git(
+        root.path(),
+        &["submodule", "deinit", "--force", "--", "vendor/client"],
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let cfg = Config {
+        registry: "file:///unused".to_string(),
+        home: home.path().to_path_buf(),
+        token: None,
+        auth_url: "http://127.0.0.1/unused".to_string(),
+        supabase_url: None,
+        supabase_key: None,
+        interactive: false,
+    };
+    let report = overtake(root.path(), &cfg).unwrap();
+    assert_eq!(report.adopted, 1);
+
+    let manifest = read_manifest(root.path()).unwrap();
+    assert_eq!(
+        manifest.dependencies.get("acme/client").map(String::as_str),
+        Some("=1.2.3")
+    );
+    assert!(
+        manifest
+            .workspace
+            .as_ref()
+            .unwrap()
+            .members
+            .contains(&"vendor/client".to_string())
+    );
+    let entries = read_lock_extensions(root.path()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].package, "acme/client");
+    assert!(root.path().join("zed_modules/acme/client/lib.txt").exists());
+}
