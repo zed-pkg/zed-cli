@@ -1,0 +1,84 @@
+name: Global executable package profiles
+
+on:
+  pull_request:
+    paths:
+      - .zpkg.toml
+      - .zpkg.lock
+      - docs/global-packages.md
+      - src/global.rs
+      - src/lib.rs
+      - src/main.rs
+      - src/completion.rs
+      - tests/global_cli.rs
+      - .github/workflows/global-packages.yml
+  push:
+    branches: [main]
+    paths:
+      - .zpkg.toml
+      - .zpkg.lock
+      - docs/global-packages.md
+      - src/global.rs
+      - src/lib.rs
+      - src/main.rs
+      - src/completion.rs
+      - tests/global_cli.rs
+      - .github/workflows/global-packages.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: global-packages-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  certify:
+    name: Global profiles (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Verify formatting and global profile tests
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo test --locked --lib global::tests
+          cargo test --locked --test global_cli
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Build and invoke the packaged command
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin zed
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./target/release/zed.exe --version
+          else
+            ./target/release/zed --version
+          fi
+
+      - name: Run the complete repository suite on Linux
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          cargo test --all-targets --all-features --locked
