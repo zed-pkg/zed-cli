@@ -5,6 +5,11 @@
 //! selections only to the root consumer manifest, so the established installer
 //! writes the lockfile, adapters, and materialization from that one graph rather
 //! than independently making greedy choices. Frozen replay remains lock-driven.
+//!
+//! Adopted Git submodules are verified before mutation and recorded through an
+//! additive lock extension after the ordinary install transaction. Older lock
+//! readers ignore that extension; this facade keeps it exact across install,
+//! add, remove, and frozen replay.
 
 use std::path::Path;
 
@@ -30,11 +35,15 @@ pub(crate) use implementation::{
 pub(crate) use implementation::legacy_ensure_artifact_for_test;
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
-    crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))
+    crate::git_submodules::preflight_mutation(project)?;
+    crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))?;
+    crate::git_submodules::refresh_lock_extensions(project)
 }
 
 pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
-    crate::config::with_install_prefetch(cfg, || implementation::remove(project, cfg, spec))
+    crate::git_submodules::preflight_mutation(project)?;
+    crate::config::with_install_prefetch(cfg, || implementation::remove(project, cfg, spec))?;
+    crate::git_submodules::refresh_lock_extensions(project)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -48,9 +57,10 @@ pub fn install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
-    if frozen {
+    let git_lock = crate::git_submodules::prepare_install(project, frozen)?;
+    let outcome = if frozen {
         crate::install_graph::prefetch(project, cfg, true)?;
-        return implementation::install(
+        implementation::install(
             project,
             cfg,
             true,
@@ -59,22 +69,24 @@ pub fn install(
             allow_build,
             target,
             allow_ecosystem_mismatch,
-        );
-    }
-
-    let prepared = crate::install_graph::prepare(project, cfg)?;
-    config::with_resolved_requirements(project, prepared.exact_requirements(), || {
-        implementation::install(
-            project,
-            cfg,
-            false,
-            mode,
-            adapter,
-            allow_build,
-            target,
-            allow_ecosystem_mismatch,
-        )
-    })
+        )?
+    } else {
+        let prepared = crate::install_graph::prepare(project, cfg)?;
+        config::with_resolved_requirements(project, prepared.exact_requirements(), || {
+            implementation::install(
+                project,
+                cfg,
+                false,
+                mode,
+                adapter,
+                allow_build,
+                target,
+                allow_ecosystem_mismatch,
+            )
+        })?
+    };
+    git_lock.finish(project)?;
+    Ok(outcome)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -87,8 +99,9 @@ pub(crate) fn install_frozen_lock_only(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    let git_lock = crate::git_submodules::prepare_install(project, true)?;
     crate::install_graph::prefetch(project, cfg, true)?;
-    implementation::install_frozen_lock_only(
+    let outcome = implementation::install_frozen_lock_only(
         project,
         cfg,
         mode,
@@ -96,5 +109,7 @@ pub(crate) fn install_frozen_lock_only(
         allow_build,
         target,
         allow_ecosystem_mismatch,
-    )
+    )?;
+    git_lock.finish(project)?;
+    Ok(outcome)
 }
