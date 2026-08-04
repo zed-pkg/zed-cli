@@ -5,12 +5,12 @@ use std::io;
 use clap_complete::{Shell, generate};
 
 use crate::cli_model;
-use crate::{dev, fetch, nix_export_plan};
+use crate::{dev, fetch, git_submodules, nix_export_plan};
 
 fn root_command() -> clap::Command {
-    nix_export_plan::augment_root_command(fetch::augment_root_command(dev::augment_root_command(
-        cli_model::command(),
-    )))
+    git_submodules::augment_root_command(nix_export_plan::augment_root_command(
+        fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
+    ))
 }
 
 /// Write a static completion script for `zed` to stdout.
@@ -54,6 +54,7 @@ mod tests {
             "export",
             "develop",
             "dev",
+            "overtake",
             "completions",
             "self-update",
             "r2g",
@@ -64,6 +65,7 @@ mod tests {
             "--do-not-write-new-manifest",
             "--allow-no-manifest",
             "--skip-manifest",
+            "--git-submodules",
             "--install-mode",
             "--frozen",
             "--json",
@@ -94,6 +96,7 @@ mod tests {
             "export",
             "develop",
             "dev",
+            "overtake",
             "completions",
             "self-update",
             "r2g",
@@ -104,6 +107,7 @@ mod tests {
             "--do-not-write-new-manifest",
             "--allow-no-manifest",
             "--skip-manifest",
+            "--git-submodules",
             "--install-mode",
             "--frozen",
             "--json",
