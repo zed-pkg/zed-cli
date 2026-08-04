@@ -204,6 +204,20 @@ pub enum Cmd {
             env = "ZED_PKG_ALLOW_NO_MANIFEST"
         )]
         allow_no_manifest: bool,
+        /// Synchronize and initialize Git submodules recursively before Zed
+        /// resolves the package graph. Bare means true; use
+        /// `--git-submodules=false` to override an enabled environment value.
+        #[arg(
+            long,
+            env = "ZED_PKG_GIT_SUBMODULES",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
+        )]
+        git_submodules: bool,
         /// Install single-language packages whose ecosystem this project does
         /// not have (e.g. a -java client into a Node project). Off by default:
         /// the wrong-language package is invisible to the toolchain, so the
@@ -614,6 +628,38 @@ mod tests {
                 other => panic!("unexpected command: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn install_git_submodule_switch_is_boolish_and_does_not_consume_specs() {
+        let cli = Cli::try_parse_from(["zed", "install", "--git-submodules", "acme/http-kit@^1"])
+            .unwrap();
+        match cli.cmd {
+            Cmd::Install {
+                specs,
+                git_submodules,
+                ..
+            } => {
+                assert!(git_submodules);
+                assert_eq!(specs, ["acme/http-kit@^1"]);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "zed",
+            "install",
+            "--git-submodules=false",
+            "acme/http-kit@^1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Install {
+                git_submodules: false,
+                ..
+            }
+        ));
     }
 
     #[test]

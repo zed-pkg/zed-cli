@@ -6,6 +6,7 @@ use zed_cli::config::Config;
 use zed_cli::dev;
 use zed_cli::environment;
 use zed_cli::fetch;
+use zed_cli::git_submodules as submodules;
 use zed_cli::managed_install;
 use zed_cli::nix_export_plan;
 use zed_cli::ops;
@@ -21,6 +22,16 @@ fn main() {
     if let Err(error) = zed_cli::flags::normalize_global_boolean_environment(&args) {
         eprintln!("error: {error:#}");
         std::process::exit(2);
+    }
+    if let Some(result) = submodules::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
     if let Some(result) = nix_export_plan::dispatch(args.clone()) {
         match result {
@@ -87,20 +98,26 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_build,
             target,
             allow_no_manifest,
+            git_submodules,
             allow_ecosystem_mismatch,
-        } => managed_install::install(
-            &cwd,
-            &cfg,
-            &specs,
-            frozen,
-            install_mode,
-            adapter,
-            allow_build,
-            target.as_deref(),
-            allow_no_manifest,
-            allow_ecosystem_mismatch,
-        )
-        .map(|_| ()),
+        } => {
+            if git_submodules {
+                submodules::sync(&cwd)?;
+            }
+            managed_install::install(
+                &cwd,
+                &cfg,
+                &specs,
+                frozen,
+                install_mode,
+                adapter,
+                allow_build,
+                target.as_deref(),
+                allow_no_manifest,
+                allow_ecosystem_mismatch,
+            )
+            .map(|_| ())
+        }
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
         Cmd::Env { cmd } => match cmd {
             EnvCmd::Import {
