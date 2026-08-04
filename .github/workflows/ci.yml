@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - agent/windows-develop-shell-edge-cfg
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/ci.yml
+      - tests/develop_shell_edge_cases.rs
 
 permissions:
   contents: write
@@ -126,6 +132,7 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
 
   commit:
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/windows-develop-shell-edge-cfg')
     needs: [windows, unix]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
