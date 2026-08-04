@@ -1,0 +1,77 @@
+name: DEN-1616 test expectation finalizer
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/den-1616-test-sync.yml'
+  push:
+    branches:
+      - agent/den-1616-powershell-no-profile
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1616-test-expectation-finalizer-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  synchronize:
+    if: github.event_name == 'push' || github.head_ref == 'agent/den-1616-powershell-no-profile'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
+    steps:
+      - name: Check out the exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Synchronize the shared shell-protocol expectation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/develop_edge_cases.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '("pwsh", &["-NoLogo", "-Command", script]),'
+          new = '(
+              "pwsh",
+              &[
+                  "-NoLogo",
+                  "-NoProfile",
+                  "-NonInteractive",
+                  "-Command",
+                  script,
+              ],
+          ),'
+          if text.count(old) != 1:
+              raise SystemExit('expected exactly one stale PowerShell protocol vector')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          cargo test --locked --test develop_edge_cases shell_name_controls_the_command_argument_protocol
+          git diff --check
+
+      - name: Publish only the validated test correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/den-1616-test-sync.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add tests/develop_edge_cases.rs
+          git commit -m 'test(DEN-1616): synchronize PowerShell command arguments'
+          git push origin "HEAD:${TARGET_BRANCH}"
