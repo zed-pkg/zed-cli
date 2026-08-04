@@ -1,0 +1,45 @@
+[package]
+org = "zed-pkg"
+name = "zed-cli"
+version = "0.1.0"
+description = "The zed universal package-manager CLI"
+license = "MIT"
+keywords = ["package-manager", "cli", "polyglot", "vcs", "global-tools"]
+language = "rust"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-cli"
+
+[build]
+command = "cargo build --release --locked"
+outputs = ["target/release/zed"]
+
+[bin]
+zed = "target/release/zed"
+
+[publish]
+include_readme = true
+tag_format = "v{version}"
+smoke_test = "test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version"
+exclude = [
+  ".env",
+  ".env.*",
+  ".direnv/**",
+  ".zed/**",
+  ".zed-pack/**",
+  "target/**",
+  "tmp/**",
+  "**/*.log",
+  ".DS_Store",
+]
+
+[publish.native]
+registry = "crates-io"
+package = "zed-cli"
+
+[install]
+adapter = "none"
+
+[scripts]
+test = "cargo test --all-targets --locked"

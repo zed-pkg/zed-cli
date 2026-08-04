@@ -2,17 +2,29 @@
 
 use std::io;
 
+use anyhow::{Context, Result};
 use clap_complete::{Shell, generate};
 
 use crate::cli_model;
-use crate::{dev, fetch, git_submodules, nix_bundle_write, nix_export_plan};
+use crate::{dev, fetch, git_submodules, global, nix_bundle_write, nix_export_plan};
 
-fn root_command() -> clap::Command {
-    git_submodules::augment_root_command(nix_bundle_write::augment_root_command(
-        nix_export_plan::augment_root_command(fetch::augment_root_command(
-            dev::augment_root_command(cli_model::command()),
+/// Build the complete public command tree shared by root help and completion
+/// generation. Every modular command must compose here rather than maintaining
+/// a second, partial root-help model.
+pub fn root_command() -> clap::Command {
+    global::augment_root_command(git_submodules::augment_root_command(
+        nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
+            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
         )),
     ))
+}
+
+/// Print the complete top-level help tree.
+pub fn print_root_help() -> Result<()> {
+    let mut command = root_command();
+    command.print_help().context("printing zed help")?;
+    println!();
+    Ok(())
 }
 
 /// Write a static completion script for `zed` to stdout.
@@ -59,6 +71,8 @@ mod tests {
             "develop",
             "dev",
             "overtake",
+            "global",
+            "bin-dir",
             "completions",
             "self-update",
             "r2g",
@@ -71,6 +85,7 @@ mod tests {
             "--skip-manifest",
             "--git-submodules",
             "--install-mode",
+            "--global-bin-dir",
             "--frozen",
             "--json",
             "--target",
@@ -105,6 +120,8 @@ mod tests {
             "develop",
             "dev",
             "overtake",
+            "global",
+            "bin-dir",
             "completions",
             "self-update",
             "r2g",
@@ -117,6 +134,7 @@ mod tests {
             "--skip-manifest",
             "--git-submodules",
             "--install-mode",
+            "--global-bin-dir",
             "--frozen",
             "--json",
             "--target",

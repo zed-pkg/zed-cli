@@ -1,0 +1,184 @@
+name: Global executable package profiles
+
+on:
+  pull_request:
+    paths:
+      - .zpkg.toml
+      - .zpkg.lock
+      - docs/global-packages.md
+      - src/global.rs
+      - src/lib.rs
+      - src/main.rs
+      - src/completion.rs
+      - src/ops.rs
+      - tests/global_cli.rs
+      - .github/workflows/global-packages.yml
+  push:
+    branches: [main]
+    paths:
+      - .zpkg.toml
+      - .zpkg.lock
+      - docs/global-packages.md
+      - src/global.rs
+      - src/lib.rs
+      - src/main.rs
+      - src/completion.rs
+      - src/ops.rs
+      - tests/global_cli.rs
+      - .github/workflows/global-packages.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: global-packages-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  certify:
+    name: Global profiles (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Check formatting
+        id: formatting
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+
+      - name: Run global profile unit tests
+        id: unit
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          cargo test --quiet --locked --lib global::tests -- --nocapture \
+            2>&1 | tee "diagnostics/global-unit-tests-${RUNNER_OS}.log"
+
+      - name: Upload focused unit-test diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: global-unit-tests-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: diagnostics/
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce global profile unit tests
+        if: always() && steps.unit.outcome == 'failure'
+        run: |
+          echo 'focused global profile unit tests failed; see retained diagnostics.' >&2
+          exit 1
+
+      - name: Run compiled global CLI tests
+        run: |
+          set -euo pipefail
+          cargo test --locked --test global_cli
+
+      - name: Run strict Clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Build and invoke the packaged command
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --bin zed
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            ./target/release/zed.exe --version
+          else
+            ./target/release/zed --version
+          fi
+
+      - name: Run the complete repository suite on Linux
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          cargo test --all-targets --all-features --locked
+
+      - name: Produce exact rustfmt evidence
+        if: always() && runner.os == 'Linux' && steps.formatting.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          python3 - <<'PY'
+          import pathlib
+          import shutil
+          import subprocess
+
+          allowed = {
+              'src/completion.rs',
+              'src/global.rs',
+              'src/lib.rs',
+              'src/main.rs',
+              'src/ops.rs',
+              'tests/global_cli.rs',
+          }
+          changed = {
+              line.strip()
+              for line in subprocess.check_output(
+                  ['git', 'diff', '--name-only'], text=True
+              ).splitlines()
+              if line.strip()
+          }
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(
+                  'rustfmt changed files outside the reviewed feature boundary: '
+                  + ', '.join(sorted(unexpected))
+              )
+          if not changed:
+              raise SystemExit('format check failed but rustfmt produced no changed files')
+          root = pathlib.Path('format-evidence')
+          for name in sorted(changed):
+              destination = root / name
+              destination.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copy2(name, destination)
+          (root / 'changed-files.txt').write_text('\n'.join(sorted(changed)) + '\n')
+          PY
+          git diff --binary -- \
+            src/completion.rs \
+            src/global.rs \
+            src/lib.rs \
+            src/main.rs \
+            src/ops.rs \
+            tests/global_cli.rs \
+            > format-evidence/rustfmt.patch
+          find format-evidence -type f -print0 | sort -z | xargs -0 sha256sum > format-evidence/SHA256SUMS
+
+      - name: Upload rustfmt evidence
+        if: always() && runner.os == 'Linux' && steps.formatting.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: global-package-rustfmt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: format-evidence/
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Enforce formatting result
+        if: always() && steps.formatting.outcome == 'failure'
+        run: |
+          echo 'cargo fmt --all --check failed; see the Linux rustfmt evidence artifact.' >&2
+          exit 1
