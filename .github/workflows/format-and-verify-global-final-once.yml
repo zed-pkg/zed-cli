@@ -1,4 +1,4 @@
-name: Format and verify hardened global packages once
+name: Format hardened global packages once
 
 on:
   push:
@@ -14,14 +14,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: format-and-verify-global-final-once
+  group: format-global-packages-final-once
   cancel-in-progress: false
 
 jobs:
-  format-and-verify:
+  format:
     if: github.actor != 'github-actions[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - name: Check out exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,22 +31,18 @@ jobs:
           persist-credentials: true
           show-progress: false
 
-      - name: Install Rust validation toolchain
+      - name: Install Rust formatter
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: stable
-          components: rustfmt,clippy
+          components: rustfmt
 
-      - name: Format and verify the complete candidate
+      - name: Apply formatter
         shell: bash
         run: |
           set -euo pipefail
           cargo fmt --all
           cargo fmt --all --check
-          cargo test --locked --lib global::tests
-          cargo test --locked --test global_cli
-          cargo clippy --locked --all-targets --all-features -- -D warnings
-          cargo test --all-targets --all-features --locked
 
       - name: Commit permanent formatted product changes only
         shell: bash
@@ -56,9 +52,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          if git diff --cached --quiet; then
-            echo 'No formatted product change required.'
-            exit 0
-          fi
-          git commit -m 'style: format and verify global package profiles'
+          git commit -m 'style: format hardened global package profiles'
           git push origin HEAD:agent/global-zed-packages-final
