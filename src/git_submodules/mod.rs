@@ -87,9 +87,11 @@ fn sync_root(project: &Path) -> Result<usize> {
     Ok(configured.len())
 }
 
-/// Import every top-level `.gitmodules` entry that is itself a valid Zed
-/// package. The root manifest becomes the graph authority while Git metadata is
-/// retained as a reversible clone/update transport.
+/// Import every top-level `.gitmodules` entry that contains a valid Zed
+/// package. Entries without a `.zpkg.toml` remain under Git authority, so mixed
+/// Zed/non-Zed submodule repositories can migrate incrementally. The root
+/// manifest becomes the graph authority for adopted packages while Git metadata
+/// remains a reversible clone/update transport.
 pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     let project = find_root(requested).with_context(|| {
         format!(
@@ -114,6 +116,7 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     let canonical_project = fs::canonicalize(&project)
         .with_context(|| format!("canonicalizing superproject {}", project.display()))?;
     let mut imported = Vec::with_capacity(modules.len());
+    let mut skipped = Vec::new();
     let mut seen_packages = BTreeSet::new();
     for module in &modules {
         let configured_child = project.join(&module.path);
@@ -139,9 +142,20 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
                 child.display()
             );
         }
+
+        let child_manifest = child.join(MANIFEST_FILE);
+        if !child_manifest.is_file() {
+            eprintln!(
+                "overtake: leaving non-Zed submodule `{}` at `{}` under Git authority (no {MANIFEST_FILE})",
+                module.name, module.path
+            );
+            skipped.push((module.name.clone(), module.path.clone()));
+            continue;
+        }
+
         let manifest = read_manifest(&child).with_context(|| {
             format!(
-                "submodule `{}` at {} is not an overtake-compatible Zed package; add {MANIFEST_FILE} first",
+                "submodule `{}` at {} contains an invalid {MANIFEST_FILE}",
                 module.name,
                 child.display()
             )
@@ -153,6 +167,20 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
         verify_checkout(&project, &module.path, &child)?;
         warn_on_repository_mismatch(module, &child, &manifest);
         imported.push((module.clone(), child, manifest));
+    }
+
+    if imported.is_empty() {
+        let examples = skipped
+            .iter()
+            .take(8)
+            .map(|(name, path)| format!("`{name}` at `{path}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "{} contains no overtake-compatible Zed submodules; {} configured submodule(s) have no {MANIFEST_FILE}: {examples}",
+            project.display(),
+            skipped.len()
+        );
     }
 
     let manifest_path = project.join(MANIFEST_FILE);
@@ -274,6 +302,12 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
         "retained {} as a reversible Git transport mirror; Zed now owns dependency and lock authority",
         project.join(".gitmodules").display()
     );
+    if !skipped.is_empty() {
+        println!(
+            "left {} non-Zed submodule(s) under Git authority",
+            skipped.len()
+        );
+    }
     Ok(OvertakeReport {
         project,
         adopted: imported.len(),
