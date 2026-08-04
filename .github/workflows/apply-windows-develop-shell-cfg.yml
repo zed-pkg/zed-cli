@@ -1,0 +1,71 @@
+name: apply Windows develop-shell test cfg fix
+
+on:
+  push:
+    branches:
+      - fix/windows-develop-shell-test-cfg
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-develop-shell-test-cfg-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/windows-develop-shell-test-cfg
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Gate Unix-only imports and helpers
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/develop_shell_edge_cases.rs')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = {
+              'use std::collections::BTreeMap;\n': '#[cfg(unix)]\nuse std::collections::BTreeMap;\n',
+              'use std::ffi::{OsStr, OsString};\n': '#[cfg(unix)]\nuse std::ffi::{OsStr, OsString};\n',
+              'fn assert_success(output: &Output) {\n': '#[cfg(unix)]\nfn assert_success(output: &Output) {\n',
+              'fn stdout(output: &Output) -> String {\n': '#[cfg(unix)]\nfn stdout(output: &Output) -> String {\n',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one anchor {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cargo fmt --all --check
+          git diff --check
+          cargo test --locked --test develop_shell_edge_cases
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/develop_shell_edge_cases.rs
+          git commit -m 'fix: gate Unix-only develop-shell test helpers'
+          git push origin HEAD:fix/windows-develop-shell-test-cfg
