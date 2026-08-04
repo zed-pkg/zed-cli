@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - .github/workflows/repair-task-runtime.yml
+      - src/bin/zed-task.rs
       - src/task_runtime.rs
+      - tests/task_runtime_cli.rs
 
 permissions:
   contents: write
@@ -20,9 +22,9 @@ defaults:
 
 jobs:
   repair:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1444-native-task-runtime'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1444-native-task-runtime' && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Check out exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,59 +39,20 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Apply compile and cross-platform repairs
+      - name: Use the portable Clap parser and rely on runtime validation
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('src/task_runtime.rs')
+          path = Path('src/bin/zed-task.rs')
           text = path.read_text()
-
-          text = text.replace(
-              'let (states, ready) = &*self.states;\n        let mut states = states.lock().expect("task state mutex poisoned");',
-              'let (state_mutex, ready) = &*self.states;\n        let mut state_guard = state_mutex.lock().expect("task state mutex poisoned");',
-              1,
-          )
-          text = text.replace('match states.get(&identity) {', 'match state_guard.get(&identity) {', 1)
-          text = text.replace('states.insert(identity.clone(), ExecutionState::Running);', 'state_guard.insert(identity.clone(), ExecutionState::Running);', 1)
-          text = text.replace(
-              'states = ready.wait(states).expect("task state mutex poisoned");',
-              'state_guard = ready\n                        .wait(state_guard)\n                        .expect("task state mutex poisoned");',
-              1,
-          )
-          text = text.replace('drop(states);', 'drop(state_guard);', 1)
-          text = text.replace(
-              'let mut states = states.lock().expect("task state mutex poisoned");',
-              'let mut state_guard = state_mutex.lock().expect("task state mutex poisoned");',
-              1,
-          )
-          text = text.replace('states.insert(identity, ExecutionState::Skipped);', 'state_guard.insert(identity, ExecutionState::Skipped);', 1)
-          text = text.replace('states.insert(identity, ExecutionState::Completed);', 'state_guard.insert(identity, ExecutionState::Completed);', 1)
-          text = text.replace('states.insert(identity, ExecutionState::Failed(format!("{error:#}")));', 'state_guard.insert(identity, ExecutionState::Failed(format!("{error:#}")));', 1)
-
-          text = text.replace(
-              "value.contains(['*', '?', '['])",
-              "value.contains('*') || value.contains('?') || value.contains('[')",
-              1,
-          )
-          text = text.replace('depends-post = ["cleanup"]', 'depends_post = ["cleanup"]', 1)
-
-          cache_anchor = '            outputs = ["output.txt"]\n            run = ["cat input.txt > output.txt"]\n            "#,'
-          cache_replacement = '            outputs = ["output.txt"]\n            run = ["cat input.txt > output.txt"]\n            run_windows = ["type input.txt > output.txt"]\n            "#,'
-          if cache_anchor in text:
-              text = text.replace(cache_anchor, cache_replacement, 1)
-
-          required = [
-              'let (state_mutex, ready) = &*self.states;',
-              'let mut state_guard = state_mutex.lock()',
-              "value.contains('*') || value.contains('?') || value.contains('[')",
-              'depends_post = ["cleanup"]',
-          ]
-          missing = [item for item in required if item not in text]
-          if missing:
-              raise SystemExit(f'missing repaired fragments: {missing}')
-
+          old = 'value_parser = clap::value_parser!(usize).range(1..)'
+          new = 'value_parser = clap::value_parser!(usize)'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('task jobs parser anchor not found')
           path.write_text(text)
           PY
 
@@ -108,7 +71,11 @@ jobs:
           rm .github/workflows/repair-task-runtime.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/task_runtime.rs .github/workflows/repair-task-runtime.yml
+          git add \
+            src/bin/zed-task.rs \
+            src/task_runtime.rs \
+            tests/task_runtime_cli.rs \
+            .github/workflows/repair-task-runtime.yml
           git diff --cached --check
-          git commit -m 'fix(DEN-1444): repair native task runtime compilation'
+          git commit -m 'fix(DEN-1444): compile and format native task runtime'
           git push origin HEAD:agent/den-1444-native-task-runtime
