@@ -6,6 +6,7 @@ pub mod cli;
 pub mod cli_model;
 pub mod completion;
 pub mod config;
+mod dart_wiring;
 pub mod dev;
 pub mod environment;
 pub mod fetch;

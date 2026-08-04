@@ -10,6 +10,11 @@
 //! additive lock extension after the ordinary install transaction. Older lock
 //! readers ignore that extension; this facade keeps it exact across install,
 //! add, remove, and frozen replay.
+//!
+//! Dart's provisional adapter fragment is finalized here after materialization,
+//! replacing Zed directory-derived keys with the native package identities from
+//! each dependency's `pubspec.yaml`. The hook is a no-op for every other
+//! adapter and is shared by normal and manifestless frozen installs.
 
 use std::path::Path;
 
@@ -96,6 +101,8 @@ pub fn install(
             )
         })?
     };
+    crate::dart_wiring::rewrite_if_present(project)
+        .context("finalizing Dart package-manager wiring")?;
     git_lock.finish(project).context(GitLockFinalizeError)?;
     Ok(outcome)
 }
@@ -121,6 +128,8 @@ pub(crate) fn install_frozen_lock_only(
         target,
         allow_ecosystem_mismatch,
     )?;
+    crate::dart_wiring::rewrite_if_present(project)
+        .context("finalizing Dart package-manager wiring")?;
     git_lock.finish(project).context(GitLockFinalizeError)?;
     Ok(outcome)
 }
