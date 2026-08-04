@@ -169,9 +169,13 @@ contribute files to an artifact. Every included submodule must:
 
 The CLI reports `zed install --git-submodules` as the recovery command for an
 uninitialized or drifted checkout. A submodule excluded from every artifact by
-`publish.exclude` or `.zedignore` does not need to be initialized. Polyglot
-packages apply this test independently to every target source root, including a
-target located inside a submodule.
+`publish.exclude` or `.zedignore` does not need to be initialized. Zed treats an
+uninitialized subtree as conclusively excluded only for a canonical, literal
+`prefix/**` rule; it does not normalize leading `./`, leading `/`, alternate
+path separators, whitespace, or wildcard-bearing prefixes into that exception.
+All other patterns fail closed and require the checkout. Polyglot packages apply
+this test independently to every target source root, including a target located
+inside a submodule.
 
 VCS control data is never package payload. Pack and publish add non-persistent
 exclusions for root and nested `.git`, `.hg`, and `.svn` control paths, including
