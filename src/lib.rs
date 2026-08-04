@@ -26,6 +26,7 @@ pub mod nix_export_plan;
 pub mod ops;
 pub mod pack;
 pub(crate) mod pack_guard;
+pub(crate) mod pack_input_guard;
 pub mod preflight;
 pub mod r2g;
 pub mod registry;

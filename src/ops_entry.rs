@@ -52,7 +52,9 @@ pub(crate) use implementation::legacy_ensure_artifact_for_test;
 fn with_pack_guard<T>(project: &Path, action: impl FnOnce() -> Result<T>) -> Result<T> {
     let manifest = config::read_manifest(project)?;
     let manifest = crate::pack_guard::harden_manifest(manifest);
+    let manifest = crate::pack_input_guard::harden_manifest(manifest);
     crate::pack_guard::preflight_submodules(project, &manifest)?;
+    crate::pack_input_guard::preflight_ignored_inputs(project, &manifest)?;
     let manifest_text = manifest.to_toml_string()?;
     config::with_manifest_override(project, manifest_text, action)
 }
