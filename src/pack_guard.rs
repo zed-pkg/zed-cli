@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
+use globset::{GlobBuilder, GlobSetBuilder};
+use zed_interfaces::excludes::effective_excludes;
 use zed_interfaces::manifest::Manifest;
-use zed_interfaces::paths::{IGNORE_FILE, MANIFEST_FILE};
+use zed_interfaces::paths::IGNORE_FILE;
 
 /// VCS control data is never part of a package payload. The root-directory
 /// defaults predate Git worktree pointer files and nested submodules, so the
@@ -23,12 +23,6 @@ const VCS_METADATA_EXCLUDES: &[&str] = &[
     ".svn",
     "**/.svn",
     "**/.svn/**",
-];
-
-const SUBMODULE_PROBES: &[&str] = &[
-    "__zed_pack_probe__",
-    MANIFEST_FILE,
-    "src/__zed_pack_probe__",
 ];
 
 pub(crate) fn harden_manifest(mut manifest: Manifest) -> Manifest {
@@ -57,7 +51,7 @@ pub(crate) fn preflight_submodules(project: &Path, manifest: &Manifest) -> Resul
         .paths()
         .filter(|relative| {
             let module = submodules.canonical_root().join(relative);
-            views.iter().any(|view| view.may_include(&module))
+            views.iter().any(|view| view.includes_submodule(&module))
         })
         .map(str::to_string)
         .collect::<Vec<_>>();
@@ -68,25 +62,47 @@ pub(crate) fn preflight_submodules(project: &Path, manifest: &Manifest) -> Resul
 
 struct ArtifactView {
     source: PathBuf,
-    excludes: GlobSet,
-    always: GlobSet,
+    excludes: Vec<String>,
 }
 
 impl ArtifactView {
-    fn may_include(&self, module: &Path) -> bool {
-        let relative = if let Ok(relative) = module.strip_prefix(&self.source) {
-            relative
-        } else if self.source.starts_with(module) {
-            Path::new("")
-        } else {
+    fn includes_submodule(&self, module: &Path) -> bool {
+        if self.source.starts_with(module) {
+            // The artifact source root itself is inside this submodule. It
+            // cannot be produced from an uninitialized checkout, even when a
+            // broad source exclusion happens to match every current file.
+            return true;
+        }
+        let Ok(relative) = module.strip_prefix(&self.source) else {
             return false;
         };
-
-        SUBMODULE_PROBES.iter().any(|probe| {
-            let candidate = relative.join(probe);
-            self.always.is_match(&candidate) || !self.excludes.is_match(&candidate)
-        })
+        !explicitly_excludes_tree(relative, &self.excludes)
     }
+}
+
+/// Return true only when one authored rule conclusively excludes the complete
+/// submodule subtree. Arbitrary glob probing is unsafe here: a pattern might
+/// exclude every sampled path while leaving an unsampled runtime file eligible.
+fn explicitly_excludes_tree(relative: &Path, patterns: &[String]) -> bool {
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    let relative = relative.trim_matches('/').to_ascii_lowercase();
+    patterns.iter().any(|pattern| {
+        let normalized = pattern
+            .trim()
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_matches('/')
+            .to_ascii_lowercase();
+        let Some(prefix) = normalized.strip_suffix("/**") else {
+            return false;
+        };
+        let prefix = prefix.trim_end_matches('/');
+        !prefix.is_empty()
+            && (relative == prefix
+                || relative
+                    .strip_prefix(prefix)
+                    .is_some_and(|suffix| suffix.starts_with('/')))
+    })
 }
 
 fn artifact_views(
@@ -94,16 +110,12 @@ fn artifact_views(
     manifest: &Manifest,
     canonical_root: &Path,
 ) -> Result<Vec<ArtifactView>> {
-    let always = ALWAYS_INCLUDE
-        .iter()
-        .map(|value| (*value).to_string())
-        .collect::<Vec<_>>();
-
     if manifest.is_polyglot() {
         let excludes = effective_excludes(
             &manifest.publish.exclude,
             manifest.publish.include_readme,
         );
+        validate_globs(&excludes)?;
         let mut views = Vec::with_capacity(manifest.targets.len());
         for (target, section) in &manifest.targets {
             let source = project.join(&section.dir);
@@ -116,8 +128,7 @@ fn artifact_views(
             ensure_source_within_root(&source, canonical_root)?;
             views.push(ArtifactView {
                 source,
-                excludes: glob_set(&excludes)?,
-                always: glob_set(&always)?,
+                excludes: excludes.clone(),
             });
         }
         return Ok(views);
@@ -142,15 +153,10 @@ fn artifact_views(
             }
         }
     }
+    let excludes = effective_excludes(&extra, manifest.publish.include_readme);
+    validate_globs(&excludes)?;
 
-    Ok(vec![ArtifactView {
-        source,
-        excludes: glob_set(&effective_excludes(
-            &extra,
-            manifest.publish.include_readme,
-        ))?,
-        always: glob_set(&always)?,
-    }])
+    Ok(vec![ArtifactView { source, excludes }])
 }
 
 fn ensure_source_within_root(source: &Path, root: &Path) -> Result<()> {
@@ -164,7 +170,7 @@ fn ensure_source_within_root(source: &Path, root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn glob_set(patterns: &[String]) -> Result<GlobSet> {
+fn validate_globs(patterns: &[String]) -> Result<()> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
         builder.add(
@@ -175,7 +181,8 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
                 .with_context(|| format!("invalid publish exclusion `{pattern}`"))?,
         );
     }
-    Ok(builder.build()?)
+    builder.build()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -184,6 +191,7 @@ mod tests {
     use std::process::Command;
 
     use flate2::read::GzDecoder;
+    use zed_interfaces::paths::MANIFEST_FILE;
 
     use super::*;
 
@@ -225,6 +233,31 @@ url = "https://example.invalid/acme/pack-guard.git"
             .unwrap()
             .map(|entry| entry.unwrap().path().unwrap().to_string_lossy().to_string())
             .collect()
+    }
+
+    #[test]
+    fn complete_tree_exclusion_requires_an_explicit_recursive_rule() {
+        let path = Path::new("vendor/client");
+        assert!(explicitly_excludes_tree(
+            path,
+            &["vendor/client/**".to_string()]
+        ));
+        assert!(explicitly_excludes_tree(
+            path,
+            &["vendor/**".to_string()]
+        ));
+        assert!(!explicitly_excludes_tree(
+            path,
+            &[
+                "vendor/client/.zpkg.toml".to_string(),
+                "vendor/client/src/**".to_string(),
+                "vendor/client/__zed_pack_probe__".to_string(),
+            ]
+        ));
+        assert!(!explicitly_excludes_tree(
+            path,
+            &["vendor/client/*".to_string()]
+        ));
     }
 
     #[test]
