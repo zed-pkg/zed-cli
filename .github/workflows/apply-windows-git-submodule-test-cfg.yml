@@ -1,0 +1,90 @@
+name: apply Windows git-submodule test cfg repair
+
+on:
+  push:
+    branches:
+      - fix/windows-git-submodule-test-cfg
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-git-submodule-test-cfg-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - name: Check out repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/windows-git-submodule-test-cfg
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Gate Unix-only takeover helpers and imports
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/git_submodules/tests.rs')
+          text = path.read_text(encoding='utf-8')
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'use std::path::Path;\nuse std::process::Command;\n',
+              '#[cfg(unix)]\nuse std::path::Path;\n#[cfg(unix)]\nuse std::process::Command;\n',
+              'Unix std imports',
+          )
+          replace_once(
+              'use super::lock::{\n    GitSubmoduleLock, active_workspace_packages, prepare_install, read_lock_extensions,\n    write_lock_extensions,\n};\n',
+              'use super::lock::{\n    GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,\n};\n#[cfg(unix)]\nuse super::lock::prepare_install;\n',
+              'prepare_install import',
+          )
+          replace_once(
+              'use crate::config::{Config, read_manifest};\n\nfn git(project: &Path, args: &[&str]) {\n',
+              '#[cfg(unix)]\nuse crate::config::{Config, read_manifest};\n\n#[cfg(unix)]\nfn git(project: &Path, args: &[&str]) {\n',
+              'config import and git helper',
+          )
+          replace_once(
+              'fn write_package(project: &Path, org: &str, name: &str, repository: &str) {\n',
+              '#[cfg(unix)]\nfn write_package(project: &Path, org: &str, name: &str, repository: &str) {\n',
+              'write_package helper',
+          )
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cargo fmt --all --check
+          git diff --check
+          cargo test --locked --lib git_submodules::tests
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/git_submodules/tests.rs
+          git commit -m 'fix: gate Unix-only git-submodule test helpers'
+          git push origin HEAD:fix/windows-git-submodule-test-cfg
