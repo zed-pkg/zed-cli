@@ -60,7 +60,7 @@ pub struct MiseLockedTool {
 #[serde(untagged)]
 pub enum MisePlatformInfo {
     Checksum(String),
-    Detail(MisePlatformDetails),
+    Detail(Box<MisePlatformDetails>),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,11 +193,149 @@ pub struct MisePkgxPackage {
     pub pkgx_runtime_env: Option<BTreeMap<String, String>>,
 }
 
+fn normalize_current_wire_platform_keys(value: &mut toml::Value, path: &str) -> Result<()> {
+    let root = value
+        .as_table_mut()
+        .with_context(|| format!("current mise lock `{path}` must be a TOML table"))?;
+    let Some(tools_value) = root.get_mut("tools") else {
+        return Ok(());
+    };
+    let tools = tools_value
+        .as_table_mut()
+        .with_context(|| format!("`tools` in current mise lock `{path}` must be a table"))?;
+
+    for (tool_name, value) in tools {
+        match value {
+            toml::Value::Array(entries) => {
+                for (index, entry) in entries.iter_mut().enumerate() {
+                    let table = entry.as_table_mut().with_context(|| {
+                        format!(
+                            "`tools.{tool_name}[{index}]` in current mise lock `{path}` must be a table"
+                        )
+                    })?;
+                    unflatten_platform_keys(table, tool_name, index, path)?;
+                }
+            }
+            toml::Value::Table(table) => {
+                unflatten_platform_keys(table, tool_name, 0, path)?;
+            }
+            _ => bail!(
+                "`tools.{tool_name}` in current mise lock `{path}` must be a table or table array"
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn unflatten_platform_keys(
+    table: &mut toml::map::Map<String, toml::Value>,
+    tool_name: &str,
+    index: usize,
+    path: &str,
+) -> Result<()> {
+    let keys = table
+        .keys()
+        .filter(|key| key.starts_with("platforms."))
+        .cloned()
+        .collect::<Vec<_>>();
+    if keys.is_empty() {
+        return Ok(());
+    }
+    ensure!(
+        !table.contains_key("platforms"),
+        "`tools.{tool_name}[{index}]` in current mise lock `{path}` mixes nested `platforms` with current quoted `platforms.<target>` keys"
+    );
+
+    let mut platforms = toml::map::Map::new();
+    for key in keys {
+        let platform = key.strip_prefix("platforms.").unwrap_or_default();
+        ensure!(
+            !platform.is_empty(),
+            "`tools.{tool_name}[{index}]` in current mise lock `{path}` has an empty platform key"
+        );
+        let metadata = table.remove(&key).with_context(|| {
+            format!("failed to extract `{key}` from `tools.{tool_name}[{index}]`")
+        })?;
+        ensure!(
+            platforms.insert(platform.to_string(), metadata).is_none(),
+            "duplicate current platform identity `{platform}` in `tools.{tool_name}[{index}]` of `{path}`"
+        );
+    }
+    table.insert("platforms".to_string(), toml::Value::Table(platforms));
+    Ok(())
+}
+
+fn flatten_current_wire_platform_keys(value: &mut toml::Value, path: &str) -> Result<()> {
+    let root = value
+        .as_table_mut()
+        .with_context(|| format!("normalized current mise lock `{path}` must be a TOML table"))?;
+    let Some(tools_value) = root.get_mut("tools") else {
+        return Ok(());
+    };
+    let tools = tools_value.as_table_mut().with_context(|| {
+        format!("`tools` in normalized current mise lock `{path}` must be a table")
+    })?;
+
+    for (tool_name, value) in tools {
+        match value {
+            toml::Value::Array(entries) => {
+                for (index, entry) in entries.iter_mut().enumerate() {
+                    let table = entry.as_table_mut().with_context(|| {
+                        format!(
+                            "`tools.{tool_name}[{index}]` in normalized current mise lock `{path}` must be a table"
+                        )
+                    })?;
+                    flatten_platform_keys(table, tool_name, index, path)?;
+                }
+            }
+            toml::Value::Table(table) => {
+                flatten_platform_keys(table, tool_name, 0, path)?;
+            }
+            _ => bail!(
+                "`tools.{tool_name}` in normalized current mise lock `{path}` must be a table or table array"
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn flatten_platform_keys(
+    table: &mut toml::map::Map<String, toml::Value>,
+    tool_name: &str,
+    index: usize,
+    path: &str,
+) -> Result<()> {
+    let Some(platforms_value) = table.remove("platforms") else {
+        return Ok(());
+    };
+    let platforms = platforms_value.as_table().with_context(|| {
+        format!(
+            "`tools.{tool_name}[{index}].platforms` in normalized current mise lock `{path}` must be a table"
+        )
+    })?;
+    let entries = platforms
+        .iter()
+        .map(|(platform, metadata)| (platform.clone(), metadata.clone()))
+        .collect::<Vec<_>>();
+    for (platform, metadata) in entries {
+        let key = format!("platforms.{platform}");
+        ensure!(
+            table.insert(key.clone(), metadata).is_none(),
+            "duplicate flattened current platform key `{key}` in `tools.{tool_name}[{index}]` of `{path}`"
+        );
+    }
+    Ok(())
+}
+
 impl MiseLockDocument {
     /// Parse and validate a complete current mise lock without invoking mise.
     pub fn parse(input: &str, path: &str, mode: MiseLockValidationMode) -> Result<Self> {
-        let document: Self = toml::from_str(input)
+        let mut value: toml::Value = toml::from_str(input)
             .with_context(|| format!("failed to parse current mise lock `{path}`"))?;
+        normalize_current_wire_platform_keys(&mut value, path)?;
+        let document: Self = value
+            .try_into()
+            .with_context(|| format!("failed to decode current mise lock `{path}`"))?;
         document.validate(path, mode)?;
         Ok(document)
     }
@@ -262,8 +400,8 @@ impl MiseLockDocument {
         Ok(())
     }
 
-    /// Presentation-independent clone. Tool identities and set-like package
-    /// lists are sorted; ordered additional artifacts remain ordered.
+    /// Presentation-independent clone. Tool identity and additional-artifact
+    /// order remain semantic; only set-like package lists are sorted.
     pub fn normalized(&self) -> Self {
         let mut normalized = self.clone();
 
@@ -271,9 +409,8 @@ impl MiseLockDocument {
             for identity in identities.iter_mut() {
                 identity.normalize();
             }
-            identities.sort_by_cached_key(|identity| {
-                serde_json::to_string(identity).unwrap_or_else(|_| identity.version.clone())
-            });
+            // mise writes each Vec<LockfileTool> in stored order and
+            // multi-version PATH/default selection is order-sensitive.
         }
 
         for packages in normalized.conda_packages.values_mut() {
@@ -310,7 +447,12 @@ impl MiseLockDocument {
     /// Deterministic TOML suitable for explicit export and round-trip tests.
     pub fn to_toml_string(&self) -> Result<String> {
         self.validate("<normalized mise lock>", MiseLockValidationMode::Authoring)?;
-        toml::to_string_pretty(&self.normalized())
+        let nested = toml::to_string(&self.normalized())
+            .context("failed to stage normalized current mise lock as TOML")?;
+        let mut value: toml::Value = toml::from_str(&nested)
+            .context("failed to stage normalized current mise lock as a TOML value")?;
+        flatten_current_wire_platform_keys(&mut value, "<normalized mise lock>")?;
+        toml::to_string_pretty(&value)
             .context("failed to serialize normalized current mise lock as TOML")
     }
 }
@@ -380,9 +522,7 @@ impl MisePlatformInfo {
     ) -> Result<()> {
         match self {
             Self::Checksum(checksum) => validate_checksum(field, checksum),
-            Self::Detail(details) => {
-                details.validate(document, path, field, platform, mode)
-            }
+            Self::Detail(details) => details.validate(document, path, field, platform, mode),
         }
     }
 
@@ -390,10 +530,10 @@ impl MisePlatformInfo {
         match self {
             Self::Checksum(checksum) => {
                 let checksum = normalize_checksum(checksum);
-                *self = Self::Detail(MisePlatformDetails {
+                *self = Self::Detail(Box::new(MisePlatformDetails {
                     checksum: Some(checksum),
                     ..MisePlatformDetails::default()
-                });
+                }));
             }
             Self::Detail(details) => details.normalize(),
         }
@@ -507,7 +647,12 @@ impl MiseArtifactInfo {
         validate_optional_url(&format!("{field}.url_api"), self.url_api.as_deref())?;
         validate_optional_checksum(&format!("{field}.checksum"), self.checksum.as_deref(), mode)?;
         validate_optional_size(&format!("{field}.size"), self.size)?;
-        validate_provenance(field, self.provenance.as_ref(), self.provenance_verified, None)?;
+        validate_provenance(
+            field,
+            self.provenance.as_ref(),
+            self.provenance_verified,
+            None,
+        )?;
         if mode == MiseLockValidationMode::FrozenPortable {
             ensure!(
                 self.checksum.is_some(),
@@ -593,11 +738,19 @@ fn validate_optional_url(field: &str, url: Option<&str>) -> Result<()> {
 
 fn validate_network_url(field: &str, value: &str) -> Result<()> {
     validate_text(field, value)?;
+    ensure!(
+        value.starts_with("https://") || value.starts_with("http://"),
+        "`{field}` must use an exact http:// or https:// network URL"
+    );
     let parsed = Url::parse(value).with_context(|| format!("`{field}` is not a valid URL"))?;
     ensure!(
         matches!(parsed.scheme(), "http" | "https"),
         "`{field}` must use http or https, got `{}`",
         parsed.scheme()
+    );
+    ensure!(
+        parsed.host_str().is_some(),
+        "`{field}` must contain a network host"
     );
     ensure!(
         parsed.username().is_empty() && parsed.password().is_none(),
@@ -621,6 +774,7 @@ fn validate_network_url(field: &str, value: &str) -> Result<()> {
         "token",
         "x-amz-credential",
         "x-amz-signature",
+        "x-amz-security-token",
         "x-goog-credential",
         "x-goog-signature",
     ];
@@ -789,6 +943,11 @@ github_attestations = "unavailable"
     }
 
     #[test]
+    fn platform_info_enum_remains_indirect_and_bounded() {
+        assert!(std::mem::size_of::<MisePlatformInfo>() <= 64);
+    }
+
+    #[test]
     fn complete_current_lock_round_trips_and_is_frozen_portable() {
         let lock = MiseLockDocument::parse(
             &full_lock(),
@@ -824,12 +983,9 @@ github_attestations = "unavailable"
             MiseLockValidationMode::FrozenPortable,
         )
         .unwrap();
-        let table = MiseLockDocument::parse(
-            &table,
-            "table.lock",
-            MiseLockValidationMode::FrozenPortable,
-        )
-        .unwrap();
+        let table =
+            MiseLockDocument::parse(&table, "table.lock", MiseLockValidationMode::FrozenPortable)
+                .unwrap();
         assert_eq!(
             compact.semantic_digest_sha256().unwrap(),
             table.semantic_digest_sha256().unwrap()
@@ -841,13 +997,9 @@ github_attestations = "unavailable"
         let lock = format!(
             "[[tools.node]]\nversion = \"22.4.0\"\nunknown = true\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{A}\"\n"
         );
-        let error = MiseLockDocument::parse(
-            &lock,
-            "mise.lock",
-            MiseLockValidationMode::Authoring,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("failed to parse current mise lock"));
+        let error = MiseLockDocument::parse(&lock, "mise.lock", MiseLockValidationMode::Authoring)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("unknown"));
     }
 
     #[test]
@@ -855,7 +1007,9 @@ github_attestations = "unavailable"
         for url in [
             "https://user:password@example.test/tool.tar.gz",
             "https://example.test/tool.tar.gz?token=secret",
+            "https://example.test/tool.tar.gz?X-Amz-Security-Token=secret",
             "https://example.test/tool.tar.gz#fragment",
+            "https:/missing-host/tool.tar.gz",
         ] {
             let lock = format!(
                 "[[tools.node]]\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{A}\"\nurl = \"{url}\"\n"
@@ -876,28 +1030,15 @@ github_attestations = "unavailable"
     fn frozen_portable_requires_checksums_and_rejects_source_installs() {
         let missing = "[[tools.node]]\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nurl = \"https://example.test/node.tar.gz\"\n";
         assert!(
-            MiseLockDocument::parse(
-                missing,
-                "mise.lock",
-                MiseLockValidationMode::FrozenPortable,
-            )
-            .is_err()
+            MiseLockDocument::parse(missing, "mise.lock", MiseLockValidationMode::FrozenPortable,)
+                .is_err()
         );
 
         let source = "[[tools.node]]\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\ninstall = \"source\"\n";
-        MiseLockDocument::parse(
-            source,
-            "mise.lock",
-            MiseLockValidationMode::Authoring,
-        )
-        .unwrap();
+        MiseLockDocument::parse(source, "mise.lock", MiseLockValidationMode::Authoring).unwrap();
         assert!(
-            MiseLockDocument::parse(
-                source,
-                "mise.lock",
-                MiseLockValidationMode::FrozenPortable,
-            )
-            .is_err()
+            MiseLockDocument::parse(source, "mise.lock", MiseLockValidationMode::FrozenPortable,)
+                .is_err()
         );
     }
 
@@ -906,13 +1047,14 @@ github_attestations = "unavailable"
         let lock = format!(
             "[[tools.python]]\nversion = \"3.12.4\"\n[tools.python.platforms.linux-x64]\nchecksum = \"sha256:{A}\"\nconda_deps = [\"missing-package\"]\n"
         );
-        let error = MiseLockDocument::parse(
-            &lock,
-            "mise.lock",
-            MiseLockValidationMode::FrozenPortable,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("no shared conda-packages section"));
+        let error =
+            MiseLockDocument::parse(&lock, "mise.lock", MiseLockValidationMode::FrozenPortable)
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no shared conda-packages section")
+        );
     }
 
     #[test]
@@ -920,36 +1062,34 @@ github_attestations = "unavailable"
         let lock = format!(
             "[[tools.node]]\nversion = \"22.4.0\"\noptions = {{ flavor = \"full\" }}\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{A}\"\n[[tools.node]]\nversion = \"22.4.0\"\noptions = {{ flavor = \"full\" }}\n[tools.node.platforms.macos-arm64]\nchecksum = \"sha256:{B}\"\n"
         );
-        let error = MiseLockDocument::parse(
-            &lock,
-            "mise.lock",
-            MiseLockValidationMode::FrozenPortable,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("duplicate option-dependent identity"));
+        let error =
+            MiseLockDocument::parse(&lock, "mise.lock", MiseLockValidationMode::FrozenPortable)
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate option-dependent identity")
+        );
     }
 
     #[test]
-    fn tool_identity_order_is_not_semantic() {
+    fn tool_identity_order_is_semantic() {
         let first = format!(
             "[[tools.node]]\nversion = \"20.15.1\"\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{A}\"\n[[tools.node]]\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{B}\"\n"
         );
         let second = format!(
             "[[tools.node]]\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{B}\"\n[[tools.node]]\nversion = \"20.15.1\"\n[tools.node.platforms.linux-x64]\nchecksum = \"sha256:{A}\"\n"
         );
-        let first = MiseLockDocument::parse(
-            &first,
-            "first.lock",
-            MiseLockValidationMode::FrozenPortable,
-        )
-        .unwrap();
+        let first =
+            MiseLockDocument::parse(&first, "first.lock", MiseLockValidationMode::FrozenPortable)
+                .unwrap();
         let second = MiseLockDocument::parse(
             &second,
             "second.lock",
             MiseLockValidationMode::FrozenPortable,
         )
         .unwrap();
-        assert_eq!(
+        assert_ne!(
             first.semantic_digest_sha256().unwrap(),
             second.semantic_digest_sha256().unwrap()
         );

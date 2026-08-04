@@ -35,6 +35,24 @@ The contract preserves:
 Unknown fields fail closed. They are not discarded and therefore cannot be
 hidden by a successful import or digest.
 
+## Current wire format
+
+Current mise serializes platform identities as quoted literal keys beneath each tool identity:
+
+```toml
+[[tools.actionlint]]
+version = "1.7.12"
+backend = "aqua:rhysd/actionlint"
+
+[tools.actionlint."platforms.linux-x64"]
+checksum = "sha256:..."
+url = "https://..."
+url_api = "https://api.github.com/..."
+provenance = "github-attestations"
+```
+
+The parser accepts this current wire form and the earlier nested compatibility form, but rejects a single identity that mixes both encodings. Deterministic TOML output always uses the quoted current `"platforms.<target>"` form. A fixture copied from mise commit `72379d0c459808f980a037065ac9c39a60032280` proves parse, deterministic render, reparse, and semantic-digest equality without invoking mise.
+
 ## Validation modes
 
 ### `Authoring`
@@ -64,14 +82,15 @@ Validation is read-only and performs no network access.
 
 `normalized()` canonicalizes non-semantic state:
 
-- tool identity arrays are sorted by complete identity;
+- tool identity arrays retain declared order because multi-version activation is order-sensitive;
 - compact platform checksums become detailed platform records;
 - checksum algorithms and digests become lowercase;
 - set-like dependency/provides lists are sorted and deduplicated; and
 - maps retain deterministic `BTreeMap` ordering.
 
-Ordered `additional_artifacts` remain ordered because mise extracts them in
-sequence. Reordering them changes the semantic digest.
+Ordered tool identities and `additional_artifacts` remain ordered because mise
+uses their sequence during activation and extraction. Reordering either changes the
+semantic digest.
 
 `canonical_json_bytes()` emits compact canonical JSON. The lock identity is a
 domain-separated SHA-256:
@@ -89,7 +108,7 @@ part of the semantic digest.
 The contract rejects:
 
 - embedded URL usernames or passwords;
-- URL fragments;
+- malformed textual schemes, missing URL hosts, and URL fragments;
 - common token, credential, signature, API-key, and authorization query keys;
 - malformed or unsupported checksum algorithms;
 - zero-byte sizes when a size is present;
