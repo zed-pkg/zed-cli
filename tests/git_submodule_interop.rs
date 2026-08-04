@@ -82,6 +82,7 @@ fn run_zed(project: &Path, home: &Path, args: &[&str]) -> Output {
         .env("ZED_PKG_HOME", home.join(".zed-pkg"))
         .env("ZED_PKG_REGISTRY", "file:///unused")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ALLOW_PROTOCOL", "file")
         .env_remove("ZED_PKG_GIT_SUBMODULES")
         .output()
         .unwrap()
