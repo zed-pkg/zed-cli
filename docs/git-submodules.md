@@ -45,10 +45,14 @@ cd <superproject>
 zed install --git-submodules --frozen
 ```
 
+All configured Git submodules are synchronized and initialized in this mode,
+including submodules that are not Zed packages. Only adopted Zed packages
+participate in `.zpkg.toml` and `.zpkg.lock` authority.
+
 ## Overtaking submodules
 
-Use takeover when the checked-out submodules are Zed packages and the root
-project should declare them as part of its Zed graph:
+Use takeover when checked-out submodules contain Zed packages and the root
+project should declare those packages as part of its Zed graph:
 
 ```sh
 zed overtake --git-submodules
@@ -57,15 +61,24 @@ zed overtake --git-submodules
 Takeover performs these steps:
 
 1. synchronizes and initializes all configured submodules recursively;
-2. requires each top-level submodule to contain a valid `.zpkg.toml`;
-3. verifies that `.gitmodules` and each gitlink are committed at superproject
-   `HEAD`;
-4. requires each submodule checkout to match its committed gitlink and have no
+2. discovers top-level submodules containing `.zpkg.toml` and leaves ordinary
+   non-Zed submodules under Git authority;
+3. requires every discovered `.zpkg.toml` to be valid;
+4. verifies that `.gitmodules` and each adopted gitlink are committed at
+   superproject `HEAD`;
+5. requires each adopted checkout to match its committed gitlink and have no
    tracked or untracked changes;
-5. adds each package path to `[workspace].members`;
-6. adds an exact direct requirement under `[dependencies]`;
-7. runs the normal Zed solver and transactional installer; and
-8. records immutable Git provenance in `.zpkg.lock`.
+6. adds each adopted package path to `[workspace].members`;
+7. adds an exact direct requirement under `[dependencies]`;
+8. runs the normal Zed solver and transactional installer; and
+9. records immutable Git provenance in `.zpkg.lock`.
+
+This makes takeover incremental in a mixed repository. For example, a project
+may keep a documentation theme or large fixture repository as an ordinary Git
+submodule while adopting only its Zed SDK packages. Missing `.zpkg.toml` means
+“leave this submodule Git-managed”; a present but malformed `.zpkg.toml` is an
+error rather than something Zed silently ignores. Takeover also fails without
+mutation when none of the configured submodules are Zed packages.
 
 The authority migration is failure-safe. If resolution or materialization fails
 before the ordinary install transaction commits, Zed restores the exact prior
@@ -86,15 +99,19 @@ members = ["vendor/client"]
 "acme/client" = "=1.2.3"
 ```
 
+A neighboring submodule such as `vendor/docs-theme` with no `.zpkg.toml`
+remains in `.gitmodules` and is still initialized by
+`zed install --git-submodules`, but it is not added to the Zed workspace or
+lockfile.
+
 If the superproject has no `.zpkg.toml`, takeover creates the same deterministic,
 non-publishable local consumer manifest used by a first `zed install` with
 package operands.
 
-Package identity comes from each submodule's own `.zpkg.toml`; Zed does not
-guess an organization or package name from a Git URL. A repository that also
-contains non-Zed submodules can continue using cooperative install mode. To
-overtake one, first add a valid package manifest to that submodule repository
-and commit it.
+Package identity comes from each adopted submodule's own `.zpkg.toml`; Zed does
+not guess an organization or package name from a Git URL. To adopt a currently
+Git-only submodule later, add and commit a valid package manifest in that
+submodule and run takeover again.
 
 ## Lock authority
 
@@ -130,8 +147,8 @@ A non-frozen install recomputes the records after normal resolution.
 Takeover deliberately retains `.gitmodules` and Git's gitlinks. Existing Git
 clone/update workflows therefore remain valid, and Zed can use them to restore
 workspace sources before resolving the package graph. Zed becomes authoritative
-for dependency declarations and lock integrity; Git remains a compatible source
-transport.
+for adopted dependency declarations and lock integrity; Git remains the source
+transport for every submodule and the sole authority for non-Zed submodules.
 
 Removing an adopted package from the active Zed dependency graph removes its
 Git lock record on the next non-frozen install. It does not delete the submodule
@@ -144,11 +161,12 @@ Zed refuses takeover or lock refresh when:
 - `.gitmodules` has uncommitted changes;
 - a configured path escapes the project or targets `.git`/Zed recovery state;
 - a workspace member resolves outside the superproject;
-- two submodules declare the same package identity or path;
-- the checkout differs from the gitlink committed at superproject `HEAD`;
-- the submodule or any nested submodule is dirty, uninitialized, conflicted, or
-  checked out at a different commit; or
-- a package manifest is invalid.
+- two adopted submodules declare the same package identity or path;
+- an adopted checkout differs from the gitlink committed at superproject
+  `HEAD`;
+- an adopted submodule or any of its nested submodules is dirty, uninitialized,
+  conflicted, or checked out at a different commit; or
+- a discovered package manifest is invalid.
 
 These checks keep `zed install --frozen` reproducible without making Git and Zed
 mutually exclusive.
