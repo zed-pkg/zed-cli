@@ -21,7 +21,7 @@ const LOCK_EXTENSION_KEY: &str = "git-submodule";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct GitSubmoduleLock {
+pub(crate) struct GitSubmoduleLock {
     pub name: String,
     pub path: String,
     pub package: String,
