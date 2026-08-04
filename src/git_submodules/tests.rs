@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
@@ -8,11 +9,14 @@ use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 
-use crate::config::{Config, read_manifest};
-
 use super::cli::{OvertakeArgs, OvertakeCli, OvertakeCommand, Route, route};
-use super::lock::{GitSubmoduleLock, read_lock_extensions, write_lock_extensions};
+use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};
+use super::lock::{
+    GitSubmoduleLock, active_workspace_packages, prepare_install, read_lock_extensions,
+    write_lock_extensions,
+};
 use super::*;
+use crate::config::{Config, read_manifest};
 
 fn git(project: &Path, args: &[&str]) {
     let status = Command::new("git")
@@ -67,7 +71,8 @@ fn route_recognizes_overtake_and_help_with_global_options() {
 
 #[test]
 fn boolish_overtake_flag_supports_bare_and_explicit_off() {
-    let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
+    let cli =
+        OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
     assert!(matches!(
         cli.command,
         OvertakeCommand::Overtake(OvertakeArgs {
@@ -82,6 +87,72 @@ fn boolish_overtake_flag_supports_bare_and_explicit_off() {
             git_submodules: false
         })
     ));
+}
+
+#[test]
+fn submodule_paths_reject_nested_git_and_transaction_components() {
+    for path in [
+        "vendor/.git/hooks",
+        "vendor/.GIT/hooks",
+        "vendor/../escape",
+        "vendor/./client",
+        "vendor//client",
+    ] {
+        assert!(
+            validate_relative_path(path).is_err(),
+            "unsafe path unexpectedly accepted: {path}"
+        );
+    }
+    let transaction_path = format!("vendor/{}/state", crate::transaction::STAGING_DIR);
+    assert!(validate_relative_path(&transaction_path).is_err());
+    validate_relative_path("vendor/client").unwrap();
+}
+
+#[test]
+fn adopted_workspace_reachability_includes_build_dependencies_transitively() {
+    let root_dir = tempfile::tempdir().unwrap();
+    let tool_dir = tempfile::tempdir().unwrap();
+    let codegen_dir = tempfile::tempdir().unwrap();
+
+    let mut root = generated_consumer_manifest(root_dir.path());
+    root.build_dependencies
+        .insert("acme/tool".to_string(), "=1.2.3".to_string());
+
+    let mut tool = generated_consumer_manifest(tool_dir.path());
+    tool.package.org = "acme".to_string();
+    tool.package.name = "tool".to_string();
+    tool.build_dependencies
+        .insert("acme/codegen".to_string(), "=1.2.3".to_string());
+
+    let mut codegen = generated_consumer_manifest(codegen_dir.path());
+    codegen.package.org = "acme".to_string();
+    codegen.package.name = "codegen".to_string();
+
+    let members = BTreeMap::from([
+        (
+            "acme/tool".to_string(),
+            WorkspaceMember {
+                path: "vendor/tool".to_string(),
+                root: tool_dir.path().to_path_buf(),
+                manifest: tool,
+            },
+        ),
+        (
+            "acme/codegen".to_string(),
+            WorkspaceMember {
+                path: "vendor/codegen".to_string(),
+                root: codegen_dir.path().to_path_buf(),
+                manifest: codegen,
+            },
+        ),
+    ]);
+
+    assert_eq!(
+        active_workspace_packages(&root, &members),
+        ["acme/codegen".to_string(), "acme/tool".to_string()]
+            .into_iter()
+            .collect()
+    );
 }
 
 #[test]
@@ -193,4 +264,28 @@ fn overtake_imports_manifest_workspace_and_git_lock() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].package, "acme/client");
     assert!(root.path().join("zed_modules/acme/client/lib.txt").exists());
+    assert!(matches!(
+        prepare_install(root.path(), true).unwrap(),
+        super::lock::InstallLockPlan::Frozen
+    ));
+
+    let gitmodules_path = root.path().join(".gitmodules");
+    let gitmodules = fs::read_to_string(&gitmodules_path).unwrap();
+    assert!(gitmodules.contains(child_url));
+    fs::write(
+        &gitmodules_path,
+        gitmodules.replace(
+            child_url,
+            "https://example.invalid/acme/client-mirror.git",
+        ),
+    )
+    .unwrap();
+    git(root.path(), &["add", ".gitmodules"]);
+    git(root.path(), &["commit", "-m", "change submodule transport"]);
+
+    let error = prepare_install(root.path(), true).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("url"),
+        "unexpected frozen drift error: {error:#}"
+    );
 }
