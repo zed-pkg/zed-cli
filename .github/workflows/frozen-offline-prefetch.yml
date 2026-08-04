@@ -1,0 +1,60 @@
+name: frozen offline prefetch
+
+on:
+  pull_request:
+    paths:
+      - src/install_graph/**
+      - tests/frozen_offline_prefetch.rs
+      - .github/workflows/frozen-offline-prefetch.yml
+  push:
+    branches: [main]
+    paths:
+      - src/install_graph/**
+      - tests/frozen_offline_prefetch.rs
+      - .github/workflows/frozen-offline-prefetch.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frozen-offline-prefetch-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  frozen-offline-prefetch:
+    name: frozen offline prefetch / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Real pack, cold prefetch, registry deletion, and offline replay
+        run: cargo test --locked --test frozen_offline_prefetch -- --nocapture
+
+      - name: Strict Clippy
+        run: cargo clippy --locked --test frozen_offline_prefetch -- -D warnings
