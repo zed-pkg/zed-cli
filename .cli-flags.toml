@@ -117,7 +117,7 @@ env = "ZED_PKG_GIT_SUBMODULES"
 aliases = ["git-submodules"]
 type = "bool"
 default = "false"
-help = "Synchronize and initialize Git submodules before installation; accepts explicit true/false."
+help = "Enable global Git submodule compatibility for install and overtake; accepts explicit true/false."
 
 [flags.allow_ecosystem_mismatch]
 env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"

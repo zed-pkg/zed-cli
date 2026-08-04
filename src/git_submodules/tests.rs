@@ -11,7 +11,7 @@ use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 
-use super::cli::{OvertakeArgs, OvertakeCli, OvertakeCommand, Route, route};
+use super::cli::{OvertakeCli, OvertakeCommand, Route, route};
 use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};
 #[cfg(unix)]
 use super::lock::prepare_install;
@@ -78,19 +78,12 @@ fn route_recognizes_overtake_and_help_with_global_options() {
 #[test]
 fn boolish_overtake_flag_supports_bare_and_explicit_off() {
     let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
-    assert!(matches!(
-        cli.command,
-        OvertakeCommand::Overtake(OvertakeArgs {
-            git_submodules: true
-        })
-    ));
+    assert!(cli.globals.git_submodules);
+    assert!(matches!(cli.command, OvertakeCommand::Overtake(_)));
+
     let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
-    assert!(matches!(
-        cli.command,
-        OvertakeCommand::Overtake(OvertakeArgs {
-            git_submodules: false
-        })
-    ));
+    assert!(!cli.globals.git_submodules);
+    assert!(matches!(cli.command, OvertakeCommand::Overtake(_)));
 }
 
 #[test]
