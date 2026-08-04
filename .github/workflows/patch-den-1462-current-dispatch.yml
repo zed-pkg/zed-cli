@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Make the legacy dispatcher replacement optional
+      - name: Let the current-main repair own dispatcher composition
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -38,12 +38,22 @@ jobs:
 
           path = Path('scripts/apply_den1462_mise_export.py')
           text = path.read_text()
-          old = 'text = replace_once(text, verify_arm, export_arm, "main export dispatch")\n'
-          new = 'if verify_arm in text:\n    text = replace_once(text, verify_arm, export_arm, "main export dispatch")\n'
+          old = '''    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one anchor, found {count}")
+    return text.replace(old, new, 1)
+'''
+          new = '''    count = text.count(old)
+    if label == "main export dispatch" and count == 0:
+        return text
+    if count != 1:
+        raise SystemExit(f"{label}: expected one anchor, found {count}")
+    return text.replace(old, new, 1)
+'''
           if new not in text:
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'legacy dispatcher replacement: expected one anchor, found {count}')
+                  raise SystemExit(f'replace_once function: expected one anchor, found {count}')
               path.write_text(text.replace(old, new, 1))
           PY
           python3 -m py_compile \
