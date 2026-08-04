@@ -7,17 +7,23 @@ on:
     paths:
       - .github/workflows/apply-gitmodules-rustfmt.yml
       - src/git_submodules/mod.rs
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-gitmodules-rustfmt.yml
+      - src/git_submodules/mod.rs
 
 permissions:
   contents: read
 
 concurrency:
-  group: apply-gitmodules-rustfmt-${{ github.ref }}
+  group: apply-gitmodules-rustfmt-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   format-and-validate:
-    if: github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || github.head_ref == 'agent/fail-closed-submodule-pack')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
