@@ -198,3 +198,53 @@ fn mixed_submodules_overtake_and_replay_from_a_fresh_clone() {
         "zed package\n"
     );
 }
+
+#[test]
+fn git_only_takeover_preserves_all_zed_managed_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let legacy_child = temp.path().join("legacy-child");
+    let root = temp.path().join("root");
+    let home = temp.path().join("home");
+
+    init_repo(&legacy_child);
+    fs::write(legacy_child.join("README.md"), "ordinary Git submodule\n").unwrap();
+    git_ok(&legacy_child, &["add", "."]);
+    git_ok(&legacy_child, &["commit", "-m", "legacy child"]);
+
+    init_repo(&root);
+    git_ok(&root, &["config", "protocol.file.allow", "always"]);
+    write_package(&root, "acme", "root");
+    add_submodule(&root, &legacy_child, "vendor/legacy");
+    git_ok(&root, &["add", "."]);
+    git_ok(&root, &["commit", "-m", "root with Git-only submodule"]);
+    git_ok(
+        &root,
+        &[
+            "submodule",
+            "deinit",
+            "--force",
+            "--",
+            "vendor/legacy",
+        ],
+    );
+    assert!(!root.join("vendor/legacy/README.md").exists());
+
+    let manifest_before = fs::read(root.join(".zpkg.toml")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let takeover = run_zed(&root, &home, &["overtake", "--git-submodules"]);
+    assert!(!takeover.status.success());
+    let stderr = String::from_utf8_lossy(&takeover.stderr);
+    assert!(stderr.contains("no overtake-compatible Zed submodules"));
+    assert!(stderr.contains("vendor/legacy"));
+
+    // Cooperative Git synchronization happens before package discovery, but
+    // the failed authority migration must not publish any Zed-managed state.
+    assert_eq!(fs::read(root.join(".zpkg.toml")).unwrap(), manifest_before);
+    assert!(!root.join(".zpkg.lock").exists());
+    assert!(!root.join("zed_modules").exists());
+    assert!(!root.join(".zpkg-staging").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("vendor/legacy/README.md")).unwrap(),
+        "ordinary Git submodule\n"
+    );
+}
