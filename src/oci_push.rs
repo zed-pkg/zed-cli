@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use zed_interfaces::{
     OCI_IMAGE_MANIFEST_MEDIA_TYPE, OciDescriptor, OciDigest, OciReference,
-    ZED_OCI_BINARY_MEDIA_TYPE_V1, ZED_OCI_CONFIG_MEDIA_TYPE_V1,
-    ZED_OCI_LOCK_MEDIA_TYPE_V1, ZED_OCI_MANIFEST_MEDIA_TYPE_V1,
-    ZED_OCI_PACKAGE_TAR_GZ_MEDIA_TYPE_V1, ZED_OCI_PACKAGE_ZIP_MEDIA_TYPE_V1,
+    ZED_OCI_BINARY_MEDIA_TYPE_V1, ZED_OCI_CONFIG_MEDIA_TYPE_V1, ZED_OCI_LOCK_MEDIA_TYPE_V1,
+    ZED_OCI_MANIFEST_MEDIA_TYPE_V1, ZED_OCI_PACKAGE_TAR_GZ_MEDIA_TYPE_V1,
+    ZED_OCI_PACKAGE_ZIP_MEDIA_TYPE_V1,
 };
 
 use crate::interactive;
@@ -169,12 +169,7 @@ fn execute(options: &OciPushOptions<'_>, password: Option<&str>) -> Result<OciPu
     let registry_config = prepare_registry_config(options, &destination, password)?;
     let target = registry_target(&destination)?;
 
-    let remote = resolve_remote(
-        options.oras,
-        &registry_config.path,
-        &target,
-        options,
-    )?;
+    let remote = resolve_remote(options.oras, &registry_config.path, &target, options)?;
     let status = match remote {
         RemoteTag::Digest(ref digest) if digest == &layout.manifest.digest => {
             OciPushStatus::AlreadyPresent
@@ -212,12 +207,8 @@ fn execute(options: &OciPushOptions<'_>, password: Option<&str>) -> Result<OciPu
             &target,
             options,
         )?;
-        let verified_remote = resolve_remote(
-            options.oras,
-            &registry_config.path,
-            &target,
-            options,
-        )?;
+        let verified_remote =
+            resolve_remote(options.oras, &registry_config.path, &target, options)?;
         match verified_remote {
             RemoteTag::Digest(ref digest) if digest == &layout.manifest.digest => {}
             RemoteTag::Digest(digest) => bail!(
@@ -338,8 +329,8 @@ fn verify_layout(layout: &Path, destination: &OciReference) -> Result<VerifiedLa
 
     let manifest_bytes = verify_descriptor_blob(&path, &manifest_descriptor, true)?
         .context("OCI manifest bytes were not captured")?;
-    let manifest: OciImageManifest = serde_json::from_slice(&manifest_bytes)
-        .context("parse verified OCI image manifest")?;
+    let manifest: OciImageManifest =
+        serde_json::from_slice(&manifest_bytes).context("parse verified OCI image manifest")?;
     if manifest.schema_version != 2
         || manifest.media_type != OCI_IMAGE_MANIFEST_MEDIA_TYPE
         || manifest.artifact_type != ZED_OCI_CONFIG_MEDIA_TYPE_V1
@@ -387,11 +378,7 @@ fn verify_layout(layout: &Path, destination: &OciReference) -> Result<VerifiedLa
     record_expected_blob(&mut expected_blobs, &manifest.config, "OCI config")?;
     verify_descriptor_blob(&path, &manifest.config, false)?;
     for (index, layer) in manifest.layers.iter().enumerate() {
-        record_expected_blob(
-            &mut expected_blobs,
-            layer,
-            &format!("OCI layer {index}"),
-        )?;
+        record_expected_blob(&mut expected_blobs, layer, &format!("OCI layer {index}"))?;
         verify_descriptor_blob(&path, layer, false)?;
     }
     verify_exact_blob_set(&path, &expected_blobs)?;
@@ -411,8 +398,8 @@ fn verify_layout(layout: &Path, destination: &OciReference) -> Result<VerifiedLa
 }
 
 fn require_real_directory(path: &Path, label: &str) -> Result<()> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("read {label} {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("read {label} {}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!("{label} {} must be a real directory", path.display());
     }
@@ -441,11 +428,9 @@ fn record_expected_blob(
         .validate(label)
         .map_err(|error| anyhow::anyhow!(error))?;
     let digest = descriptor.digest.to_string();
-    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size)
-        && previous_size != descriptor.size
-    {
+    if let Some(previous_size) = expected.insert(digest.clone(), descriptor.size) {
         bail!(
-            "OCI digest `{digest}` is declared with conflicting sizes {previous_size} and {}",
+            "OCI digest `{digest}` is declared more than once (sizes {previous_size} and {})",
             descriptor.size
         );
     }
@@ -465,10 +450,13 @@ fn verify_descriptor_blob(
         .encoded()
         .context("OCI descriptor is not a canonical SHA-256 digest")?;
     let path = layout.join("blobs/sha256").join(encoded);
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("read OCI blob {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(&path).with_context(|| format!("read OCI blob {}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!("OCI blob {} must be a regular non-symlink file", path.display());
+        bail!(
+            "OCI blob {} must be a regular non-symlink file",
+            path.display()
+        );
     }
     if metadata.len() != descriptor.size {
         bail!(
@@ -478,14 +466,14 @@ fn verify_descriptor_blob(
             metadata.len()
         );
     }
-    let canonical = fs::canonicalize(&path)
-        .with_context(|| format!("resolve OCI blob {}", path.display()))?;
+    let canonical =
+        fs::canonicalize(&path).with_context(|| format!("resolve OCI blob {}", path.display()))?;
     if !canonical.starts_with(layout) {
         bail!("OCI blob {} escapes the image layout", path.display());
     }
 
-    let mut file = fs::File::open(&path)
-        .with_context(|| format!("open OCI blob {}", path.display()))?;
+    let mut file =
+        fs::File::open(&path).with_context(|| format!("open OCI blob {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut captured = capture.then(Vec::new);
     let mut buffer = [0u8; 64 * 1024];
@@ -641,6 +629,7 @@ fn validate_username(username: &str) -> Result<()> {
 fn write_secure_file(path: &Path, bytes: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
+        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let mut file = fs::OpenOptions::new()
             .create_new(true)
@@ -667,12 +656,12 @@ fn read_password() -> Result<String> {
             .lock()
             .read_line(&mut password)
             .context("read OCI registry password from stdin")?;
-        while password.ends_with(['\n', '\r']) {
+        while password.ends_with('\n') || password.ends_with('\r') {
             password.pop();
         }
         password
     };
-    while password.ends_with(['\n', '\r']) {
+    while password.ends_with('\n') || password.ends_with('\r') {
         password.pop();
     }
     if password.is_empty() || password.contains('\0') {
@@ -727,7 +716,12 @@ fn validate_oras(oras: &Path, require_ca_file: bool) -> Result<String> {
         }
     }
 
-    Ok(version.lines().next().unwrap_or(version.trim()).trim().to_string())
+    Ok(version
+        .lines()
+        .next()
+        .unwrap_or(version.trim())
+        .trim()
+        .to_string())
 }
 
 fn resolve_remote(
@@ -749,7 +743,9 @@ fn resolve_remote(
             .split_whitespace()
             .rev()
             .find_map(|value| OciDigest::parse(value).ok())
-            .with_context(|| format!("ORAS resolve returned no canonical SHA-256 digest: {text}"))?;
+            .with_context(|| {
+                format!("ORAS resolve returned no canonical SHA-256 digest: {text}")
+            })?;
         return Ok(RemoteTag::Digest(digest));
     }
     let diagnostic = combined_output(&output);
@@ -775,9 +771,9 @@ fn copy_layout(
     command.args(["cp", "--from-oci-layout", "--no-tty"]);
     append_copy_transport(&mut command, registry_config, options)?;
     command.args([&source, target]).stdin(Stdio::null());
-    let output = command
-        .output()
-        .with_context(|| format!("copy verified OCI layout `{source}` to `{target}` through ORAS"))?;
+    let output = command.output().with_context(|| {
+        format!("copy verified OCI layout `{source}` to `{target}` through ORAS")
+    })?;
     require_success("oras cp", &output)
 }
 
@@ -851,8 +847,12 @@ fn bounded_diagnostic(value: &str) -> String {
         })
         .collect::<String>();
     if value.len() > MAX_DIAGNOSTIC_BYTES {
-        value.truncate(MAX_DIAGNOSTIC_BYTES);
-        value.push_str("…");
+        let mut end = MAX_DIAGNOSTIC_BYTES;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+        value.push('…');
     }
     value.trim().to_string()
 }
@@ -862,10 +862,10 @@ fn is_missing_manifest(value: &str) -> bool {
     [
         "manifest unknown",
         "manifest not found",
-        "not found",
-        "404",
         "no such manifest",
         "name unknown",
+        "response status code 404",
+        "404 not found",
     ]
     .iter()
     .any(|needle| value.contains(needle))
@@ -892,8 +892,7 @@ fn is_loopback_registry(registry: &str) -> bool {
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let first = chunk[0];
@@ -933,6 +932,7 @@ fn authentication_name(authentication: OciAuthentication) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     use serde_json::Value;
@@ -1087,21 +1087,23 @@ esac
     fn layout_verification_rejects_tampered_blob_before_transport() {
         let workspace = tempfile::tempdir().unwrap();
         let (layout, _) = make_layout(workspace.path());
-        let index: Value = serde_json::from_slice(&fs::read(layout.join(OCI_INDEX_FILE)).unwrap())
-            .unwrap();
+        let index: Value =
+            serde_json::from_slice(&fs::read(layout.join(OCI_INDEX_FILE)).unwrap()).unwrap();
         let manifest_digest = index["manifests"][0]["digest"]
             .as_str()
             .unwrap()
             .strip_prefix("sha256:")
             .unwrap();
-        fs::write(layout.join("blobs/sha256").join(manifest_digest), "tampered")
-            .unwrap();
+        fs::write(
+            layout.join("blobs/sha256").join(manifest_digest),
+            "tampered",
+        )
+        .unwrap();
 
         let destination = parse_destination("oci://localhost:5000/acme/tool:1.2.3").unwrap();
         let error = verify_layout(&layout, &destination).unwrap_err();
         assert!(
-            error.to_string().contains("size drift")
-                || error.to_string().contains("digest drift")
+            error.to_string().contains("size drift") || error.to_string().contains("digest drift")
         );
     }
 
@@ -1128,8 +1130,7 @@ esac
         };
         let destination = parse_destination(options.destination).unwrap();
         let prepared = prepare_registry_config(&options, &destination, Some("pass")).unwrap();
-        let config: Value =
-            serde_json::from_slice(&fs::read(&prepared.path).unwrap()).unwrap();
+        let config: Value = serde_json::from_slice(&fs::read(&prepared.path).unwrap()).unwrap();
         assert_eq!(config["auths"]["ghcr.io"]["auth"], "dXNlcjpwYXNz");
         #[cfg(unix)]
         assert_eq!(
