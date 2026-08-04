@@ -53,12 +53,16 @@ remain serialized across processes by their per-SHA blocking operating-system
 locks. Worker completion order cannot choose the graph because the solver
 consumes results in deterministic sequence order.
 
-The solver batches one highest currently viable candidate for every active
-unresolved coordinate before waiting. This lets a wide cold frontier saturate
-the configured five-worker pool while keeping alternate versions lazy:
-backtracking downloads another version only after the selected search branch
-actually needs it. A warm run still reports zero downloads and reuses the
-content-addressed store.
+The solver batches one highest currently viable candidate for every coordinate
+in the shallowest active provenance wave before waiting. Unresolved parents are
+therefore selected before deeper transitive coordinates are prefetched, so all
+constraints already discoverable from the shallower wave participate in the
+deeper candidate choice. In the canonical overlap graph this prevents
+acquisition of `shared@1.9.0` before the sibling parent contributes
+`shared <=1.5.0`; the cold solve downloads only the three selected artifacts.
+Equal-depth breadth still saturates the configured five-worker pool, and
+backtracking acquires another version only after the active search branch needs
+it. A warm run reports zero downloads and reuses the content-addressed store.
 
 Once solved, exact registry selections are exposed only to the root consumer
 manifest through a scoped, panic-safe context. Package manifests loaded from
@@ -85,10 +89,14 @@ The permanent test surface must retain all of these properties:
 9. fresh solving rejects yanked candidates before archive acquisition;
 10. frozen replay consumes the exact lock graph, including a previously locked
     version that was subsequently yanked;
-11. a cold wide frontier reaches the configured five-worker bound;
-12. a warm replay downloads zero artifacts;
-13. candidate acquisition retains the per-SHA interprocess lock; and
-14. normal install and prefetch consume the same prepared graph.
+11. unresolved shallower parents contribute constraints before deeper
+    transitive candidates are acquired;
+12. the canonical overlap cold solve downloads only its three selected
+    artifacts;
+13. a cold wide frontier reaches the configured five-worker bound;
+14. a warm replay downloads zero artifacts;
+15. candidate acquisition retains the per-SHA interprocess lock; and
+16. normal install and prefetch consume the same prepared graph.
 
 ## Verification procedure
 
@@ -110,7 +118,8 @@ Repository CI must additionally retain frozen-lock integrity, Windows locking,
 manifestless/polyglot installation, OCI copy-mode, Nix interoperability,
 development-shell, formal review, agent-policy, and repository-hardening gates.
 Independent black-box certification in `zed-pkg-test/zed-pkg-e2e#36` must build
-one immutable product SHA and prove overlap, multi-coordinate backtracking,
+one immutable product SHA and prove overlap with a `(resolved=3, workers=5,
+downloaded=3)` cold summary, multi-coordinate backtracking,
 rejected-constraint removal, deterministic unsatisfiable provenance, cycles,
 yank-before-acquisition, and frozen replay through the public executable.
 
