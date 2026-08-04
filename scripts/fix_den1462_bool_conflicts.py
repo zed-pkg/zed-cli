@@ -135,3 +135,15 @@ else:
 ''',
         "runtime export mode conflict",
     )
+
+mise_export = Path("src/mise_export.rs")
+replace_once(
+    mise_export,
+    '''        "{kind} cannot escape the project root: {}",
+        path.display()
+''',
+    '''        "{kind} must be project-relative and cannot escape the project root: {}",
+        path.display()
+''',
+    "project escape error contract",
+)
