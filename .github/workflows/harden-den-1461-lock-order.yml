@@ -1,0 +1,180 @@
+name: harden DEN-1461 lock semantics
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/harden-den-1461-lock-order.yml
+      - src/mise_lock.rs
+      - docs/mise-lock-contract.md
+
+permissions:
+  contents: write
+
+concurrency:
+  group: harden-den-1461-lock-semantics
+  cancel-in-progress: false
+
+jobs:
+  harden:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/den-1461-mise-lock-contract'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/den-1461-mise-lock-contract
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Preserve semantic order and strengthen URL identity
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/mise_lock.rs')
+          text = path.read_text(encoding='utf-8')
+
+          old_comment = '''    /// Presentation-independent clone. Tool identities and set-like package
+              /// lists are sorted; ordered additional artifacts remain ordered.
+          '''
+          new_comment = '''    /// Presentation-independent clone. Tool identity and additional-artifact
+              /// order remain semantic; only set-like package lists are sorted.
+          '''
+          if old_comment not in text:
+              raise SystemExit('normalization documentation anchor not found')
+          text = text.replace(old_comment, new_comment, 1)
+
+          old_sort = '''        for identities in normalized.tools.values_mut() {
+                  for identity in identities.iter_mut() {
+                      identity.normalize();
+                  }
+                  identities.sort_by_cached_key(|identity| {
+                      serde_json::to_string(identity).unwrap_or_else(|_| identity.version.clone())
+                  });
+              }
+          '''
+          new_sort = '''        for identities in normalized.tools.values_mut() {
+                  for identity in identities.iter_mut() {
+                      identity.normalize();
+                  }
+                  // mise writes each Vec<LockfileTool> in stored order and
+                  // multi-version PATH/default selection is order-sensitive.
+              }
+          '''
+          if old_sort not in text:
+              raise SystemExit('tool identity sorting block not found')
+          text = text.replace(old_sort, new_sort, 1)
+
+          old_test = '''    #[test]
+              fn tool_identity_order_is_not_semantic() {
+          '''
+          new_test = '''    #[test]
+              fn tool_identity_order_is_semantic() {
+          '''
+          if old_test not in text:
+              raise SystemExit('tool identity order test not found')
+          text = text.replace(old_test, new_test, 1)
+
+          block_start = text.index('    fn tool_identity_order_is_semantic()')
+          block_end = text.index('    #[test]\n    fn ordered_additional_artifacts_change_semantic_identity()', block_start)
+          block = text[block_start:block_end]
+          old_assert = '''        assert_eq!(
+                  first.semantic_digest_sha256().unwrap(),
+                  second.semantic_digest_sha256().unwrap()
+              );
+          '''
+          new_assert = '''        assert_ne!(
+                  first.semantic_digest_sha256().unwrap(),
+                  second.semantic_digest_sha256().unwrap()
+              );
+          '''
+          if old_assert not in block:
+              raise SystemExit('tool identity order assertion not found')
+          block = block.replace(old_assert, new_assert, 1)
+          text = text[:block_start] + block + text[block_end:]
+
+          scheme_guard = '''    ensure!(
+                  matches!(parsed.scheme(), "http" | "https"),
+                  "`{field}` must use http or https, got `{}`",
+                  parsed.scheme()
+              );
+          '''
+          host_guard = scheme_guard + '''    ensure!(
+                  parsed.host_str().is_some(),
+                  "`{field}` must contain a network host"
+              );
+          '''
+          if scheme_guard not in text:
+              raise SystemExit('URL scheme guard not found')
+          text = text.replace(scheme_guard, host_guard, 1)
+
+          credential_key = '        "x-amz-signature",\n'
+          credential_insert = credential_key + '        "x-amz-security-token",\n'
+          if credential_key not in text:
+              raise SystemExit('AWS signature query key not found')
+          text = text.replace(credential_key, credential_insert, 1)
+
+          secret_loop = '''            "https://example.test/tool.tar.gz?token=secret",
+                  "https://example.test/tool.tar.gz#fragment",
+          '''
+          secret_insert = '''            "https://example.test/tool.tar.gz?token=secret",
+                  "https://example.test/tool.tar.gz?X-Amz-Security-Token=secret",
+                  "https://example.test/tool.tar.gz#fragment",
+                  "https:/missing-host/tool.tar.gz",
+          '''
+          if secret_loop not in text:
+              raise SystemExit('secret URL regression list not found')
+          text = text.replace(secret_loop, secret_insert, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+          docs = Path('docs/mise-lock-contract.md')
+          text = docs.read_text(encoding='utf-8')
+          text = text.replace(
+              '- tool identity arrays are sorted by complete identity;\n',
+              '- tool identity arrays retain declared order because multi-version activation is order-sensitive;\n',
+              1,
+          )
+          text = text.replace(
+              'Ordered `additional_artifacts` remain ordered because mise extracts them in\nsequence. Reordering them changes the semantic digest.\n',
+              'Ordered tool identities and `additional_artifacts` remain ordered because mise\nuses their sequence during activation and extraction. Reordering either changes the\nsemantic digest.\n',
+              1,
+          )
+          text = text.replace(
+              '- URL fragments;\n',
+              '- missing URL hosts and URL fragments;\n',
+              1,
+          )
+          docs.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate the hardened contract
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked mise_lock
+          cargo test --locked --test mise_lock_contract
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit ordinary source and remove bootstrap workflow
+        run: |
+          set -euo pipefail
+          rm .github/workflows/harden-den-1461-lock-order.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/mise_lock.rs docs/mise-lock-contract.md .github/workflows/harden-den-1461-lock-order.yml
+          git diff --cached --check
+          git commit -m 'fix(DEN-1461): preserve ordered lock identities'
+          git push origin HEAD:feat/den-1461-mise-lock-contract
