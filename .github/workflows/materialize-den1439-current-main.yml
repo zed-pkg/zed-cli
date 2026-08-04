@@ -1,0 +1,236 @@
+name: materialize DEN-1439 on current main
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/materialize-den1439-current-main.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-den1439-current-main
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1439-mise-import-current-main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out clean current-main branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: agent/den-1439-mise-import-current-main
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Fetch reviewed implementation source
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            alexanderdmills/den-1439-mise-import-verify
+
+      - name: Copy additive implementation files
+        run: |
+          set -euo pipefail
+          OLD=origin/alexanderdmills/den-1439-mise-import-verify
+          git show "$OLD:src/environment.rs" > src/environment.rs
+          git show "$OLD:tests/mise_environment_cli.rs" > tests/mise_environment_cli.rs
+          git show "$OLD:docs/mise-interop.md" > docs/mise-interop.md
+
+      - name: Compose CLI, dispatcher, flags, and docs semantically
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          old_ref = "origin/alexanderdmills/den-1439-mise-import-verify"
+
+          def old_file(path: str) -> str:
+              return subprocess.check_output(
+                  ["git", "show", f"{old_ref}:{path}"], text=True
+              )
+
+          def extract(text: str, pattern: str, label: str) -> str:
+              match = re.search(pattern, text, flags=re.S | re.M)
+              if not match:
+                  raise SystemExit(f"could not extract {label}")
+              return match.group(0)
+
+          # Public module surface: retain every current-main module and add only
+          # the environment adapter module.
+          lib_path = Path("src/lib.rs")
+          lib = lib_path.read_text()
+          if "pub mod environment;" not in lib:
+              anchor = "pub mod fetch;\n"
+              if anchor not in lib:
+                  raise SystemExit("src/lib.rs fetch-module anchor missing")
+              lib = lib.replace(anchor, anchor + "pub mod environment;\n", 1)
+          lib_path.write_text(lib)
+
+          old_cli = old_file("src/cli.rs")
+          cli_path = Path("src/cli.rs")
+          cli = cli_path.read_text()
+
+          manager_block = extract(
+              old_cli,
+              r"#\[derive\(Debug, Clone, Copy, PartialEq, Eq, ValueEnum\)\]\npub enum EnvironmentManagerArg \{.*?\n\}\n",
+              "EnvironmentManagerArg",
+          )
+          if "pub enum EnvironmentManagerArg" not in cli:
+              anchor = "#[derive(Debug, Subcommand)]\npub enum Cmd {"
+              if anchor not in cli:
+                  raise SystemExit("Cmd anchor missing")
+              cli = cli.replace(anchor, manager_block + "\n" + anchor, 1)
+
+          cmd_variant = extract(
+              old_cli,
+              r"    /// Import or verify project-local developer-environment configuration\.\n    Env \{.*?\n    \},\n",
+              "Cmd::Env variant",
+          )
+          if "    Env {\n        #[command(subcommand)]\n        cmd: EnvCmd," not in cli:
+              anchor = "    /// Generate a completion script from the same typed command model used at runtime\n"
+              if anchor not in cli:
+                  raise SystemExit("Completions command anchor missing")
+              cli = cli.replace(anchor, cmd_variant + anchor, 1)
+
+          env_cmd_block = extract(
+              old_cli,
+              r"#\[derive\(Debug, Subcommand\)\]\npub enum EnvCmd \{.*?\n\}\n",
+              "EnvCmd",
+          )
+          if "pub enum EnvCmd" not in cli:
+              anchor = "#[derive(Debug, Subcommand)]\npub enum ReleaseCmd {"
+              if anchor not in cli:
+                  raise SystemExit("ReleaseCmd anchor missing")
+              cli = cli.replace(anchor, env_cmd_block + "\n" + anchor, 1)
+
+          test_block = extract(
+              old_cli,
+              r"    #\[test\]\n    fn environment_import_and_verify_are_typed\(\) \{.*?\n    \}\n",
+              "typed environment CLI test",
+          )
+          if "fn environment_import_and_verify_are_typed" not in cli:
+              anchor = "    #[test]\n    fn completion_shells_are_typed_positionals() {"
+              if anchor not in cli:
+                  raise SystemExit("completion test anchor missing")
+              cli = cli.replace(anchor, test_block + "\n" + anchor, 1)
+          cli_path.write_text(cli)
+
+          old_main = old_file("src/main.rs")
+          main_path = Path("src/main.rs")
+          main = main_path.read_text()
+          if "use zed_cli::cli::EnvCmd;" not in main:
+              main = main.replace(
+                  "use zed_cli::completion;\n",
+                  "use zed_cli::cli::EnvCmd;\nuse zed_cli::completion;\n",
+                  1,
+              )
+          if "use zed_cli::environment;" not in main:
+              main = main.replace(
+                  "use zed_cli::dev;\n",
+                  "use zed_cli::dev;\nuse zed_cli::environment;\n",
+                  1,
+              )
+
+          env_arm = extract(
+              old_main,
+              r"        Cmd::Env \{ cmd \} => match cmd \{.*?\n        \},\n",
+              "Cmd::Env dispatcher arm",
+          )
+          if "        Cmd::Env { cmd } =>" not in main:
+              anchor = "        Cmd::Completions { shell } => {"
+              if anchor not in main:
+                  raise SystemExit("main Completions arm anchor missing")
+              main = main.replace(anchor, env_arm + anchor, 1)
+          main_path.write_text(main)
+
+          old_flags = old_file(".cli-flags.toml")
+          flags_path = Path(".cli-flags.toml")
+          flags = flags_path.read_text()
+          env_flags = extract(
+              old_flags,
+              r"\[flags\.env_config\].*?(?=\[commands\.init\])",
+              "environment flags",
+          )
+          if "[flags.env_config]" not in flags:
+              anchor = "[commands.init]"
+              if anchor not in flags:
+                  raise SystemExit("commands.init anchor missing")
+              flags = flags.replace(anchor, env_flags + anchor, 1)
+
+          env_commands = extract(
+              old_flags,
+              r"\[commands\.env\].*?(?=\[commands\.completions\])",
+              "environment command metadata",
+          )
+          if "[commands.env]" not in flags:
+              anchor = "[commands.completions]"
+              if anchor not in flags:
+                  raise SystemExit("commands.completions anchor missing")
+              flags = flags.replace(anchor, env_commands + anchor, 1)
+          flags_path.write_text(flags)
+
+          old_readme = old_file("README.md")
+          readme_path = Path("README.md")
+          readme = readme_path.read_text()
+          rows = "\n".join(
+              line
+              for line in old_readme.splitlines()
+              if "`zed env import mise" in line or "`zed env verify mise" in line
+          )
+          if not rows:
+              raise SystemExit("README environment command rows missing")
+          if "`zed env import mise" not in readme:
+              lines = readme.splitlines()
+              index = next(
+                  (
+                      i + 1
+                      for i, line in enumerate(lines)
+                      if "`zed uninstall" in line
+                  ),
+                  None,
+              )
+              if index is None:
+                  raise SystemExit("README uninstall row anchor missing")
+              lines[index:index] = rows.splitlines()
+              readme = "\n".join(lines) + ("\n" if readme.endswith("\n") else "")
+          readme_path.write_text(readme)
+          PY
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Validate the current-main composition
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --locked environment::tests
+          cargo test --locked --test mise_environment_cli
+          cargo test --locked --doc
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo build --locked --release --bin zed
+          ./target/release/zed env import mise --help
+          ./target/release/zed env verify mise --help
+          git diff --check
+
+      - name: Commit ordinary implementation and remove materializer
+        run: |
+          set -euo pipefail
+          rm .github/workflows/materialize-den1439-current-main.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat(DEN-1439): import and verify mise on current main'
+          git push origin HEAD:agent/den-1439-mise-import-current-main
