@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -90,6 +99,59 @@ export function assertDistinctArtifactPaths({ planPath, reportPath, integrityPat
     reportPath: resolved[1],
     integrityPath: resolved[2],
   };
+}
+
+async function existingArtifactIdentity(path) {
+  try {
+    const [canonical, metadata] = await Promise.all([realpath(path), stat(path)]);
+    return {
+      canonical: process.platform === "win32" ? canonical.toLowerCase() : canonical,
+      inode:
+        Number.isSafeInteger(metadata.dev) &&
+        Number.isSafeInteger(metadata.ino) &&
+        metadata.ino !== 0
+          ? `${metadata.dev}:${metadata.ino}`
+          : null,
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+export async function assertDistinctArtifactFiles({
+  planPath,
+  reportPath,
+  integrityPath,
+}) {
+  const artifacts = [
+    ["release plan", planPath],
+    ["release report", reportPath],
+    ["release report integrity manifest", integrityPath],
+  ];
+  const canonicalPaths = new Map();
+  const inodes = new Map();
+
+  for (const [label, path] of artifacts) {
+    const identity = await existingArtifactIdentity(path);
+    if (!identity) continue;
+
+    const canonicalAlias = canonicalPaths.get(identity.canonical);
+    if (canonicalAlias) {
+      throw new Error(`${canonicalAlias} and ${label} must be distinct files`);
+    }
+    canonicalPaths.set(identity.canonical, label);
+
+    if (identity.inode) {
+      const inodeAlias = inodes.get(identity.inode);
+      if (inodeAlias) {
+        throw new Error(`${inodeAlias} and ${label} must be distinct files`);
+      }
+      inodes.set(identity.inode, label);
+    }
+  }
+
+  return { planPath, reportPath, integrityPath };
 }
 
 async function metadataOrNull(path) {
@@ -209,7 +271,9 @@ export function validateIntegrityManifest(input, planPath, reportPath) {
 }
 
 export async function bindReleasePlanIntegrity(paths) {
-  const { planPath, reportPath, integrityPath } = assertDistinctArtifactPaths(paths);
+  const resolvedPaths = assertDistinctArtifactPaths(paths);
+  const { planPath, reportPath, integrityPath } =
+    await assertDistinctArtifactFiles(resolvedPaths);
   await Promise.all([
     assertSafeIntegrityOutputPath(reportPath, "release report"),
     assertSafeIntegrityOutputPath(integrityPath, "release report integrity manifest"),
@@ -239,7 +303,9 @@ export async function bindReleasePlanIntegrity(paths) {
 }
 
 export async function verifyReleasePlanIntegrity(paths) {
-  const { planPath, reportPath, integrityPath } = assertDistinctArtifactPaths(paths);
+  const resolvedPaths = assertDistinctArtifactPaths(paths);
+  const { planPath, reportPath, integrityPath } =
+    await assertDistinctArtifactFiles(resolvedPaths);
   const [planSource, reportSource, integritySource] = await Promise.all([
     readFile(planPath, "utf8"),
     readFile(reportPath, "utf8"),
