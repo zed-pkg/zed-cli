@@ -1,0 +1,121 @@
+name: native task runtime
+
+on:
+  pull_request:
+    paths:
+      - .task-cli-flags.toml
+      - docs/task-runtime.md
+      - src/task_runtime.rs
+      - src/bin/zed-task.rs
+      - src/lib.rs
+      - tests/task_runtime_cli.rs
+      - .github/workflows/task-runtime.yml
+  push:
+    branches: [main]
+    paths:
+      - .task-cli-flags.toml
+      - src/task_runtime.rs
+      - src/bin/zed-task.rs
+      - src/lib.rs
+      - tests/task_runtime_cli.rs
+      - .github/workflows/task-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: task-runtime-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  task-runtime:
+    name: task runtime / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Validate flags-2-env contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          contract = tomllib.loads(Path('.task-cli-flags.toml').read_text())
+          expected = {
+              'ZED_TASK_PLAN',
+              'ZED_TASK_JSON',
+              'ZED_TASK_ALL',
+              'ZED_TASK_DRY_RUN',
+              'ZED_TASK_YES',
+              'ZED_TASK_JOBS',
+              'ZED_TASK_NO_CACHE',
+          }
+          observed = set()
+          for flag in contract.get('flags', {}).values():
+              observed.add(flag['env'])
+          for command in contract.get('commands', {}).values():
+              for flag in command.get('flags', {}).values():
+                  observed.add(flag['env'])
+          assert observed == expected, (observed, expected)
+          PY
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Unit and real CLI tests
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib task_runtime::tests
+          cargo test --locked --test task_runtime_cli
+
+      - name: Strict Clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
+
+      - name: Repeated deterministic dry-run canary
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed-task
+          work="$RUNNER_TEMP/zed-task-determinism"
+          mkdir -p "$work"
+          cat > "$work/zed-env.toml" <<'TOML'
+          schema = 2
+
+          [tasks.prepare]
+          run = ["echo prepare"]
+
+          [tasks.build]
+          depends = ["prepare"]
+          run = ["echo build"]
+          TOML
+          (
+            cd "$work"
+            "$GITHUB_WORKSPACE/target/debug/zed-task" --json run build --dry-run > first.json
+            "$GITHUB_WORKSPACE/target/debug/zed-task" --json run build --dry-run > second.json
+            cmp first.json second.json
+          )
