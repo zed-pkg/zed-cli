@@ -1,25 +1,47 @@
-use super::artifact::{resolve_version, split_key, validate_version_identity};
+use super::artifact::validate_version_identity;
+use super::solver::{PreparedInstall, solve_install};
 use super::*;
 
-/// Warm the content-addressed store for an install. The normal installer runs
-/// immediately afterward and remains responsible for the project transaction.
-pub fn prefetch(project: &Path, cfg: &Config, frozen: bool) -> Result<PrefetchReport> {
+/// Solve the complete active constraint set before the transactional installer
+/// mutates project output. Candidate manifests are still loaded through the
+/// bounded worker pool and the shared per-artifact process locks.
+pub(crate) fn prepare(project: &Path, cfg: &Config) -> Result<PreparedInstall> {
     let concurrency = install_concurrency();
     let registry = registry_for(&cfg.registry)?;
-    let report = if frozen {
-        prefetch_locked(project, cfg, registry.as_ref(), concurrency)?
+    let manifest = read_manifest(project)?;
+    let prepared = if manifest.dependencies.is_empty() {
+        PreparedInstall::default()
     } else {
-        let manifest = read_manifest(project)?;
-        prefetch_recursive(project, cfg, registry.as_ref(), &manifest, concurrency)?
+        run_with_pool(cfg, concurrency, |pool| {
+            solve_install(project, &manifest, registry.as_ref(), pool)
+        })?
     };
+    report_prefetch(prepared.report, concurrency);
+    Ok(prepared)
+}
 
+/// Warm the content-addressed store for an install. Non-frozen installs use the
+/// same complete graph returned to the normal installer facade. Frozen replay
+/// remains lock-authoritative and never re-solves or rewrites the graph.
+pub fn prefetch(project: &Path, cfg: &Config, frozen: bool) -> Result<PrefetchReport> {
+    if !frozen {
+        return prepare(project, cfg).map(|prepared| prepared.report);
+    }
+
+    let concurrency = install_concurrency();
+    let registry = registry_for(&cfg.registry)?;
+    let report = prefetch_locked(project, cfg, registry.as_ref(), concurrency)?;
+    report_prefetch(report, concurrency);
+    Ok(report)
+}
+
+fn report_prefetch(report: PrefetchReport, concurrency: usize) {
     if report.resolved > 0 {
         eprintln!(
             "recursive install prefetch: {} package(s), up to {} concurrent, {} downloaded",
             report.resolved, concurrency, report.downloaded
         );
     }
-    Ok(report)
 }
 
 fn install_concurrency() -> usize {
@@ -112,97 +134,6 @@ fn prefetch_locked(
         }
         Ok(PrefetchReport {
             resolved: total,
-            downloaded,
-        })
-    })
-}
-
-fn prefetch_recursive(
-    project: &Path,
-    cfg: &Config,
-    registry: &dyn Registry,
-    manifest: &Manifest,
-    concurrency: usize,
-) -> Result<PrefetchReport> {
-    if manifest.dependencies.is_empty() {
-        return Ok(PrefetchReport::default());
-    }
-    let workspace = WorkspaceGraph::discover(project);
-
-    run_with_pool(cfg, concurrency, |pool| {
-        let mut pending: VecDeque<DependencyRequest> = manifest
-            .dependencies
-            .iter()
-            .map(|(key, requirement)| DependencyRequest {
-                key: key.clone(),
-                requirement: requirement.clone(),
-            })
-            .collect();
-        let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
-        let mut expanded_workspace = BTreeSet::new();
-        let mut in_flight = 0usize;
-        let mut next_sequence = 0usize;
-        let mut next_result = 0usize;
-        let mut buffered_results: BTreeMap<usize, Result<FetchResult>> = BTreeMap::new();
-        let mut downloaded = 0usize;
-
-        loop {
-            while let Some(request) = pending.pop_front() {
-                if let Some(member_dependencies) = workspace.dependencies.get(&request.key) {
-                    if expanded_workspace.insert(request.key.clone()) {
-                        pending.extend(member_dependencies.iter().map(|(key, requirement)| {
-                            DependencyRequest {
-                                key: key.clone(),
-                                requirement: requirement.clone(),
-                            }
-                        }));
-                    }
-                    continue;
-                }
-
-                let (org, name) = split_key(&request.key)?;
-                let requirement = Requirement::parse(&request.requirement);
-                if let Some(existing) = resolved.get(&request.key) {
-                    if requirement.matches(&existing.version) {
-                        continue;
-                    }
-                    bail!(
-                        "version conflict for {}: resolved {} but another dependency requires `{}` (zed installs one version per package)",
-                        request.key,
-                        existing.version,
-                        request.requirement
-                    );
-                }
-
-                let version = resolve_version(registry, &org, &name, &request.requirement)?;
-                resolved.insert(request.key.clone(), version.clone());
-                pool.submit(FetchTask {
-                    sequence: next_sequence,
-                    key: request.key,
-                    version,
-                })?;
-                next_sequence += 1;
-                in_flight += 1;
-            }
-
-            if in_flight == 0 {
-                break;
-            }
-
-            let result = receive_in_order(pool, &mut buffered_results, next_result)?;
-            next_result += 1;
-            in_flight -= 1;
-            downloaded += usize::from(result.downloaded);
-            pending.extend(
-                result
-                    .dependencies
-                    .into_iter()
-                    .map(|(key, requirement)| DependencyRequest { key, requirement }),
-            );
-        }
-
-        Ok(PrefetchReport {
-            resolved: resolved.len(),
             downloaded,
         })
     })
