@@ -230,5 +230,5 @@ mod tests;
 
 pub(crate) use artifact::ensure_artifact;
 use artifact::worker_loop;
-pub(crate) use resolver::prepare;
 pub use resolver::prefetch;
+pub(crate) use resolver::prepare;
