@@ -82,7 +82,7 @@ pub enum OciCmd {
         #[arg(long, env = "ZED_PKG_OCI_ALLOW_TAG_REPLACEMENT")]
         allow_tag_replacement: bool,
         /// Emit machine-readable JSON rather than the human summary
-        #[arg(long, env = "ZED_PKG_OCI_JSON")]
+        #[arg(long, env = "ZED_PKG_OCI_PUSH_JSON")]
         json: bool,
     },
 }
@@ -91,7 +91,7 @@ pub enum OciCmd {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     use crate::cli::{Cli, Cmd};
 
@@ -206,6 +206,30 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn oci_json_environment_keys_are_command_scoped() {
+        let root = Cli::command();
+        let oci = root.find_subcommand("oci").unwrap();
+        let plan = oci.find_subcommand("plan").unwrap();
+        let push = oci.find_subcommand("push").unwrap();
+
+        let plan_json = plan
+            .get_arguments()
+            .find(|argument| argument.get_long() == Some("json"))
+            .and_then(|argument| argument.get_env())
+            .unwrap()
+            .to_string_lossy();
+        let push_json = push
+            .get_arguments()
+            .find(|argument| argument.get_long() == Some("json"))
+            .and_then(|argument| argument.get_env())
+            .unwrap()
+            .to_string_lossy();
+
+        assert_eq!(plan_json, "ZED_PKG_OCI_JSON");
+        assert_eq!(push_json, "ZED_PKG_OCI_PUSH_JSON");
     }
 
     #[test]
