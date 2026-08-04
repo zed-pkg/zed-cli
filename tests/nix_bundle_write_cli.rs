@@ -255,6 +255,43 @@ fn command_accepts_environment_contract_and_rejects_unknown_flags() {
     assert!(stderr(&unknown).contains("unknown Nix interop option"));
 }
 
+#[cfg(unix)]
+#[test]
+fn command_rejects_symlinked_immediate_output_parent() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().unwrap();
+    let project = root.path().join("project");
+    let lock = root.path().join("approved-flake.lock");
+    let real_parent = root.path().join("real-exports");
+    let linked_parent = root.path().join("linked-exports");
+    let target_bundle = real_parent.join("bundle");
+    write_project(&project, "x86_64-linux");
+    fs::write(&lock, flake_lock()).unwrap();
+    fs::create_dir(&real_parent).unwrap();
+    symlink(&real_parent, &linked_parent).unwrap();
+
+    let output = run_bundle(
+        &project,
+        &[
+            "--frozen",
+            "--flake-lock",
+            lock.to_str().unwrap(),
+            "--out",
+            linked_parent.join("bundle").to_str().unwrap(),
+        ],
+        &[],
+    );
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("is not a real directory"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!target_bundle.exists());
+}
+
 #[test]
 #[ignore = "requires Nix and one explicit immutable closure acquisition step"]
 fn persisted_command_bundle_checks_and_builds_offline() {
