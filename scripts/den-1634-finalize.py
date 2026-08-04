@@ -25,6 +25,7 @@ resolve_marker = "fn resolve_shell(explicit: Option<&Path>) -> PathBuf {\n"
 helper = r'''fn child_process_current_dir(root: &Path) -> PathBuf {
     #[cfg(windows)]
     {
+        use std::ffi::OsString;
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
         let wide = root.as_os_str().encode_wide().collect::<Vec<_>>();
@@ -39,6 +40,7 @@ helper = r'''fn child_process_current_dir(root: &Path) -> PathBuf {
     }
 }
 
+#[cfg(any(windows, test))]
 fn normalize_windows_child_current_dir(wide: &[u16]) -> Vec<u16> {
     const SLASH: u16 = b'\\' as u16;
     const VERBATIM: &[u16] = &[SLASH, SLASH, b'?' as u16, SLASH];
