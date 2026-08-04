@@ -27,6 +27,24 @@ An unsatisfiable graph reports the active requirements and their deterministic
 paths. Candidate failure nesting is bounded in the rendered diagnostic, while
 the solve itself remains complete.
 
+## Version-scheme and withdrawal policy
+
+Requirements are matched according to the package's declared version scheme:
+
+- semver and calver packages use their normalized range semantics;
+- opaque versions are exact identifiers and never acquire semver meaning merely
+  because an identifier contains digits or a requirement begins with `^`; and
+- workspace members are checked with the same scheme-aware matcher as registry
+  candidates.
+
+Fresh resolution reads immutable version metadata before submitting an artifact
+to the acquisition pool. A yanked candidate may be remembered as unavailable
+for deterministic diagnostics, but its archive is not downloaded or extracted
+into a fresh home. When every otherwise matching candidate is yanked, the error
+points to lock-authoritative `zed install --frozen` replay. An existing exact
+lock may continue to acquire and replay the withdrawn version; fresh solving may
+not choose it.
+
 ## Artifact and mutation boundary
 
 Graph correctness does not introduce another downloader. Package metadata and
@@ -34,6 +52,13 @@ candidate manifests use the existing bounded `FetchPool`; immutable artifacts
 remain serialized across processes by their per-SHA blocking operating-system
 locks. Worker completion order cannot choose the graph because the solver
 consumes results in deterministic sequence order.
+
+The solver batches one highest currently viable candidate for every active
+unresolved coordinate before waiting. This lets a wide cold frontier saturate
+the configured five-worker pool while keeping alternate versions lazy:
+backtracking downloads another version only after the selected search branch
+actually needs it. A warm run still reports zero downloads and reuses the
+content-addressed store.
 
 Once solved, exact registry selections are exposed only to the root consumer
 manifest through a scoped, panic-safe context. Package manifests loaded from
@@ -56,9 +81,14 @@ The permanent test surface must retain all of these properties:
 5. backtracking may cross more than one package coordinate;
 6. every incompatible requirement path appears deterministically;
 7. diamonds and cycles terminate with one selected version per coordinate;
-8. frozen replay consumes the exact lock graph without solving;
-9. candidate acquisition retains the configured worker bound and per-SHA lock;
-10. normal install and prefetch consume the same prepared graph.
+8. opaque package identifiers accept exact requirements only;
+9. fresh solving rejects yanked candidates before archive acquisition;
+10. frozen replay consumes the exact lock graph, including a previously locked
+    version that was subsequently yanked;
+11. a cold wide frontier reaches the configured five-worker bound;
+12. a warm replay downloads zero artifacts;
+13. candidate acquisition retains the per-SHA interprocess lock; and
+14. normal install and prefetch consume the same prepared graph.
 
 ## Verification procedure
 
@@ -69,15 +99,22 @@ The review head must pass all of the following on the same immutable commit:
 cargo fmt --all --check
 cargo test --locked --lib install_graph::tests
 cargo test --locked --lib install_graph::solver::tests
-cargo test --locked --lib config::tests
-cargo test --locked --lib store::tests
+cargo test --locked --test e2e opaque_versions_require_exact_match -- --exact
+cargo test --locked --test recursive_install_concurrency \
+  recursive_http_prefetch_saturates_at_five_and_warm_runs_do_not_redownload -- --exact
+cargo test --locked --all-targets
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
 Repository CI must additionally retain frozen-lock integrity, Windows locking,
 manifestless/polyglot installation, OCI copy-mode, Nix interoperability,
 development-shell, formal review, agent-policy, and repository-hardening gates.
-Temporary formatting or correction workflows are not product evidence and must
-be absent from the final pull-request diff.
+Independent black-box certification in `zed-pkg-test/zed-pkg-e2e#36` must build
+one immutable product SHA and prove overlap, multi-coordinate backtracking,
+rejected-constraint removal, deterministic unsatisfiable provenance, cycles,
+yank-before-acquisition, and frozen replay through the public executable.
+
+Temporary formatting, generation, or correction workflows are not product
+evidence and must be absent from the final pull-request diff.
 
 Linear: DEN-1553. Related foundations: DEN-1505 and DEN-1522.
