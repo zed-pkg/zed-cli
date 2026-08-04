@@ -97,6 +97,11 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
             requested.display()
         )
     })?;
+    // Takeover is an authority migration, not merely a convenience checkout.
+    // Refuse to fetch from working-tree-only or dirty transport metadata.
+    checked_git(&project, &["cat-file", "-e", "HEAD:.gitmodules"])
+        .context("takeover requires .gitmodules to be committed at superproject HEAD")?;
+    verify_gitmodules_committed(&project)?;
     sync_root(&project)?;
     let modules = configured_submodules(&project)?;
     if modules.is_empty() {
@@ -105,7 +110,6 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
             project.display()
         );
     }
-    verify_gitmodules_committed(&project)?;
 
     let canonical_project = fs::canonicalize(&project)
         .with_context(|| format!("canonicalizing superproject {}", project.display()))?;
