@@ -111,10 +111,8 @@ fn artifact_views(
     canonical_root: &Path,
 ) -> Result<Vec<ArtifactView>> {
     if manifest.is_polyglot() {
-        let excludes = effective_excludes(
-            &manifest.publish.exclude,
-            manifest.publish.include_readme,
-        );
+        let excludes =
+            effective_excludes(&manifest.publish.exclude, manifest.publish.include_readme);
         validate_globs(&excludes)?;
         let mut views = Vec::with_capacity(manifest.targets.len());
         for (target, section) in &manifest.targets {
@@ -242,10 +240,7 @@ url = "https://example.invalid/acme/pack-guard.git"
             path,
             &["vendor/client/**".to_string()]
         ));
-        assert!(explicitly_excludes_tree(
-            path,
-            &["vendor/**".to_string()]
-        ));
+        assert!(explicitly_excludes_tree(path, &["vendor/**".to_string()]));
         assert!(!explicitly_excludes_tree(
             path,
             &[
