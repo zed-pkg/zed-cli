@@ -1,6 +1,17 @@
 name: materialize DEN-1461 lock contract
 
 on:
+  push:
+    branches:
+      - feat/den-1461-mise-lock-contract
+    paths:
+      - .github/workflows/harden-den-1461-lock-order.yml
+      - scripts/apply_den1461_current_wire.py
+      - scripts/harden_den1461_lock.py
+      - src/mise_lock.rs
+      - docs/mise-lock-contract.md
+      - tests/mise_lock_contract.rs
+      - tests/fixtures/mise-lock/current-actionlint.lock
   pull_request:
     branches:
       - main
@@ -22,7 +33,7 @@ concurrency:
 
 jobs:
   materialize:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/den-1461-mise-lock-contract' && github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/den-1461-mise-lock-contract'))
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
