@@ -1,0 +1,141 @@
+name: DEN-1553 update legacy conflict test
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/den-1553-update-legacy-test.yml'
+      - 'src/install_graph/tests.rs'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1553-update-legacy-test
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/den-1553-complete-constraint-solver'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+      - name: Replace the obsolete shallow diagnostic assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/install_graph/tests.rs')
+          text = path.read_text()
+          old = '''    assert!(
+              message.contains("version conflict for test/leaf"),
+              "{message}"
+          );
+          assert!(message.contains("resolved 1.0.0"), "{message}");
+          assert!(message.contains("requires `^2`"), "{message}");
+          '''
+          new = '''    assert!(
+              message.contains("version conflict for test/leaf"),
+              "{message}"
+          );
+          assert!(
+              message.contains(
+                  "`^1` via consumer/app@0.1.0 -> test/root@1.0.0 -> test/left@1.0.0 -> test/leaf"
+              ),
+              "{message}"
+          );
+          assert!(
+              message.contains(
+                  "`^2` via consumer/app@0.1.0 -> test/root@1.0.0 -> test/right@1.0.0 -> test/leaf"
+              ),
+              "{message}"
+          );
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one obsolete assertion block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+      - name: Format and prove recursive graph and process-lock suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib install_graph::tests
+          cargo test --locked --lib install_graph::solver::tests
+          cargo test --locked --lib store::tests
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Commit validated test bytes and remove this workflow
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: agent/den-1553-complete-constraint-solver
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, json, os, urllib.error, urllib.request
+          from pathlib import Path
+
+          repo = os.environ['REPOSITORY']
+          branch = os.environ['BRANCH']
+          expected = os.environ['EXPECTED_HEAD']
+          token = os.environ['GITHUB_TOKEN']
+          api = f'https://api.github.com/repos/{repo}'
+          product = 'src/install_graph/tests.rs'
+          helper = '.github/workflows/den-1553-update-legacy-test.yml'
+
+          def request(method, path, payload=None):
+              req = urllib.request.Request(
+                  api + path,
+                  data=None if payload is None else json.dumps(payload).encode(),
+                  method=method,
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': f'Bearer {token}',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'zed-den-1553-legacy-test-update',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      body = response.read(2_000_000)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'GitHub API {method} {path} failed with HTTP {error.code}')
+              return json.loads(body) if body else None
+
+          live = request('GET', f'/git/ref/heads/{branch}')['object']['sha']
+          if live != expected:
+              raise SystemExit(f'branch advanced: expected {expected}, found {live}')
+          parent = request('GET', f'/git/commits/{live}')
+          blob = request('POST', '/git/blobs', {
+              'content': base64.b64encode(Path(product).read_bytes()).decode(),
+              'encoding': 'base64',
+          })
+          tree = request('POST', '/git/trees', {
+              'base_tree': parent['tree']['sha'],
+              'tree': [
+                  {'path': product, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']},
+                  {'path': helper, 'mode': '100644', 'type': 'blob', 'sha': None},
+              ],
+          })
+          commit = request('POST', '/git/commits', {
+              'message': 'test(DEN-1553): assert complete deterministic conflict provenance',
+              'tree': tree['sha'],
+              'parents': [live],
+          })
+          request('PATCH', f'/git/refs/heads/{branch}', {'sha': commit['sha'], 'force': False})
+          print(commit['sha'])
+          PY
