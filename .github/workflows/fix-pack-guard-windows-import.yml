@@ -1,11 +1,12 @@
 name: repair pack-guard Windows test import
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/windows-pack-guard-command-import
+      - main
     paths:
       - .github/workflows/fix-pack-guard-windows-import.yml
+      - src/pack_guard.rs
 
 permissions:
   contents: write
@@ -20,7 +21,7 @@ defaults:
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]'
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/windows-pack-guard-command-import' && github.actor != 'github-actions[bot]'
     runs-on: windows-2025
     timeout-minutes: 25
     steps:
