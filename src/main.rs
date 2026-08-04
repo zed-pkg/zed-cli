@@ -8,6 +8,7 @@ use zed_cli::dev;
 use zed_cli::manifestless;
 use zed_cli::oci;
 use zed_cli::oci_layout;
+use zed_cli::oci_push::{self, OciPushOptions};
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -46,12 +47,11 @@ fn main() {
 fn run(cli: Cli) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // OCI planning and local layout materialization deliberately stay outside
-    // the normal command bootstrap. They do not construct Config, resolve
-    // saved credentials, or recover/mutate a pending project transaction.
-    // Planning writes only temporary pack data; materialization writes only to
-    // the explicit --out directory after every planned blob is reconstructed
-    // and verified.
+    // OCI planning, local layout materialization, and ORAS transport remain
+    // outside the normal Zed registry bootstrap. They never resolve the Zed
+    // registry token or recover a pending project transaction. `oci push`
+    // validates its explicit OCI credential source independently and keeps a
+    // password-stdin secret in a temporary 0600 registry config only.
     if let Cmd::Oci { cmd } = &cli.cmd {
         return match cmd {
             OciCmd::Plan {
@@ -66,6 +66,34 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     oci::plan(&cwd, destination, target.as_deref(), *json)
                 }
             }
+            OciCmd::Push {
+                layout,
+                destination,
+                oras,
+                username,
+                password_stdin,
+                registry_config,
+                anonymous,
+                plain_http,
+                insecure_tls,
+                ca_file,
+                allow_tag_replacement,
+                json,
+            } => oci_push::push(OciPushOptions {
+                layout,
+                destination,
+                oras,
+                username: username.as_deref(),
+                password_stdin: *password_stdin,
+                registry_config: registry_config.as_deref(),
+                anonymous: *anonymous,
+                plain_http: *plain_http,
+                insecure_tls: *insecure_tls,
+                ca_file: ca_file.as_deref(),
+                allow_tag_replacement: *allow_tag_replacement,
+                interactive: cli.globals.interactive,
+                json: *json,
+            }),
         };
     }
 
