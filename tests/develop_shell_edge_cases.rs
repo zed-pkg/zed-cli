@@ -1,5 +1,7 @@
+#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::env;
+#[cfg(unix)]
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -55,6 +57,7 @@ fn clean_command(root: &Path) -> Command {
     command
 }
 
+#[cfg(unix)]
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -69,6 +72,7 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+#[cfg(unix)]
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
