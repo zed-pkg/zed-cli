@@ -411,7 +411,7 @@ fn takeover_plan_refuses_a_manifest_changed_by_another_writer() {
     let error = ensure_manifest_unchanged(&path, Some(b"before")).unwrap_err();
 
     assert!(error.to_string().contains("another writer"));
-    assert_eq!(fs::read(&path).unwrap(), b"after".to_vec());
+    assert_eq!(fs::read(&path).unwrap().as_slice(), b"after");
 }
 
 #[test]
@@ -435,7 +435,7 @@ fn failed_overtake_never_overwrites_a_concurrent_manifest_edit() {
 
 #[test]
 fn git_lock_finalize_context_marks_a_post_commit_install_error() {
-    let post_commit = anyhow::Error::msg(crate::ops::GIT_LOCK_FINALIZE_CONTEXT);
+    let post_commit = anyhow::Error::new(crate::ops::GitLockFinalizeError);
     assert!(install_committed_before_error(&post_commit));
     assert!(!install_committed_before_error(&anyhow::anyhow!(
         "resolution failed"
