@@ -19,12 +19,7 @@ jobs:
           ref: feat/git-submodule-interop
           fetch-depth: 0
           persist-credentials: true
-      - name: Install the pinned Rust formatter
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          toolchain: 1.97.1
-          components: rustfmt
-      - name: Merge current main and preserve both typed CLI tests
+      - name: Merge current main and preserve both typed CLI surfaces
         shell: bash
         run: |
           set -euo pipefail
@@ -47,22 +42,47 @@ jobs:
           if [[ "$unmerged" == "src/cli.rs" ]]; then
             python3 - <<'PY'
           from pathlib import Path
+          import subprocess
 
-          path = Path("src/cli.rs")
-          text = path.read_text()
-          start = "<<<<<<< HEAD\n"
-          middle = "=======\n"
-          end = ">>>>>>> origin/main\n"
-          if text.count(start) != 1 or text.count(middle) != 1 or text.count(end) != 1:
-              raise SystemExit("expected exactly one src/cli.rs conflict")
-          before, remainder = text.split(start, 1)
-          ours, remainder = remainder.split(middle, 1)
-          theirs, after = remainder.split(end, 1)
-          if "install_git_submodule_switch_is_boolish" not in ours:
-              raise SystemExit("ours side is not the submodule flag test")
-          if "environment_import_and_verify_are_typed" not in theirs:
-              raise SystemExit("theirs side is not the environment test")
-          path.write_text(before + ours.rstrip() + "\n\n    #[test]\n" + theirs.lstrip() + after)
+          feature = subprocess.check_output(
+              ["git", "show", "HEAD:src/cli.rs"], text=True
+          )
+          merged = subprocess.check_output(
+              ["git", "show", "origin/main:src/cli.rs"], text=True
+          )
+
+          field_start = feature.index(
+              "        /// Synchronize and initialize Git submodules recursively before Zed\n"
+          )
+          field_end = feature.index(
+              "        /// Install single-language packages whose ecosystem this project does\n",
+              field_start,
+          )
+          field_block = feature[field_start:field_end]
+          field_anchor = (
+              "        /// Install single-language packages whose ecosystem this project does\n"
+          )
+          if "git_submodules: bool" in merged or merged.count(field_anchor) != 1:
+              raise SystemExit("unexpected install-field merge shape")
+          merged = merged.replace(field_anchor, field_block + field_anchor, 1)
+
+          test_start = feature.index(
+              "    #[test]\n"
+              "    fn install_git_submodule_switch_is_boolish_and_does_not_consume_specs() {\n"
+          )
+          test_end = feature.index(
+              "    #[test]\n    fn completion_shells_are_typed_positionals() {\n",
+              test_start,
+          )
+          test_block = feature[test_start:test_end]
+          test_anchor = (
+              "    #[test]\n    fn environment_import_and_verify_are_typed() {\n"
+          )
+          if "install_git_submodule_switch_is_boolish" in merged or merged.count(test_anchor) != 1:
+              raise SystemExit("unexpected CLI-test merge shape")
+          merged = merged.replace(test_anchor, test_block + test_anchor, 1)
+
+          Path("src/cli.rs").write_text(merged)
           PY
             git add src/cli.rs
           fi
@@ -72,8 +92,6 @@ jobs:
             exit 1
           fi
 
-          cargo fmt --all
-          git add -- '*.rs'
           git diff --cached --check
           git commit -m 'Merge current main into git-submodule interop'
           git push origin HEAD:feat/git-submodule-interop
