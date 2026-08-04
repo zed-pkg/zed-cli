@@ -1242,9 +1242,9 @@ fn child_process_current_dir(root: &Path) -> PathBuf {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
         let wide = root.as_os_str().encode_wide().collect::<Vec<_>>();
-        return PathBuf::from(OsString::from_wide(&normalize_windows_child_current_dir(
+        PathBuf::from(OsString::from_wide(&normalize_windows_child_current_dir(
             &wide,
-        )));
+        )))
     }
 
     #[cfg(not(windows))]
