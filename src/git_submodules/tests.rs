@@ -284,3 +284,70 @@ fn overtake_imports_manifest_workspace_and_git_lock() {
         "unexpected frozen drift error: {error:#}"
     );
 }
+
+#[test]
+fn failed_overtake_restores_exact_prior_manifest_bytes() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join(MANIFEST_FILE);
+    let previous = b"# preserve hand formatting\n[package]\nname = \"before\"\n";
+    let adopted = b"[package]\nname = \"after\"\n";
+    fs::write(&path, adopted).unwrap();
+
+    restore_manifest_if_unchanged(project.path(), &path, adopted, Some(previous)).unwrap();
+
+    assert_eq!(fs::read(&path).unwrap(), previous);
+    assert!(!project.path().join(crate::transaction::STAGING_DIR).exists());
+}
+
+#[test]
+fn failed_overtake_removes_a_new_generated_manifest() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join(MANIFEST_FILE);
+    let adopted = b"[package]\nname = \"generated\"\n";
+    fs::write(&path, adopted).unwrap();
+
+    restore_manifest_if_unchanged(project.path(), &path, adopted, None).unwrap();
+
+    assert!(!path.exists());
+    assert!(!project.path().join(crate::transaction::STAGING_DIR).exists());
+}
+
+#[test]
+fn takeover_plan_refuses_a_manifest_changed_by_another_writer() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join(MANIFEST_FILE);
+    fs::write(&path, b"after").unwrap();
+
+    let error = ensure_manifest_unchanged(&path, Some(b"before")).unwrap_err();
+
+    assert!(error.to_string().contains("another writer"));
+    assert_eq!(fs::read(&path).unwrap(), b"after");
+}
+
+#[test]
+fn failed_overtake_never_overwrites_a_concurrent_manifest_edit() {
+    let project = tempfile::tempdir().unwrap();
+    let path = project.path().join(MANIFEST_FILE);
+    let adopted = b"[package]\nname = \"adopted\"\n";
+    fs::write(&path, b"[package]\nname = \"concurrent\"\n").unwrap();
+
+    let error = restore_manifest_if_unchanged(
+        project.path(),
+        &path,
+        adopted,
+        Some(b"[package]\nname = \"before\"\n"),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("another writer"));
+    assert!(fs::read_to_string(&path).unwrap().contains("concurrent"));
+}
+
+#[test]
+fn git_lock_finalize_context_marks_a_post_commit_install_error() {
+    let post_commit = anyhow::Error::msg(crate::ops::GIT_LOCK_FINALIZE_CONTEXT);
+    assert!(install_committed_before_error(&post_commit));
+    assert!(!install_committed_before_error(&anyhow::anyhow!(
+        "resolution failed"
+    )));
+}
