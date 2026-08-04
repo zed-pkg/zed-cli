@@ -1,0 +1,84 @@
+name: repair-polyglot-regression-tests
+
+on:
+  push:
+    branches:
+      - agent/publish-canonical-polyglot-package
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-polyglot-regression-tests
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/publish-canonical-polyglot-package
+          fetch-depth: 0
+
+      - name: Update the focused regression expectations
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("tests/e2e.rs")
+          text = path.read_text()
+
+          replacements = [
+              (
+                  '/// target per language subtree. Publishing fans this out to one package per\n/// language, each named `<name>-<target>`.\n',
+                  '/// target per language subtree. Publishing emits the canonical repository\n/// package plus one isolated package per language, named `<name>-<target>`.\n',
+              ),
+              (
+                  '    assert_eq!(packed.len(), 3, "one artifact per declared target");\n',
+                  '    assert_eq!(\n        packed.len(),\n        4,\n        "the canonical repository package plus one artifact per declared target"\n    );\n',
+              ),
+              (
+                  '        vec![\n            "acme-clients-golang",\n            "acme-clients-java",\n            "acme-clients-nodejs"\n        ],\n        "packages are named <repo>-<language>"\n',
+                  '        vec![\n            "acme-clients",\n            "acme-clients-golang",\n            "acme-clients-java",\n            "acme-clients-nodejs"\n        ],\n        "the canonical package keeps the repository name and target packages use <repo>-<language>"\n',
+              ),
+              (
+                  '        match target.manifest.package.name.as_str() {\n            "acme-clients-java" => {\n',
+                  '        match target.manifest.package.name.as_str() {\n            "acme-clients" => {\n                assert!(joined.contains("clients/ts/index.ts"), "{joined}");\n                assert!(joined.contains("clients/java/Client.java"), "{joined}");\n                assert!(joined.contains("clients/go/client.go"), "{joined}");\n            }\n            "acme-clients-java" => {\n',
+              ),
+              (
+                  '    assert_eq!(published.len(), 3);\n',
+                  '    assert_eq!(published.len(), 4);\n',
+              ),
+              (
+                  '        let expected = match pkg.name.as_str() {\n            "acme-clients-java" => "jvm",\n',
+                  '        let expected = match pkg.name.as_str() {\n            "acme-clients" => "universal",\n            "acme-clients-java" => "jvm",\n',
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected exactly one match, found {count}: {old!r}")
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          cargo fmt --all
+          git diff --check
+
+      - name: Commit the focused test fix and remove this workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "zed-pkg automation"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/repair-polyglot-regression-tests.yml
+          git add tests/e2e.rs
+          git commit -m "test: cover canonical polyglot package publishing"
+          git push origin HEAD:agent/publish-canonical-polyglot-package
