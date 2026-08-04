@@ -65,6 +65,7 @@ jobs:
               'fn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {\n': '#[cfg(unix)]\nfn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {\n',
               'fn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {\n': '#[cfg(unix)]\nfn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {\n',
               '#[test]\nfn hoisted_bins_are_container_safe_in_copy_mode() {\n': '#[cfg(unix)]\n#[test]\nfn hoisted_bins_are_container_safe_in_copy_mode() {\n',
+              '#[test]\nfn install_dir_is_honored_by_install_run_and_remove() {\n': '#[cfg(unix)]\n#[test]\nfn install_dir_is_honored_by_install_run_and_remove() {\n',
           }
           for old, new in replacements.items():
               count = text.count(old)
