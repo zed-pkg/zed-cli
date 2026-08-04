@@ -81,6 +81,20 @@ if new_assert not in block:
     block = block.replace(old_assert, new_assert, 1)
     text = text[:start] + block + text[end:]
 
+url_start = """fn validate_network_url(field: &str, value: &str) -> Result<()> {
+    validate_text(field, value)?;
+    let parsed = Url::parse(value).with_context(|| format!("`{field}` is not a valid URL"))?;
+"""
+url_hardened = """fn validate_network_url(field: &str, value: &str) -> Result<()> {
+    validate_text(field, value)?;
+    ensure!(
+        value.starts_with("https://") || value.starts_with("http://"),
+        "`{field}` must use an exact http:// or https:// network URL"
+    );
+    let parsed = Url::parse(value).with_context(|| format!("`{field}` is not a valid URL"))?;
+"""
+text = replace_once(text, url_start, url_hardened, "literal URL scheme validation")
+
 scheme_guard = """    ensure!(
         matches!(parsed.scheme(), "http" | "https"),
         "`{field}` must use http or https, got `{}`",
@@ -114,6 +128,15 @@ text = replace_once(
     "secret URL regressions",
 )
 
+text = replace_once(
+    text,
+    """        assert!(error.to_string().contains("failed to parse current mise lock"));
+""",
+    """        assert!(format!("{error:#}").contains("unknown"));
+""",
+    "unknown-field full error-chain assertion",
+)
+
 source.write_text(text, encoding="utf-8")
 
 docs = Path("docs/mise-lock-contract.md")
@@ -133,7 +156,7 @@ text = text.replace(
 )
 text = text.replace(
     "- URL fragments;\n",
-    "- missing URL hosts and URL fragments;\n",
+    "- malformed textual schemes, missing URL hosts, and URL fragments;\n",
     1,
 )
 docs.write_text(text, encoding="utf-8")
