@@ -77,8 +77,10 @@ This makes takeover incremental in a mixed repository. For example, a project
 may keep a documentation theme or large fixture repository as an ordinary Git
 submodule while adopting only its Zed SDK packages. Missing `.zpkg.toml` means
 “leave this submodule Git-managed”; a present but malformed `.zpkg.toml` is an
-error rather than something Zed silently ignores. Takeover also fails without
-mutation when none of the configured submodules are Zed packages.
+error rather than something Zed silently ignores. When none of the configured
+submodules are Zed packages, takeover still performs the requested cooperative
+Git synchronization but leaves `.zpkg.toml`, `.zpkg.lock`, and materialized Zed
+state unchanged before returning an actionable error.
 
 The authority migration is failure-safe. If resolution or materialization fails
 before the ordinary install transaction commits, Zed restores the exact prior
