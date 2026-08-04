@@ -326,10 +326,9 @@ url = "https://example.invalid/acme/pack-guard.git"
             &["submodule", "deinit", "--force", "--", "vendor/client"],
         );
 
-        let error = preflight_submodules(root.path(), &manifest)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("not initialized"), "{error}");
+        let error = preflight_submodules(root.path(), &manifest).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("not initialized"), "{message}");
 
         let mut excluded = manifest;
         excluded
@@ -345,9 +344,8 @@ url = "https://example.invalid/acme/pack-guard.git"
         let (_child, root, manifest) = submodule_fixture();
         fs::write(root.path().join("vendor/client/lib.txt"), "dirty\n").unwrap();
 
-        let error = preflight_submodules(root.path(), &manifest)
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("dirty"), "{error}");
+        let error = preflight_submodules(root.path(), &manifest).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("dirty"), "{message}");
     }
 }
