@@ -45,6 +45,7 @@ struct Candidate {
 struct Constraint {
     requirement: String,
     path: Vec<String>,
+    propagate: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -434,6 +435,9 @@ impl<S: SolveSource> GraphSolver<'_, S> {
             for (key, candidate) in &state.registry {
                 let parents = state.constraints.get(key).cloned().unwrap_or_default();
                 for parent in parents {
+                    if !parent.propagate {
+                        continue;
+                    }
                     for (dependency, requirement) in &candidate.dependencies {
                         additions.push((
                             dependency.clone(),
@@ -451,6 +455,9 @@ impl<S: SolveSource> GraphSolver<'_, S> {
             for (key, member) in &state.workspace {
                 let parents = state.constraints.get(key).cloned().unwrap_or_default();
                 for parent in parents {
+                    if !parent.propagate {
+                        continue;
+                    }
                     for (dependency, requirement) in &member.dependencies {
                         additions.push((
                             dependency.clone(),
@@ -484,6 +491,12 @@ fn child_constraint(
     dependency: &str,
     requirement: &str,
 ) -> Constraint {
+    let cycle_back_edge = parent.path.iter().any(|segment| {
+        segment
+            .split_once('@')
+            .map_or(segment.as_str(), |(coordinate, _)| coordinate)
+            == dependency
+    });
     let mut path = parent.path.clone();
     if let Some(last) = path.last_mut() {
         *last = format!("{parent_key}@{parent_version}");
@@ -492,6 +505,7 @@ fn child_constraint(
     Constraint {
         requirement: requirement.to_string(),
         path,
+        propagate: !cycle_back_edge,
     }
 }
 
@@ -514,6 +528,7 @@ pub(super) fn solve_install(
             Constraint {
                 requirement: requirement.clone(),
                 path: vec![root.clone(), key.clone()],
+                propagate: true,
             },
         )?;
     }
@@ -558,7 +573,7 @@ mod tests {
                 version: version_text.to_string(),
                 sha256: format!("{:064x}", self.candidates.len() + 1),
                 size: 1,
-                format: zed_interfaces::registry::ArtifactFormat::TarGz,
+                format: zed_interfaces::ArtifactFormat::TarGz,
                 vcs_tag: format!("v{version_text}"),
                 vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
                 download_url: "https://example.invalid/artifact".to_string(),
@@ -635,6 +650,7 @@ mod tests {
                 Constraint {
                     requirement: (*requirement).to_string(),
                     path: vec![root.clone(), (*key).to_string()],
+                    propagate: true,
                 },
             )?;
         }
