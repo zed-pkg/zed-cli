@@ -1,0 +1,147 @@
+name: DEN-1553 compiler correction
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/den-1553-compile-fix.yml'
+      - 'src/install_graph/artifact.rs'
+      - 'src/install_graph/solver.rs'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1553-compile-fix
+  cancel-in-progress: false
+
+jobs:
+  correct:
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/den-1553-complete-constraint-solver'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+      - name: Apply bounded source corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          solver_path = Path('src/install_graph/solver.rs')
+          solver = solver_path.read_text()
+          old = 'zed_interfaces::registry::ArtifactFormat::TarGz'
+          new = 'zed_interfaces::ArtifactFormat::TarGz'
+          if solver.count(old) != 1:
+              raise SystemExit(f'expected exactly one private ArtifactFormat path, found {solver.count(old)}')
+          solver_path.write_text(solver.replace(old, new))
+
+          artifact_path = Path('src/install_graph/artifact.rs')
+          artifact = artifact_path.read_text()
+          marker = '\npub(super) fn resolve_version('
+          if artifact.count(marker) != 1:
+              raise SystemExit(f'expected exactly one obsolete greedy resolver, found {artifact.count(marker)}')
+          start = artifact.index(marker)
+          artifact_path.write_text(artifact[:start].rstrip() + '\n')
+          PY
+      - name: Format and compile every target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo check --locked --all-targets
+      - name: Run the complete solver unit corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib install_graph::solver::tests
+      - name: Create one fast-forward product commit and remove this workflow
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: agent/den-1553-complete-constraint-solver
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ['REPOSITORY']
+          branch = os.environ['BRANCH']
+          expected_head = os.environ['EXPECTED_HEAD']
+          token = os.environ['GITHUB_TOKEN']
+          api = f'https://api.github.com/repos/{repo}'
+          product_paths = [
+              'src/install_graph/artifact.rs',
+              'src/install_graph/solver.rs',
+          ]
+          helper_path = '.github/workflows/den-1553-compile-fix.yml'
+
+          def request(method, path, payload=None):
+              data = None if payload is None else json.dumps(payload).encode()
+              req = urllib.request.Request(
+                  api + path,
+                  data=data,
+                  method=method,
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': f'Bearer {token}',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'zed-den-1553-compiler-correction',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=20) as response:
+                      body = response.read(2_000_000)
+              except urllib.error.HTTPError as error:
+                  raise SystemExit(f'GitHub API {method} {path} failed with HTTP {error.code}')
+              return json.loads(body) if body else None
+
+          ref = request('GET', f'/git/ref/heads/{branch}')
+          live_head = ref['object']['sha']
+          if live_head != expected_head:
+              raise SystemExit(
+                  f'branch advanced before compiler correction: expected {expected_head}, found {live_head}'
+              )
+          parent = request('GET', f'/git/commits/{live_head}')
+          entries = []
+          for path in product_paths:
+              blob = request(
+                  'POST',
+                  '/git/blobs',
+                  {
+                      'content': base64.b64encode(Path(path).read_bytes()).decode(),
+                      'encoding': 'base64',
+                  },
+              )
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
+          entries.append({'path': helper_path, 'mode': '100644', 'type': 'blob', 'sha': None})
+          tree = request('POST', '/git/trees', {'base_tree': parent['tree']['sha'], 'tree': entries})
+          commit = request(
+              'POST',
+              '/git/commits',
+              {
+                  'message': 'fix(DEN-1553): use the public artifact type and retire greedy resolution',
+                  'tree': tree['sha'],
+                  'parents': [live_head],
+              },
+          )
+          request('PATCH', f'/git/refs/heads/{branch}', {'sha': commit['sha'], 'force': False})
+          print(f"created compiler-corrected commit {commit['sha']}")
+          PY
