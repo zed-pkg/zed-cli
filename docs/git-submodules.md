@@ -6,9 +6,11 @@ workspace resolution, integrity, and frozen replay.
 
 ## Cooperative install mode
 
-Submodule handling is opt-in and defaults to off. Enable it for one install:
+Submodule handling is opt-in and defaults to off. The compatibility switch is
+global, so it can appear before or after the command:
 
 ```sh
+zed --git-submodules install
 zed install --git-submodules
 ```
 

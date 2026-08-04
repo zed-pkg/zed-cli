@@ -7,23 +7,10 @@ use clap::{Args, Parser, Subcommand};
 use crate::cli::Globals;
 use crate::config::Config;
 
+/// Marker arguments for the modular takeover command. Git-submodule mode is
+/// owned by the shared global CLI contract in [`Globals`].
 #[derive(Debug, Clone, Args)]
-pub struct OvertakeArgs {
-    /// Import initialized Git submodules into the Zed workspace and lock.
-    /// Bare `--git-submodules` means true; explicit on/off values use
-    /// `--git-submodules=true|false`.
-    #[arg(
-        long,
-        env = "ZED_PKG_GIT_SUBMODULES",
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        default_value = "false",
-        value_parser = clap::builder::BoolishValueParser::new(),
-        action = clap::ArgAction::Set
-    )]
-    pub git_submodules: bool,
-}
+pub struct OvertakeArgs {}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -104,7 +91,7 @@ fn print_root_help() -> Result<()> {
 }
 
 fn run_cli(args: Vec<OsString>) -> Result<i32> {
-    normalize_boolean_environment(&args)?;
+    crate::flags::normalize_global_boolean_environment(&args)?;
     let cli = match OvertakeCli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
@@ -118,8 +105,8 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
     let cfg = Config::from_globals(&cli.globals)?;
     let cwd = env::current_dir().context("reading the current directory")?;
     match cli.command {
-        OvertakeCommand::Overtake(options) => {
-            if !options.git_submodules {
+        OvertakeCommand::Overtake(_) => {
+            if !cli.globals.git_submodules {
                 bail!(
                     "no takeover source selected; pass `--git-submodules` or set ZED_PKG_GIT_SUBMODULES=1"
                 );
@@ -133,35 +120,6 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
             Ok(0)
         }
     }
-}
-
-fn normalize_boolean_environment(args: &[OsString]) -> Result<()> {
-    let key = "ZED_PKG_GIT_SUBMODULES";
-    let explicitly_supplied = args.iter().skip(1).any(|value| {
-        let value = value.to_string_lossy();
-        value == "--git-submodules" || value.starts_with("--git-submodules=")
-    });
-    if explicitly_supplied {
-        return Ok(());
-    }
-    let Some(raw) = env::var_os(key) else {
-        return Ok(());
-    };
-    let raw = raw
-        .to_str()
-        .with_context(|| format!("boolean environment variable `{key}` is not UTF-8"))?;
-    let normalized = match raw.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "on" => "true",
-        "false" | "0" | "no" | "off" => "false",
-        _ => {
-            bail!("boolean environment variable `{key}` must be true/false, 1/0, yes/no, or on/off")
-        }
-    };
-    if raw != normalized {
-        // SAFETY: modular dispatch runs at process startup before worker threads.
-        unsafe { env::set_var(key, normalized) };
-    }
-    Ok(())
 }
 
 pub(super) fn route(args: &[OsString]) -> Route {
@@ -236,4 +194,26 @@ fn global_option_takes_value(token: &str) -> bool {
                 .strip_prefix(option)
                 .is_some_and(|remainder| remainder.starts_with('='))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::OvertakeCli;
+
+    #[test]
+    fn takeover_accepts_the_global_switch_before_and_after_the_command() {
+        for args in [
+            ["zed", "--git-submodules", "overtake"],
+            ["zed", "overtake", "--git-submodules"],
+        ] {
+            let cli = OvertakeCli::try_parse_from(args).unwrap();
+            assert!(cli.globals.git_submodules, "{args:?}");
+        }
+
+        let cli =
+            OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
+        assert!(!cli.globals.git_submodules);
+    }
 }

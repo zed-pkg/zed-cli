@@ -57,6 +57,24 @@ pub struct Globals {
     /// prompt, EOF, or redirected stdin fails closed before that step.
     #[arg(long, global = true, env = "ZED_PKG_INTERACTIVE")]
     pub interactive: bool,
+
+    /// Enable Git submodule compatibility for commands that consume Git
+    /// transport metadata. `install` synchronizes recursively before package
+    /// resolution; `overtake` imports eligible submodules into Zed authority.
+    /// Bare means true; use `--git-submodules=false` to override an enabled
+    /// environment value.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_GIT_SUBMODULES",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
+    pub git_submodules: bool,
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -204,20 +222,6 @@ pub enum Cmd {
             env = "ZED_PKG_ALLOW_NO_MANIFEST"
         )]
         allow_no_manifest: bool,
-        /// Synchronize and initialize Git submodules recursively before Zed
-        /// resolves the package graph. Bare means true; use
-        /// `--git-submodules=false` to override an enabled environment value.
-        #[arg(
-            long,
-            env = "ZED_PKG_GIT_SUBMODULES",
-            num_args = 0..=1,
-            require_equals = true,
-            default_missing_value = "true",
-            default_value = "false",
-            value_parser = clap::builder::BoolishValueParser::new(),
-            action = clap::ArgAction::Set
-        )]
-        git_submodules: bool,
         /// Install single-language packages whose ecosystem this project does
         /// not have (e.g. a -java client into a Node project). Off by default:
         /// the wrong-language package is invisible to the toolchain, so the
@@ -631,19 +635,19 @@ mod tests {
     }
 
     #[test]
-    fn install_git_submodule_switch_is_boolish_and_does_not_consume_specs() {
-        let cli = Cli::try_parse_from(["zed", "install", "--git-submodules", "acme/http-kit@^1"])
-            .unwrap();
-        match cli.cmd {
-            Cmd::Install {
-                specs,
-                git_submodules,
-                ..
-            } => {
-                assert!(git_submodules);
-                assert_eq!(specs, ["acme/http-kit@^1"]);
+    fn git_submodule_switch_is_global_boolish_and_does_not_consume_specs() {
+        for args in [
+            ["zed", "--git-submodules", "install", "acme/http-kit@^1"],
+            ["zed", "install", "--git-submodules", "acme/http-kit@^1"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.globals.git_submodules, "{args:?}");
+            match cli.cmd {
+                Cmd::Install { specs, .. } => {
+                    assert_eq!(specs, ["acme/http-kit@^1"]);
+                }
+                other => panic!("unexpected command: {other:?}"),
             }
-            other => panic!("unexpected command: {other:?}"),
         }
 
         let cli = Cli::try_parse_from([
@@ -653,13 +657,8 @@ mod tests {
             "acme/http-kit@^1",
         ])
         .unwrap();
-        assert!(matches!(
-            cli.cmd,
-            Cmd::Install {
-                git_submodules: false,
-                ..
-            }
-        ));
+        assert!(!cli.globals.git_submodules);
+        assert!(matches!(cli.cmd, Cmd::Install { .. }));
     }
 
     #[test]
@@ -719,6 +718,10 @@ mod tests {
         assert_eq!(env_of("registry").as_deref(), Some("ZED_PKG_REGISTRY"));
         assert_eq!(env_of("home").as_deref(), Some("ZED_PKG_HOME"));
         assert_eq!(env_of("token").as_deref(), Some("ZED_PKG_TOKEN"));
+        assert_eq!(
+            env_of("git-submodules").as_deref(),
+            Some("ZED_PKG_GIT_SUBMODULES")
+        );
     }
 
     /// Walk every command and subcommand, asserting each flag has a
@@ -759,6 +762,21 @@ mod tests {
     fn cli_flags_toml_is_in_sync_with_clap() {
         let doc: toml::Value = toml::from_str(include_str!("../.cli-flags.toml"))
             .expect(".cli-flags.toml must be valid TOML");
+        let git_submodules = doc
+            .as_table()
+            .and_then(|root| root.get("flags"))
+            .and_then(toml::Value::as_table)
+            .and_then(|flags| flags.get("git_submodules"))
+            .and_then(toml::Value::as_table)
+            .expect("git_submodules must remain a root/global flags2env entry");
+        assert_eq!(
+            git_submodules.get("env").and_then(toml::Value::as_str),
+            Some("ZED_PKG_GIT_SUBMODULES")
+        );
+        assert_eq!(
+            git_submodules.get("type").and_then(toml::Value::as_str),
+            Some("bool")
+        );
 
         fn collect_file_envs(value: &toml::Value, envs: &mut BTreeSet<String>) {
             let Some(table) = value.as_table() else {
