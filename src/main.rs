@@ -1,8 +1,10 @@
 use zed_cli::auth;
+use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
+use zed_cli::environment;
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::managed_install;
@@ -117,6 +119,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             .map(|_| ())
         }
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
+        Cmd::Env { cmd } => match cmd {
+            EnvCmd::Import {
+                manager: _,
+                config,
+                lock,
+                frozen,
+                json,
+            } => {
+                let imported =
+                    environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                environment::print_import(&imported, json)
+            }
+            EnvCmd::Verify {
+                manager: _,
+                config,
+                lock,
+                frozen,
+                json,
+            } => {
+                let imported =
+                    environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                environment::print_verification(&imported, json)
+            }
+        },
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

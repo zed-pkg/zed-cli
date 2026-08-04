@@ -253,6 +253,25 @@ type = "bool"
 default = "false"
 help = "Read one password line from stdin."
 
+[flags.env_config]
+env = "ZED_PKG_ENV_CONFIG"
+aliases = ["config"]
+type = "string"
+help = "Project-local environment-manager config path."
+
+[flags.env_lock]
+env = "ZED_PKG_ENV_LOCK"
+aliases = ["lock"]
+type = "string"
+help = "Project-local environment-manager lockfile path."
+
+[flags.env_json]
+env = "ZED_PKG_ENV_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit environment interoperability output as JSON."
+
 [commands.init]
 help = "Create a package manifest."
 
@@ -272,6 +291,15 @@ help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
 [commands.uninstall]
 aliases = ["un"]
 help = "Remove materialized dependencies while retaining the lockfile."
+
+[commands.env]
+help = "Import and verify project-local developer environments."
+
+[commands.env.commands.import]
+help = "Import manager-native state as a normalized EnvironmentPlan."
+
+[commands.env.commands.verify]
+help = "Verify config/lock coverage and normalized environment identity."
 
 [commands.completions]
 help = "Generate Bash or Zsh completion from the typed CLI model."
