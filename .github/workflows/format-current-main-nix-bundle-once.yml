@@ -1,0 +1,82 @@
+name: Format current-main Nix bundle files once
+
+on:
+  push:
+    branches:
+      - fix/format-current-main-nix-bundle
+
+permissions:
+  contents: write
+
+concurrency:
+  group: format-current-main-nix-bundle-once
+  cancel-in-progress: false
+
+jobs:
+  format:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install pinned formatter
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Apply and constrain formatting repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              'src/nix_bundle_write.rs',
+              'tests/nix_bundle_write_boundaries.rs',
+              'tests/nix_bundle_write_cli.rs',
+          }
+          changed = {
+              line.strip()
+              for line in subprocess.check_output(
+                  ['git', 'diff', '--name-only'], text=True
+              ).splitlines()
+              if line.strip()
+          }
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(
+                  'formatter changed files outside the reviewed repair boundary: '
+                  + ', '.join(sorted(unexpected))
+              )
+          if not changed:
+              raise SystemExit('current main is already rustfmt-clean; no repair commit needed')
+          PY
+
+          cargo fmt --all --check
+          cargo test --locked --test nix_bundle_write_cli --no-run
+          cargo test --locked --test nix_bundle_write_boundaries --no-run
+
+      - name: Commit only permanent formatting changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/format-current-main-nix-bundle-once.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            src/nix_bundle_write.rs \
+            tests/nix_bundle_write_boundaries.rs \
+            tests/nix_bundle_write_cli.rs \
+            .github/workflows/format-current-main-nix-bundle-once.yml
+          git commit -m 'style(DEN-1592): format Nix bundle writer'
+          git push origin HEAD:fix/format-current-main-nix-bundle
