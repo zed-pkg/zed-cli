@@ -15,7 +15,8 @@ use zed_interfaces::paths::{ARCHIVE_ROOT, IGNORE_FILE, PACK_OUT_DIR};
 
 /// One independently publishable artifact produced from a source manifest.
 /// A single-language manifest yields one item with `target = None`; a
-/// polyglot manifest yields one item per declared target.
+/// polyglot manifest yields the canonical whole-repository package with
+/// `target = None` plus one item per declared target.
 pub struct PackagedTarget {
     pub target: Option<String>,
     pub manifest: Manifest,
@@ -51,11 +52,12 @@ pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Resu
 
 /// Fan a source repository out into independently publishable packages.
 ///
-/// A target directory is re-rooted in its artifact: `clients/ts/package.json`
-/// becomes `pkg/package.json`, not `pkg/clients/ts/package.json`. The source
-/// repository's other language directories are never staged and therefore
-/// cannot leak into the artifact. A derived, single-language `.zpkg.toml` is
-/// written at the artifact root.
+/// The canonical package always contains the complete source repository and
+/// keeps the root manifest's exact `org/name` identity. Each language target
+/// is additionally re-rooted in an isolated artifact: `clients/ts/package.json`
+/// becomes `pkg/package.json`, not `pkg/clients/ts/package.json`. Other
+/// language directories are never staged into a target artifact. A derived,
+/// single-language `.zpkg.toml` is written at each target artifact root.
 pub fn pack_all(
     project: &Path,
     manifest: &Manifest,
@@ -72,7 +74,13 @@ pub fn pack_all(
     let output = out_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| project.join(PACK_OUT_DIR));
-    let mut packages = Vec::with_capacity(manifest.targets.len());
+    let mut packages = Vec::with_capacity(manifest.targets.len() + 1);
+    packages.push(PackagedTarget {
+        target: None,
+        manifest: manifest.clone(),
+        packed: pack(project, manifest, Some(&output))?,
+    });
+
     for (target, _) in manifest.target_package_names() {
         let derived = manifest
             .manifest_for_target(&target)
@@ -380,8 +388,7 @@ mod tests {
         .unwrap();
         fs::write(project.path().join("LICENSE"), "MIT").unwrap();
 
-        let manifest = Manifest::parse(
-            r#"
+        let source_manifest = r#"
 [package]
 org = "acme"
 name = "clients"
@@ -397,12 +404,28 @@ adapter = "node"
 [targets.java]
 dir = "clients/java"
 adapter = "java"
-"#,
+"#;
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
         )
         .unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
 
         let packages = pack_all(project.path(), &manifest, None).unwrap();
-        assert_eq!(packages.len(), 2);
+        assert_eq!(packages.len(), 3);
+
+        let canonical = packages
+            .iter()
+            .find(|package| package.target.is_none())
+            .unwrap();
+        assert_eq!(canonical.manifest.package.name, "clients");
+        assert!(canonical.manifest.is_polyglot());
+        let canonical_files = archive_files(&canonical.packed.path);
+        assert!(canonical_files.contains("pkg/.zpkg.toml"));
+        assert!(canonical_files.contains("pkg/clients/ts/package.json"));
+        assert!(canonical_files.contains("pkg/clients/java/pom.xml"));
+        assert!(canonical_files.contains("pkg/LICENSE"));
 
         let node = packages
             .iter()
@@ -484,7 +507,19 @@ adapter = "node"
         let manifest = Manifest::parse(source_manifest).unwrap();
 
         let packages = pack_all(project.path(), &manifest, None).unwrap();
-        assert_eq!(packages.len(), 2);
+        assert_eq!(packages.len(), 3);
+
+        let canonical = packages
+            .iter()
+            .find(|package| package.target.is_none())
+            .unwrap();
+        assert_eq!(canonical.manifest.package.name, "clients");
+        assert!(canonical.manifest.is_polyglot());
+        let canonical_files = archive_files(&canonical.packed.path);
+        assert!(canonical_files.contains("pkg/.zpkg.toml"));
+        assert!(canonical_files.contains("pkg/clients/ts/package.json"));
+        assert!(canonical_files.contains("pkg/clients/ts/src/index.js"));
+        assert!(canonical_files.contains("pkg/LICENSE"));
 
         let repository = packages
             .iter()
