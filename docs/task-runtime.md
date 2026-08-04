@@ -14,6 +14,11 @@ zed-task [--plan zed-env.toml] graph <task>
 zed-task [--plan zed-env.toml] run <task> [--dry-run] [--yes] [--jobs N] [--no-cache] [-- <args>...]
 ```
 
+`--jobs` is a positive integer. Zero is rejected during argument parsing before
+plan discovery, so a malformed concurrency request cannot partially inspect or
+execute a project plan. The same validation applies to `ZED_TASK_JOBS` after
+flags-2-env normalization.
+
 Every option has one flags-2-env identity in `.task-cli-flags.toml`:
 
 - `ZED_TASK_PLAN`
