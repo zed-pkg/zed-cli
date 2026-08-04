@@ -122,7 +122,7 @@ jobs:
               )
               entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': blob['sha']})
           for path in helper_paths:
-              entries.append({'path': path, 'sha': None})
+              entries.append({'path': path, 'mode': '100644', 'type': 'blob', 'sha': None})
 
           tree = request(
               'POST',
