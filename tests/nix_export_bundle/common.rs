@@ -31,11 +31,7 @@ pub(crate) fn artifact(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
         header.set_mtime(0);
         header.set_cksum();
         builder
-            .append_data(
-                &mut header,
-                format!("{ARCHIVE_ROOT}/{path}"),
-                *bytes,
-            )
+            .append_data(&mut header, format!("{ARCHIVE_ROOT}/{path}"), *bytes)
             .unwrap();
     }
     let encoder = builder.into_inner().unwrap();
