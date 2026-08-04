@@ -85,9 +85,7 @@ fn validate_gitmodules_index(text: &str) -> Result<()> {
             || stage != "0"
             || fields.next().is_some()
         {
-            bail!(
-                ".gitmodules must be a stage-zero regular Git blob, not index record `{line}`"
-            );
+            bail!(".gitmodules must be a stage-zero regular Git blob, not index record `{line}`");
         }
     }
     Ok(())
