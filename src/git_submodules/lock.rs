@@ -9,9 +9,9 @@ use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 
 use super::git::{
-    SubmoduleConfig, WorkspaceMember, collect_workspace_members, configured_submodules,
-    is_git_object_id, origin_url, validate_relative_path, verify_checkout,
-    verify_gitmodules_committed,
+    SubmoduleConfig, WorkspaceMember, checked_git, collect_workspace_members,
+    configured_submodules, is_git_object_id, origin_url, validate_relative_path,
+    verify_checkout, verify_gitmodules_committed,
 };
 use crate::config::read_manifest;
 use crate::pack;
@@ -243,10 +243,15 @@ fn build_lock_entry(
     previous: Option<&GitSubmoduleLock>,
 ) -> Result<GitSubmoduleLock> {
     let commit = verify_checkout(project, &member.path, &member.root)?;
-    let remote = origin_url(&member.root)
-        .or_else(|| module.map(|module| module.url.clone()))
+    // The committed `.gitmodules` declaration is the reproducible transport
+    // authority. A checkout's local `origin` can legitimately be rewritten by
+    // mirrors or developer tooling, so use it only when Git metadata has been
+    // intentionally removed after takeover and the lock has no prior URL.
+    let remote = module
+        .map(|module| module.url.clone())
         .or_else(|| previous.map(|entry| entry.url.clone()))
-        .context("adopted Git submodule has no origin URL")?;
+        .or_else(|| origin_url(&member.root))
+        .context("adopted Git submodule has no transport URL")?;
     let name = module
         .map(|module| module.name.clone())
         .or_else(|| previous.map(|entry| entry.name.clone()))
@@ -300,12 +305,17 @@ fn pack_commit(project: &Path, manifest: &Manifest) -> Result<pack::PackResult> 
         .context("packing canonical adopted Git submodule artifact")
 }
 
-fn active_workspace_packages(
+pub(super) fn active_workspace_packages(
     root: &Manifest,
     members: &BTreeMap<String, WorkspaceMember>,
 ) -> BTreeSet<String> {
     let mut active = BTreeSet::new();
-    let mut queue: VecDeque<String> = root.dependencies.keys().cloned().collect();
+    let mut queue: VecDeque<String> = root
+        .dependencies
+        .keys()
+        .chain(root.build_dependencies.keys())
+        .cloned()
+        .collect();
     while let Some(package) = queue.pop_front() {
         let Some(member) = members.get(&package) else {
             continue;
@@ -313,7 +323,14 @@ fn active_workspace_packages(
         if !active.insert(package) {
             continue;
         }
-        queue.extend(member.manifest.dependencies.keys().cloned());
+        queue.extend(
+            member
+                .manifest
+                .dependencies
+                .keys()
+                .chain(member.manifest.build_dependencies.keys())
+                .cloned(),
+        );
     }
     active
 }
