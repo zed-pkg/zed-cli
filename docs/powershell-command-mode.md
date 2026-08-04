@@ -30,13 +30,29 @@ The Windows regression suite creates current-user profile files under a temporar
 
 - does not execute or emit the profile canary;
 - receives the managed `ZED_DEV` environment;
-- identifies a project root that owns the fixture manifest; and
+- starts at the selected `ZED_DEV_PROJECT_ROOT`; and
 - returns the child PowerShell exit code unchanged.
 
-`ZED_DEV_PROJECT_ROOT` retains the canonical filesystem identity used for project selection and evidence, which may include the Win32 verbatim `\\?\` or `\\?\UNC\` prefix. Before launching a Windows child process, Zed converts only that prefix to the equivalent drive or UNC spelling accepted reliably as a process current directory. The child therefore starts at the selected project root while the managed environment keeps its canonical identity path. The conversion operates on UTF-16 code units and is lossless for Unicode paths.
+## Canonical identity versus process current directory
+
+`ZED_DEV_PROJECT_ROOT` retains the canonical filesystem identity used for project selection, caches, managed environment, and evidence. On Windows that identity may include a Win32 verbatim prefix:
+
+```text
+\\?\C:\path
+\\?\UNC\server\share\path
+```
+
+Those forms are valid filesystem identities but are not accepted consistently as a child-process current directory. Before launching a Windows child, Zed converts only the prefix to the equivalent process-compatible spelling:
+
+```text
+\\?\C:\path                    -> C:\path
+\\?\UNC\server\share\path     -> \\server\share\path
+```
+
+Ordinary drive paths, ordinary UNC paths, and device paths remain unchanged. The conversion operates on UTF-16 code units rather than lossy UTF-8 strings, so Unicode project names are preserved exactly. This separation is tracked by [DEN-1634](https://linear.app/denman/issue/DEN-1634/zed-cli-normalize-windows-child-process-cwd-for-verbatim-project-paths).
 
 ## Exact-head validation ownership
 
-The source correction, shared shell matrices, native Windows canary, and this trust-boundary note are reviewed as one immutable CLI candidate. The independent `zed-pkg/zed-e2e` contract pins that exact commit; it does not follow the branch or assume that a later `main` still represents the reviewed candidate. A candidate change requires a new explicit pin and a complete Windows replay.
+The profile correction, child-current-directory normalization, shared shell matrices, native Windows canary, and this trust-boundary note are reviewed as one immutable CLI candidate. The independent `zed-pkg/zed-e2e` contract pins that exact commit; it does not follow the branch or assume that a later `main` still represents the reviewed candidate. A candidate change requires a new explicit pin and a complete Windows replay.
 
-The companion independent acceptance is tracked by [DEN-1614](https://linear.app/denman/issue/DEN-1614/zed-e2e-add-windows-clean-room-certification-for-zed-develop). The implementation correction is tracked by [DEN-1616](https://linear.app/denman/issue/DEN-1616/zed-cli-suppress-powershell-profiles-in-zed-develop-command-mode).
+The companion independent acceptance is tracked by [DEN-1614](https://linear.app/denman/issue/DEN-1614/zed-e2e-add-windows-clean-room-certification-for-zed-develop). The PowerShell correction is tracked by [DEN-1616](https://linear.app/denman/issue/DEN-1616/zed-cli-suppress-powershell-profiles-in-zed-develop-command-mode).
