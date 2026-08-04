@@ -55,6 +55,13 @@ type = "bool"
 default = "false"
 help = "Confirm each mutating lifecycle step in a real terminal."
 
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Enable global Git submodule compatibility for package restoration."
+
 [commands.develop]
 aliases = ["dev"]
 help = "Enter a package-aware, cross-language virtual development environment."
