@@ -13,10 +13,13 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
+
+pub(crate) const GIT_LOCK_FINALIZE_CONTEXT: &str =
+    "finalizing adopted Git submodule lock metadata";
 
 #[path = "ops.rs"]
 mod implementation;
@@ -85,7 +88,9 @@ pub fn install(
             )
         })?
     };
-    git_lock.finish(project)?;
+    git_lock
+        .finish(project)
+        .context(GIT_LOCK_FINALIZE_CONTEXT)?;
     Ok(outcome)
 }
 
@@ -110,6 +115,8 @@ pub(crate) fn install_frozen_lock_only(
         target,
         allow_ecosystem_mismatch,
     )?;
-    git_lock.finish(project)?;
+    git_lock
+        .finish(project)
+        .context(GIT_LOCK_FINALIZE_CONTEXT)?;
     Ok(outcome)
 }
