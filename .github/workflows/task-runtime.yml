@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: task-runtime-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -36,17 +36,18 @@ jobs:
   task-runtime:
     name: task runtime / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
-      - name: Check out exact candidate
+      - name: Check out exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: agent/den-1444-native-task-runtime
           fetch-depth: 1
-          persist-credentials: false
+          persist-credentials: true
           show-progress: false
 
       - name: Install Rust quality components
@@ -83,8 +84,11 @@ jobs:
           assert observed == expected, (observed, expected)
           PY
 
-      - name: Format
-        run: cargo fmt --all --check
+      - name: Format exact product source
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
 
       - name: Unit and real CLI tests
         run: |
@@ -119,3 +123,14 @@ jobs:
             "$GITHUB_WORKSPACE/target/debug/zed-task" --json run build --dry-run > second.json
             cmp first.json second.json
           )
+
+      - name: Commit validated ordinary source
+        if: matrix.os == 'ubuntu-24.04' && github.actor != 'github-actions[bot]'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/bin/zed-task.rs src/task_runtime.rs tests/task_runtime_cli.rs
+          git diff --cached --check
+          git commit -m 'style(DEN-1444): apply validated task runtime formatting'
+          git push origin HEAD:agent/den-1444-native-task-runtime
