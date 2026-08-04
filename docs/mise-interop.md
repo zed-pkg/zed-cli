@@ -112,6 +112,9 @@ The normalized plan retains the authored requirement, exact locked version, prov
 - a project-local lockfile;
 - exact one-to-one tool coverage between config and lock;
 - an exact non-moving resolved version for every tool;
+- locked versions that satisfy the authored exact, prefix, or supported SemVer-range requirement;
+- exact backend equality when the config explicitly names a backend such as `aqua:jqlang/jq`;
+- every applicable platform requested by `settings.lockfile_platforms` for every tool;
 - at least one platform artifact identity per locked tool;
 - a cryptographic checksum for every represented platform artifact;
 - valid checksum algorithms and digest lengths;
@@ -156,6 +159,8 @@ Human verification output reports the selected config, lock, tool count, and pla
 `zed env import mise --json` emits the normalized shared `EnvironmentPlan` itself.
 
 The manager-source digest is semantic rather than presentation-based: changing TOML whitespace or key order does not change it, while changing a resolved version, backend, platform artifact, checksum, URL, byte size, or supported setting does.
+
+Frozen identity comparison treats a plain version such as `22` or `3.12` as a boundary-aware prefix, a strict full SemVer as exact, and supported SemVer operators such as `^`, `~`, comparators, and wildcards through the Rust SemVer contract. Manager-specific range syntax that cannot be parsed is rejected rather than approximated.
 
 ## Lockfile naming
 
