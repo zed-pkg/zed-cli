@@ -1,0 +1,186 @@
+name: apply Windows cfg hygiene
+
+on:
+  push:
+    branches:
+      - agent/fail-closed-submodule-pack
+    paths:
+      - .github/workflows/apply-windows-cfg-hygiene.yml
+      - src/git_submodules/mod.rs
+      - src/pack_guard.rs
+      - src/nix_export_bundle/persist.rs
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-windows-cfg-hygiene.yml
+      - src/git_submodules/mod.rs
+      - src/pack_guard.rs
+      - src/nix_export_bundle/persist.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-windows-cfg-hygiene-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch-and-validate:
+    if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || github.head_ref == 'agent/fail-closed-submodule-pack')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact product branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/fail-closed-submodule-pack
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Apply only targeted cross-platform cfg repairs
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str, label: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              if text.count(old) != 1:
+                  raise SystemExit(f'{label}: expected one exact anchor, found {text.count(old)}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'src/git_submodules/mod.rs',
+              '''    use super::{
+                  preflight_gitmodules_metadata, submodule_manifest_present, validate_gitmodules_index,
+              };
+          ''',
+              '''    use super::{submodule_manifest_present, validate_gitmodules_index};
+              #[cfg(unix)]
+              use super::preflight_gitmodules_metadata;
+          ''',
+              'Windows-only metadata-test import',
+          )
+
+          replace_once(
+              'src/pack_guard.rs',
+              '''    fn git(project: &Path, args: &[&str]) {
+          ''',
+              '''    #[cfg(unix)]
+              fn git(project: &Path, args: &[&str]) {
+          ''',
+              'Unix-only Git fixture helper',
+          )
+
+          replace_once(
+              'src/nix_export_bundle/persist.rs',
+              '''use std::fs::{self, File, OpenOptions};
+          ''',
+              '''use std::fs::{self, OpenOptions};
+          #[cfg(unix)]
+          use std::fs::File;
+          ''',
+              'Unix-only File import',
+          )
+          replace_once(
+              'src/nix_export_bundle/persist.rs',
+              '''fn sync_directory(path: &Path) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  File::open(path)
+                      .with_context(|| format!("opening directory `{}` for synchronization", path.display()))?
+                      .sync_all()
+                      .with_context(|| format!("synchronizing directory `{}`", path.display()))?;
+              }
+              Ok(())
+          }
+
+          fn set_regular_mode(path: &Path) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  use std::os::unix::fs::PermissionsExt;
+                  fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
+              }
+              Ok(())
+          }
+
+          fn verify_regular_mode(path: &Path, relative: &str) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  use std::os::unix::fs::PermissionsExt;
+                  let mode = fs::symlink_metadata(path)?.permissions().mode() & 0o777;
+                  if mode != 0o644 {
+                      bail!("persisted Nix flake bundle file `{relative}` has mode {mode:o}, expected 644");
+                  }
+              }
+              Ok(())
+          }
+          ''',
+              '''fn sync_directory(_path: &Path) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  File::open(_path)
+                      .with_context(|| format!("opening directory `{}` for synchronization", _path.display()))?
+                      .sync_all()
+                      .with_context(|| format!("synchronizing directory `{}`", _path.display()))?;
+              }
+              Ok(())
+          }
+
+          fn set_regular_mode(_path: &Path) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  use std::os::unix::fs::PermissionsExt;
+                  fs::set_permissions(_path, fs::Permissions::from_mode(0o644))?;
+              }
+              Ok(())
+          }
+
+          fn verify_regular_mode(_path: &Path, _relative: &str) -> Result<()> {
+              #[cfg(unix)]
+              {
+                  use std::os::unix::fs::PermissionsExt;
+                  let mode = fs::symlink_metadata(_path)?.permissions().mode() & 0o777;
+                  if mode != 0o644 {
+                      bail!("persisted Nix flake bundle file `{_relative}` has mode {mode:o}, expected 644");
+                  }
+              }
+              Ok(())
+          }
+          ''',
+              'cross-platform persistence parameters',
+          )
+          PY
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate the touched Linux surfaces
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+          cargo fmt --all --check
+          cargo test --locked --lib git_submodules::manifest_kind_tests -- --nocapture
+          cargo test --locked --lib pack_guard -- --nocapture
+          cargo test --locked --lib nix_export_bundle -- --nocapture
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Publish ordinary source only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-windows-cfg-hygiene.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: gate Unix-only helpers on Windows'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/fail-closed-submodule-pack
