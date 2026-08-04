@@ -1,4 +1,4 @@
-name: diagnose main merge into submodule branch
+name: merge current main into submodule branch
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  diagnose:
+  merge-main:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
@@ -19,34 +19,61 @@ jobs:
           ref: feat/git-submodule-interop
           fetch-depth: 0
           persist-credentials: true
-      - name: Capture semantic conflict hunks against current main
+      - name: Install the pinned Rust formatter
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.97.1
+          components: rustfmt
+      - name: Merge current main and preserve both typed CLI tests
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git fetch origin main
-          feature_head=$(git rev-parse HEAD)
-          main_head=$(git rev-parse origin/main)
-          merge_base=$(git merge-base "$feature_head" "$main_head")
+
           set +e
-          merge_output=$(git merge --no-commit --no-ff origin/main 2>&1)
+          git merge --no-commit --no-ff origin/main
           merge_status=$?
           set -e
-          {
-            printf 'feature_head=%s\nmain_head=%s\nmerge_base=%s\nmerge_status=%s\n\n' \
-              "$feature_head" "$main_head" "$merge_base" "$merge_status"
-            echo '## Merge output'
-            printf '%s\n' "$merge_output"
-            echo
-            echo '## Unmerged files'
-            git diff --name-only --diff-filter=U || true
-            echo
-            echo '## Combined conflict diff'
-            git diff --cc --no-ext-diff || true
-          } > /tmp/merge-main-diagnostics.txt
-          git merge --abort || true
-          cp /tmp/merge-main-diagnostics.txt MERGE_MAIN_DIAGNOSTICS.txt
-          git add MERGE_MAIN_DIAGNOSTICS.txt
-          git commit -m 'chore: refresh main merge conflict diagnostics'
+
+          unmerged=$(git diff --name-only --diff-filter=U)
+          if [[ "$merge_status" -ne 0 && "$unmerged" != "src/cli.rs" ]]; then
+            echo "Unexpected merge conflicts:" >&2
+            printf '%s\n' "$unmerged" >&2
+            exit 1
+          fi
+
+          if [[ "$unmerged" == "src/cli.rs" ]]; then
+            python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/cli.rs")
+          text = path.read_text()
+          start = "<<<<<<< HEAD\n"
+          middle = "=======\n"
+          end = ">>>>>>> origin/main\n"
+          if text.count(start) != 1 or text.count(middle) != 1 or text.count(end) != 1:
+              raise SystemExit("expected exactly one src/cli.rs conflict")
+          before, remainder = text.split(start, 1)
+          ours, remainder = remainder.split(middle, 1)
+          theirs, after = remainder.split(end, 1)
+          if "install_git_submodule_switch_is_boolish" not in ours:
+              raise SystemExit("ours side is not the submodule flag test")
+          if "environment_import_and_verify_are_typed" not in theirs:
+              raise SystemExit("theirs side is not the environment test")
+          path.write_text(before + ours.rstrip() + "\n\n    #[test]\n" + theirs.lstrip() + after)
+          PY
+            git add src/cli.rs
+          fi
+
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+
+          cargo fmt --all
+          git add -- '*.rs'
+          git diff --cached --check
+          git commit -m 'Merge current main into git-submodule interop'
           git push origin HEAD:feat/git-submodule-interop
