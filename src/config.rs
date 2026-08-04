@@ -406,7 +406,10 @@ url = "https://localhost/manifestless/consumer"
                 );
                 let package = read_manifest(dependency.path())?;
                 assert_eq!(
-                    package.dependencies.get("acme/http-kit").map(String::as_str),
+                    package
+                        .dependencies
+                        .get("acme/http-kit")
+                        .map(String::as_str),
                     Some("^1")
                 );
                 assert!(!package.dependencies.contains_key("acme/transitive"));
@@ -417,7 +420,10 @@ url = "https://localhost/manifestless/consumer"
 
         let restored = read_manifest(project.path()).unwrap();
         assert_eq!(
-            restored.dependencies.get("acme/http-kit").map(String::as_str),
+            restored
+                .dependencies
+                .get("acme/http-kit")
+                .map(String::as_str),
             Some("^1")
         );
         assert!(!restored.dependencies.contains_key("acme/transitive"));

@@ -343,10 +343,9 @@ impl<S: SolveSource> GraphSolver<'_, S> {
         let constraints = state.constraints.get(&key).cloned().unwrap_or_default();
 
         if let Some(member) = self.workspace.members.get(&key) {
-            if constraints
-                .iter()
-                .any(|constraint| !Requirement::parse(&constraint.requirement).matches(&member.version))
-            {
+            if constraints.iter().any(|constraint| {
+                !Requirement::parse(&constraint.requirement).matches(&member.version)
+            }) {
                 return Ok(SearchOutcome::Unsatisfiable(SolveFailure {
                     key,
                     constraints,
@@ -367,19 +366,16 @@ impl<S: SolveSource> GraphSolver<'_, S> {
         let mut matching = false;
 
         for published in &versions {
-            if constraints.iter().any(|constraint| {
-                !Requirement::parse(&constraint.requirement).matches(published)
-            }) {
+            if constraints
+                .iter()
+                .any(|constraint| !Requirement::parse(&constraint.requirement).matches(published))
+            {
                 continue;
             }
             matching = true;
-            let candidate = self.source.candidate(
-                &key,
-                &org,
-                &name,
-                published,
-                package.version_scheme,
-            )?;
+            let candidate =
+                self.source
+                    .candidate(&key, &org, &name, published, package.version_scheme)?;
             if candidate.version.yanked {
                 continue;
             }
@@ -412,8 +408,7 @@ impl<S: SolveSource> GraphSolver<'_, S> {
             for (key, candidate) in &state.registry {
                 let constraints = state.constraints.get(key).cloned().unwrap_or_default();
                 if constraints.iter().any(|constraint| {
-                    !Requirement::parse(&constraint.requirement)
-                        .matches(&candidate.version.version)
+                    !Requirement::parse(&constraint.requirement).matches(&candidate.version.version)
                 }) {
                     return Ok(Some(SolveFailure::selected(
                         key,
@@ -555,12 +550,7 @@ mod tests {
     }
 
     impl MemorySource {
-        fn publish(
-            &mut self,
-            key: &str,
-            version_text: &str,
-            dependencies: &[(&str, &str)],
-        ) {
+        fn publish(&mut self, key: &str, version_text: &str, dependencies: &[(&str, &str)]) {
             let (org, name) = key.split_once('/').unwrap();
             let metadata = VersionMetadata {
                 org: org.to_string(),
@@ -582,9 +572,7 @@ mod tests {
                     version: metadata,
                     dependencies: dependencies
                         .iter()
-                        .map(|(key, requirement)| {
-                            ((*key).to_string(), (*requirement).to_string())
-                        })
+                        .map(|(key, requirement)| ((*key).to_string(), (*requirement).to_string()))
                         .collect(),
                 },
             );
@@ -674,11 +662,7 @@ mod tests {
         source.publish("test/shared", "1.5.0", &[]);
         source.publish("test/shared", "1.9.0", &[]);
         source.publish("test/left", "1.0.0", &[("test/shared", "^1")]);
-        source.publish(
-            "test/right",
-            "1.0.0",
-            &[("test/shared", "<=1.5.0")],
-        );
+        source.publish("test/right", "1.0.0", &[("test/shared", "<=1.5.0")]);
 
         let solved = solve_memory(
             &mut source,
@@ -717,11 +701,8 @@ mod tests {
         source.publish("test/a", "2.0.0", &[("test/b", "^2")]);
         source.publish("test/policy", "1.0.0", &[("test/core", "^1")]);
 
-        let solved = solve_memory(
-            &mut source,
-            &[("test/a", ">=1"), ("test/policy", "=1.0.0")],
-        )
-        .unwrap();
+        let solved =
+            solve_memory(&mut source, &[("test/a", ">=1"), ("test/policy", "=1.0.0")]).unwrap();
         assert_eq!(solved.selected_version("test/a"), Some("1.0.0"));
         assert_eq!(solved.selected_version("test/b"), Some("1.0.0"));
         assert_eq!(solved.selected_version("test/core"), Some("1.0.0"));
