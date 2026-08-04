@@ -18,7 +18,10 @@ into another branch.
 New provenance paths are propagated through dependencies that are already
 selected. This is required for diamonds and cycles: discovering another path
 to a selected package may add a requirement path to each of its children even
-when no selected version changes.
+when no selected version changes. A cycle-closing back edge remains an active
+version constraint, but its provenance path is terminal and is not expanded
+again; this preserves the safety check without producing an infinite sequence
+of longer equivalent paths.
 
 An unsatisfiable graph reports the active requirements and their deterministic
 paths. Candidate failure nesting is bounded in the rendered diagnostic, while
