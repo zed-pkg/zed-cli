@@ -10,6 +10,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use semver::{Version, VersionReq};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zed_interfaces::environment::{
@@ -125,6 +126,7 @@ pub fn import_mise(
 
     if frozen {
         verify_lock_coverage(&configured, &locked, lock_relative.as_deref())?;
+        verify_frozen_identity(&settings, &configured, &locked, lock_relative.as_deref())?;
         verify_frozen_artifacts(&locked, lock_relative.as_deref())?;
     }
 
@@ -774,6 +776,137 @@ fn verify_lock_coverage(
     Ok(())
 }
 
+fn verify_frozen_identity(
+    settings: &MiseSettings,
+    configured: &BTreeMap<String, ConfiguredTool>,
+    locked: &BTreeMap<String, LockedTool>,
+    lock_path: Option<&str>,
+) -> Result<()> {
+    let lock_path = lock_path.unwrap_or("<missing lockfile>");
+    for (name, configured_tool) in configured {
+        let locked_tool = locked.get(name).with_context(|| {
+            format!("mise lock `{lock_path}` has no entry for configured tool `{name}`")
+        })?;
+
+        if let Some(expected_backend) = configured_tool.backend.as_deref() {
+            let actual_backend = locked_tool.backend.as_deref().unwrap_or("<missing>");
+            if actual_backend != expected_backend {
+                bail!(
+                    "mise backend drift in `{lock_path}` for `{name}`: config selects `{expected_backend}`, lock records `{actual_backend}`"
+                );
+            }
+        }
+
+        if !requirement_matches_resolved(&configured_tool.requirement, &locked_tool.version)? {
+            bail!(
+                "mise version drift in `{lock_path}` for `{name}`: configured requirement `{}` does not accept locked version `{}`",
+                configured_tool.requirement,
+                locked_tool.version
+            );
+        }
+
+        let missing_platforms = settings
+            .lockfile_platforms
+            .iter()
+            .filter(|platform| {
+                configured_tool_applies_to_platform(platform, &configured_tool.platforms)
+                    && !locked_tool.artifacts.contains_key(*platform)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing_platforms.is_empty() {
+            bail!(
+                "mise platform drift in `{lock_path}` for `{name}`: missing requested locked platform(s) [{}]",
+                missing_platforms.join(", ")
+            );
+        }
+    }
+    Ok(())
+}
+
+fn configured_tool_applies_to_platform(platform: &str, constraints: &[String]) -> bool {
+    if constraints.is_empty() {
+        return true;
+    }
+    let platform_os = platform
+        .split_once('-')
+        .map(|(os, _)| os)
+        .unwrap_or(platform);
+    constraints.iter().any(|constraint| {
+        let constraint_os = match constraint.as_str() {
+            "darwin" => "macos",
+            other => other,
+        };
+        constraint.as_str() == platform || constraint_os == platform_os
+    })
+}
+
+fn requirement_matches_resolved(requirement: &str, resolved: &str) -> Result<bool> {
+    let requirement = requirement.trim();
+    let resolved = resolved.trim();
+    if requirement.is_empty() || resolved.is_empty() {
+        return Ok(false);
+    }
+    if requirement == resolved {
+        return Ok(true);
+    }
+
+    if let Some(exact) = requirement.strip_prefix('=') {
+        let exact = exact.trim();
+        if exact == resolved {
+            return Ok(true);
+        }
+        return Ok(match (Version::parse(exact), Version::parse(resolved)) {
+            (Ok(expected), Ok(actual)) => expected == actual,
+            _ => false,
+        });
+    }
+
+    if let Ok(expected) = Version::parse(requirement) {
+        return Ok(Version::parse(resolved).is_ok_and(|actual| actual == expected));
+    }
+
+    if requirement_uses_semver_range(requirement) {
+        let parsed_requirement = VersionReq::parse(requirement).with_context(|| {
+            format!(
+                "unsupported mise SemVer requirement `{requirement}`; frozen verification will not approximate manager-specific range syntax"
+            )
+        })?;
+        let parsed_resolved = Version::parse(resolved).with_context(|| {
+            format!(
+                "mise requirement `{requirement}` uses SemVer range syntax, but locked version `{resolved}` is not strict SemVer"
+            )
+        })?;
+        return Ok(parsed_requirement.matches(&parsed_resolved));
+    }
+
+    let prefix = requirement.strip_prefix("prefix:").unwrap_or(requirement);
+    Ok(version_prefix_matches(prefix, resolved))
+}
+
+fn requirement_uses_semver_range(requirement: &str) -> bool {
+    requirement
+        .chars()
+        .any(|character| matches!(character, '^' | '~' | '*' | '<' | '>' | '=' | ',' | '|'))
+        || requirement.split_whitespace().count() > 1
+        || requirement
+            .split('.')
+            .any(|segment| matches!(segment, "x" | "X"))
+}
+
+fn version_prefix_matches(prefix: &str, resolved: &str) -> bool {
+    if prefix.is_empty() || !resolved.starts_with(prefix) {
+        return false;
+    }
+    if prefix.len() == resolved.len() {
+        return true;
+    }
+    resolved[prefix.len()..]
+        .chars()
+        .next()
+        .is_some_and(|character| matches!(character, '.' | '-' | '+' | '_' | '/'))
+}
+
 fn verify_frozen_artifacts(
     locked: &BTreeMap<String, LockedTool>,
     lock_path: Option<&str>,
@@ -782,7 +915,7 @@ fn verify_frozen_artifacts(
     for (name, tool) in locked {
         if tool.artifacts.is_empty() {
             bail!(
-                "mise lock `{lock_path}` gives `{name}` an exact version but no platform artifact identity; frozen-portable verification requires at least one checksum or immutable URL"
+                "mise lock `{lock_path}` gives `{name}` an exact version but no platform artifact identity; frozen-portable verification requires at least one checksummed platform artifact"
             );
         }
         for (platform, artifact) in &tool.artifacts {
@@ -968,20 +1101,20 @@ checksum = "{}"
             fs::write(
                 root.join("mise.toml"),
                 if root == first_dir.path() {
-                    "[settings]\nlockfile_platforms = [\"macos-arm64\", \"linux-x64\"]\nlockfile = true\n[tools]\npython = \"3.12\"\nnode = \"22\"\n"
+                    "[settings]\nlockfile_platforms = [\"linux-x64\"]\nlockfile = true\n[tools]\npython = \"3.12\"\nnode = \"22\"\n"
                 } else {
-                    "[tools]\nnode=\"22\"\npython=\"3.12\"\n\n[settings]\nlockfile=true\nlockfile_platforms=[\"linux-x64\",\"macos-arm64\"]\n"
+                    "[tools]\nnode=\"22\"\npython=\"3.12\"\n\n[settings]\nlockfile=true\nlockfile_platforms=[\"linux-x64\"]\n"
                 },
             )
             .unwrap();
         }
         let first_lock = format!(
-            "[[tools.python]]\nbackend=\"core:python\"\nversion=\"3.12.4\"\n[tools.python.platforms.macos-arm64]\nchecksum=\"{}\"\nurl=\"https://example.invalid/python\"\n[[tools.node]]\nversion=\"22.4.0\"\nbackend=\"core:node\"\n[tools.node.platforms.linux-x64]\nurl=\"https://example.invalid/node\"\nchecksum=\"{}\"\n",
+            "[[tools.python]]\nbackend=\"core:python\"\nversion=\"3.12.4\"\n[tools.python.platforms.linux-x64]\nchecksum=\"{}\"\nurl=\"https://example.invalid/python\"\n[[tools.node]]\nversion=\"22.4.0\"\nbackend=\"core:node\"\n[tools.node.platforms.linux-x64]\nurl=\"https://example.invalid/node\"\nchecksum=\"{}\"\n",
             checksum('b'),
             checksum('a')
         );
         let second_lock = format!(
-            "[[tools.node]]\nbackend = \"core:node\"\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nchecksum = \"{}\"\nurl = \"https://example.invalid/node\"\n\n[[tools.python]]\nversion = \"3.12.4\"\nbackend = \"core:python\"\n[tools.python.platforms.macos-arm64]\nurl = \"https://example.invalid/python\"\nchecksum = \"{}\"\n",
+            "[[tools.node]]\nbackend = \"core:node\"\nversion = \"22.4.0\"\n[tools.node.platforms.linux-x64]\nchecksum = \"{}\"\nurl = \"https://example.invalid/node\"\n\n[[tools.python]]\nversion = \"3.12.4\"\nbackend = \"core:python\"\n[tools.python.platforms.linux-x64]\nurl = \"https://example.invalid/python\"\nchecksum = \"{}\"\n",
             checksum('a'),
             checksum('b')
         );
@@ -999,7 +1132,7 @@ checksum = "{}"
         fs::write(
             second_dir.path().join("mise.lock"),
             format!(
-                "[[tools.node]]\nversion=\"22.4.0\"\nbackend=\"core:node\"\n[tools.node.platforms.linux-x64]\nurl=\"https://mirror.invalid/node\"\nchecksum=\"{}\"\n[[tools.python]]\nversion=\"3.12.4\"\nbackend=\"core:python\"\n[tools.python.platforms.macos-arm64]\nurl=\"https://example.invalid/python\"\nchecksum=\"{}\"\n",
+                "[[tools.node]]\nversion=\"22.4.0\"\nbackend=\"core:node\"\n[tools.node.platforms.linux-x64]\nurl=\"https://mirror.invalid/node\"\nchecksum=\"{}\"\n[[tools.python]]\nversion=\"3.12.4\"\nbackend=\"core:python\"\n[tools.python.platforms.linux-x64]\nurl=\"https://example.invalid/python\"\nchecksum=\"{}\"\n",
                 checksum('a'),
                 checksum('b')
             ),
@@ -1030,6 +1163,105 @@ checksum = "{}"
         .unwrap();
         let error = import_mise(temp.path(), None, None, false).unwrap_err();
         assert!(error.to_string().contains("global mise scope"));
+    }
+
+    #[test]
+    fn frozen_identity_requires_requested_platform_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("mise.toml"),
+            "[settings]\nlockfile_platforms = [\"linux-x64\", \"macos-arm64\"]\n[tools]\nnode = \"22\"\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("mise.lock"),
+            format!(
+                "[[tools.node]]\nversion = \"22.4.0\"\nbackend = \"core:node\"\n[tools.node.platforms.linux-x64]\nchecksum = \"{}\"\n",
+                checksum('a')
+            ),
+        )
+        .unwrap();
+
+        let error = import_mise(temp.path(), None, None, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing requested locked platform")
+        );
+        assert!(error.to_string().contains("macos-arm64"));
+
+        fs::write(
+            temp.path().join("mise.lock"),
+            format!(
+                "[[tools.node]]\nversion = \"22.4.0\"\nbackend = \"core:node\"\n[tools.node.platforms.linux-x64]\nchecksum = \"{}\"\n[tools.node.platforms.macos-arm64]\nchecksum = \"{}\"\n",
+                checksum('a'),
+                checksum('b')
+            ),
+        )
+        .unwrap();
+        import_mise(temp.path(), None, None, true).unwrap();
+    }
+
+    #[test]
+    fn tool_os_constraints_limit_requested_platform_coverage() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("mise.toml"),
+            "[settings]\nlockfile_platforms = [\"linux-x64\", \"macos-arm64\"]\n[tools]\npython = { version = \"3.12\", os = \"linux\" }\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("mise.lock"),
+            format!(
+                "[[tools.python]]\nversion = \"3.12.4\"\nbackend = \"core:python\"\n[tools.python.platforms.linux-x64]\nchecksum = \"{}\"\n",
+                checksum('a')
+            ),
+        )
+        .unwrap();
+        import_mise(temp.path(), None, None, true).unwrap();
+    }
+
+    #[test]
+    fn explicit_backend_and_requirement_must_match_the_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("mise.toml"),
+            "[tools]\n\"aqua:jqlang/jq\" = \"^1.7\"\n",
+        )
+        .unwrap();
+
+        let write_lock = |backend: &str, version: &str| {
+            fs::write(
+                temp.path().join("mise.lock"),
+                format!(
+                    "[[tools.\"aqua:jqlang/jq\"]]\nversion = \"{version}\"\nbackend = \"{backend}\"\n[tools.\"aqua:jqlang/jq\".platforms.linux-x64]\nchecksum = \"{}\"\n",
+                    checksum('a')
+                ),
+            )
+            .unwrap();
+        };
+
+        write_lock("core:node", "1.7.1");
+        let backend_error = import_mise(temp.path(), None, None, true).unwrap_err();
+        assert!(backend_error.to_string().contains("mise backend drift"));
+
+        write_lock("aqua:jqlang/jq", "1.6.0");
+        let version_error = import_mise(temp.path(), None, None, true).unwrap_err();
+        assert!(version_error.to_string().contains("mise version drift"));
+
+        write_lock("aqua:jqlang/jq", "1.7.1");
+        import_mise(temp.path(), None, None, true).unwrap();
+    }
+
+    #[test]
+    fn requirement_matching_supports_exact_prefix_and_semver_ranges() {
+        assert!(requirement_matches_resolved("22", "22.4.0").unwrap());
+        assert!(requirement_matches_resolved("3.12", "3.12.4").unwrap());
+        assert!(requirement_matches_resolved("temurin-21", "temurin-21.0.2+13").unwrap());
+        assert!(requirement_matches_resolved("=1.7.1", "1.7.1").unwrap());
+        assert!(requirement_matches_resolved("^1.7", "1.9.0").unwrap());
+        assert!(!requirement_matches_resolved("^1.7", "2.0.0").unwrap());
+        assert!(!requirement_matches_resolved("22", "21.9.0").unwrap());
     }
 
     #[test]

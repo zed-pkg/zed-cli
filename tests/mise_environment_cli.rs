@@ -245,3 +245,78 @@ fn frozen_verify_fails_closed_on_ambiguous_or_incomplete_project_state() {
         String::from_utf8_lossy(&unlocked.stderr).contains("requires a project-local lockfile")
     );
 }
+
+#[test]
+fn frozen_verify_reports_platform_backend_and_requirement_drift() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("mise.toml"),
+        "[settings]\nlockfile_platforms = [\"linux-x64\", \"macos-arm64\"]\n[tools]\n\"aqua:jqlang/jq\" = \"^1.7\"\n",
+    )
+    .unwrap();
+
+    let write_lock = |backend: &str, version: &str, include_macos: bool| {
+        let macos = if include_macos {
+            format!(
+                "[tools.\"aqua:jqlang/jq\".platforms.macos-arm64]\nchecksum = \"{}\"\n",
+                sha256('b')
+            )
+        } else {
+            String::new()
+        };
+        fs::write(
+            project.join("mise.lock"),
+            format!(
+                "[[tools.\"aqua:jqlang/jq\"]]\nversion = \"{version}\"\nbackend = \"{backend}\"\n[tools.\"aqua:jqlang/jq\".platforms.linux-x64]\nchecksum = \"{}\"\n{macos}",
+                sha256('a')
+            ),
+        )
+        .unwrap();
+    };
+
+    write_lock("aqua:jqlang/jq", "1.7.1", false);
+    let missing_platform = run_zed(
+        &project,
+        &home,
+        &["env", "verify", "mise", "--frozen", "--json"],
+    );
+    assert!(!missing_platform.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_platform.stderr)
+            .contains("missing requested locked platform")
+    );
+
+    write_lock("core:node", "1.7.1", true);
+    let backend_drift = run_zed(
+        &project,
+        &home,
+        &["env", "verify", "mise", "--frozen", "--json"],
+    );
+    assert!(!backend_drift.status.success());
+    assert!(String::from_utf8_lossy(&backend_drift.stderr).contains("mise backend drift"));
+
+    write_lock("aqua:jqlang/jq", "1.6.0", true);
+    let version_drift = run_zed(
+        &project,
+        &home,
+        &["env", "verify", "mise", "--frozen", "--json"],
+    );
+    assert!(!version_drift.status.success());
+    assert!(String::from_utf8_lossy(&version_drift.stderr).contains("mise version drift"));
+
+    write_lock("aqua:jqlang/jq", "1.7.1", true);
+    let valid = run_zed(
+        &project,
+        &home,
+        &["env", "verify", "mise", "--frozen", "--json"],
+    );
+    assert!(
+        valid.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&valid.stderr)
+    );
+}
