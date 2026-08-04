@@ -32,7 +32,10 @@ pub(super) fn discover(project: &Path) -> Result<Vec<GitContext>> {
         .filter_entry(|entry| entry.file_name() != OsStr::new(".git"))
     {
         let entry = entry.with_context(|| {
-            format!("discovering nested Git work trees under {}", project.display())
+            format!(
+                "discovering nested Git work trees under {}",
+                project.display()
+            )
         })?;
         if !entry.file_type().is_dir() || !entry.path().join(".git").exists() {
             continue;
@@ -88,16 +91,13 @@ pub(super) fn ignored_files(context: &GitContext) -> Result<Vec<PathBuf>> {
         .collect()
 }
 
-pub(super) fn ignored_input_patterns(
-    project: &Path,
-    context: &GitContext,
-) -> Result<Vec<String>> {
+pub(super) fn ignored_input_patterns(project: &Path, context: &GitContext) -> Result<Vec<String>> {
     let path = project.join(IGNORED_INPUT_ALLOW_FILE);
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("inspecting {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(&path).with_context(|| format!("inspecting {}", path.display()))?;
     ensure!(
         metadata.file_type().is_file(),
         "`{IGNORED_INPUT_ALLOW_FILE}` must be a regular file, not a symlink or directory"
@@ -109,9 +109,9 @@ pub(super) fn ignored_input_patterns(
             context.root.display()
         )
     })?;
-    let root_relative = root_relative.to_str().with_context(|| {
-        format!("`{IGNORED_INPUT_ALLOW_FILE}` has a non-UTF-8 repository path")
-    })?;
+    let root_relative = root_relative
+        .to_str()
+        .with_context(|| format!("`{IGNORED_INPUT_ALLOW_FILE}` has a non-UTF-8 repository path"))?;
 
     let tracked = run_git(
         &context.root,
@@ -151,9 +151,18 @@ pub(super) fn validate_allow_pattern(pattern: &str) -> Result<()> {
         pattern == pattern.trim(),
         "patterns may not have leading or trailing whitespace"
     );
-    ensure!(!pattern.starts_with('!'), "negated patterns are not supported");
-    ensure!(!pattern.starts_with('/'), "patterns must be project-relative");
-    ensure!(!pattern.starts_with("./"), "patterns must not start with `./`");
+    ensure!(
+        !pattern.starts_with('!'),
+        "negated patterns are not supported"
+    );
+    ensure!(
+        !pattern.starts_with('/'),
+        "patterns must be project-relative"
+    );
+    ensure!(
+        !pattern.starts_with("./"),
+        "patterns must not start with `./`"
+    );
     ensure!(
         !(pattern.len() >= 2
             && pattern.as_bytes()[0].is_ascii_alphabetic()
@@ -243,8 +252,7 @@ fn run_git(directory: &Path, args: &[&str]) -> Result<Output> {
         .output()
         .with_context(|| format!("running `git {}`", args.join(" ")))?;
     ensure!(
-        output.stdout.len() <= MAX_GIT_OUTPUT_BYTES
-            && output.stderr.len() <= MAX_GIT_OUTPUT_BYTES,
+        output.stdout.len() <= MAX_GIT_OUTPUT_BYTES && output.stderr.len() <= MAX_GIT_OUTPUT_BYTES,
         "Git output exceeded the {}-byte packaging safety limit",
         MAX_GIT_OUTPUT_BYTES
     );
@@ -255,7 +263,7 @@ fn stdout_line(output: &Output, label: &str) -> Result<String> {
     ensure!(
         output.status.success(),
         "resolving {label} failed: {}",
-        diagnostic_stderr(output)
+        diagnostic_stderr(&output)
     );
     let value = std::str::from_utf8(&output.stdout)
         .with_context(|| format!("Git returned a non-UTF-8 {label}"))?;

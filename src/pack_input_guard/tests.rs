@@ -62,7 +62,10 @@ fn non_git_package_keeps_manifest_only_packaging_behavior() {
     fs::write(project.path().join(".zpkg.toml"), &source).unwrap();
     fs::write(project.path().join("local.txt"), "runtime\n").unwrap();
     let manifest = harden_manifest(Manifest::parse(&source).unwrap());
-    assert_eq!(preflight_ignored_inputs(project.path(), &manifest).unwrap(), 0);
+    assert_eq!(
+        preflight_ignored_inputs(project.path(), &manifest).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -95,7 +98,10 @@ fn manifest_exclusion_makes_an_ignored_file_safe() {
 exclude = ["private.env"]
 "#,
     );
-    assert_eq!(preflight_ignored_inputs(project.path(), &manifest).unwrap(), 0);
+    assert_eq!(
+        preflight_ignored_inputs(project.path(), &manifest).unwrap(),
+        0
+    );
 }
 
 #[cfg(unix)]
@@ -123,7 +129,10 @@ exclude = ["private.env"]
     );
     run_git(project.path(), &["commit", "-m", "allow generated input"]);
 
-    assert_eq!(preflight_ignored_inputs(project.path(), &manifest).unwrap(), 1);
+    assert_eq!(
+        preflight_ignored_inputs(project.path(), &manifest).unwrap(),
+        1
+    );
 }
 
 #[cfg(unix)]
@@ -171,7 +180,6 @@ fn ignored_input_inside_an_initialized_submodule_is_rejected() {
     let message = format!("{error:#}");
     assert!(message.contains("vendor/client/private.env"), "{message}");
 }
-
 
 #[cfg(unix)]
 #[test]
@@ -226,8 +234,17 @@ exclude = ["private.env"]
 #[test]
 fn allowlist_patterns_are_project_relative_and_non_negated() {
     for invalid in [
-        "", "*", "**", "**/*", "!secret", "/secret", "./secret", "../secret",
-        "C:/secret", "a//b", "a\\b",
+        "",
+        "*",
+        "**",
+        "**/*",
+        "!secret",
+        "/secret",
+        "./secret",
+        "../secret",
+        "C:/secret",
+        "a//b",
+        "a\\b",
     ] {
         assert!(git::validate_allow_pattern(invalid).is_err(), "{invalid}");
     }
