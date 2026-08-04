@@ -1,3 +1,4 @@
+# Trigger the product-only repair after the exact rustfmt diff was isolated on all three runners.
 name: repair native task runtime
 
 on:
