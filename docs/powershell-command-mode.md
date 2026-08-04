@@ -51,6 +51,17 @@ Those forms are valid filesystem identities but are not accepted consistently as
 
 Ordinary drive paths, ordinary UNC paths, and device paths remain unchanged. The conversion operates on UTF-16 code units rather than lossy UTF-8 strings, so Unicode project names are preserved exactly. This separation is tracked by [DEN-1634](https://linear.app/denman/issue/DEN-1634/zed-cli-normalize-windows-child-process-cwd-for-verbatim-project-paths).
 
+## Reviewed evidence stack
+
+A change to this boundary is complete only when all of the following agree on the same immutable candidate:
+
+1. the typed shell-argument unit tests;
+2. the two shared cross-platform shell matrices;
+3. the native Windows profile and child-current-directory regression; and
+4. the independent Windows clean-room consumer contract in `zed-pkg/zed-e2e`.
+
+The independent contract must pin the exact reviewed CLI commit, build the real `zed.exe`, and prove PowerShell and cmd.exe behavior without importing implementation test helpers. Temporary finalizers, cleanup commits, or a later moving branch tip are not validation evidence. A source change after a green run requires a new immutable pin and complete replay.
+
 ## Exact-head validation ownership
 
 The profile correction, child-current-directory normalization, shared shell matrices, native Windows canary, and this trust-boundary note are reviewed as one immutable CLI candidate. The independent `zed-pkg/zed-e2e` contract pins that exact commit; it does not follow the branch or assume that a later `main` still represents the reviewed candidate. A candidate change requires a new explicit pin and a complete Windows replay.
