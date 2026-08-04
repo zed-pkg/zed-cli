@@ -37,6 +37,9 @@ pub(crate) fn artifact(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
     encoder.finish().unwrap()
 }
 
+// This shared integration-test module is compiled independently by several
+// test targets; not every target exercises the adversarial archive fixture.
+#[allow(dead_code)]
 pub(crate) fn symlink_artifact() -> Vec<u8> {
     let encoder = GzBuilder::new()
         .mtime(0)
