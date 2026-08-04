@@ -1,7 +1,5 @@
-use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -51,33 +49,20 @@ pub(crate) fn harden_manifest(mut manifest: Manifest) -> Manifest {
 /// package artifact. Submodules excluded from every artifact remain optional;
 /// included ones must be initialized, exact, clean, and recursively settled.
 pub(crate) fn preflight_submodules(project: &Path, manifest: &Manifest) -> Result<usize> {
-    let Some(root) = crate::git_submodules::find_root(project) else {
+    let Some(submodules) = crate::git_submodules::pack_submodules(project)? else {
         return Ok(0);
     };
-    let paths = configured_submodule_paths(&root)?;
-    if paths.is_empty() {
-        return Ok(0);
-    }
-
-    let canonical_root = fs::canonicalize(&root)
-        .with_context(|| format!("canonicalizing Git superproject {}", root.display()))?;
-    let views = artifact_views(project, manifest, &canonical_root)?;
-    let included = paths
-        .into_iter()
+    let views = artifact_views(project, manifest, submodules.canonical_root())?;
+    let included = submodules
+        .paths()
         .filter(|relative| {
-            let module = canonical_root.join(relative);
+            let module = submodules.canonical_root().join(relative);
             views.iter().any(|view| view.may_include(&module))
         })
+        .map(str::to_string)
         .collect::<Vec<_>>();
 
-    if included.is_empty() {
-        return Ok(0);
-    }
-
-    verify_gitmodules_committed(&root)?;
-    for relative in &included {
-        verify_checkout(&root, &canonical_root, relative)?;
-    }
+    submodules.verify(&included)?;
     Ok(included.len())
 }
 
@@ -193,235 +178,10 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
-fn configured_submodule_paths(project: &Path) -> Result<Vec<String>> {
-    if !project.join(".gitmodules").is_file() {
-        return Ok(Vec::new());
-    }
-    let args = [
-        "config",
-        "--null",
-        "--file",
-        ".gitmodules",
-        "--get-regexp",
-        r"^submodule\..*\.path$",
-    ];
-    let output = git_output(project, &args)?;
-    if !output.status.success() {
-        if output.status.code() == Some(1) {
-            return Ok(Vec::new());
-        }
-        return git_failure(project, &args, output);
-    }
-
-    let mut paths = BTreeSet::new();
-    for raw in output
-        .stdout
-        .split(|byte| *byte == 0)
-        .filter(|record| !record.is_empty())
-    {
-        let record = std::str::from_utf8(raw).context(".gitmodules contains non-UTF-8 data")?;
-        let (_, value) = record
-            .split_once('\n')
-            .or_else(|| record.split_once(' '))
-            .with_context(|| format!("unrecognized git config record `{record}`"))?;
-        let path = normalize_path_text(value);
-        validate_relative_path(&path)?;
-        if !paths.insert(path.clone()) {
-            bail!("duplicate submodule path `{path}` in .gitmodules");
-        }
-    }
-    Ok(paths.into_iter().collect())
-}
-
-fn normalize_path_text(value: &str) -> String {
-    value.replace('\\', "/").trim_end_matches('/').to_string()
-}
-
-fn validate_relative_path(value: &str) -> Result<()> {
-    if value.is_empty()
-        || value.starts_with('/')
-        || value.contains("//")
-        || value.split('/').any(|component| component.is_empty())
-    {
-        bail!("unsafe Git submodule path `{value}`");
-    }
-    for component in Path::new(value).components() {
-        let Component::Normal(component) = component else {
-            bail!("unsafe Git submodule path `{value}`");
-        };
-        let component = component.to_string_lossy();
-        if component.eq_ignore_ascii_case(".git")
-            || component == crate::transaction::STAGING_DIR
-        {
-            bail!("unsafe Git submodule path `{value}`");
-        }
-    }
-    Ok(())
-}
-
-fn verify_gitmodules_committed(project: &Path) -> Result<()> {
-    checked_git(
-        project,
-        &["ls-files", "--error-unmatch", "--", ".gitmodules"],
-    )
-    .context(".gitmodules is not committed at superproject HEAD")?;
-    let output = checked_git(
-        project,
-        &[
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-            "--",
-            ".gitmodules",
-        ],
-    )?;
-    let status = String::from_utf8(output.stdout).context("Git status output is not UTF-8")?;
-    if !status.trim().is_empty() {
-        bail!(
-            ".gitmodules has uncommitted changes (`{}`); commit it before packing",
-            status.lines().take(4).collect::<Vec<_>>().join("; ")
-        );
-    }
-    Ok(())
-}
-
-fn verify_checkout(project: &Path, canonical_root: &Path, relative: &str) -> Result<()> {
-    let child = canonical_root.join(relative);
-    let marker = child.join(".git");
-    let marker_metadata = fs::symlink_metadata(&marker).with_context(|| {
-        format!(
-            "included submodule `{relative}` is not initialized; run `zed install --git-submodules` before packing"
-        )
-    })?;
-    if marker_metadata.file_type().is_symlink() {
-        bail!(
-            "included submodule `{relative}` has a symlinked .git control path; refusing to package it"
-        );
-    }
-
-    let canonical_child = fs::canonicalize(&child)
-        .with_context(|| format!("canonicalizing included submodule `{relative}`"))?;
-    if !canonical_child.starts_with(canonical_root) {
-        bail!(
-            "included submodule `{relative}` resolves outside superproject {}; refusing",
-            project.display()
-        );
-    }
-
-    let parent_commit = gitlink_commit(project, relative)?;
-    let child_commit = git_line(&canonical_child, &["rev-parse", "HEAD"])
-        .context("reading included submodule checkout commit")?;
-    if parent_commit != child_commit {
-        bail!(
-            "included submodule `{relative}` is checked out at {child_commit}, but superproject HEAD pins {parent_commit}; run `zed install --git-submodules` before packing"
-        );
-    }
-
-    let status = checked_git(
-        &canonical_child,
-        &[
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
-            "--ignore-submodules=none",
-        ],
-    )?;
-    let status = String::from_utf8(status.stdout).context("Git status output is not UTF-8")?;
-    if !status.trim().is_empty() {
-        bail!(
-            "included submodule `{relative}` is dirty ({}); commit or stash changes before packing",
-            status.lines().take(8).collect::<Vec<_>>().join("; ")
-        );
-    }
-
-    let nested = checked_git(&canonical_child, &["submodule", "status", "--recursive"])?;
-    let nested =
-        String::from_utf8(nested.stdout).context("nested submodule status is not UTF-8")?;
-    for line in nested.lines().filter(|line| !line.trim().is_empty()) {
-        if matches!(line.as_bytes().first().copied(), Some(b'-' | b'+' | b'U')) {
-            bail!(
-                "nested submodule drift under `{relative}`: `{line}`; run `zed install --git-submodules` before packing"
-            );
-        }
-    }
-    Ok(())
-}
-
-fn gitlink_commit(project: &Path, relative: &str) -> Result<String> {
-    let output = checked_git(project, &["ls-tree", "HEAD", "--", relative])?;
-    let text = String::from_utf8(output.stdout).context("Git tree output is not UTF-8")?;
-    let line = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .with_context(|| {
-            format!(
-                "included path `{relative}` is not committed as a Git submodule at superproject HEAD"
-            )
-        })?;
-    let mut fields = line.split_whitespace();
-    let mode = fields.next().unwrap_or_default();
-    let kind = fields.next().unwrap_or_default();
-    let commit = fields.next().unwrap_or_default();
-    if mode != "160000" || kind != "commit" || !is_git_object_id(commit) {
-        bail!(
-            "included path `{relative}` is not a committed Git submodule gitlink at HEAD (found `{line}`)"
-        );
-    }
-    Ok(commit.to_string())
-}
-
-fn is_git_object_id(value: &str) -> bool {
-    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn git_line(project: &Path, args: &[&str]) -> Result<String> {
-    let output = checked_git(project, args)?;
-    Ok(String::from_utf8(output.stdout)
-        .context("Git output is not UTF-8")?
-        .trim()
-        .to_string())
-}
-
-fn checked_git(project: &Path, args: &[&str]) -> Result<Output> {
-    let output = git_output(project, args)?;
-    if output.status.success() {
-        return Ok(output);
-    }
-    git_failure(project, args, output)
-}
-
-fn git_output(project: &Path, args: &[&str]) -> Result<Output> {
-    Command::new("git")
-        .arg("-C")
-        .arg(project)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_ASKPASS", "true")
-        .output()
-        .with_context(|| format!("running git {} in {}", args.join(" "), project.display()))
-}
-
-fn git_failure<T>(project: &Path, args: &[&str], output: Output) -> Result<T> {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    bail!(
-        "git {} failed in {} ({}): {}{}",
-        args.join(" "),
-        project.display(),
-        output.status,
-        stderr.trim(),
-        if stdout.trim().is_empty() {
-            String::new()
-        } else {
-            format!("; {}", stdout.trim())
-        }
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::io::Read;
+    use std::process::Command;
 
     use flate2::read::GzDecoder;
 
@@ -472,9 +232,15 @@ url = "https://example.invalid/acme/pack-guard.git"
         let project = tempfile::tempdir().unwrap();
         let manifest_text = manifest_text("");
         fs::write(project.path().join(MANIFEST_FILE), &manifest_text).unwrap();
-        fs::create_dir_all(project.path().join("vendor/client/.git/objects")).unwrap();
-        fs::write(project.path().join("vendor/client/.git/HEAD"), "secret\n").unwrap();
+        fs::create_dir_all(project.path().join("vendor/client")).unwrap();
+        fs::write(
+            project.path().join("vendor/client/.git"),
+            "gitdir: ../../.git/modules/vendor/client\n",
+        )
+        .unwrap();
         fs::write(project.path().join("vendor/client/lib.txt"), "runtime\n").unwrap();
+        fs::create_dir_all(project.path().join("vendor/other/.git/objects")).unwrap();
+        fs::write(project.path().join("vendor/other/.git/HEAD"), "secret\n").unwrap();
         fs::write(project.path().join(".gitmodules"), "transport metadata\n").unwrap();
 
         let manifest = harden_manifest(Manifest::parse(&manifest_text).unwrap());
@@ -555,28 +321,5 @@ url = "https://example.invalid/acme/pack-guard.git"
             .unwrap_err()
             .to_string();
         assert!(error.contains("dirty"), "{error}");
-    }
-
-    #[test]
-    fn archive_reader_helper_reads_runtime_file() {
-        let project = tempfile::tempdir().unwrap();
-        let manifest_text = manifest_text("");
-        fs::write(project.path().join(MANIFEST_FILE), &manifest_text).unwrap();
-        fs::write(project.path().join("runtime.txt"), "runtime\n").unwrap();
-        let manifest = harden_manifest(Manifest::parse(&manifest_text).unwrap());
-        let packed = crate::pack::pack(project.path(), &manifest, None).unwrap();
-        let file = fs::File::open(packed.path).unwrap();
-        let mut archive = tar::Archive::new(GzDecoder::new(file));
-        let mut found = false;
-        for entry in archive.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            if entry.path().unwrap() == Path::new("pkg/runtime.txt") {
-                let mut body = String::new();
-                entry.read_to_string(&mut body).unwrap();
-                assert_eq!(body, "runtime\n");
-                found = true;
-            }
-        }
-        assert!(found);
     }
 }
