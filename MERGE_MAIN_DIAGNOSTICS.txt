@@ -1,8 +1,77 @@
-feature_head=54021eed720d3bc7cc22fb4b37cf0d43de34640a
+feature_head=52c709781105483d8c0eac88af938b09ebd8e76f
 main_head=d57ad0bf76cb60d2a01a7fbfe1ba44f1142f9c6c
 merge_base=4cb2018b42c0f80086920185d92d6460be675804
-merge_status=128
+merge_status=1
+
+## Merge output
+Auto-merging .cli-flags.toml
+Auto-merging src/cli.rs
+CONFLICT (content): Merge conflict in src/cli.rs
+Auto-merging src/lib.rs
+Auto-merging src/main.rs
+Automatic merge failed; fix conflicts and then commit the result.
 
 ## Unmerged files
+src/cli.rs
 
 ## Combined conflict diff
+diff --cc src/cli.rs
+index ac5e0f5,ec7eba0..0000000
+--- a/src/cli.rs
++++ b/src/cli.rs
+@@@ -582,35 -617,23 +631,55 @@@ mod tests 
+      }
+  
+      #[test]
+++<<<<<<< HEAD
+ +    fn install_git_submodule_switch_is_boolish_and_does_not_consume_specs() {
+ +        let cli = Cli::try_parse_from(["zed", "install", "--git-submodules", "acme/http-kit@^1"])
+ +            .unwrap();
+ +        match cli.cmd {
+ +            Cmd::Install {
+ +                specs,
+ +                git_submodules,
+ +                ..
+ +            } => {
+ +                assert!(git_submodules);
+ +                assert_eq!(specs, ["acme/http-kit@^1"]);
+ +            }
+ +            other => panic!("unexpected command: {other:?}"),
+ +        }
+ +
+ +        let cli = Cli::try_parse_from([
+ +            "zed",
+ +            "install",
+ +            "--git-submodules=false",
+ +            "acme/http-kit@^1",
+ +        ])
+ +        .unwrap();
+ +        assert!(matches!(
+ +            cli.cmd,
+ +            Cmd::Install {
+ +                git_submodules: false,
+ +                ..
+ +            }
+ +        ));
+++=======
++     fn environment_import_and_verify_are_typed() {
++         for action in ["import", "verify"] {
++             let cli = Cli::try_parse_from([
++                 "zed",
++                 "env",
++                 action,
++                 "mise",
++                 "--config",
++                 "mise.toml",
++                 "--lock",
++                 "mise.lock",
++                 "--frozen",
++                 "--json",
++             ])
++             .unwrap();
++             assert!(matches!(cli.cmd, Cmd::Env { .. }));
++         }
+++>>>>>>> origin/main
+      }
+  
+      #[test]
