@@ -107,14 +107,31 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     }
     verify_gitmodules_committed(&project)?;
 
+    let canonical_project = fs::canonicalize(&project)
+        .with_context(|| format!("canonicalizing superproject {}", project.display()))?;
     let mut imported = Vec::with_capacity(modules.len());
     let mut seen_packages = BTreeSet::new();
     for module in &modules {
-        let child = project.join(&module.path);
-        if !child.is_dir() {
+        let configured_child = project.join(&module.path);
+        if !configured_child.is_dir() {
             bail!(
                 "submodule `{}` is not initialized at {}; run `zed install --git-submodules`",
                 module.name,
+                configured_child.display()
+            );
+        }
+        let child = fs::canonicalize(&configured_child).with_context(|| {
+            format!(
+                "canonicalizing submodule `{}` at {}",
+                module.name,
+                configured_child.display()
+            )
+        })?;
+        if !child.starts_with(&canonical_project) {
+            bail!(
+                "submodule `{}` resolves outside superproject {}: {}",
+                module.name,
+                project.display(),
                 child.display()
             );
         }
