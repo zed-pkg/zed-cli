@@ -37,7 +37,7 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
         };
         // The packer includes regular files only. Symlinks, directories, and
         // other filesystem objects cannot enter the current artifact format.
-        if !metadata.file_type().is_file() {
+        if !metadata.is_file() {
             continue;
         }
 
@@ -77,8 +77,8 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
         bail!(
             concat!(
                 "refusing to pack {total} untracked Git-ignored file(s) that remain eligible for publication:{details}\n",
-                "Git ignore rules are not publication rules. Add explicit [publish].exclude entries or {} rules ",
-                "at the relevant artifact source root, then retry."
+                "Git ignore rules are not publication rules. Add explicit [publish].exclude entries, or a {} rule ",
+                "for a whole-tree package, then retry."
             ),
             IGNORE_FILE
         );
@@ -101,7 +101,12 @@ struct ArtifactView {
 }
 
 impl ArtifactView {
-    fn new(label: String, source: PathBuf, manifest: &Manifest) -> Result<Self> {
+    fn new(
+        label: String,
+        source: PathBuf,
+        manifest: &Manifest,
+        include_source_ignore: bool,
+    ) -> Result<Self> {
         let source = fs::canonicalize(&source)
             .with_context(|| format!("canonicalizing artifact source {}", source.display()))?;
         let mut extra = manifest.publish.exclude.clone();
@@ -113,7 +118,9 @@ impl ArtifactView {
             extra.push(format!("{modules_dir}/**"));
         }
         extra.push(format!("{}/**", crate::transaction::STAGING_DIR));
-        append_ignore_file(&source.join(IGNORE_FILE), &mut extra)?;
+        if include_source_ignore {
+            append_ignore_file(&source.join(IGNORE_FILE), &mut extra)?;
+        }
 
         let excludes = effective_excludes(&extra, manifest.publish.include_readme);
         let always = ALWAYS_INCLUDE
@@ -143,6 +150,7 @@ fn artifact_views(project: &Path, manifest: &Manifest) -> Result<Vec<ArtifactVie
             "package artifact".to_string(),
             project.to_path_buf(),
             manifest,
+            true,
         )?]);
     }
 
@@ -151,10 +159,14 @@ fn artifact_views(project: &Path, manifest: &Manifest) -> Result<Vec<ArtifactVie
         let derived = manifest
             .manifest_for_target(target)
             .with_context(|| format!("target `{target}` disappeared during package preflight"))?;
+        // pack_all first copies each target into a staging directory. The
+        // source target's .zedignore is intentionally not treated as active
+        // here because it is not copied into that staging tree by copy_files.
         views.push(ArtifactView::new(
             format!("target `{target}` artifact"),
             project.join(&section.dir),
             &derived,
+            false,
         )?);
     }
     Ok(views)
@@ -374,6 +386,42 @@ adapter = "node"
         let message = format!("{error:#}");
         assert!(message.contains("clients/ts/private.key"), "{message}");
         assert!(message.contains("target `nodejs` artifact"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polyglot_source_ignore_is_not_mistaken_for_pack_exclusion() {
+        let project = tempfile::tempdir().unwrap();
+        git(project.path(), &["init"]);
+        fs::create_dir_all(project.path().join("clients/ts")).unwrap();
+        fs::write(
+            project.path().join(".gitignore"),
+            "clients/ts/private.key\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("clients/ts/.zedignore"),
+            "private.key\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("clients/ts/private.key"),
+            "private\n",
+        )
+        .unwrap();
+
+        let error = preflight_git_ignored(
+            project.path(),
+            &manifest(
+                r#"[targets.nodejs]
+dir = "clients/ts"
+adapter = "node"
+"#,
+            ),
+        )
+        .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("clients/ts/private.key"), "{message}");
     }
 
     #[cfg(unix)]
