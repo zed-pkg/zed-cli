@@ -34,8 +34,7 @@ mod implementation;
 
 pub use implementation::{
     InstallOutcome, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean, find, gc, init,
-    login, org_audit, org_claim, pack_cmd, publish, run, split_key, store_prune, store_status,
-    uninstall, yank,
+    login, org_audit, org_claim, run, split_key, store_prune, store_status, uninstall, yank,
 };
 
 pub(crate) use implementation::{
@@ -44,6 +43,33 @@ pub(crate) use implementation::{
 
 #[cfg(test)]
 pub(crate) use implementation::legacy_ensure_artifact_for_test;
+
+fn with_pack_guard<T>(project: &Path, action: impl FnOnce() -> Result<T>) -> Result<T> {
+    let manifest = config::read_manifest(project)?;
+    let manifest = crate::pack_guard::harden_manifest(manifest);
+    crate::pack_guard::preflight_submodules(project, &manifest)?;
+    let manifest_text = manifest.to_toml_string()?;
+    config::with_manifest_override(project, manifest_text, action)
+}
+
+pub fn pack_cmd(
+    project: &Path,
+    out: Option<&Path>,
+) -> Result<Vec<crate::pack::PackagedTarget>> {
+    with_pack_guard(project, || implementation::pack_cmd(project, out))
+}
+
+pub fn publish(
+    project: &Path,
+    cfg: &Config,
+    dry_run: bool,
+    allow_dirty: bool,
+    skip_vcs_checks: bool,
+) -> Result<()> {
+    with_pack_guard(project, || {
+        implementation::publish(project, cfg, dry_run, allow_dirty, skip_vcs_checks)
+    })
+}
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     crate::git_submodules::preflight_mutation(project)?;
