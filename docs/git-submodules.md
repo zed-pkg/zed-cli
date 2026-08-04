@@ -67,6 +67,14 @@ Takeover performs these steps:
 7. runs the normal Zed solver and transactional installer; and
 8. records immutable Git provenance in `.zpkg.lock`.
 
+The authority migration is failure-safe. If resolution or materialization fails
+before the ordinary install transaction commits, Zed restores the exact prior
+root-manifest bytes, or removes the generated manifest when none existed. It
+also refuses to overwrite a manifest changed by another writer while takeover
+was running. If package installation commits but the additive Git-lock finalizer
+alone fails, Zed retains the adopted manifest so it remains aligned with
+installed state and reports the reconciliation failure explicitly.
+
 For example, a submodule at `vendor/client` declaring `acme/client@1.2.3`
 produces manifest intent equivalent to:
 

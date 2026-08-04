@@ -13,10 +13,21 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
+
+#[derive(Debug)]
+pub(crate) struct GitLockFinalizeError;
+
+impl std::fmt::Display for GitLockFinalizeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("finalizing adopted Git submodule lock metadata")
+    }
+}
+
+impl std::error::Error for GitLockFinalizeError {}
 
 #[path = "ops.rs"]
 mod implementation;
@@ -85,7 +96,7 @@ pub fn install(
             )
         })?
     };
-    git_lock.finish(project)?;
+    git_lock.finish(project).context(GitLockFinalizeError)?;
     Ok(outcome)
 }
 
@@ -110,6 +121,6 @@ pub(crate) fn install_frozen_lock_only(
         target,
         allow_ecosystem_mismatch,
     )?;
-    git_lock.finish(project)?;
+    git_lock.finish(project).context(GitLockFinalizeError)?;
     Ok(outcome)
 }
