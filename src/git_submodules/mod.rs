@@ -318,8 +318,7 @@ fn restore_manifest_if_unchanged(
     let mut transaction = ProjectTransaction::begin(project)?;
     transaction.backup(path)?;
     if let Some(previous) = previous {
-        fs::write(path, previous)
-            .with_context(|| format!("restoring {}", path.display()))?;
+        fs::write(path, previous).with_context(|| format!("restoring {}", path.display()))?;
     }
     transaction.commit()
 }
