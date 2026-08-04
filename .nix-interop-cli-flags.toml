@@ -53,6 +53,13 @@ type = "bool"
 default = "false"
 help = "Global lifecycle confirmation mode; Nix planning and bundle writing are non-interactive."
 
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Global Git submodule compatibility mode; Nix interop remains read-only."
+
 [commands.interop]
 help = "Typed interoperability commands."
 
