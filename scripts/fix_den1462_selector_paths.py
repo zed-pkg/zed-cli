@@ -89,7 +89,9 @@ new_test = r'''    #[test]
             .requirement = "path:vendor/node".to_string();
         let rendered = render_mise_config(&plan).unwrap();
         let value: toml::Value = toml::from_str(&rendered).unwrap();
-        assert_eq!(value["tools"]["node"].as_str(), Some("path:vendor/node"));
+        let versions = value["tools"]["node"].as_array().unwrap();
+        assert_eq!(versions[0].as_str(), Some("path:vendor/node"));
+        assert_eq!(versions[1].as_str(), Some("20.15.1"));
     }
 
     #[test]
