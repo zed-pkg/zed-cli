@@ -1,0 +1,99 @@
+name: finalize DEN-1444 task product branch
+
+on:
+  push:
+    branches:
+      - agent/den-1444-native-task-product
+    paths:
+      - .github/den-1444-finalize-trigger
+      - .github/finalize-den-1444.py
+      - .github/workflows/finalize-den-1444.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-den-1444-task-product
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact product branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1444-native-task-product
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Apply the focused runtime repair
+        run: |
+          set -euo pipefail
+          python3 .github/finalize-den-1444.py
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+
+      - name: Run task and integration tests
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib task_runtime::tests
+          cargo test --locked --test task_runtime_cli
+          cargo test --locked --test asdf_main_cli
+          cargo test --locked --test nix_environment_export_cli
+          cargo test --locked --test frozen_offline_prefetch
+          cargo test --locked --test global_cli
+          cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
+
+      - name: Verify the repair changed only reviewed paths
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              "src/bin/zed-task.rs",
+              "src/lib.rs",
+              "src/task_runtime.rs",
+              "tests/task_runtime_cli.rs",
+          }
+          changed = set(
+              subprocess.check_output(
+                  ["git", "diff", "--name-only"], text=True
+              ).splitlines()
+          )
+          unexpected = changed - allowed
+          if unexpected:
+              raise SystemExit(f"unexpected formatted paths: {sorted(unexpected)}")
+          if "src/task_runtime.rs" not in changed:
+              raise SystemExit("runtime repair did not change src/task_runtime.rs")
+          PY
+
+      - name: Remove temporary finalizer and push ordinary product source
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/den-1444-finalize-trigger \
+            .github/finalize-den-1444.py \
+            .github/workflows/finalize-den-1444.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix(DEN-1444): finalize native task runtime on current main'
+          git push origin HEAD:agent/den-1444-native-task-product
