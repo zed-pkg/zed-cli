@@ -1,0 +1,79 @@
+name: DEN-1553 prove scheme and yank correction
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/den-1553-scheme-yank.py'
+      - '.github/workflows/den-1553-prove-scheme-yank.yml'
+      - 'src/install_graph/solver.rs'
+      - 'tests/e2e.rs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: den-1553-prove-scheme-yank-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prove:
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/den-1553-complete-constraint-solver'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Generate and format the candidate solver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile .github/scripts/den-1553-scheme-yank.py
+          python3 .github/scripts/den-1553-scheme-yank.py
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+          git diff -- src/install_graph/solver.rs > "$RUNNER_TEMP/den-1553-solver.patch"
+          test -s "$RUNNER_TEMP/den-1553-solver.patch"
+
+      - name: Prove focused compatibility and solver contracts
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib install_graph::solver::tests
+          cargo test --locked --test e2e opaque_versions_require_exact_match -- --exact
+
+      - name: Prove the complete Rust repository target set
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Upload the exact reviewed solver bytes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: den-1553-scheme-yank-${{ github.event.pull_request.head.sha }}
+          path: |
+            src/install_graph/solver.rs
+            ${{ runner.temp }}/den-1553-solver.patch
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+
+      - name: Upload bounded failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: den-1553-scheme-yank-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            src/install_graph/solver.rs
+            ${{ runner.temp }}/den-1553-solver.patch
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
