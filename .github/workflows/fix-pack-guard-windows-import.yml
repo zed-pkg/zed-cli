@@ -1,0 +1,74 @@
+name: repair pack-guard Windows test import
+
+on:
+  push:
+    branches:
+      - fix/windows-pack-guard-command-import
+    paths:
+      - .github/workflows/fix-pack-guard-windows-import.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-pack-guard-windows-import
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - name: Check out repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/windows-pack-guard-command-import
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Gate the Unix-only test import
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/pack_guard.rs')
+          text = path.read_text()
+          old = '    use std::collections::BTreeSet;\n    use std::process::Command;'
+          new = '    use std::collections::BTreeSet;\n    #[cfg(unix)]\n    use std::process::Command;'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('pack-guard test import anchor not found')
+          path.write_text(text)
+          PY
+
+      - name: Validate Windows all-target contract
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib pack_guard::tests
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Commit ordinary source
+        run: |
+          set -euo pipefail
+          rm .github/workflows/fix-pack-guard-windows-import.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/pack_guard.rs .github/workflows/fix-pack-guard-windows-import.yml
+          git diff --cached --check
+          git commit -m 'fix: gate pack-guard Command import on Unix'
+          git push origin HEAD:fix/windows-pack-guard-command-import
