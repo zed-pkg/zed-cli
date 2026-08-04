@@ -1,20 +1,17 @@
-# Trigger the product-only repair after the exact rustfmt diff was isolated on all three runners.
 name: repair native task runtime
 
 on:
-  pull_request:
-    branches: [main]
+  push:
+    branches:
+      - agent/den-1444-native-task-runtime
     paths:
       - .github/workflows/repair-task-runtime.yml
-      - src/bin/zed-task.rs
-      - src/task_runtime.rs
-      - tests/task_runtime_cli.rs
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: repair-native-task-runtime
+  group: repair-native-task-runtime-${{ github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -23,15 +20,18 @@ defaults:
 
 jobs:
   repair:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'agent/den-1444-native-task-runtime' && github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    permissions:
+      contents: write
     steps:
       - name: Check out exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: agent/den-1444-native-task-runtime
-          persist-credentials: true
+          fetch-depth: 0
+          persist-credentials: false
           show-progress: false
 
       - name: Install Rust quality components
@@ -134,15 +134,16 @@ fn zero_jobs_is_rejected_before_plan_discovery() {
           cargo test --locked --test task_runtime_cli
           cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
 
-      - name: Commit ordinary repaired source only
+      - name: Commit validated ordinary source only
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            src/bin/zed-task.rs \
-            src/task_runtime.rs \
-            tests/task_runtime_cli.rs
+          git add src/bin/zed-task.rs src/task_runtime.rs tests/task_runtime_cli.rs
           git diff --cached --check
           git commit -m 'fix(DEN-1444): validate and format native task runtime'
-          git push origin HEAD:agent/den-1444-native-task-runtime
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/den-1444-native-task-runtime
