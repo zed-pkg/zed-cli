@@ -52,10 +52,7 @@ fn with_pack_guard<T>(project: &Path, action: impl FnOnce() -> Result<T>) -> Res
     config::with_manifest_override(project, manifest_text, action)
 }
 
-pub fn pack_cmd(
-    project: &Path,
-    out: Option<&Path>,
-) -> Result<Vec<crate::pack::PackagedTarget>> {
+pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<crate::pack::PackagedTarget>> {
     with_pack_guard(project, || implementation::pack_cmd(project, out))
 }
 
