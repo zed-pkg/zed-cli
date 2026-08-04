@@ -1,0 +1,57 @@
+name: apply Git-submodule rustfmt repair
+
+on:
+  push:
+    branches:
+      - agent/fail-closed-submodule-pack
+    paths:
+      - .github/workflows/apply-gitmodules-rustfmt.yml
+      - src/git_submodules/mod.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apply-gitmodules-rustfmt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out exact product branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/fail-closed-submodule-pack
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Apply formatting and validate focused boundary
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib git_submodules::manifest_kind_tests -- --nocapture
+          git diff --check
+
+      - name: Publish only the permanent formatting repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/apply-gitmodules-rustfmt.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'style: format Git-submodule metadata guard'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/fail-closed-submodule-pack
