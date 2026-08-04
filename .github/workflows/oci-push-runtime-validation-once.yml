@@ -1,5 +1,6 @@
 name: validate OCI push option combinations once
 
+# This update triggers the workflow after GitHub has registered it on the branch.
 on:
   push:
     branches:
