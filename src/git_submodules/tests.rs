@@ -302,7 +302,10 @@ fn overtake_install_failure_restores_original_root_manifest() {
     fs::write(&child_manifest_path, child_manifest).unwrap();
     fs::write(child.path().join("lib.txt"), "hello\n").unwrap();
     git(child.path(), &["add", "."]);
-    git(child.path(), &["commit", "-m", "child with missing dependency"]);
+    git(
+        child.path(),
+        &["commit", "-m", "child with missing dependency"],
+    );
 
     let root = tempfile::tempdir().unwrap();
     git(root.path(), &["init"]);
@@ -373,7 +376,12 @@ fn failed_overtake_restores_exact_prior_manifest_bytes() {
     restore_manifest_if_unchanged(project.path(), &path, adopted, Some(previous)).unwrap();
 
     assert_eq!(fs::read(&path).unwrap(), previous);
-    assert!(!project.path().join(crate::transaction::STAGING_DIR).exists());
+    assert!(
+        !project
+            .path()
+            .join(crate::transaction::STAGING_DIR)
+            .exists()
+    );
 }
 
 #[test]
@@ -386,7 +394,12 @@ fn failed_overtake_removes_a_new_generated_manifest() {
     restore_manifest_if_unchanged(project.path(), &path, adopted, None).unwrap();
 
     assert!(!path.exists());
-    assert!(!project.path().join(crate::transaction::STAGING_DIR).exists());
+    assert!(
+        !project
+            .path()
+            .join(crate::transaction::STAGING_DIR)
+            .exists()
+    );
 }
 
 #[test]
