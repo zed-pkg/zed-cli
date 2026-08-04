@@ -109,7 +109,6 @@ jobs:
           api = f'https://api.github.com/repos/{repo}'
           products = ['src/install_graph/solver.rs', 'src/install_graph/tests.rs']
           helpers = [
-              '.github/workflows/den-1553-update-legacy-test.yml',
               '.github/workflows/den-1553-update-legacy-test-v2.yml',
               '.github/workflows/den-1553-update-legacy-test-v3.yml',
           ]
