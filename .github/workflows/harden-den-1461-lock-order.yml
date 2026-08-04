@@ -8,6 +8,7 @@ on:
       - .github/workflows/harden-den-1461-lock-order.yml
       - scripts/apply_den1461_current_wire.py
       - scripts/harden_den1461_lock.py
+      - scripts/fix_den1461_enum_size.py
       - src/mise_lock.rs
       - docs/mise-lock-contract.md
       - tests/mise_lock_contract.rs
@@ -19,6 +20,7 @@ on:
       - .github/workflows/harden-den-1461-lock-order.yml
       - scripts/apply_den1461_current_wire.py
       - scripts/harden_den1461_lock.py
+      - scripts/fix_den1461_enum_size.py
       - src/mise_lock.rs
       - docs/mise-lock-contract.md
       - tests/mise_lock_contract.rs
@@ -56,6 +58,7 @@ jobs:
           set -euo pipefail
           python3 scripts/apply_den1461_current_wire.py
           python3 scripts/harden_den1461_lock.py
+          python3 scripts/fix_den1461_enum_size.py
           cargo fmt --all
           cargo fmt --all --check
           git diff --check
@@ -70,7 +73,8 @@ jobs:
             .github/workflows/harden-den-1461-lock-order.yml \
             .github/workflows/apply-den-1461-current-wire.yml \
             scripts/apply_den1461_current_wire.py \
-            scripts/harden_den1461_lock.py
+            scripts/harden_den1461_lock.py \
+            scripts/fix_den1461_enum_size.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
