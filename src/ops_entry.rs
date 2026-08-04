@@ -1,16 +1,17 @@
 //! Public installer facade.
 //!
-//! The existing implementation continues to own dependency resolution,
-//! project transactions, lockfile writes, adapter wiring, and materialization.
-//! This facade warms the content-addressed store with the recursive,
-//! bounded-concurrency installer before entering that transactional phase.
+//! Graph solving and artifact acquisition happen before the implementation's
+//! project transaction. Non-frozen installs expose the solver's exact registry
+//! selections only to the root consumer manifest, so the established installer
+//! writes the lockfile, adapters, and materialization from that one graph rather
+//! than independently making greedy choices. Frozen replay remains lock-driven.
 
 use std::path::Path;
 
 use anyhow::Result;
 
 use crate::cli::{Adapter, InstallMode};
-use crate::config::Config;
+use crate::config::{self, Config};
 
 #[path = "ops.rs"]
 mod implementation;
@@ -47,17 +48,33 @@ pub fn install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
-    crate::install_graph::prefetch(project, cfg, frozen)?;
-    implementation::install(
-        project,
-        cfg,
-        frozen,
-        mode,
-        adapter,
-        allow_build,
-        target,
-        allow_ecosystem_mismatch,
-    )
+    if frozen {
+        crate::install_graph::prefetch(project, cfg, true)?;
+        return implementation::install(
+            project,
+            cfg,
+            true,
+            mode,
+            adapter,
+            allow_build,
+            target,
+            allow_ecosystem_mismatch,
+        );
+    }
+
+    let prepared = crate::install_graph::prepare(project, cfg)?;
+    config::with_resolved_requirements(project, prepared.exact_requirements(), || {
+        implementation::install(
+            project,
+            cfg,
+            false,
+            mode,
+            adapter,
+            allow_build,
+            target,
+            allow_ecosystem_mismatch,
+        )
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

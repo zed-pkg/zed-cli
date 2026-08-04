@@ -154,9 +154,16 @@ struct ManifestOverride {
     text: String,
 }
 
+#[derive(Debug)]
+struct ResolvedRequirements {
+    project: PathBuf,
+    requirements: BTreeMap<String, String>,
+}
+
 thread_local! {
     static MANIFEST_OVERRIDE: RefCell<Option<ManifestOverride>> = const { RefCell::new(None) };
     static INSTALL_PREFETCH_CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) };
+    static RESOLVED_REQUIREMENTS: RefCell<Option<ResolvedRequirements>> = const { RefCell::new(None) };
 }
 
 struct ManifestOverrideGuard;
@@ -179,12 +186,22 @@ impl Drop for InstallPrefetchGuard {
     }
 }
 
+struct ResolvedRequirementsGuard;
+
+impl Drop for ResolvedRequirementsGuard {
+    fn drop(&mut self) {
+        RESOLVED_REQUIREMENTS.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
 fn normalized_project(project: &Path) -> PathBuf {
     fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf())
 }
 
 /// Mark one facade operation so an in-memory manifest proposed by `zed add`
-/// or `zed remove` is recursively prefetched before the implementation-local
+/// or `zed remove` is completely solved before the implementation-local
 /// reinstall begins. The context is thread-local and panic-safe; ordinary
 /// manifest overrides remain side-effect free.
 pub(crate) fn with_install_prefetch<T>(
@@ -202,6 +219,35 @@ pub(crate) fn with_install_prefetch<T>(
         Ok(())
     })?;
     let guard = InstallPrefetchGuard;
+    let result = operation();
+    drop(guard);
+    result
+}
+
+/// Apply the solver's exact registry selections only to the root consumer
+/// manifest. Package manifests read from the immutable store remain untouched.
+/// This lets the existing transactional installer materialize one already
+/// solved graph instead of independently making greedy version choices.
+pub(crate) fn with_resolved_requirements<T>(
+    project: &Path,
+    requirements: BTreeMap<String, String>,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let project = normalized_project(project);
+    RESOLVED_REQUIREMENTS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err(anyhow!(
+                "a resolved dependency graph is already active on this thread"
+            ));
+        }
+        *slot = Some(ResolvedRequirements {
+            project,
+            requirements,
+        });
+        Ok(())
+    })?;
+    let guard = ResolvedRequirementsGuard;
     let result = operation();
     drop(guard);
     result
@@ -232,12 +278,29 @@ pub(crate) fn with_manifest_override<T>(
     })?;
     let guard = ManifestOverrideGuard;
     let prefetch_cfg = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().clone());
-    if let Some(cfg) = prefetch_cfg {
-        crate::install_graph::prefetch(&project, &cfg, false)?;
-    }
-    let result = operation();
+    let result = match prefetch_cfg {
+        Some(cfg) => {
+            let prepared = crate::install_graph::prepare(&project, &cfg)?;
+            with_resolved_requirements(&project, prepared.exact_requirements(), operation)
+        }
+        None => operation(),
+    };
     drop(guard);
     result
+}
+
+fn apply_resolved_requirements(project: &Path, manifest: &mut Manifest) {
+    RESOLVED_REQUIREMENTS.with(|slot| {
+        let slot = slot.borrow();
+        let Some(resolved) = slot.as_ref().filter(|resolved| resolved.project == project) else {
+            return;
+        };
+        for (key, requirement) in &resolved.requirements {
+            manifest
+                .dependencies
+                .insert(key.clone(), requirement.clone());
+        }
+    });
 }
 
 pub fn read_manifest(project: &Path) -> Result<Manifest> {
@@ -248,15 +311,18 @@ pub fn read_manifest(project: &Path) -> Result<Manifest> {
             .filter(|manifest| manifest.project == normalized)
             .map(|manifest| manifest.text.clone())
     });
-    if let Some(text) = override_text {
-        return Manifest::parse(&text)
-            .with_context(|| format!("invalid in-memory manifest for {}", project.display()));
-    }
 
-    let path = project.join(MANIFEST_FILE);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("no {MANIFEST_FILE} found in {}", project.display()))?;
-    Manifest::parse(&text).with_context(|| format!("invalid manifest {}", path.display()))
+    let mut manifest = if let Some(text) = override_text {
+        Manifest::parse(&text)
+            .with_context(|| format!("invalid in-memory manifest for {}", project.display()))?
+    } else {
+        let path = project.join(MANIFEST_FILE);
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("no {MANIFEST_FILE} found in {}", project.display()))?;
+        Manifest::parse(&text).with_context(|| format!("invalid manifest {}", path.display()))?
+    };
+    apply_resolved_requirements(&normalized, &mut manifest);
+    Ok(manifest)
 }
 
 pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
@@ -269,10 +335,7 @@ pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn manifest_override_is_scoped_and_never_written_to_disk() {
-        let project = tempfile::tempdir().unwrap();
-        let text = r#"
+    const BASIC_MANIFEST: &str = r#"
 [package]
 org = "manifestless"
 name = "consumer"
@@ -286,7 +349,11 @@ url = "https://localhost/manifestless/consumer"
 "acme/http-kit" = "^1"
 "#;
 
-        with_manifest_override(project.path(), text.to_string(), || {
+    #[test]
+    fn manifest_override_is_scoped_and_never_written_to_disk() {
+        let project = tempfile::tempdir().unwrap();
+
+        with_manifest_override(project.path(), BASIC_MANIFEST.to_string(), || {
             let manifest = read_manifest(project.path())?;
             assert_eq!(
                 manifest
@@ -307,18 +374,66 @@ url = "https://localhost/manifestless/consumer"
     #[test]
     fn nested_manifest_overrides_fail_closed() {
         let project = tempfile::tempdir().unwrap();
-        let text = r#"
-[package]
-org = "manifestless"
-name = "consumer"
-version = "0.0.0"
+        let error = with_manifest_override(project.path(), BASIC_MANIFEST.to_string(), || {
+            with_manifest_override(project.path(), BASIC_MANIFEST.to_string(), || Ok(()))
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("already active"));
+    }
 
-[package.repository]
-vcs = "git"
-url = "https://localhost/manifestless/consumer"
-"#;
-        let error = with_manifest_override(project.path(), text.to_string(), || {
-            with_manifest_override(project.path(), text.to_string(), || Ok(()))
+    #[test]
+    fn solved_requirements_are_consumer_scoped_and_restored() {
+        let project = tempfile::tempdir().unwrap();
+        let dependency = tempfile::tempdir().unwrap();
+        fs::write(project.path().join(MANIFEST_FILE), BASIC_MANIFEST).unwrap();
+        fs::write(dependency.path().join(MANIFEST_FILE), BASIC_MANIFEST).unwrap();
+
+        with_resolved_requirements(
+            project.path(),
+            BTreeMap::from([
+                ("acme/http-kit".to_string(), "=1.5.0".to_string()),
+                ("acme/transitive".to_string(), "=2.0.0".to_string()),
+            ]),
+            || {
+                let root = read_manifest(project.path())?;
+                assert_eq!(
+                    root.dependencies.get("acme/http-kit").map(String::as_str),
+                    Some("=1.5.0")
+                );
+                assert_eq!(
+                    root.dependencies.get("acme/transitive").map(String::as_str),
+                    Some("=2.0.0")
+                );
+                let package = read_manifest(dependency.path())?;
+                assert_eq!(
+                    package
+                        .dependencies
+                        .get("acme/http-kit")
+                        .map(String::as_str),
+                    Some("^1")
+                );
+                assert!(!package.dependencies.contains_key("acme/transitive"));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        let restored = read_manifest(project.path()).unwrap();
+        assert_eq!(
+            restored
+                .dependencies
+                .get("acme/http-kit")
+                .map(String::as_str),
+            Some("^1")
+        );
+        assert!(!restored.dependencies.contains_key("acme/transitive"));
+    }
+
+    #[test]
+    fn nested_solved_graphs_fail_closed() {
+        let project = tempfile::tempdir().unwrap();
+        let error = with_resolved_requirements(project.path(), BTreeMap::new(), || {
+            with_resolved_requirements(project.path(), BTreeMap::new(), || Ok(()))
         })
         .unwrap_err();
         assert!(error.to_string().contains("already active"));
