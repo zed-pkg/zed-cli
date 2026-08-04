@@ -47,7 +47,10 @@ zed install --git-submodules --frozen
 
 All configured Git submodules are synchronized and initialized in this mode,
 including submodules that are not Zed packages. Only adopted Zed packages
-participate in `.zpkg.toml` and `.zpkg.lock` authority.
+participate in `.zpkg.toml` and `.zpkg.lock` authority. Before Zed parses
+`.gitmodules`, its worktree entry must be a regular file and any indexed entry
+must be a stage-zero regular Git blob; symlinked, conflicted, directory, or other
+indirect metadata fails closed.
 
 ## Overtaking submodules
 
@@ -156,11 +159,43 @@ Removing an adopted package from the active Zed dependency graph removes its
 Git lock record on the next non-frozen install. It does not delete the submodule
 or rewrite `.gitmodules`; those remain explicit Git operations.
 
+## Packing and publishing submodule source
+
+`zed pack` and `zed publish` fail closed when a configured Git submodule can
+contribute files to an artifact. Every included submodule must:
+
+- be initialized;
+- resolve inside the superproject;
+- match the gitlink committed at superproject `HEAD`;
+- have no tracked or untracked changes; and
+- have no uninitialized, conflicted, dirty, or commit-drifted nested submodule.
+
+The CLI reports `zed install --git-submodules` as the recovery command for an
+uninitialized or drifted checkout. A submodule excluded from every artifact by
+`publish.exclude` or `.zedignore` does not need to be initialized. Zed treats an
+uninitialized subtree as conclusively excluded only for a canonical, literal
+`prefix/**` rule; it does not normalize leading `./`, leading `/`, alternate
+path separators, whitespace, or wildcard-bearing prefixes into that exception.
+All other patterns fail closed and require the checkout. Polyglot packages apply
+this test independently to every target source root, including a target located
+inside a submodule.
+
+VCS control data is never package payload. Pack and publish add non-persistent
+exclusions for root and nested `.git`, `.hg`, and `.svn` control paths, including
+Git worktree/submodule `.git` pointer files and `.gitmodules`. These rules do not
+rewrite the authored `.zpkg.toml`; they harden only the active packaging
+operation.
+
+This boundary prevents a fresh clone with an uninitialized gitlink from
+producing a valid-looking but incomplete archive, while still allowing a fully
+materialized submodule to be embedded as ordinary runtime source.
+
 ## Safety constraints
 
 Zed refuses takeover or lock refresh when:
 
-- `.gitmodules` has uncommitted changes;
+- `.gitmodules` is indirect, non-regular, conflicted in the index, or has
+  uncommitted changes;
 - a configured path escapes the project or targets `.git`/Zed recovery state;
 - a workspace member resolves outside the superproject;
 - two adopted submodules declare the same package identity or path;

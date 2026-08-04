@@ -22,6 +22,7 @@ pub mod nix_export_plan;
 #[path = "ops_entry.rs"]
 pub mod ops;
 pub mod pack;
+pub(crate) mod pack_guard;
 pub mod preflight;
 pub mod r2g;
 pub mod registry;

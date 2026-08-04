@@ -40,12 +40,149 @@ pub struct OvertakeReport {
     pub adopted: usize,
 }
 
+fn has_gitmodules_entry(candidate: &Path) -> bool {
+    match fs::symlink_metadata(candidate.join(".gitmodules")) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 /// Find the nearest Git-submodule superproject at or above `requested`.
 pub fn find_root(requested: &Path) -> Option<PathBuf> {
     requested
         .ancestors()
-        .find(|candidate| candidate.join(".gitmodules").is_file())
+        .find(|candidate| has_gitmodules_entry(candidate))
         .map(Path::to_path_buf)
+}
+
+fn verify_gitmodules_worktree_regular(project: &Path) -> Result<()> {
+    let path = project.join(".gitmodules");
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspecting Git submodule metadata {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "{} must be a regular file; refusing mutable or indirect Git submodule metadata",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn validate_gitmodules_index(text: &str) -> Result<()> {
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let (metadata, path) = line
+            .split_once('\t')
+            .with_context(|| format!("unrecognized Git index record for .gitmodules: `{line}`"))?;
+        if path != ".gitmodules" {
+            bail!("unexpected Git index path while validating .gitmodules: `{path}`");
+        }
+        let mut fields = metadata.split_whitespace();
+        let mode = fields.next().unwrap_or_default();
+        let object = fields.next().unwrap_or_default();
+        let stage = fields.next().unwrap_or_default();
+        if !matches!(mode, "100644" | "100755")
+            || object.is_empty()
+            || stage != "0"
+            || fields.next().is_some()
+        {
+            bail!(".gitmodules must be a stage-zero regular Git blob, not index record `{line}`");
+        }
+    }
+    Ok(())
+}
+
+fn verify_gitmodules_index_regular(project: &Path) -> Result<()> {
+    let output = checked_git(project, &["ls-files", "--stage", "--", ".gitmodules"])
+        .context("reading .gitmodules mode from the Git index")?;
+    let text = String::from_utf8(output.stdout).context("Git index output is not UTF-8")?;
+    validate_gitmodules_index(&text)
+}
+
+/// Reject indirect `.gitmodules` metadata before any parser, sync, lock, pack,
+/// or publish operation consumes it. An untracked regular file remains usable
+/// for cooperative Git workflows; once indexed, it must be a regular blob.
+pub(crate) fn preflight_gitmodules_metadata(requested: &Path) -> Result<()> {
+    let Some(root) = find_root(requested) else {
+        return Ok(());
+    };
+    verify_gitmodules_worktree_regular(&root)?;
+    verify_gitmodules_index_regular(&root)
+}
+
+/// Canonical Git-submodule metadata shared by takeover, frozen replay, and
+/// package publication. Keeping parsing and checkout verification in this
+/// subsystem prevents pack/publish policy from drifting from install policy.
+#[derive(Debug)]
+pub(crate) struct PackSubmodules {
+    root: PathBuf,
+    canonical_root: PathBuf,
+    paths: Vec<String>,
+}
+
+impl PackSubmodules {
+    pub(crate) fn canonical_root(&self) -> &Path {
+        &self.canonical_root
+    }
+
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &str> {
+        self.paths.iter().map(String::as_str)
+    }
+
+    pub(crate) fn verify(&self, included: &[String]) -> Result<()> {
+        if included.is_empty() {
+            return Ok(());
+        }
+        checked_git(&self.root, &["cat-file", "-e", "HEAD:.gitmodules"])
+            .context("packing submodule source requires .gitmodules committed at HEAD")?;
+        verify_gitmodules_committed(&self.root)?;
+
+        for relative in included {
+            let configured_child = self.canonical_root.join(relative);
+            let marker = configured_child.join(".git");
+            let marker_metadata = fs::symlink_metadata(&marker).with_context(|| {
+                format!(
+                    "included submodule `{relative}` is not initialized; run `zed install --git-submodules` before packing"
+                )
+            })?;
+            if marker_metadata.file_type().is_symlink() {
+                bail!(
+                    "included submodule `{relative}` has a symlinked .git control path; refusing to package it"
+                );
+            }
+
+            let child = fs::canonicalize(&configured_child)
+                .with_context(|| format!("canonicalizing included submodule `{relative}`"))?;
+            if !child.starts_with(&self.canonical_root) {
+                bail!(
+                    "included submodule `{relative}` resolves outside superproject {}: {}",
+                    self.root.display(),
+                    child.display()
+                );
+            }
+            verify_checkout(&self.root, relative, &child).with_context(|| {
+                format!("verifying included submodule `{relative}` for packing")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn pack_submodules(requested: &Path) -> Result<Option<PackSubmodules>> {
+    let Some(root) = find_root(requested) else {
+        return Ok(None);
+    };
+    preflight_gitmodules_metadata(&root)?;
+    let paths = configured_submodules(&root)?
+        .into_iter()
+        .map(|module| module.path)
+        .collect();
+    let canonical_root = fs::canonicalize(&root)
+        .with_context(|| format!("canonicalizing Git superproject {}", root.display()))?;
+    Ok(Some(PackSubmodules {
+        root,
+        canonical_root,
+        paths,
+    }))
 }
 
 /// Synchronize URLs and initialize/update every configured submodule,
@@ -62,6 +199,7 @@ pub fn sync(requested: &Path) -> Result<usize> {
 }
 
 fn sync_root(project: &Path) -> Result<usize> {
+    preflight_gitmodules_metadata(project)?;
     let configured = configured_submodules(project)?;
     if configured.is_empty() {
         eprintln!(
@@ -111,6 +249,7 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     })?;
     // Takeover is an authority migration, not merely a convenience checkout.
     // Refuse to fetch from working-tree-only or dirty transport metadata.
+    preflight_gitmodules_metadata(&project)?;
     checked_git(&project, &["cat-file", "-e", "HEAD:.gitmodules"])
         .context("takeover requires .gitmodules to be committed at superproject HEAD")?;
     verify_gitmodules_committed(&project)?;
@@ -375,7 +514,9 @@ fn restore_manifest_if_unchanged(
 mod manifest_kind_tests {
     use std::fs;
 
-    use super::submodule_manifest_present;
+    use super::{
+        preflight_gitmodules_metadata, submodule_manifest_present, validate_gitmodules_index,
+    };
 
     #[test]
     fn only_a_missing_manifest_is_skippable() {
@@ -392,6 +533,27 @@ mod manifest_kind_tests {
         assert!(error.to_string().contains("not a regular file"));
     }
 
+    #[test]
+    fn gitmodules_index_requires_a_regular_stage_zero_blob() {
+        validate_gitmodules_index(
+            "100644 0123456789012345678901234567890123456789 0\t.gitmodules\n",
+        )
+        .unwrap();
+        validate_gitmodules_index(
+            "100755 0123456789012345678901234567890123456789 0\t.gitmodules\n",
+        )
+        .unwrap();
+
+        for record in [
+            "120000 0123456789012345678901234567890123456789 0\t.gitmodules\n",
+            "100644 0123456789012345678901234567890123456789 1\t.gitmodules\n",
+            "160000 0123456789012345678901234567890123456789 0\t.gitmodules\n",
+        ] {
+            let error = validate_gitmodules_index(record).unwrap_err();
+            assert!(error.to_string().contains("regular Git blob"));
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_manifests_fail_closed() {
@@ -405,5 +567,23 @@ mod manifest_kind_tests {
 
         let error = submodule_manifest_present(&manifest).unwrap_err();
         assert!(error.to_string().contains("not a regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_gitmodules_fail_before_git_parsing() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let target = project.path().join("external-gitmodules");
+        fs::write(
+            &target,
+            "[submodule \"client\"]\n\tpath = vendor/client\n\turl = ../client\n",
+        )
+        .unwrap();
+        symlink(&target, project.path().join(".gitmodules")).unwrap();
+
+        let error = preflight_gitmodules_metadata(project.path()).unwrap_err();
+        assert!(error.to_string().contains("must be a regular file"));
     }
 }
