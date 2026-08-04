@@ -1,0 +1,69 @@
+name: materialize DEN-1462 mise export
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/apply-den-1462-mise-export.yml
+      - scripts/apply_den1462_mise_export.py
+      - src/mise_export.rs
+      - tests/mise_export_cli.rs
+      - docs/mise-export.md
+      - .github/workflows/mise-export.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-den-1462-mise-export
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/den-1462-mise-export' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/den-1462-mise-export
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Apply typed CLI integration and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/apply_den1462_mise_export.py
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+          cargo test --locked mise_export
+          cargo test --locked --test mise_export_cli
+          cargo test --locked cli::tests::environment_export_is_typed_and_rejects_ambiguous_write_modes
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit ordinary source and remove materializer
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/apply-den-1462-mise-export.yml \
+            scripts/apply_den1462_mise_export.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat(DEN-1462): add deterministic conflict-safe mise export'
+          git push origin HEAD:feat/den-1462-mise-export
