@@ -7,6 +7,7 @@ use zed_cli::nix_export_plan::{
     NIX_EXPORT_PLAN_SCHEMA_V1, NixExportPlan, PlannedDependency, PlannedPackageClass,
     PlannedZedArtifact, ResolvedNixIntent,
 };
+use zed_interfaces::paths::ARCHIVE_ROOT;
 use zed_interfaces::{
     NixBuilderNetwork, NixExportMode, NixInteropArtifact, NixPackageIdentity, NixPolicyEvidence,
     NixPolicyProfile,
@@ -30,7 +31,7 @@ pub(crate) fn artifact(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
         header.set_mtime(0);
         header.set_cksum();
         builder
-            .append_data(&mut header, format!("package/{path}"), *bytes)
+            .append_data(&mut header, format!("{ARCHIVE_ROOT}/{path}"), *bytes)
             .unwrap();
     }
     let encoder = builder.into_inner().unwrap();
@@ -55,7 +56,11 @@ pub(crate) fn symlink_artifact() -> Vec<u8> {
     header.set_link_name("/etc/passwd").unwrap();
     header.set_cksum();
     builder
-        .append_data(&mut header, "package/bin/tool", std::io::empty())
+        .append_data(
+            &mut header,
+            format!("{ARCHIVE_ROOT}/bin/tool"),
+            std::io::empty(),
+        )
         .unwrap();
     let encoder = builder.into_inner().unwrap();
     encoder.finish().unwrap()
