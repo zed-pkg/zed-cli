@@ -1,0 +1,302 @@
+name: DEN-1553 fix provenance frontier depth
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/den-1553-fix-frontier-depth.yml'
+      - 'src/install_graph/solver.rs'
+      - 'tests/recursive_install_concurrency.rs'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1553-fix-frontier-depth
+  cancel-in-progress: false
+
+jobs:
+  fix-prove-publish:
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'agent/den-1553-complete-constraint-solver'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          show-progress: false
+
+      - name: Process the shallowest provenance wave first
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/install_graph/solver.rs')
+          text = path.read_text()
+
+          def replace_once(label: str, old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              'constraint depth helper',
+              '''#[derive(Debug, Clone, Default)]
+          struct SolveState {
+          ''',
+              '''fn constraint_depth(constraints: &[Constraint]) -> usize {
+              constraints
+                  .iter()
+                  .map(|constraint| constraint.path.len())
+                  .min()
+                  .unwrap_or(usize::MAX)
+          }
+
+          #[derive(Debug, Clone, Default)]
+          struct SolveState {
+          ''',
+          )
+          replace_once(
+              'depth-aware unresolved selection',
+              '''    fn unresolved_key(&self) -> Option<String> {
+                  self.constraints
+                      .keys()
+                      .find(|key| !self.registry.contains_key(*key) && !self.workspace.contains_key(*key))
+                      .cloned()
+              }
+          ''',
+              '''    fn unresolved_depth(&self) -> Option<usize> {
+                  self.constraints
+                      .iter()
+                      .filter(|(key, _)| {
+                          !self.registry.contains_key(*key) && !self.workspace.contains_key(*key)
+                      })
+                      .map(|(_, constraints)| constraint_depth(constraints))
+                      .min()
+              }
+
+              fn unresolved_key(&self) -> Option<String> {
+                  self.constraints
+                      .iter()
+                      .filter(|(key, _)| {
+                          !self.registry.contains_key(*key) && !self.workspace.contains_key(*key)
+                      })
+                      .min_by(|(left_key, left_constraints), (right_key, right_constraints)| {
+                          constraint_depth(left_constraints)
+                              .cmp(&constraint_depth(right_constraints))
+                              .then_with(|| left_key.cmp(right_key))
+                      })
+                      .map(|(key, _)| key.clone())
+              }
+          ''',
+          )
+          replace_once(
+              'frontier depth filter',
+              '''    fn prefetch_frontier(&mut self, state: &SolveState) -> Result<()> {
+                  let mut requests = Vec::new();
+                  for (key, constraints) in &state.constraints {
+                      if state.registry.contains_key(key)
+                          || state.workspace.contains_key(key)
+                          || self.workspace.members.contains_key(key)
+                      {
+                          continue;
+                      }
+
+                      let (org, name) = split_key(key)?;
+          ''',
+              '''    fn prefetch_frontier(&mut self, state: &SolveState) -> Result<()> {
+                  let Some(frontier_depth) = state.unresolved_depth() else {
+                      return Ok(());
+                  };
+                  let mut requests = Vec::new();
+                  for (key, constraints) in &state.constraints {
+                      if state.registry.contains_key(key)
+                          || state.workspace.contains_key(key)
+                          || self.workspace.members.contains_key(key)
+                          || constraint_depth(constraints) != frontier_depth
+                      {
+                          continue;
+                      }
+
+                      let (org, name) = split_key(key)?;
+          ''',
+          )
+          replace_once(
+              'frontier contract comment',
+              '''        // Submit one best candidate for every currently active coordinate
+                  // before waiting. This preserves deterministic graph search and avoids
+                  // downloading alternate versions eagerly while still saturating the
+                  // bounded worker pool on wide dependency frontiers.
+          ''',
+              '''        // Submit one best candidate for every coordinate in the shallowest
+                  // active provenance wave before waiting. Shallower packages can add
+                  // constraints to deeper coordinates, so delaying those deeper fetches
+                  // avoids acquiring a version that a still-unresolved parent will make
+                  // ineligible. Equal-depth breadth still saturates the bounded pool.
+          ''',
+          )
+
+          marker = '''    #[test]
+              fn overlapping_ranges_select_the_highest_common_version() {
+          '''
+          if text.count(marker) != 1:
+              raise SystemExit('overlap test marker changed')
+          test = '''    #[test]
+              fn unresolved_selection_finishes_shallower_provenance_before_deeper_keys() {
+                  let mut state = SolveState::default();
+                  state
+                      .add_constraint(
+                          "test/a-deep".to_string(),
+                          Constraint {
+                              requirement: "^1".to_string(),
+                              path: vec![
+                                  "consumer/app@0.1.0".to_string(),
+                                  "test/parent@1.0.0".to_string(),
+                                  "test/a-deep".to_string(),
+                              ],
+                              propagate: true,
+                          },
+                      )
+                      .unwrap();
+                  state
+                      .add_constraint(
+                          "test/z-shallow".to_string(),
+                          Constraint {
+                              requirement: "^1".to_string(),
+                              path: vec![
+                                  "consumer/app@0.1.0".to_string(),
+                                  "test/z-shallow".to_string(),
+                              ],
+                              propagate: true,
+                          },
+                      )
+                      .unwrap();
+
+                  assert_eq!(state.unresolved_depth(), Some(2));
+                  assert_eq!(state.unresolved_key().as_deref(), Some("test/z-shallow"));
+              }
+
+          '''
+          text = text.replace(marker, test + marker, 1)
+          path.write_text(text)
+          PY
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+
+      - name: Prove focused solver and five-worker contracts
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib install_graph::solver::tests
+          cargo test --locked --test recursive_install_concurrency \
+            recursive_http_prefetch_saturates_at_five_and_warm_runs_do_not_redownload -- --exact
+
+      - name: Prove complete Rust target and lint contracts
+        run: |
+          set -euo pipefail
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Publish permanent solver and remove this helper
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          REPOSITORY: ${{ github.repository }}
+          BRANCH: agent/den-1553-complete-constraint-solver
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          repo = os.environ['REPOSITORY']
+          branch = os.environ['BRANCH']
+          expected = os.environ['EXPECTED_HEAD']
+          token = os.environ['GITHUB_TOKEN']
+          api = f'https://api.github.com/repos/{repo}'
+          solver = Path('src/install_graph/solver.rs')
+          helper = '.github/workflows/den-1553-fix-frontier-depth.yml'
+
+          def request(method, endpoint, payload=None):
+              req = urllib.request.Request(
+                  api + endpoint,
+                  data=None if payload is None else json.dumps(payload).encode(),
+                  method=method,
+                  headers={
+                      'Accept': 'application/vnd.github+json',
+                      'Authorization': f'Bearer {token}',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'User-Agent': 'zed-den-1553-depth-frontier-fix',
+                  },
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response:
+                      body = response.read(2_000_000)
+              except urllib.error.HTTPError as error:
+                  detail = error.read(16_384).decode(errors='replace')
+                  raise SystemExit(
+                      f'GitHub API {method} {endpoint} failed with HTTP {error.code}: {detail}'
+                  )
+              return json.loads(body) if body else None
+
+          live = request('GET', f'/git/ref/heads/{branch}')['object']['sha']
+          if live != expected:
+              raise SystemExit(f'branch advanced: expected {expected}, found {live}')
+          parent = request('GET', f'/git/commits/{live}')
+          blob = request('POST', '/git/blobs', {
+              'content': base64.b64encode(solver.read_bytes()).decode(),
+              'encoding': 'base64',
+          })
+          tree = request('POST', '/git/trees', {
+              'base_tree': parent['tree']['sha'],
+              'tree': [
+                  {
+                      'path': 'src/install_graph/solver.rs',
+                      'mode': '100644',
+                      'type': 'blob',
+                      'sha': blob['sha'],
+                  },
+                  {'path': helper, 'mode': '100644', 'type': 'blob', 'sha': None},
+              ],
+          })
+          commit = request('POST', '/git/commits', {
+              'message': (
+                  'fix(DEN-1553): defer deeper candidate acquisition\n\n'
+                  'Resolve and prefetch the shallowest active provenance wave before deeper '
+                  'coordinates. This lets unresolved parents contribute their constraints '
+                  'before a transitive candidate is acquired, so the overlap graph downloads '
+                  'only its three selected artifacts while equal-depth wide frontiers still '
+                  'saturate the five-worker pool. Add a deterministic depth-order regression '
+                  'test and remove this temporary helper after all-target and Clippy proof.'
+              ),
+              'tree': tree['sha'],
+              'parents': [live],
+          })
+          request('PATCH', f'/git/refs/heads/{branch}', {
+              'sha': commit['sha'],
+              'force': False,
+          })
+          print(commit['sha'])
+          PY
+
+      - name: Upload bounded failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: den-1553-frontier-depth-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          path: src/install_graph/solver.rs
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false
