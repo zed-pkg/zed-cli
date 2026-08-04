@@ -252,9 +252,21 @@ fn write_bundle(requested_root: &Path, options: &NixBundleWriteArgs) -> Result<(
         )
     })?;
     let rendered = render_nix_export_bundle(&plan, &artifact_bytes, &flake_lock_bytes)?;
-    let destination = absolute_destination(&options.out)?;
+    let destination = resolve_destination(&options.out)?;
     let outcome = persist_nix_export_bundle(&rendered, &destination)?;
-    print_receipt(&rendered, &plan, outcome, &destination, options.json)
+    let canonical_destination = fs::canonicalize(&destination).with_context(|| {
+        format!(
+            "canonicalizing successfully persisted Nix bundle {}",
+            destination.display()
+        )
+    })?;
+    print_receipt(
+        &rendered,
+        &plan,
+        outcome,
+        &canonical_destination,
+        options.json,
+    )
 }
 
 fn repack_planned_artifact(requested_root: &Path, plan: &NixExportPlan) -> Result<Vec<u8>> {
@@ -313,22 +325,17 @@ fn verify_packed_identity(packed: &PackResult, plan: &NixExportPlan) -> Result<(
     Ok(())
 }
 
-fn absolute_destination(destination: &Path) -> Result<PathBuf> {
-    let file_name = destination
+fn resolve_destination(destination: &Path) -> Result<PathBuf> {
+    destination
         .file_name()
         .filter(|name| !name.is_empty())
         .context("Nix bundle output must name a directory")?;
-    let requested_parent = destination
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let parent = fs::canonicalize(requested_parent).with_context(|| {
-        format!(
-            "Nix bundle output parent `{}` must already exist",
-            requested_parent.display()
-        )
-    })?;
-    Ok(parent.join(file_name))
+    if destination.is_absolute() {
+        return Ok(destination.to_path_buf());
+    }
+    Ok(env::current_dir()
+        .context("reading current directory for relative Nix bundle output")?
+        .join(destination))
 }
 
 fn print_receipt(
@@ -597,11 +604,16 @@ mod tests {
     }
 
     #[test]
-    fn relative_output_is_resolved_below_existing_current_directory() {
-        let canonical_cwd = fs::canonicalize(".").unwrap();
+    fn relative_output_preserves_lexical_parent_until_persistence() {
         assert_eq!(
-            absolute_destination(Path::new("bundle")).unwrap(),
-            canonical_cwd.join("bundle")
+            resolve_destination(Path::new("bundle")).unwrap(),
+            env::current_dir().unwrap().join("bundle")
         );
+    }
+
+    #[test]
+    fn absolute_output_is_not_canonicalized_before_persistence() {
+        let absolute = env::current_dir().unwrap().join("parent-link/bundle");
+        assert_eq!(resolve_destination(&absolute).unwrap(), absolute);
     }
 }
