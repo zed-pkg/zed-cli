@@ -72,9 +72,7 @@ fn run_with_pool<T>(
     }
 }
 
-fn locked_version_metadata(
-    locked: &zed_interfaces::lockfile::LockedPackage,
-) -> VersionMetadata {
+fn locked_version_metadata(locked: &zed_interfaces::lockfile::LockedPackage) -> VersionMetadata {
     VersionMetadata {
         org: locked.org.clone(),
         name: locked.name.clone(),
@@ -92,11 +90,7 @@ fn locked_version_metadata(
     }
 }
 
-fn prefetch_locked(
-    project: &Path,
-    cfg: &Config,
-    concurrency: usize,
-) -> Result<PrefetchReport> {
+fn prefetch_locked(project: &Path, cfg: &Config, concurrency: usize) -> Result<PrefetchReport> {
     let lock_path = project.join(LOCKFILE_FILE);
     let text = fs::read_to_string(&lock_path)
         .with_context(|| format!("--frozen requires {}", lock_path.display()))?;
@@ -120,33 +114,32 @@ fn prefetch_locked(
             bail!("duplicate package `{key}` in {LOCKFILE_FILE}");
         }
 
-        let version = if store.has(&locked.sha256)
-            || store.cached_artifact(&locked.sha256).is_file()
-        {
-            // The lockfile authenticates every immutable field needed to
-            // verify locally owned bytes. Frozen replay must not turn a local
-            // restore into a registry metadata availability check.
-            locked_version_metadata(locked)
-        } else {
-            if registry.is_none() {
-                registry = Some(registry_for(&cfg.registry)?);
-            }
-            let version = registry
-                .as_deref()
-                .context("frozen prefetch registry was not initialized")?
-                .get_version(&locked.org, &locked.name, &locked.version)?;
-            validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
-            if version.sha256 != locked.sha256 {
-                bail!(
-                    "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
-                    key,
-                    locked.version,
-                    locked.sha256,
-                    version.sha256
-                );
-            }
-            version
-        };
+        let version =
+            if store.has(&locked.sha256) || store.cached_artifact(&locked.sha256).is_file() {
+                // The lockfile authenticates every immutable field needed to
+                // verify locally owned bytes. Frozen replay must not turn a local
+                // restore into a registry metadata availability check.
+                locked_version_metadata(locked)
+            } else {
+                if registry.is_none() {
+                    registry = Some(registry_for(&cfg.registry)?);
+                }
+                let version = registry
+                    .as_deref()
+                    .context("frozen prefetch registry was not initialized")?
+                    .get_version(&locked.org, &locked.name, &locked.version)?;
+                validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
+                if version.sha256 != locked.sha256 {
+                    bail!(
+                        "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
+                        key,
+                        locked.version,
+                        locked.sha256,
+                        version.sha256
+                    );
+                }
+                version
+            };
         validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
         tasks.push(FetchTask {
             sequence: tasks.len(),
