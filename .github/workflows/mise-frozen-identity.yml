@@ -1,0 +1,78 @@
+name: mise frozen identity
+
+on:
+  pull_request:
+    paths:
+      - src/environment.rs
+      - tests/mise_environment_cli.rs
+      - docs/mise-interop.md
+      - .github/workflows/mise-frozen-identity.yml
+  push:
+    branches: [main]
+    paths:
+      - src/environment.rs
+      - tests/mise_environment_cli.rs
+      - docs/mise-interop.md
+      - .github/workflows/mise-frozen-identity.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mise-frozen-identity-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  certify:
+    name: Frozen identity / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2025
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Verify formatting and frozen identity behavior
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo test --locked --lib environment::tests
+          cargo test --locked --test mise_environment_cli
+          cargo clippy --locked --all-targets -- -D warnings
+
+  gate:
+    name: All frozen identity platforms passed
+    if: always()
+    needs: certify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Enforce aggregate result
+        env:
+          MATRIX_RESULT: ${{ needs.certify.result }}
+        run: |
+          set -euo pipefail
+          printf 'mise-frozen-identity=%s\n' "$MATRIX_RESULT"
+          test "$MATRIX_RESULT" = success
