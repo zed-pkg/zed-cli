@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/apply-den-1462-mise-export.yml
       - scripts/apply_den1462_mise_export.py
+      - scripts/harden_den1462_export.py
       - src/mise_export.rs
       - tests/mise_export_cli.rs
       - docs/mise-export.md
@@ -40,11 +41,12 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Apply typed CLI integration and validate
+      - name: Apply typed integration, semantic hardening, and validate
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/apply_den1462_mise_export.py
+          python3 scripts/harden_den1462_export.py
           cargo fmt --all
           cargo fmt --all --check
           git diff --check
@@ -54,13 +56,14 @@ jobs:
           cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
           cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Commit ordinary source and remove materializer
+      - name: Commit ordinary source and remove materializers
         shell: bash
         run: |
           set -euo pipefail
           rm -f \
             .github/workflows/apply-den-1462-mise-export.yml \
-            scripts/apply_den1462_mise_export.py
+            scripts/apply_den1462_mise_export.py \
+            scripts/harden_den1462_export.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
