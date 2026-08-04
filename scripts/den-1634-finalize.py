@@ -110,20 +110,27 @@ text = text.replace(test_marker, tests + test_marker, 1)
 source.write_text(text, encoding="utf-8")
 
 native = Path("tests/develop_windows_profile_contract.rs")
-text = native.read_text(encoding="utf-8")
-old_native = '''         if ($env:ZED_DEV -ne '1') {{ throw 'managed environment missing' }}; \
-         if (-not (Test-Path -LiteralPath (Join-Path $env:ZED_DEV_PROJECT_ROOT 'package.json') -PathType Leaf)) {{ throw 'project root does not own package.json' }}; \
-         Write-Output 'windows-powershell-profile-safe'; exit 29",
-'''
-new_native = '''         if ($env:ZED_DEV -ne '1') {{ throw 'managed environment missing' }}; \
-         $actual = (Get-Item -LiteralPath '.').FullName.TrimEnd('\\'); \
-         $expected = (Get-Item -LiteralPath $env:ZED_DEV_PROJECT_ROOT).FullName.TrimEnd('\\'); \
-         if (-not [String]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {{ throw \"project root mismatch: $actual != $expected\" }}; \
-         Write-Output 'windows-powershell-profile-safe'; exit 29",
-'''
-if text.count(old_native) != 1:
-    raise SystemExit("expected exactly one Windows project-ownership assertion")
-native.write_text(text.replace(old_native, new_native, 1), encoding="utf-8")
+lines = native.read_text(encoding="utf-8").splitlines(keepends=True)
+matches = [
+    index
+    for index, line in enumerate(lines)
+    if "project root does not own package.json" in line
+]
+if len(matches) != 1:
+    raise SystemExit(
+        f"expected exactly one Windows project-ownership assertion, found {len(matches)}"
+    )
+index = matches[0]
+continuation = "\\" + "\n"
+lines[index : index + 1] = [
+    "         $actual = (Get-Item -LiteralPath '.').FullName; " + continuation,
+    "         $expected = (Get-Item -LiteralPath $env:ZED_DEV_PROJECT_ROOT).FullName; "
+    + continuation,
+    "         if (-not [String]::Equals($actual, $expected, "
+    "[StringComparison]::OrdinalIgnoreCase)) {{ throw 'project root mismatch' }}; "
+    + continuation,
+]
+native.write_text("".join(lines), encoding="utf-8")
 
 doc = Path("docs/powershell-command-mode.md")
 text = doc.read_text(encoding="utf-8")
