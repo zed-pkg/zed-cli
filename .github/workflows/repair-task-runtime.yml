@@ -3,9 +3,10 @@ name: repair native task runtime
 on:
   pull_request:
     branches:
-      - agent/den-1444-native-task-runtime
+      - main
     paths:
       - .github/task-runtime-repair-trigger
+      - .github/workflows/repair-task-runtime.yml
 
 permissions:
   contents: read
