@@ -1,14 +1,12 @@
-//! Recursive, bounded-concurrency artifact prefetch for `zed install`.
+//! Recursive, bounded-concurrency artifact preparation for `zed install`.
 //!
-//! The normal installer remains the authority for resolution, lockfile writes,
-//! project transactions, adapters, and symlink/copy materialization. This module
-//! runs immediately before it: it walks package manifests recursively, installs
-//! artifacts into the content-addressed store with a five-worker queue, and lets
-//! the normal install phase reuse the warm store.
+//! Non-frozen installs solve the complete active constraint set before project
+//! mutation. Candidate manifests and final artifacts are acquired through the
+//! existing five-worker queue and per-SHA kernel-blocking locks. The prepared
+//! exact graph is then consumed by the transactional installer facade.
 //!
-//! Cross-process coordination is deliberately per artifact. Waiters block in
-//! the operating system's file-lock primitive instead of polling, so unrelated
-//! dependencies and unrelated projects can keep making progress.
+//! Frozen replay remains lock-authoritative: it verifies and materializes the
+//! exact lock graph without solving or rewriting it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -40,12 +38,6 @@ pub struct PrefetchReport {
     pub resolved: usize,
     /// Artifacts that were absent locally and downloaded by this process.
     pub downloaded: usize,
-}
-
-#[derive(Debug, Clone)]
-struct DependencyRequest {
-    key: String,
-    requirement: String,
 }
 
 #[derive(Debug, Clone)]
@@ -228,76 +220,15 @@ impl Drop for ArtifactProcessLock {
     }
 }
 
-#[derive(Debug, Default)]
-struct WorkspaceGraph {
-    dependencies: BTreeMap<String, BTreeMap<String, String>>,
-}
-
-impl WorkspaceGraph {
-    fn discover(project: &Path) -> Self {
-        let mut current = Some(project);
-        while let Some(directory) = current {
-            if directory.join(MANIFEST_FILE).is_file()
-                && let Ok(manifest) = read_manifest(directory)
-                && let Some(workspace) = manifest.workspace.as_ref()
-            {
-                return Self::collect(directory, &workspace.members);
-            }
-            current = directory.parent();
-        }
-        Self::default()
-    }
-
-    fn collect(root: &Path, patterns: &[String]) -> Self {
-        let mut graph = Self::default();
-        for pattern in patterns {
-            let mut candidates = vec![root.to_path_buf()];
-            for segment in pattern.split('/') {
-                let mut next = Vec::new();
-                for base in &candidates {
-                    if segment.contains('*') {
-                        let Ok(glob) = Glob::new(segment) else {
-                            continue;
-                        };
-                        let matcher = glob.compile_matcher();
-                        if let Ok(entries) = fs::read_dir(base) {
-                            for entry in entries.flatten() {
-                                let name = entry.file_name();
-                                if entry.path().is_dir()
-                                    && matcher.is_match(Path::new(&name))
-                                    && !name.to_string_lossy().starts_with('.')
-                                {
-                                    next.push(entry.path());
-                                }
-                            }
-                        }
-                    } else {
-                        let candidate = base.join(segment);
-                        if candidate.is_dir() {
-                            next.push(candidate);
-                        }
-                    }
-                }
-                candidates = next;
-            }
-            for member_dir in candidates {
-                if let Ok(member) = read_manifest(&member_dir) {
-                    let key = member.full_name();
-                    graph.dependencies.insert(key, member.dependencies);
-                }
-            }
-        }
-        graph
-    }
-}
-
 mod artifact;
 #[cfg(test)]
 mod hardening_tests;
 mod resolver;
+mod solver;
 #[cfg(test)]
 mod tests;
 
 pub(crate) use artifact::ensure_artifact;
 use artifact::worker_loop;
+pub(crate) use resolver::prepare;
 pub use resolver::prefetch;
