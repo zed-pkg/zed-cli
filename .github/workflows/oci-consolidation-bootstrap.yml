@@ -1,4 +1,4 @@
-name: inventory stale OCI interface pins
+name: publish validated OCI lock and formatting once
 
 on:
   push:
@@ -14,34 +14,87 @@ on:
       - .github/workflows/oci-consolidation-bootstrap.yml
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: oci-interface-pin-inventory
+  group: oci-consolidation-generated-files
   cancel-in-progress: true
 
 defaults:
   run:
     shell: bash
 
+env:
+  TARGET_BRANCH: agent/oci-interop-consolidated-v1
+  NEW_INTERFACES_REF: 2082012d1903783a89200c3bd44d2659a6daf872
+  EXPECTED_LOCK_SHA256: 84835b6def7b8254ded2916e0cbe5cd74b336f4b05c2643ee7ead36d48446ed7
+
 jobs:
-  inventory:
+  publish:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-22.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
-      - name: Check out exact candidate
+      - name: Check out exact candidate with branch credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
+          fetch-depth: 0
+          persist-credentials: true
           show-progress: false
 
-      - name: Print stale interface references
-        env:
-          OLD_INTERFACES_REF: c2e049006453c26ca8ca291783f681fce75cb01f
+      - name: Install declared Rust formatter
         run: |
           set -euo pipefail
-          git grep -n "$OLD_INTERFACES_REF" -- . ':!Cargo.lock' ':!Cargo.toml' || true
-          echo '--- unique files ---'
-          git grep -l "$OLD_INTERFACES_REF" -- . ':!Cargo.lock' ':!Cargo.toml' | sort -u || true
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          cargo --version --verbose
+          cargo fmt --version
+
+      - name: Regenerate exact previously validated files
+        run: |
+          set -euo pipefail
+          cargo update -p zed-interfaces --precise "$NEW_INTERFACES_REF"
+          test "$(sha256sum Cargo.lock | cut -d' ' -f1)" = "$EXPECTED_LOCK_SHA256"
+          cargo fmt --all
+          git diff --check
+          cargo check --locked --all-targets
+
+      - name: Commit only non-workflow generated files
+        run: |
+          set -euo pipefail
+          files=(
+            Cargo.lock
+            src/cli_oci.rs
+            src/completion.rs
+            src/nix_bundle_write.rs
+            src/nix_export_bundle/archive.rs
+            src/nix_export_bundle/templates.rs
+            src/oci_command.rs
+            tests/nix_bundle_write_boundaries.rs
+            tests/nix_bundle_write_cli.rs
+            tests/nix_export_bundle/common.rs
+          )
+          git add -- "${files[@]}"
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
+
+          mapfile -t changed < <(git diff --cached --name-only)
+          for path in "${changed[@]}"; do
+            permitted=false
+            for candidate in "${files[@]}"; do
+              if [[ "$path" == "$candidate" ]]; then
+                permitted=true
+                break
+              fi
+            done
+            if [[ "$permitted" != true ]]; then
+              echo "generated commit contains an unexpected path: $path" >&2
+              exit 1
+            fi
+          done
+
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "chore: lock and format consolidated OCI interoperability"
+          git push origin HEAD:${TARGET_BRANCH}
