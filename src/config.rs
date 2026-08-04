@@ -156,6 +156,7 @@ struct ManifestOverride {
 
 thread_local! {
     static MANIFEST_OVERRIDE: RefCell<Option<ManifestOverride>> = const { RefCell::new(None) };
+    static INSTALL_PREFETCH_CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) };
 }
 
 struct ManifestOverrideGuard;
@@ -168,8 +169,42 @@ impl Drop for ManifestOverrideGuard {
     }
 }
 
+struct InstallPrefetchGuard;
+
+impl Drop for InstallPrefetchGuard {
+    fn drop(&mut self) {
+        INSTALL_PREFETCH_CONFIG.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
 fn normalized_project(project: &Path) -> PathBuf {
     fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf())
+}
+
+/// Mark one facade operation so an in-memory manifest proposed by `zed add`
+/// or `zed remove` is recursively prefetched before the implementation-local
+/// reinstall begins. The context is thread-local and panic-safe; ordinary
+/// manifest overrides remain side-effect free.
+pub(crate) fn with_install_prefetch<T>(
+    cfg: &Config,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    INSTALL_PREFETCH_CONFIG.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err(anyhow!(
+                "an install prefetch context is already active on this thread"
+            ));
+        }
+        *slot = Some(cfg.clone());
+        Ok(())
+    })?;
+    let guard = InstallPrefetchGuard;
+    let result = operation();
+    drop(guard);
+    result
 }
 
 /// Run one installer operation with an in-memory root manifest. Package
@@ -189,10 +224,17 @@ pub(crate) fn with_manifest_override<T>(
                 "a manifest override is already active on this thread"
             ));
         }
-        *slot = Some(ManifestOverride { project, text });
+        *slot = Some(ManifestOverride {
+            project: project.clone(),
+            text,
+        });
         Ok(())
     })?;
     let guard = ManifestOverrideGuard;
+    let prefetch_cfg = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().clone());
+    if let Some(cfg) = prefetch_cfg {
+        crate::install_graph::prefetch(&project, &cfg, false)?;
+    }
     let result = operation();
     drop(guard);
     result
@@ -280,6 +322,32 @@ url = "https://localhost/manifestless/consumer"
         })
         .unwrap_err();
         assert!(error.to_string().contains("already active"));
+    }
+
+    #[test]
+    fn install_prefetch_context_is_scoped_and_nested_contexts_fail_closed() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = Config {
+            registry: "file:///unused".to_string(),
+            home: home.path().to_path_buf(),
+            token: None,
+            auth_url: "https://localhost/unused".to_string(),
+            supabase_url: None,
+            supabase_key: None,
+            interactive: false,
+        };
+
+        with_install_prefetch(&cfg, || {
+            let active = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().is_some());
+            assert!(active);
+            let nested = with_install_prefetch(&cfg, || Ok(())).unwrap_err();
+            assert!(nested.to_string().contains("already active"));
+            Ok(())
+        })
+        .unwrap();
+
+        let active = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().is_some());
+        assert!(!active);
     }
 
     #[test]

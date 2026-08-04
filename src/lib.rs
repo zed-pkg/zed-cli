@@ -6,9 +6,14 @@ pub mod cli;
 pub mod completion;
 pub mod config;
 pub mod dev;
+pub mod fetch;
 pub mod flags;
+pub mod install_graph;
 pub mod interactive;
 pub mod manifestless;
+pub mod nix_export_bundle;
+pub mod nix_export_plan;
+#[path = "ops_entry.rs"]
 pub mod ops;
 pub mod pack;
 pub mod preflight;
