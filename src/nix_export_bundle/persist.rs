@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -314,33 +316,38 @@ fn sync_tree(root: &Path) -> Result<()> {
     sync_directory(root)
 }
 
-fn sync_directory(path: &Path) -> Result<()> {
+fn sync_directory(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
-        File::open(path)
-            .with_context(|| format!("opening directory `{}` for synchronization", path.display()))?
+        File::open(_path)
+            .with_context(|| {
+                format!(
+                    "opening directory `{}` for synchronization",
+                    _path.display()
+                )
+            })?
             .sync_all()
-            .with_context(|| format!("synchronizing directory `{}`", path.display()))?;
+            .with_context(|| format!("synchronizing directory `{}`", _path.display()))?;
     }
     Ok(())
 }
 
-fn set_regular_mode(path: &Path) -> Result<()> {
+fn set_regular_mode(_path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
+        fs::set_permissions(_path, fs::Permissions::from_mode(0o644))?;
     }
     Ok(())
 }
 
-fn verify_regular_mode(path: &Path, relative: &str) -> Result<()> {
+fn verify_regular_mode(_path: &Path, _relative: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::symlink_metadata(path)?.permissions().mode() & 0o777;
+        let mode = fs::symlink_metadata(_path)?.permissions().mode() & 0o777;
         if mode != 0o644 {
-            bail!("persisted Nix flake bundle file `{relative}` has mode {mode:o}, expected 644");
+            bail!("persisted Nix flake bundle file `{_relative}` has mode {mode:o}, expected 644");
         }
     }
     Ok(())
