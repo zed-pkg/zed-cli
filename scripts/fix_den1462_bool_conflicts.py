@@ -147,3 +147,66 @@ replace_once(
 ''',
     "project escape error contract",
 )
+replace_once(
+    mise_export,
+    '''        MiseExportMode::Write => write_export(
+            &root,
+            &plan_path,
+            &plan_relative,
+            &output_path,
+            &output_relative,
+            &candidate,
+            &plan_sha256,
+            &output_sha256,
+        ),
+''',
+    '''        MiseExportMode::Write => write_export(MiseWriteRequest {
+            root: &root,
+            plan_relative: &plan_relative,
+            output_path: &output_path,
+            output_relative: &output_relative,
+            candidate: &candidate,
+            plan_sha256: &plan_sha256,
+            output_sha256: &output_sha256,
+        }),
+''',
+    "write request construction",
+)
+replace_once(
+    mise_export,
+    '''fn write_export(
+    root: &Path,
+    _plan_path: &Path,
+    plan_relative: &str,
+    output_path: &Path,
+    output_relative: &str,
+    candidate: &str,
+    plan_sha256: &str,
+    output_sha256: &str,
+) -> Result<MiseExportReport> {
+    let state_path = root.join(EXPORT_STATE_PATH);
+''',
+    '''struct MiseWriteRequest<'a> {
+    root: &'a Path,
+    plan_relative: &'a str,
+    output_path: &'a Path,
+    output_relative: &'a str,
+    candidate: &'a str,
+    plan_sha256: &'a str,
+    output_sha256: &'a str,
+}
+
+fn write_export(request: MiseWriteRequest<'_>) -> Result<MiseExportReport> {
+    let MiseWriteRequest {
+        root,
+        plan_relative,
+        output_path,
+        output_relative,
+        candidate,
+        plan_sha256,
+        output_sha256,
+    } = request;
+    let state_path = root.join(EXPORT_STATE_PATH);
+''',
+    "write request structure",
+)
