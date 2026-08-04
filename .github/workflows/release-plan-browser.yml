@@ -5,10 +5,13 @@ on:
     paths:
       - ".github/workflows/release-plan-browser.yml"
       - "scripts/render-release-plan-html.mjs"
+      - "scripts/release-plan-integrity.mjs"
       - "tests/release_plan_report_test.mjs"
       - "tests/release_plan_accessibility_test.mjs"
+      - "tests/release_plan_integrity_test.mjs"
       - "tests/browser/test_release_plan_report.py"
       - "tests/browser/test_release_plan_cross_browser.py"
+      - "tests/browser/test_release_plan_integrity.py"
       - "tests/fixtures/release-report/**"
       - "docs/release-plan-report.md"
       - "src/release.rs"
@@ -21,10 +24,13 @@ on:
     paths:
       - ".github/workflows/release-plan-browser.yml"
       - "scripts/render-release-plan-html.mjs"
+      - "scripts/release-plan-integrity.mjs"
       - "tests/release_plan_report_test.mjs"
       - "tests/release_plan_accessibility_test.mjs"
+      - "tests/release_plan_integrity_test.mjs"
       - "tests/browser/test_release_plan_report.py"
       - "tests/browser/test_release_plan_cross_browser.py"
+      - "tests/browser/test_release_plan_integrity.py"
       - "tests/fixtures/release-report/**"
       - "docs/release-plan-report.md"
       - "src/release.rs"
@@ -42,8 +48,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  integrity-portability:
+    name: Integrity writer on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+
+      - name: Test canonical hashing and atomic publication
+        run: node --test tests/release_plan_integrity_test.mjs
+
   browser:
     name: Generate and review in ${{ matrix.browser }}
+    needs: integrity-portability
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -76,12 +103,13 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Test the fail-closed renderer and accessibility structure
+      - name: Test renderer accessibility and integrity boundaries
         working-directory: zed-cli
         run: >-
           node --test
           tests/release_plan_report_test.mjs
           tests/release_plan_accessibility_test.mjs
+          tests/release_plan_integrity_test.mjs
 
       - name: Build the locked Rust CLI
         working-directory: zed-cli
@@ -106,6 +134,20 @@ jobs:
           --input build/release-plan.json
           --output build/release-plan.html
 
+      - name: Bind and verify release-report integrity
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release-plan-integrity.mjs bind \
+            --plan build/release-plan.json \
+            --report build/release-plan.html \
+            --integrity build/release-plan.integrity.json
+          node scripts/release-plan-integrity.mjs verify \
+            --plan build/release-plan.json \
+            --report build/release-plan.html \
+            --integrity build/release-plan.integrity.json
+
       - name: Install pinned Playwright ${{ matrix.browser }}
         working-directory: zed-cli
         run: |
@@ -120,11 +162,20 @@ jobs:
           PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
         run: .venv-release-browser/bin/python tests/browser/test_release_plan_cross_browser.py
 
-      - name: Upload the reviewed offline report
+      - name: Exercise integrity provenance in the browser
+        working-directory: zed-cli
+        env:
+          PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
+        run: .venv-release-browser/bin/python tests/browser/test_release_plan_integrity.py
+
+      - name: Upload the reviewed release-plan artifact set
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: zed-release-plan-report-${{ matrix.browser }}
-          path: zed-cli/build/release-plan.html
+          path: |
+            zed-cli/build/release-plan.json
+            zed-cli/build/release-plan.html
+            zed-cli/build/release-plan.integrity.json
           if-no-files-found: error
           retention-days: 7
 
