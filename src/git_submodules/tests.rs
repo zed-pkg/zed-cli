@@ -13,11 +13,11 @@ use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 
 use super::cli::{OvertakeArgs, OvertakeCli, OvertakeCommand, Route, route};
 use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};
+#[cfg(unix)]
+use super::lock::prepare_install;
 use super::lock::{
     GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,
 };
-#[cfg(unix)]
-use super::lock::prepare_install;
 use super::*;
 #[cfg(unix)]
 use crate::config::{Config, read_manifest};
