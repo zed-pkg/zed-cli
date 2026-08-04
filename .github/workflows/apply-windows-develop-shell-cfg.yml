@@ -1,4 +1,4 @@
-name: apply Windows develop-shell test cfg fix
+name: apply Windows test cfg fix
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: windows-develop-shell-test-cfg-${{ github.event.pull_request.number || github.ref }}
+  group: windows-test-cfg-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -37,15 +37,14 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Gate Unix-only imports and helpers
+      - name: Gate Unix-only test imports, helpers, and fixtures
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('tests/develop_shell_edge_cases.rs')
-          text = path.read_text(encoding='utf-8')
-
+          shell_tests = Path('tests/develop_shell_edge_cases.rs')
+          text = shell_tests.read_text(encoding='utf-8')
           replacements = {
               'use std::collections::BTreeMap;\n': '#[cfg(unix)]\nuse std::collections::BTreeMap;\n',
               'use std::ffi::{OsStr, OsString};\n': '#[cfg(unix)]\nuse std::ffi::{OsStr, OsString};\n',
@@ -55,19 +54,34 @@ jobs:
           for old, new in replacements.items():
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'expected exactly one anchor {old!r}, found {count}')
+                  raise SystemExit(f'develop-shell: expected exactly one anchor {old!r}, found {count}')
               text = text.replace(old, new, 1)
+          shell_tests.write_text(text, encoding='utf-8')
 
-          path.write_text(text, encoding='utf-8')
+          e2e = Path('tests/e2e.rs')
+          text = e2e.read_text(encoding='utf-8')
+          replacements = {
+              'fn write_executable(path: &Path, contents: &str) {\n': '#[cfg(unix)]\nfn write_executable(path: &Path, contents: &str) {\n',
+              'fn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {\n': '#[cfg(unix)]\nfn bin_fixture(root: &Path, name: &str, bin_name: &str, script: &str) -> PathBuf {\n',
+              'fn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {\n': '#[cfg(unix)]\nfn bin_consumer(root: &Path, name: &str, deps: &[&str]) -> PathBuf {\n',
+              '#[test]\nfn hoisted_bins_are_container_safe_in_copy_mode() {\n': '#[cfg(unix)]\n#[test]\nfn hoisted_bins_are_container_safe_in_copy_mode() {\n',
+          }
+          for old, new in replacements.items():
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'e2e: expected exactly one anchor {old!r}, found {count}')
+              text = text.replace(old, new, 1)
+          e2e.write_text(text, encoding='utf-8')
           PY
 
           cargo fmt --all --check
           git diff --check
           cargo test --locked --test develop_shell_edge_cases
+          cargo test --locked --test e2e --no-run
           cargo clippy --locked --all-targets -- -D warnings
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add tests/develop_shell_edge_cases.rs
-          git commit -m 'fix: gate Unix-only develop-shell test helpers'
+          git add tests/develop_shell_edge_cases.rs tests/e2e.rs
+          git commit -m 'fix: gate Unix-only test helpers on Windows'
           git push origin HEAD:fix/windows-develop-shell-test-cfg
