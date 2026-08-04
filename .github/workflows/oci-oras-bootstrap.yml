@@ -65,6 +65,20 @@ jobs:
           path = Path('src/oci_push.rs')
           text = path.read_text(encoding='utf-8')
 
+          import_old = "use std::io::{self, BufRead, IsTerminal, Read, Write};"
+          import_new = "use std::io::{self, BufRead, IsTerminal, Read};"
+          count = text.count(import_old)
+          if count != 1:
+              raise SystemExit(f'expected one global Write import, found {count}')
+          text = text.replace(import_old, import_new)
+
+          unix_write_old = "        use std::os::unix::fs::OpenOptionsExt;"
+          unix_write_new = "        use std::io::Write;\n        use std::os::unix::fs::OpenOptionsExt;"
+          count = text.count(unix_write_old)
+          if count != 1:
+              raise SystemExit(f'expected one Unix OpenOptions import, found {count}')
+          text = text.replace(unix_write_old, unix_write_new)
+
           newline_old = "while password.ends_with(['\\n', '\\r']) {"
           newline_new = "while password.ends_with('\\n') || password.ends_with('\\r') {"
           count = text.count(newline_old)
@@ -122,6 +136,25 @@ jobs:
           if count != 1:
               raise SystemExit(f'expected one missing-manifest diagnostic block, found {count}')
           text = text.replace(missing_old, missing_new)
+
+          truncation_old = '''    if value.len() > MAX_DIAGNOSTIC_BYTES {
+              value.truncate(MAX_DIAGNOSTIC_BYTES);
+              value.push_str("…");
+          }
+          '''
+          truncation_new = '''    if value.len() > MAX_DIAGNOSTIC_BYTES {
+              let mut end = MAX_DIAGNOSTIC_BYTES;
+              while !value.is_char_boundary(end) {
+                  end -= 1;
+              }
+              value.truncate(end);
+              value.push_str("…");
+          }
+          '''
+          count = text.count(truncation_old)
+          if count != 1:
+              raise SystemExit(f'expected one diagnostic truncation block, found {count}')
+          text = text.replace(truncation_old, truncation_new)
 
           path.write_text(text, encoding='utf-8')
           PY
