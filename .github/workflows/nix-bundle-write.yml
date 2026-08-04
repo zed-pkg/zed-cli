@@ -13,6 +13,7 @@ on:
       - "src/lib.rs"
       - "src/completion.rs"
       - "tests/nix_bundle_write_cli.rs"
+      - "tests/nix_bundle_write_boundaries.rs"
       - "Cargo.toml"
       - "Cargo.lock"
   push:
@@ -28,6 +29,7 @@ on:
       - "src/lib.rs"
       - "src/completion.rs"
       - "tests/nix_bundle_write_cli.rs"
+      - "tests/nix_bundle_write_boundaries.rs"
       - "Cargo.toml"
       - "Cargo.lock"
   workflow_dispatch:
@@ -80,7 +82,9 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run process-level command contracts
-        run: cargo test --locked --test nix_bundle_write_cli -- --nocapture --test-threads=1
+        run: |
+          cargo test --locked --test nix_bundle_write_cli -- --nocapture --test-threads=1
+          cargo test --locked --test nix_bundle_write_boundaries -- --nocapture --test-threads=1
 
       - name: Verify combined help and completions
         shell: bash
