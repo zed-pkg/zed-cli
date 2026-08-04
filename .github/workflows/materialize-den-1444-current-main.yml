@@ -1,0 +1,297 @@
+name: materialize native task runtime on current main
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/materialize-den-1444-current-main.yml
+      - .github/den-1444-materializer-trigger
+
+permissions:
+  contents: read
+
+concurrency:
+  group: materialize-den-1444-current-main
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - name: Check out current-main task branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1444-native-task-current-main
+          fetch-depth: 0
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Materialize reviewed task product files
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin agent/den-1444-native-task-runtime
+          source_ref=origin/agent/den-1444-native-task-runtime
+          for path in \
+            .task-cli-flags.toml \
+            docs/task-runtime.md \
+            src/bin/zed-task.rs \
+            src/task_runtime.rs \
+            tests/task_runtime_cli.rs; do
+            mkdir -p "$(dirname "$path")"
+            git show "$source_ref:$path" > "$path"
+          done
+
+      - name: Compose current-main module and repair runtime defects
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path('src/lib.rs')
+          text = lib.read_text()
+          if 'pub mod task_runtime;' not in text:
+              anchor = 'pub mod store;\n'
+              if anchor not in text:
+                  raise SystemExit('current-main task module anchor not found')
+              text = text.replace(anchor, anchor + 'pub mod task_runtime;\n', 1)
+          lib.write_text(text)
+
+          binary = Path('src/bin/zed-task.rs')
+          text = binary.read_text()
+          old = '#[arg(long, env = "ZED_TASK_JOBS", default_value_t = 1, value_parser = clap::value_parser!(usize).range(1..))]'
+          new = '#[arg(long, env = "ZED_TASK_JOBS", default_value_t = 1, value_parser = parse_jobs)]'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('task jobs parser anchor not found')
+          if 'fn parse_jobs(' not in text:
+              anchor = '\nstruct HumanObserver;\n'
+              replacement = '''
+fn parse_jobs(value: &str) -> std::result::Result<usize, String> {
+    let jobs = value
+        .parse::<usize>()
+        .map_err(|_| format!("`{value}` is not a valid positive integer"))?;
+    if jobs == 0 {
+        return Err("task concurrency must be at least one".to_string());
+    }
+    Ok(jobs)
+}
+
+struct HumanObserver;
+'''
+              if anchor not in text:
+                  raise SystemExit('task parser insertion anchor not found')
+              text = text.replace(anchor, '\n' + replacement, 1)
+          binary.write_text(text)
+
+          runtime = Path('src/task_runtime.rs')
+          text = runtime.read_text()
+          old = '        let (states, ready) = &*self.states;\n'
+          new = '        let (state_mutex, ready) = &*self.states;\n'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('task state mutex tuple anchor not found')
+          old_lock = '        let mut states = states.lock().expect("task state mutex poisoned");\n'
+          new_lock = '        let mut states = state_mutex.lock().expect("task state mutex poisoned");\n'
+          count = text.count(old_lock)
+          if count:
+              text = text.replace(old_lock, new_lock)
+          elif text.count(new_lock) < 2:
+              raise SystemExit('task state lock anchors not found')
+          runtime.write_text(text)
+
+          tests = Path('tests/task_runtime_cli.rs')
+          text = tests.read_text()
+          if 'fn zero_jobs_is_rejected_before_plan_discovery()' not in text:
+              text += r'''
+
+#[test]
+fn zero_jobs_is_rejected_before_plan_discovery() {
+    let root = tempfile::tempdir().unwrap();
+    let output = run(root.path(), &["run", "missing", "--jobs", "0"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("task concurrency must be at least one"),
+        "{stderr}"
+    );
+}
+'''
+          tests.write_text(text)
+          PY
+
+      - name: Write permanent read-only three-platform certification
+        run: |
+          set -euo pipefail
+          cat > .github/workflows/task-runtime.yml <<'YAML'
+          name: native task runtime
+
+          on:
+            pull_request:
+              paths:
+                - .task-cli-flags.toml
+                - docs/task-runtime.md
+                - src/task_runtime.rs
+                - src/bin/zed-task.rs
+                - src/lib.rs
+                - tests/task_runtime_cli.rs
+                - .github/workflows/task-runtime.yml
+            push:
+              branches: [main]
+              paths:
+                - .task-cli-flags.toml
+                - docs/task-runtime.md
+                - src/task_runtime.rs
+                - src/bin/zed-task.rs
+                - src/lib.rs
+                - tests/task_runtime_cli.rs
+                - .github/workflows/task-runtime.yml
+            workflow_dispatch:
+
+          permissions:
+            contents: read
+
+          concurrency:
+            group: task-runtime-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+            cancel-in-progress: true
+
+          defaults:
+            run:
+              shell: bash
+
+          jobs:
+            task-runtime:
+              name: task runtime / ${{ matrix.os }}
+              runs-on: ${{ matrix.os }}
+              timeout-minutes: 40
+              strategy:
+                fail-fast: false
+                matrix:
+                  os: [ubuntu-24.04, macos-15, windows-2025]
+              steps:
+                - name: Check out exact candidate
+                  uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+                  with:
+                    fetch-depth: 1
+                    persist-credentials: false
+                    show-progress: false
+
+                - name: Install Rust quality components
+                  run: |
+                    set -euo pipefail
+                    rustup toolchain install stable --profile minimal --component rustfmt,clippy
+                    rustup default stable
+                    rustc --version --verbose
+                    cargo --version --verbose
+
+                - name: Validate flags-2-env contract
+                  run: |
+                    set -euo pipefail
+                    python - <<'PY'
+                    import tomllib
+                    from pathlib import Path
+
+                    contract = tomllib.loads(Path('.task-cli-flags.toml').read_text())
+                    expected = {
+                        'ZED_TASK_PLAN',
+                        'ZED_TASK_JSON',
+                        'ZED_TASK_ALL',
+                        'ZED_TASK_DRY_RUN',
+                        'ZED_TASK_YES',
+                        'ZED_TASK_JOBS',
+                        'ZED_TASK_NO_CACHE',
+                    }
+                    observed = set()
+                    for flag in contract.get('flags', {}).values():
+                        observed.add(flag['env'])
+                    for command in contract.get('commands', {}).values():
+                        for flag in command.get('flags', {}).values():
+                            observed.add(flag['env'])
+                    assert observed == expected, (observed, expected)
+                    PY
+
+                - name: Format
+                  run: cargo fmt --all --check
+
+                - name: Unit and real CLI tests
+                  run: |
+                    set -euo pipefail
+                    cargo test --locked --lib task_runtime::tests
+                    cargo test --locked --test task_runtime_cli
+
+                - name: Strict Clippy
+                  run: cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
+
+                - name: Repeated deterministic dry-run canary
+                  run: |
+                    set -euo pipefail
+                    cargo build --locked --bin zed-task
+                    work="$RUNNER_TEMP/zed-task-determinism"
+                    mkdir -p "$work"
+                    cat > "$work/zed-env.toml" <<'TOML'
+                    schema = 2
+
+                    [tasks.prepare]
+                    run = ["echo prepare"]
+
+                    [tasks.build]
+                    depends = ["prepare"]
+                    run = ["echo build"]
+                    TOML
+                    (
+                      cd "$work"
+                      "$GITHUB_WORKSPACE/target/debug/zed-task" --json run build --dry-run > first.json
+                      "$GITHUB_WORKSPACE/target/debug/zed-task" --json run build --dry-run > second.json
+                      cmp first.json second.json
+                    )
+          YAML
+
+      - name: Validate task runtime and current-main compatibility
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+          cargo test --locked --lib task_runtime::tests
+          cargo test --locked --test task_runtime_cli
+          cargo test --locked --test asdf_main_cli
+          cargo test --locked --test nix_environment_export_cli
+          cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
+
+      - name: Commit validated ordinary product files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            .github/workflows/task-runtime.yml \
+            .task-cli-flags.toml \
+            docs/task-runtime.md \
+            src/bin/zed-task.rs \
+            src/lib.rs \
+            src/task_runtime.rs \
+            tests/task_runtime_cli.rs
+          git diff --cached --check
+          git commit -m 'feat(DEN-1444): compose native task runtime on current main'
+          git push \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:agent/den-1444-native-task-current-main
