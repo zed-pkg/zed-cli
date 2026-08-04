@@ -1,8 +1,11 @@
 use std::ffi::{OsStr, OsString};
 
+use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
-use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};
+use zed_cli::cli::{
+    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
+};
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
@@ -200,27 +203,49 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
         Cmd::Env { cmd } => match cmd {
             EnvCmd::Import {
-                manager: _,
+                manager,
                 config,
                 lock,
                 frozen,
                 json,
-            } => {
-                let imported =
-                    environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
-                environment::print_import(&imported, json)
-            }
+            } => match manager {
+                EnvironmentManagerArg::Mise => {
+                    let imported =
+                        environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                    environment::print_import(&imported, json)
+                }
+                EnvironmentManagerArg::Asdf => {
+                    let imported = asdf_environment::import_asdf(
+                        &cwd,
+                        config.as_deref(),
+                        lock.as_deref(),
+                        frozen,
+                    )?;
+                    asdf_environment::print_import(&imported, json)
+                }
+            },
             EnvCmd::Verify {
-                manager: _,
+                manager,
                 config,
                 lock,
                 frozen,
                 json,
-            } => {
-                let imported =
-                    environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
-                environment::print_verification(&imported, json)
-            }
+            } => match manager {
+                EnvironmentManagerArg::Mise => {
+                    let imported =
+                        environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                    environment::print_verification(&imported, json)
+                }
+                EnvironmentManagerArg::Asdf => {
+                    let imported = asdf_environment::import_asdf(
+                        &cwd,
+                        config.as_deref(),
+                        lock.as_deref(),
+                        frozen,
+                    )?;
+                    asdf_environment::print_verification(&imported, json)
+                }
+            },
         },
         Cmd::Completions { shell } => {
             completion::print(shell.into());
