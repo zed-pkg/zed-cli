@@ -1,0 +1,60 @@
+name: format and validate canonical archive-root fix
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/format-nix-archive-root-fix.yml
+      - src/nix_export_bundle/archive.rs
+      - src/nix_export_bundle/templates.rs
+
+permissions:
+  contents: write
+
+concurrency:
+  group: format-nix-archive-root-fix
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  validate:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/nix-bundle-canonical-archive-root'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/nix-bundle-canonical-archive-root
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Format and validate bundle contracts
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked nix_export_bundle
+          cargo test --locked --test nix_bundle_write_boundaries
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit ordinary formatted source
+        run: |
+          set -euo pipefail
+          rm .github/workflows/format-nix-archive-root-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/nix_export_bundle/archive.rs src/nix_export_bundle/templates.rs .github/workflows/format-nix-archive-root-fix.yml
+          git diff --cached --check
+          git commit -m 'style: format canonical archive-root fix'
+          git push origin HEAD:fix/nix-bundle-canonical-archive-root
