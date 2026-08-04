@@ -514,9 +514,9 @@ fn restore_manifest_if_unchanged(
 mod manifest_kind_tests {
     use std::fs;
 
-    use super::{
-        preflight_gitmodules_metadata, submodule_manifest_present, validate_gitmodules_index,
-    };
+    #[cfg(unix)]
+    use super::preflight_gitmodules_metadata;
+    use super::{submodule_manifest_present, validate_gitmodules_index};
 
     #[test]
     fn only_a_missing_manifest_is_skippable() {

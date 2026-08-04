@@ -231,6 +231,7 @@ url = "https://example.invalid/acme/pack-guard.git"
         )
     }
 
+    #[cfg(unix)]
     fn git(project: &Path, args: &[&str]) {
         let status = Command::new("git")
             .arg("-C")
