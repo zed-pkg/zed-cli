@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Temporary residual hardener applied after the base DEN-1462 materializer."""
+"""Apply residual DEN-1462 ownership and secret boundaries structurally."""
 
 from pathlib import Path
 
@@ -14,35 +14,13 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
 source = Path("src/mise_export.rs")
 text = source.read_text(encoding="utf-8")
 
-# The base PR rejects exact aliases and transaction staging. Strengthen that
-# contract for portable case-insensitive filesystems and reserve the state path
-# for both input and output.
-old_relationships = '''fn validate_export_path_relationships(
-    plan_path: &Path,
-    plan_relative: &str,
-    output_path: &Path,
-    output_relative: &str,
-) -> Result<()> {
-    ensure!(
-        output_relative != plan_relative,
-        "mise output `{output_relative}` cannot overwrite its source environment plan"
-    );
-    ensure!(
-        output_relative != EXPORT_STATE_PATH,
-        "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
-    );
-    let staging_prefix = format!("{STAGING_DIR}/");
-    for (kind, relative) in [
-        ("environment plan", plan_relative),
-        ("mise output", output_relative),
-    ] {
-        ensure!(
-            relative != STAGING_DIR && !relative.starts_with(&staging_prefix),
-            "{kind} cannot target reserved transaction staging `{STAGING_DIR}`: `{relative}`"
-        );
-    }
-'''
-new_relationships = '''fn validate_export_path_relationships(
+# Earlier hardening revisions changed this function's body. Replace the whole
+# function structurally so this final pass is independent of intermediate
+# presentation while preserving its canonical-path alias check.
+if "fn portable_path_eq(" not in text:
+    start = text.index("fn validate_export_path_relationships(")
+    end = text.index("fn read_plan(", start)
+    final_relationships = '''fn validate_export_path_relationships(
     plan_path: &Path,
     plan_relative: &str,
     output_path: &Path,
@@ -65,13 +43,24 @@ new_relationships = '''fn validate_export_path_relationships(
             "{kind} cannot target reserved transaction staging `{STAGING_DIR}`: `{relative}`"
         );
     }
-'''
-if "!portable_path_eq(output_relative, plan_relative)" not in text:
-    text = replace_once(text, old_relationships, new_relationships, "portable path relationships")
 
-if "fn portable_path_eq(" not in text:
-    anchor = "fn read_plan(path: &Path) -> Result<EnvironmentPlanV2> {\n"
-    helpers = '''fn portable_path_eq(left: &str, right: &str) -> bool {
+    if output_path.exists() {
+        let canonical_output = output_path
+            .canonicalize()
+            .with_context(|| format!("failed to resolve mise output {}", output_path.display()))?;
+        let canonical_plan = plan_path
+            .canonicalize()
+            .with_context(|| format!("failed to resolve environment plan {}", plan_path.display()))?;
+        ensure!(
+            canonical_output != canonical_plan,
+            "mise output resolves to its source environment plan: {}",
+            output_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn portable_path_eq(left: &str, right: &str) -> bool {
     left.eq_ignore_ascii_case(right)
 }
 
@@ -84,10 +73,10 @@ fn reserved_path_or_child(path: &str, reserved: &str) -> bool {
 }
 
 '''
-    text = replace_once(text, anchor, helpers + anchor, "portable path helpers")
+    text = text[:start] + final_relationships + text[end:]
 
-# Protect every existing prefix of generated files, while allowing a missing
-# safe suffix to be created within the project transaction.
+# Protect every existing prefix of generated files while allowing a safe
+# missing suffix to be created transactionally inside the project.
 if "fn ensure_no_symlink_existing_prefix(" not in text:
     anchor = "fn ensure_no_symlink_components(\n"
     helper = '''fn ensure_no_symlink_existing_prefix(
@@ -152,10 +141,13 @@ new_resolve = '''    let relative = validate_relative_argument(requested, kind)?
 if old_resolve in text:
     text = replace_once(text, old_resolve, new_resolve, "generated path prefix validation")
 
-state_anchor = '''    let state_path = root.join(EXPORT_STATE_PATH);
-    let mut state = load_state(&state_path)?;
-'''
-state_replacement = '''    let state_path = root.join(EXPORT_STATE_PATH);
+# The first integration pass may already have inserted the older helper call.
+# Replace the complete state initialization region with the final prefix-safe
+# form instead of depending on one intermediate layout.
+state_start = text.index("    let state_path = root.join(EXPORT_STATE_PATH);\n")
+state_end_marker = "    let mut state = load_state(&state_path)?;\n"
+state_end = text.index(state_end_marker, state_start) + len(state_end_marker)
+state_block = '''    let state_path = root.join(EXPORT_STATE_PATH);
     ensure_no_symlink_existing_prefix(
         root,
         Path::new(EXPORT_STATE_PATH),
@@ -163,8 +155,7 @@ state_replacement = '''    let state_path = root.join(EXPORT_STATE_PATH);
     )?;
     let mut state = load_state(&state_path)?;
 '''
-if "Path::new(EXPORT_STATE_PATH),\n        \"mise export state\"" not in text:
-    text = replace_once(text, state_anchor, state_replacement, "state prefix validation")
+text = text[:state_start] + state_block + text[state_end:]
 
 # Add residual regressions not present in the base hardening.
 if "fn nested_tool_option_secrets_fail_closed()" not in text:
