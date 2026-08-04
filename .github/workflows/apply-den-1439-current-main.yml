@@ -1,0 +1,324 @@
+name: apply DEN-1439 current-main merge
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-1439-mise-import-verify
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1439-current-main-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the static mise branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: alexanderdmills/den-1439-mise-import-verify
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Merge current main and resolve overlapping contracts semantically
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+
+          set +e
+          git merge --no-ff --no-commit origin/main
+          merge_status=$?
+          set -e
+          if [[ $merge_status -ne 0 ]] && [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
+            echo 'git merge failed without ordinary content conflicts' >&2
+            exit "$merge_status"
+          fi
+
+          # Current main is authoritative for the evolved CLI, installer,
+          # Nix/runtime work, command table, and shared dependency pin. Reapply
+          # only the static mise import/verify surface to those overlapping files.
+          git checkout origin/main -- \
+            .cli-flags.toml \
+            Cargo.lock \
+            Cargo.toml \
+            README.md \
+            src/cli.rs \
+            src/lib.rs \
+            src/main.rs \
+            tests/develop_shell_edge_cases.rs
+
+          unresolved=$(git diff --name-only --diff-filter=U)
+          if [[ -n "$unresolved" ]]; then
+            echo 'unexpected unresolved paths after semantic selection:' >&2
+            printf '%s\n' "$unresolved" >&2
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              return text.replace(old, new, 1)
+
+          flags = Path('.cli-flags.toml')
+          text = flags.read_text(encoding='utf-8')
+          if '[flags.env_config]' not in text:
+              marker = '[commands.init]\n'
+              block = '''[flags.env_config]
+          env = "ZED_PKG_ENV_CONFIG"
+          aliases = ["config"]
+          type = "string"
+          help = "Project-local environment-manager config path."
+
+          [flags.env_lock]
+          env = "ZED_PKG_ENV_LOCK"
+          aliases = ["lock"]
+          type = "string"
+          help = "Project-local environment-manager lockfile path."
+
+          [flags.env_json]
+          env = "ZED_PKG_ENV_JSON"
+          aliases = ["json"]
+          type = "bool"
+          default = "false"
+          help = "Emit environment interoperability output as JSON."
+
+          '''
+              text = replace_once(text, marker, block + marker, 'flags environment options')
+          if '[commands.env]' not in text:
+              marker = '[commands.completions]\n'
+              block = '''[commands.env]
+          help = "Import and verify project-local developer environments."
+
+          [commands.env.commands.import]
+          help = "Import manager-native state as a normalized EnvironmentPlan."
+
+          [commands.env.commands.verify]
+          help = "Verify config/lock coverage and normalized environment identity."
+
+          '''
+              text = replace_once(text, marker, block + marker, 'flags environment commands')
+          flags.write_text(text, encoding='utf-8')
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          if '`zed env import mise' not in text:
+              marker = '| `zed find <query>` | Search the registry |\n'
+              rows = '''| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool and lock subset as a normalized `EnvironmentPlan`; never load parent/global config or execute hooks |
+          | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
+          '''
+              text = replace_once(text, marker, rows + marker, 'README command rows')
+          readme.write_text(text, encoding='utf-8')
+
+          cli = Path('src/cli.rs')
+          text = cli.read_text(encoding='utf-8')
+          if 'pub enum EnvironmentManagerArg' not in text:
+              marker = '#[derive(Debug, Subcommand)]\npub enum Cmd {\n'
+              block = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum EnvironmentManagerArg {
+              /// Import or verify project-local mise configuration.
+              Mise,
+          }
+
+          '''
+              text = replace_once(text, marker, block + marker, 'environment manager enum')
+          if '    Env {\n        #[command(subcommand)]\n        cmd: EnvCmd,' not in text:
+              marker = '    /// Generate a completion script from the same typed command model used at runtime\n'
+              block = '''    /// Import or verify project-local developer-environment configuration.
+              Env {
+                  #[command(subcommand)]
+                  cmd: EnvCmd,
+              },
+          '''
+              text = replace_once(text, marker, block + marker, 'Cmd::Env')
+          if 'pub enum EnvCmd' not in text:
+              marker = '#[derive(Debug, Subcommand)]\npub enum ReleaseCmd {\n'
+              block = '''#[derive(Debug, Subcommand)]
+          pub enum EnvCmd {
+              /// Import the supported project-local manager state as an EnvironmentPlan.
+              Import {
+                  #[arg(value_enum)]
+                  manager: EnvironmentManagerArg,
+                  /// Project-local manager config; auto-detected only when unambiguous.
+                  #[arg(long, env = "ZED_PKG_ENV_CONFIG")]
+                  config: Option<PathBuf>,
+                  /// Project-local manager lockfile; otherwise derived from the config name.
+                  #[arg(long, env = "ZED_PKG_ENV_LOCK")]
+                  lock: Option<PathBuf>,
+                  /// Require complete locked identities and portable frozen validation.
+                  #[arg(long, env = "ZED_PKG_FROZEN")]
+                  frozen: bool,
+                  /// Emit the normalized EnvironmentPlan as JSON.
+                  #[arg(long, env = "ZED_PKG_ENV_JSON")]
+                  json: bool,
+              },
+              /// Verify manager config/lock coverage and the normalized plan digest.
+              Verify {
+                  #[arg(value_enum)]
+                  manager: EnvironmentManagerArg,
+                  /// Project-local manager config; auto-detected only when unambiguous.
+                  #[arg(long, env = "ZED_PKG_ENV_CONFIG")]
+                  config: Option<PathBuf>,
+                  /// Project-local manager lockfile; otherwise derived from the config name.
+                  #[arg(long, env = "ZED_PKG_ENV_LOCK")]
+                  lock: Option<PathBuf>,
+                  /// Require complete locked identities and portable frozen validation.
+                  #[arg(long, env = "ZED_PKG_FROZEN")]
+                  frozen: bool,
+                  /// Emit a machine-readable verification result.
+                  #[arg(long, env = "ZED_PKG_ENV_JSON")]
+                  json: bool,
+              },
+          }
+
+          '''
+              text = replace_once(text, marker, block + marker, 'EnvCmd')
+          if 'fn environment_import_and_verify_are_typed()' not in text:
+              marker = '    #[test]\n    fn completion_shells_are_typed_positionals() {\n'
+              block = '''    #[test]
+              fn environment_import_and_verify_are_typed() {
+                  for action in ["import", "verify"] {
+                      let cli = Cli::try_parse_from([
+                          "zed",
+                          "env",
+                          action,
+                          "mise",
+                          "--config",
+                          "mise.toml",
+                          "--lock",
+                          "mise.lock",
+                          "--frozen",
+                          "--json",
+                      ])
+                      .unwrap();
+                      assert!(matches!(cli.cmd, Cmd::Env { .. }));
+                  }
+              }
+
+          '''
+              text = replace_once(text, marker, block + marker, 'typed environment test')
+          cli.write_text(text, encoding='utf-8')
+
+          lib = Path('src/lib.rs')
+          text = lib.read_text(encoding='utf-8')
+          if 'pub mod environment;' not in text:
+              text = replace_once(
+                  text,
+                  'pub mod dev;\n',
+                  'pub mod dev;\npub mod environment;\n',
+                  'environment module export',
+              )
+          lib.write_text(text, encoding='utf-8')
+
+          main = Path('src/main.rs')
+          text = main.read_text(encoding='utf-8')
+          old_use = 'use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, OrgCmd, ReleaseCmd, StoreCmd};\n'
+          new_use = 'use zed_cli::cli::{AuthCmd, CacheCmd, Cli, Cmd, EnvCmd, OrgCmd, ReleaseCmd, StoreCmd};\n'
+          if new_use not in text:
+              text = replace_once(text, old_use, new_use, 'main EnvCmd import')
+          if 'use zed_cli::environment;\n' not in text:
+              text = replace_once(
+                  text,
+                  'use zed_cli::dev;\n',
+                  'use zed_cli::dev;\nuse zed_cli::environment;\n',
+                  'main environment module import',
+              )
+          if '        Cmd::Env { cmd } => match cmd {' not in text:
+              marker = '        Cmd::Release { cmd } => match cmd {\n'
+              arm = '''        Cmd::Env { cmd } => match cmd {
+                  EnvCmd::Import {
+                      manager: _,
+                      config,
+                      lock,
+                      frozen,
+                      json,
+                  } => {
+                      let imported =
+                          environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                      environment::print_import(&imported, json)
+                  }
+                  EnvCmd::Verify {
+                      manager: _,
+                      config,
+                      lock,
+                      frozen,
+                      json,
+                  } => {
+                      let imported =
+                          environment::import_mise(&cwd, config.as_deref(), lock.as_deref(), frozen)?;
+                      environment::print_verification(&imported, json)
+                  }
+              },
+          '''
+              text = replace_once(text, marker, arm + marker, 'main environment dispatch')
+          main.write_text(text, encoding='utf-8')
+
+          docs = Path('docs/mise-interop.md')
+          text = docs.read_text(encoding='utf-8')
+          if '## Integrated runtime activation' not in text:
+              marker = '## Read-only plan import and verification\n'
+              section = '''## Integrated runtime activation
+
+          Current `zed dev` can compose a project-local mise toolchain directly:
+
+          ```sh
+          zed dev --mise required --nix never --frozen -c 'npm test'
+          ```
+
+          Use `--mise auto` to activate mise only when `mise.toml` or `.mise.toml`
+          exists inside the owning checkout, or `--mise never` after entering a
+          separately verified `mise exec` environment yourself. Integrated frozen
+          activation requires adjacent `mise.lock` evidence, ignores `.tool-versions`,
+          isolates user and system mise configuration, and rejects unverifiable ambient
+          mise activation. Nix remains the outer environment when both adapters are used.
+
+          '''
+              text = replace_once(text, marker, section + marker, 'runtime documentation')
+          text = text.replace(
+              'The remaining mise-parity work includes deterministic export and three-way merge planning, typed environment values and trust, task-DAG execution, native tool backends, activation in `zed dev`, offline replay, tamper tests, and cross-platform certification in `zed-pkg-test` and `zed-e2e`.',
+              'The remaining mise-parity work includes deterministic export and three-way merge planning, typed environment values and trust, task-DAG execution, native tool backends, broader offline replay, and additional tamper certification.',
+          )
+          docs.write_text(text, encoding='utf-8')
+
+          # The old branch carried duplicate cfg attributes while fixing a
+          # cross-platform test warning. Normalize any surviving duplicate.
+          edge = Path('tests/develop_shell_edge_cases.rs')
+          text = edge.read_text(encoding='utf-8')
+          while '#[cfg(unix)]\n#[cfg(unix)]\n' in text:
+              text = text.replace('#[cfg(unix)]\n#[cfg(unix)]\n', '#[cfg(unix)]\n')
+          edge.write_text(text, encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test --locked environment::tests
+          cargo test --locked --test mise_environment_cli
+          cargo test --locked cli::tests::environment_import_and_verify_are_typed
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git add -A
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo 'unresolved conflicts remain' >&2
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+          git commit -m 'Merge current main into DEN-1439 static mise adapter'
+          git push origin HEAD:alexanderdmills/den-1439-mise-import-verify
