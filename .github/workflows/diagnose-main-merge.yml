@@ -1,0 +1,49 @@
+name: diagnose main merge into submodule branch
+
+on:
+  push:
+    branches:
+      - feat/git-submodule-interop
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the feature branch with history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: feat/git-submodule-interop
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Capture semantic conflict hunks against current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          feature_head=$(git rev-parse HEAD)
+          main_head=$(git rev-parse origin/main)
+          merge_base=$(git merge-base "$feature_head" "$main_head")
+          set +e
+          git merge --no-commit --no-ff origin/main
+          merge_status=$?
+          set -e
+          {
+            printf 'feature_head=%s\nmain_head=%s\nmerge_base=%s\nmerge_status=%s\n\n' \
+              "$feature_head" "$main_head" "$merge_base" "$merge_status"
+            echo '## Unmerged files'
+            git diff --name-only --diff-filter=U || true
+            echo
+            echo '## Combined conflict diff'
+            git diff --cc --no-ext-diff || true
+          } > /tmp/merge-main-diagnostics.txt
+          git merge --abort || true
+          cp /tmp/merge-main-diagnostics.txt MERGE_MAIN_DIAGNOSTICS.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add MERGE_MAIN_DIAGNOSTICS.txt
+          git commit -m 'chore: capture main merge conflict diagnostics'
+          git push origin HEAD:feat/git-submodule-interop
