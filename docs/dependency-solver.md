@@ -60,4 +60,24 @@ The permanent test surface must retain all of these properties:
 9. candidate acquisition retains the configured worker bound and per-SHA lock;
 10. normal install and prefetch consume the same prepared graph.
 
+## Verification procedure
+
+A candidate solver change is not complete after the focused overlap test alone.
+The review head must pass all of the following on the same immutable commit:
+
+```text
+cargo fmt --all --check
+cargo test --locked --lib install_graph::tests
+cargo test --locked --lib install_graph::solver::tests
+cargo test --locked --lib config::tests
+cargo test --locked --lib store::tests
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+Repository CI must additionally retain frozen-lock integrity, Windows locking,
+manifestless/polyglot installation, OCI copy-mode, Nix interoperability,
+development-shell, formal review, agent-policy, and repository-hardening gates.
+Temporary formatting or correction workflows are not product evidence and must
+be absent from the final pull-request diff.
+
 Linear: DEN-1553. Related foundations: DEN-1505 and DEN-1522.
