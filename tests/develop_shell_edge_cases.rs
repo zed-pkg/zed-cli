@@ -862,7 +862,16 @@ fn shell_dispatch_covers_posix_fish_powershell_cmd_and_generic_shells() {
     let cases: Vec<(&str, Vec<&str>)> = vec![
         ("bash", vec!["-c", script]),
         ("fish", vec!["-c", script]),
-        ("PwSh.ExE", vec!["-NoLogo", "-Command", script]),
+        (
+            "PwSh.ExE",
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ],
+        ),
         ("CMD.EXE", vec!["/D", "/S", "/C", script]),
         ("custom-shell", vec!["-c", script]),
     ];

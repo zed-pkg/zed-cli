@@ -1226,12 +1226,58 @@ fn spawn_shell(
     let shell = resolve_shell(options.shell.as_deref());
     let mut command = Command::new(&shell);
     configure_shell_arguments(&mut command, &shell, options.command.as_deref());
+    let current_dir = child_process_current_dir(root);
     let status = command
         .envs(environment)
-        .current_dir(root)
+        .current_dir(&current_dir)
         .status()
         .with_context(|| format!("starting development shell {}", shell.display()))?;
     Ok(status.code().unwrap_or(1))
+}
+
+fn child_process_current_dir(root: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        let wide = root.as_os_str().encode_wide().collect::<Vec<_>>();
+        PathBuf::from(OsString::from_wide(&normalize_windows_child_current_dir(
+            &wide,
+        )))
+    }
+
+    #[cfg(not(windows))]
+    {
+        root.to_path_buf()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_child_current_dir(wide: &[u16]) -> Vec<u16> {
+    const SLASH: u16 = b'\\' as u16;
+    const VERBATIM: &[u16] = &[SLASH, SLASH, b'?' as u16, SLASH];
+    const VERBATIM_UNC: &[u16] = &[
+        SLASH,
+        SLASH,
+        b'?' as u16,
+        SLASH,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        SLASH,
+    ];
+
+    if wide.starts_with(VERBATIM_UNC) {
+        let mut normalized = Vec::with_capacity(wide.len() - VERBATIM_UNC.len() + 2);
+        normalized.extend_from_slice(&[SLASH, SLASH]);
+        normalized.extend_from_slice(&wide[VERBATIM_UNC.len()..]);
+        normalized
+    } else if wide.starts_with(VERBATIM) {
+        wide[VERBATIM.len()..].to_vec()
+    } else {
+        wide.to_vec()
+    }
 }
 
 fn resolve_shell(explicit: Option<&Path>) -> PathBuf {
@@ -1265,7 +1311,13 @@ fn configure_shell_arguments(command: &mut Command, shell: &Path, script: Option
             command.args(["/D", "/S", "/C", script]);
         }
         "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe" => {
-            command.args(["-NoLogo", "-Command", script]);
+            command.args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ]);
         }
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => {
             command.args(["-c", script]);
@@ -1307,6 +1359,84 @@ mod tests {
             arguments,
             vec![OsString::from("-c"), OsString::from("true")]
         );
+    }
+
+    #[test]
+    fn powershell_command_mode_disables_profiles_and_interaction() {
+        let script = "Write-Output profile-safe";
+        for shell in ["pwsh.exe", "powershell.exe"] {
+            let mut command = Command::new(shell);
+            configure_shell_arguments(&mut command, Path::new(shell), Some(script));
+            let arguments: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+            assert_eq!(
+                arguments,
+                vec![
+                    OsString::from("-NoLogo"),
+                    OsString::from("-NoProfile"),
+                    OsString::from("-NonInteractive"),
+                    OsString::from("-Command"),
+                    OsString::from(script),
+                ],
+                "unexpected command-mode arguments for {shell}"
+            );
+        }
+    }
+
+    #[test]
+    fn interactive_powershell_retains_native_startup_semantics() {
+        let mut command = Command::new("pwsh.exe");
+        configure_shell_arguments(&mut command, Path::new("pwsh.exe"), None);
+        assert_eq!(command.get_args().count(), 0);
+    }
+
+    #[test]
+    fn cmd_command_mode_disables_autorun() {
+        let script = "echo profile-safe";
+        for shell in ["cmd", "cmd.exe"] {
+            let mut command = Command::new(shell);
+            configure_shell_arguments(&mut command, Path::new(shell), Some(script));
+            let arguments: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+            assert_eq!(
+                arguments,
+                vec![
+                    OsString::from("/D"),
+                    OsString::from("/S"),
+                    OsString::from("/C"),
+                    OsString::from(script),
+                ],
+                "unexpected command-mode arguments for {shell}"
+            );
+        }
+    }
+
+    fn utf16(value: &str) -> Vec<u16> {
+        value.encode_utf16().collect()
+    }
+
+    fn from_utf16(value: &[u16]) -> String {
+        String::from_utf16(value).expect("valid UTF-16 fixture")
+    }
+
+    #[test]
+    fn windows_child_cwd_strips_verbatim_disk_prefix_without_losing_unicode() {
+        let input = utf16(r"\\?\C:\répo\工具");
+        let normalized = normalize_windows_child_current_dir(&input);
+        assert_eq!(from_utf16(&normalized), r"C:\répo\工具");
+    }
+
+    #[test]
+    fn windows_child_cwd_converts_verbatim_unc_to_standard_unc() {
+        let input = utf16(r"\\?\UNC\server\share\repo");
+        let normalized = normalize_windows_child_current_dir(&input);
+        assert_eq!(from_utf16(&normalized), r"\\server\share\repo");
+    }
+
+    #[test]
+    fn windows_child_cwd_preserves_non_verbatim_paths() {
+        for value in [r"C:\repo\nested", r"\\server\share\repo", r"\\.\PIPE\zed"] {
+            let input = utf16(value);
+            assert_eq!(normalize_windows_child_current_dir(&input), input);
+        }
     }
 
     #[test]
