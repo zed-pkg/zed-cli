@@ -36,6 +36,12 @@ replace_once(
 )
 replace_once(
     cli,
+    "    use super::{AuthCmd, Cli, Cmd};\n",
+    "    use super::{AuthCmd, Cli, Cmd, EnvCmd};\n",
+    "export command test import",
+)
+replace_once(
+    cli,
     '''        assert!(Cli::try_parse_from([
             "zed",
             "env",
