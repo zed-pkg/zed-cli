@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - agent/den-1553-complete-constraint-solver
+  pull_request:
+    paths:
+      - '.github/workflows/den-1553-apply-format.yml'
+      - '.github/workflows/den-1553-format-artifact.yml'
+      - 'src/config.rs'
+      - 'src/install_graph.rs'
+      - 'src/install_graph/**'
+      - 'src/ops_entry.rs'
 
 permissions:
   contents: write
@@ -16,14 +24,18 @@ jobs:
   apply:
     if: >-
       github.repository == 'zed-pkg/zed-cli' &&
-      github.ref == 'refs/heads/agent/den-1553-complete-constraint-solver'
+      ((github.event_name == 'push' &&
+        github.ref == 'refs/heads/agent/den-1553-complete-constraint-solver') ||
+       (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.head_ref == 'agent/den-1553-complete-constraint-solver'))
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Check out the exact triggering head without persisted credentials
+      - name: Check out the exact pull-request head without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           fetch-depth: 1
           show-progress: false
@@ -42,7 +54,7 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           REPOSITORY: ${{ github.repository }}
           BRANCH: agent/den-1553-complete-constraint-solver
         run: |
