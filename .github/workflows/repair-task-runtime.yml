@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: repair-native-task-runtime
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -39,21 +39,64 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Use the portable Clap parser and rely on runtime validation
+      - name: Install a portable positive-jobs parser and regression
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('src/bin/zed-task.rs')
-          text = path.read_text()
-          old = 'value_parser = clap::value_parser!(usize).range(1..)'
-          new = 'value_parser = clap::value_parser!(usize)'
-          if old in text:
-              text = text.replace(old, new, 1)
-          elif new not in text:
+          binary = Path('src/bin/zed-task.rs')
+          text = binary.read_text()
+          parser_variants = [
+              'value_parser = clap::value_parser!(usize).range(1..)',
+              'value_parser = clap::value_parser!(usize)',
+          ]
+          for old in parser_variants:
+              if old in text:
+                  text = text.replace(old, 'value_parser = parse_jobs', 1)
+                  break
+          if 'value_parser = parse_jobs' not in text:
               raise SystemExit('task jobs parser anchor not found')
-          path.write_text(text)
+
+          if 'fn parse_jobs(' not in text:
+              marker = '\nstruct HumanObserver;\n'
+              replacement = '''
+fn parse_jobs(value: &str) -> std::result::Result<usize, String> {
+    let jobs = value
+        .parse::<usize>()
+        .map_err(|_| format!("`{value}` is not a valid positive integer"))?;
+    if jobs == 0 {
+        return Err("task concurrency must be at least one".to_string());
+    }
+    Ok(jobs)
+}
+
+struct HumanObserver;
+'''
+              if marker not in text:
+                  raise SystemExit('task observer insertion anchor not found')
+              text = text.replace(marker, '\n' + replacement, 1)
+          binary.write_text(text)
+
+          tests = Path('tests/task_runtime_cli.rs')
+          test_text = tests.read_text()
+          test_name = 'zero_jobs_is_rejected_before_plan_discovery'
+          if test_name not in test_text:
+              test_text += r'''
+
+#[test]
+fn zero_jobs_is_rejected_before_plan_discovery() {
+    let root = tempfile::tempdir().unwrap();
+    let output = run(root.path(), &["run", "missing", "--jobs", "0"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("task concurrency must be at least one"),
+        "{stderr}"
+    );
+}
+'''
+          tests.write_text(test_text)
           PY
 
       - name: Format, test, and lint the runtime
@@ -77,5 +120,5 @@ jobs:
             tests/task_runtime_cli.rs \
             .github/workflows/repair-task-runtime.yml
           git diff --cached --check
-          git commit -m 'fix(DEN-1444): compile and format native task runtime'
+          git commit -m 'fix(DEN-1444): validate and format native task runtime'
           git push origin HEAD:agent/den-1444-native-task-runtime
