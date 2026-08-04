@@ -18,8 +18,7 @@ use anyhow::{Context, Result};
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
 
-pub(crate) const GIT_LOCK_FINALIZE_CONTEXT: &str =
-    "finalizing adopted Git submodule lock metadata";
+pub(crate) const GIT_LOCK_FINALIZE_CONTEXT: &str = "finalizing adopted Git submodule lock metadata";
 
 #[path = "ops.rs"]
 mod implementation;
