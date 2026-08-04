@@ -378,7 +378,7 @@ default = "false"
 help = "Explicitly replace a destination tag whose digest differs."
 
 [commands.oci.commands.push.flags.oci_json]
-env = "ZED_PKG_OCI_JSON"
+env = "ZED_PKG_OCI_PUSH_JSON"
 aliases = ["json"]
 type = "bool"
 default = "false"
