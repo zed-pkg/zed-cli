@@ -27,56 +27,26 @@ pub enum OciCmd {
         /// ORAS executable path
         #[arg(long, env = "ZED_PKG_OCI_ORAS", default_value = "oras")]
         oras: PathBuf,
-        /// Registry username; requires --password-stdin
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_USERNAME",
-            requires = "password_stdin",
-            conflicts_with_all = ["registry_config", "anonymous"]
-        )]
+        /// Registry username; requires --password-stdin at runtime
+        #[arg(long, env = "ZED_PKG_OCI_USERNAME")]
         username: Option<String>,
         /// Read one registry password or personal access token from stdin
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_PASSWORD_STDIN",
-            requires = "username",
-            conflicts_with_all = ["registry_config", "anonymous"]
-        )]
+        #[arg(long, env = "ZED_PKG_OCI_PASSWORD_STDIN")]
         password_stdin: bool,
         /// Explicit Docker/ORAS registry config; default credentials are never read implicitly
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_REGISTRY_CONFIG",
-            conflicts_with_all = ["username", "password_stdin", "anonymous"]
-        )]
+        #[arg(long, env = "ZED_PKG_OCI_REGISTRY_CONFIG")]
         registry_config: Option<PathBuf>,
         /// Push without registry credentials
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_ANONYMOUS",
-            conflicts_with_all = ["username", "password_stdin", "registry_config"]
-        )]
+        #[arg(long, env = "ZED_PKG_OCI_ANONYMOUS")]
         anonymous: bool,
         /// Use unencrypted HTTP; accepted only for loopback registries
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_PLAIN_HTTP",
-            conflicts_with_all = ["insecure_tls", "ca_file"]
-        )]
+        #[arg(long, env = "ZED_PKG_OCI_PLAIN_HTTP")]
         plain_http: bool,
         /// Skip destination TLS certificate verification
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_INSECURE_TLS",
-            conflicts_with_all = ["plain_http", "ca_file"]
-        )]
+        #[arg(long, env = "ZED_PKG_OCI_INSECURE_TLS")]
         insecure_tls: bool,
         /// Custom destination registry CA certificate
-        #[arg(
-            long,
-            env = "ZED_PKG_OCI_CA_FILE",
-            conflicts_with_all = ["plain_http", "insecure_tls"]
-        )]
+        #[arg(long, env = "ZED_PKG_OCI_CA_FILE")]
         ca_file: Option<PathBuf>,
         /// Replace a remote tag only when its digest differs from the verified layout
         #[arg(long, env = "ZED_PKG_OCI_ALLOW_TAG_REPLACEMENT")]
@@ -159,16 +129,17 @@ mod tests {
     }
 
     #[test]
-    fn oci_push_has_explicit_password_stdin_and_transport_flags() {
+    fn oci_push_has_typed_authentication_and_transport_flags() {
         let cli = Cli::try_parse_from([
             "zed",
             "oci",
             "push",
             "dist/tool-layout",
-            "oci://ghcr.io/acme/tool:1.2.3",
+            "oci://127.0.0.1:5000/acme/tool:1.2.3",
             "--username",
             "acme-bot",
             "--password-stdin",
+            "--plain-http",
             "--allow-tag-replacement",
             "--json",
         ])
@@ -192,13 +163,16 @@ mod tests {
                     },
             } => {
                 assert_eq!(layout, PathBuf::from("dist/tool-layout"));
-                assert_eq!(destination, "oci://ghcr.io/acme/tool:1.2.3");
+                assert_eq!(
+                    destination,
+                    "oci://127.0.0.1:5000/acme/tool:1.2.3"
+                );
                 assert_eq!(oras, PathBuf::from("oras"));
                 assert_eq!(username.as_deref(), Some("acme-bot"));
                 assert!(password_stdin);
                 assert!(registry_config.is_none());
                 assert!(!anonymous);
-                assert!(!plain_http);
+                assert!(plain_http);
                 assert!(!insecure_tls);
                 assert!(ca_file.is_none());
                 assert!(allow_tag_replacement);
@@ -233,19 +207,16 @@ mod tests {
     }
 
     #[test]
-    fn oci_push_parser_defers_missing_auth_to_runtime_and_rejects_conflicts() {
-        assert!(
-            Cli::try_parse_from([
+    fn oci_push_parser_defers_all_option_combinations_to_runtime() {
+        for arguments in [
+            vec![
                 "zed",
                 "oci",
                 "push",
                 "layout",
                 "oci://ghcr.io/acme/tool:1.2.3",
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
+            ],
+            vec![
                 "zed",
                 "oci",
                 "push",
@@ -255,11 +226,8 @@ mod tests {
                 "--username",
                 "acme-bot",
                 "--password-stdin",
-            ])
-            .is_err()
-        );
-        assert!(
-            Cli::try_parse_from([
+            ],
+            vec![
                 "zed",
                 "oci",
                 "push",
@@ -267,8 +235,19 @@ mod tests {
                 "oci://ghcr.io/acme/tool:1.2.3",
                 "--username",
                 "acme-bot",
-            ])
-            .is_err()
-        );
+            ],
+            vec![
+                "zed",
+                "oci",
+                "push",
+                "layout",
+                "oci://127.0.0.1:5000/acme/tool:1.2.3",
+                "--anonymous",
+                "--plain-http",
+                "--insecure-tls",
+            ],
+        ] {
+            Cli::try_parse_from(arguments).unwrap();
+        }
     }
 }
