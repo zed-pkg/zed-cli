@@ -79,10 +79,12 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
 
         bail!(
             concat!(
-                "refusing to pack {total} untracked Git-ignored file(s) that remain eligible for publication:{details}\n",
+                "refusing to pack {} untracked Git-ignored file(s) that remain eligible for publication:{}\n",
                 "Git ignore rules are not publication rules. Add explicit [publish].exclude entries, or a {} rule ",
                 "for a whole-tree package, then retry."
             ),
+            total,
+            details,
             IGNORE_FILE
         );
     }
