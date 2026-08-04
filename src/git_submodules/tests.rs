@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(unix)]
 use std::path::Path;
+#[cfg(unix)]
 use std::process::Command;
 
 use clap::Parser;
@@ -12,12 +14,15 @@ use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 use super::cli::{OvertakeArgs, OvertakeCli, OvertakeCommand, Route, route};
 use super::git::{WorkspaceMember, generated_consumer_manifest, validate_relative_path};
 use super::lock::{
-    GitSubmoduleLock, active_workspace_packages, prepare_install, read_lock_extensions,
-    write_lock_extensions,
+    GitSubmoduleLock, active_workspace_packages, read_lock_extensions, write_lock_extensions,
 };
+#[cfg(unix)]
+use super::lock::prepare_install;
 use super::*;
+#[cfg(unix)]
 use crate::config::{Config, read_manifest};
 
+#[cfg(unix)]
 fn git(project: &Path, args: &[&str]) {
     let status = Command::new("git")
         .arg("-C")
@@ -32,6 +37,7 @@ fn git(project: &Path, args: &[&str]) {
     assert!(status.success(), "git {:?} failed", args);
 }
 
+#[cfg(unix)]
 fn write_package(project: &Path, org: &str, name: &str, repository: &str) {
     fs::write(
         project.join(MANIFEST_FILE),
