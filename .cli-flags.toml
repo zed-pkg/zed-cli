@@ -112,6 +112,13 @@ type = "bool"
 default = "false"
 help = "Do not create a new .zpkg.toml when installing into a project without one."
 
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Synchronize and initialize Git submodules before installation; accepts explicit true/false."
+
 [flags.allow_ecosystem_mismatch]
 env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
 aliases = ["allow-ecosystem-mismatch"]
@@ -258,6 +265,9 @@ help = "Remove a dependency."
 [commands.install]
 aliases = ["i"]
 help = "Install dependencies."
+
+[commands.overtake]
+help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
 
 [commands.uninstall]
 aliases = ["un"]
