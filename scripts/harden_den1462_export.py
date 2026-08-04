@@ -49,21 +49,24 @@ relationship_helper = """fn validate_export_path_relationships(
     output_path: &Path,
     output_relative: &str,
 ) -> Result<()> {
+    let plan_folded = plan_relative.to_ascii_lowercase();
+    let output_folded = output_relative.to_ascii_lowercase();
     ensure!(
-        output_relative != plan_relative,
+        output_folded != plan_folded,
         "mise output `{output_relative}` cannot overwrite its source environment plan"
     );
     ensure!(
-        output_relative != EXPORT_STATE_PATH,
+        output_folded != EXPORT_STATE_PATH.to_ascii_lowercase(),
         "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
     );
-    let staging_prefix = format!("{STAGING_DIR}/");
-    for (kind, relative) in [
-        ("environment plan", plan_relative),
-        ("mise output", output_relative),
+    let staging_folded = STAGING_DIR.to_ascii_lowercase();
+    let staging_prefix = format!("{staging_folded}/");
+    for (kind, relative, folded) in [
+        ("environment plan", plan_relative, plan_folded.as_str()),
+        ("mise output", output_relative, output_folded.as_str()),
     ] {
         ensure!(
-            relative != STAGING_DIR && !relative.starts_with(&staging_prefix),
+            folded != staging_folded && !folded.starts_with(&staging_prefix),
             "{kind} cannot target reserved transaction staging `{STAGING_DIR}`: `{relative}`"
         );
     }
@@ -88,12 +91,107 @@ fn read_plan(path: &Path) -> Result<EnvironmentPlanV2> {
 """
 text = replace_once(text, read_plan_anchor, relationship_helper, "path relationship helper")
 
+old_state_load = """    let mut state = load_state(&state_path)?;
+    let current = read_regular_file(output_path, "mise output")?;
+"""
+new_state_load = """    let mut state = load_state(&state_path)?;
+    if let Some(existing) = state.outputs.keys().find(|existing| {
+        existing.eq_ignore_ascii_case(output_relative) && existing.as_str() != output_relative
+    }) {
+        bail!(
+            "portable mise export path collision: `{output_relative}` conflicts with existing state key `{existing}`"
+        );
+    }
+    let current = read_regular_file(output_path, "mise output")?;
+"""
+text = replace_once(text, old_state_load, new_state_load, "portable state-key collision")
+
+render_anchor = """fn render_mise_config(plan: &EnvironmentPlanV2) -> Result<String> {
+    ensure!(
+"""
+render_normalized = """fn render_mise_config(plan: &EnvironmentPlanV2) -> Result<String> {
+    let plan = plan.normalized();
+    ensure!(
+"""
+text = replace_once(text, render_anchor, render_normalized, "semantic renderer normalization")
+
 text = replace_once(
     text,
     "export_value_map(values, field, true, false)?",
     "export_value_map(values, field, true, true)?",
     "recursive sensitive-key validation",
 )
+
+old_deterministic_tail = """        assert_eq!(commands[0].as_str(), Some("zed install --frozen"));
+        assert_eq!(commands[1].as_str(), Some("cargo check"));
+    }
+
+    #[test]
+    fn write_check_and_unchanged_state_are_conflict_safe() {
+"""
+new_deterministic_tail = """        assert_eq!(commands[0].as_str(), Some("zed install --frozen"));
+        assert_eq!(commands[1].as_str(), Some("cargo check"));
+    }
+
+    #[test]
+    fn set_like_presentation_order_does_not_change_semantic_output() {
+        let mut first = simple_plan();
+        first.platforms = vec![
+            "macos-arm64".to_string(),
+            "linux-x64".to_string(),
+            "macos-arm64".to_string(),
+        ];
+        first.tasks.get_mut("setup").unwrap().aliases = vec![
+            "z-bootstrap".to_string(),
+            "a-bootstrap".to_string(),
+            "z-bootstrap".to_string(),
+        ];
+        first.tasks.get_mut("setup").unwrap().depends = vec![
+            "prepare".to_string(),
+            "prepare".to_string(),
+        ];
+
+        let mut second = first.clone();
+        second.platforms.reverse();
+        second.tasks.get_mut("setup").unwrap().aliases.reverse();
+        second.tasks.get_mut("setup").unwrap().depends.reverse();
+
+        assert_eq!(render_mise_config(&first).unwrap(), render_mise_config(&second).unwrap());
+        assert_eq!(digest_plan(&first).unwrap(), digest_plan(&second).unwrap());
+    }
+
+    #[test]
+    fn write_check_and_unchanged_state_are_conflict_safe() {
+"""
+text = replace_once(
+    text,
+    old_deterministic_tail,
+    new_deterministic_tail,
+    "semantic presentation-order regression",
+)
+
+old_unchanged_tail = """        assert_eq!(unchanged.action, MiseExportAction::Unchanged);
+    }
+
+    #[test]
+    fn hand_edits_and_unowned_outputs_are_never_overwritten() {
+"""
+new_unchanged_tail = """        assert_eq!(unchanged.action, MiseExportAction::Unchanged);
+
+        let collision = export_mise(
+            temp.path(),
+            &plan_path,
+            Path::new(".MISE.TOML"),
+            MiseExportMode::Write,
+        )
+        .unwrap_err();
+        assert!(collision.to_string().contains("portable mise export path collision"));
+    }
+
+    #[test]
+    fn hand_edits_and_unowned_outputs_are_never_overwritten() {
+"""
+text = replace_once(text, old_unchanged_tail, new_unchanged_tail, "case-folded state collision")
 
 old_sensitive_tail = """        assert!(render_mise_config(&plan)
             .unwrap_err()
@@ -129,8 +227,11 @@ new_paths_loop = """        for output in [
             "C:\\\\mise.toml",
             "\\\\\\\\server\\\\share\\\\mise.toml",
             "zed-env.toml",
+            "ZED-ENV.TOML",
             ".zed/mise-export-state.json",
+            ".ZED/MISE-EXPORT-STATE.JSON",
             ".zpkg-staging/mise.toml",
+            ".ZPKG-STAGING/mise.toml",
         ] {
 """
 text = replace_once(text, old_paths_loop, new_paths_loop, "reserved-path regressions")
@@ -147,6 +248,16 @@ text = text.replace(
 text = text.replace(
     "look credential-bearing, including password, secret, token, private/access key,\nAPI key, credential, and authorization names.",
     "look credential-bearing at any nesting depth, including password, secret, token,\nprivate/access key, API key, credential, and authorization names.",
+    1,
+)
+text = text.replace(
+    "Output and state changes share `ProjectTransaction`, including crash recovery\nand rollback.",
+    "Output and state changes share `ProjectTransaction`, including crash recovery\nand rollback. Plan, output, state, and staging identities are compared with\nportable ASCII case-folding so a Linux-generated ownership file cannot become\nambiguous on Windows or macOS.",
+    1,
+)
+text = text.replace(
+    "Print,\ncheck, and write modes all use the same renderer.",
+    "Print,\ncheck, and write modes all render the normalized semantic plan, so set-like\npresentation order cannot diverge under one plan digest.",
     1,
 )
 docs.write_text(text, encoding="utf-8")
