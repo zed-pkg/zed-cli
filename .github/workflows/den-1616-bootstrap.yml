@@ -1,0 +1,140 @@
+name: DEN-1616 PowerShell profile bootstrap
+
+on:
+  push:
+    branches:
+      - agent/den-1616-powershell-no-profile
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1616-powershell-profile-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply-validate-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt
+
+      - name: Apply the semantic shell-launch patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/dev.rs")
+          text = path.read_text(encoding="utf-8")
+
+          before = '''        "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe" => {
+              command.args(["-NoLogo", "-Command", script]);
+          }
+          '''
+          after = '''        "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe" => {
+              command.args([
+                  "-NoLogo",
+                  "-NoProfile",
+                  "-NonInteractive",
+                  "-Command",
+                  script,
+              ]);
+          }
+          '''
+          if text.count(before) != 1:
+              raise SystemExit("expected one PowerShell command-mode branch")
+          text = text.replace(before, after, 1)
+
+          marker = '''    #[test]
+              fn routes_canonical_alias_and_help_spellings() {
+          '''
+          tests = '''    #[test]
+              fn powershell_command_mode_disables_profiles_and_interaction() {
+                  let script = "Write-Output profile-safe";
+                  for shell in ["pwsh.exe", "powershell.exe"] {
+                      let mut command = Command::new(shell);
+                      configure_shell_arguments(&mut command, Path::new(shell), Some(script));
+                      let arguments: Vec<OsString> =
+                          command.get_args().map(OsStr::to_os_string).collect();
+                      assert_eq!(
+                          arguments,
+                          vec![
+                              OsString::from("-NoLogo"),
+                              OsString::from("-NoProfile"),
+                              OsString::from("-NonInteractive"),
+                              OsString::from("-Command"),
+                              OsString::from(script),
+                          ],
+                          "unexpected command-mode arguments for {shell}"
+                      );
+                  }
+              }
+
+              #[test]
+              fn interactive_powershell_retains_native_startup_semantics() {
+                  let mut command = Command::new("pwsh.exe");
+                  configure_shell_arguments(&mut command, Path::new("pwsh.exe"), None);
+                  assert_eq!(command.get_args().count(), 0);
+              }
+
+              #[test]
+              fn cmd_command_mode_disables_autorun() {
+                  let script = "echo profile-safe";
+                  for shell in ["cmd", "cmd.exe"] {
+                      let mut command = Command::new(shell);
+                      configure_shell_arguments(&mut command, Path::new(shell), Some(script));
+                      let arguments: Vec<OsString> =
+                          command.get_args().map(OsStr::to_os_string).collect();
+                      assert_eq!(
+                          arguments,
+                          vec![
+                              OsString::from("/D"),
+                              OsString::from("/S"),
+                              OsString::from("/C"),
+                              OsString::from(script),
+                          ],
+                          "unexpected command-mode arguments for {shell}"
+                      );
+                  }
+              }
+
+          ''' + marker
+          if text.count(marker) != 1:
+              raise SystemExit("expected one route-test insertion marker")
+          text = text.replace(marker, tests, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          cargo fmt --all
+          git diff --check
+
+      - name: Validate focused shell argument contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib powershell_command_mode_disables_profiles_and_interaction
+          cargo test --locked --lib interactive_powershell_retains_native_startup_semantics
+          cargo test --locked --lib cmd_command_mode_disables_autorun
+
+      - name: Commit the validated source and remove the bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/den-1616-bootstrap.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/dev.rs
+          git commit -m 'fix(DEN-1616): suppress PowerShell profiles in command mode'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
