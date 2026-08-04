@@ -95,6 +95,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cargo fmt --all
           cargo fmt --all --check
           cargo test --locked --lib install_graph::tests
           cargo test --locked --lib install_graph::solver::tests
