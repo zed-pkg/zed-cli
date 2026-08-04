@@ -245,6 +245,18 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
                 "package installation committed; retained the overtaken manifest for reconciliation",
             ));
         }
+        // ProjectTransaction::begin performs crash recovery. Serialize that
+        // recovery with every live installer so this rollback cannot mistake a
+        // different process's active staging journal for an abandoned one.
+        let store = crate::store::Store::new(&cfg.home);
+        let _rollback_lock = match store.install_lock() {
+            Ok(lock) => lock,
+            Err(rollback) => {
+                return Err(error.context(format!(
+                    "overtake installation failed and the root manifest could not be locked for rollback: {rollback:#}"
+                )));
+            }
+        };
         if let Err(rollback) = restore_manifest_if_unchanged(
             &project,
             &manifest_path,
