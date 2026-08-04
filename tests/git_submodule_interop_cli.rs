@@ -23,7 +23,10 @@ fn git(project: &Path, args: &[&str]) -> Output {
         .env("GIT_ALLOW_PROTOCOL", "file")
         .output()
         .unwrap();
-    assert_success(&output, &format!("git -C {} {}", project.display(), args.join(" ")));
+    assert_success(
+        &output,
+        &format!("git -C {} {}", project.display(), args.join(" ")),
+    );
     output
 }
 
@@ -140,8 +143,14 @@ fn install_transport_is_recursive_and_obeys_cli_environment_precedence() {
 
     let home = tempfile::tempdir().unwrap();
 
-    let default_off = zed(root.path(), home.path()).arg("install").output().unwrap();
-    assert_success(&default_off, "zed install with submodule transport disabled by default");
+    let default_off = zed(root.path(), home.path())
+        .arg("install")
+        .output()
+        .unwrap();
+    assert_success(
+        &default_off,
+        "zed install with submodule transport disabled by default",
+    );
     assert!(!root.path().join(SUBMODULE_PAYLOAD).exists());
 
     let env_on = zed(root.path(), home.path())
@@ -172,10 +181,7 @@ fn install_transport_is_recursive_and_obeys_cli_environment_precedence() {
         .unwrap();
     assert_failure(&invalid_env, "invalid Git-submodule environment value");
     assert_eq!(invalid_env.status.code(), Some(2));
-    assert!(
-        String::from_utf8_lossy(&invalid_env.stderr)
-            .contains("ZED_PKG_GIT_SUBMODULES")
-    );
+    assert!(String::from_utf8_lossy(&invalid_env.stderr).contains("ZED_PKG_GIT_SUBMODULES"));
     assert!(!root.path().join(SUBMODULE_PAYLOAD).exists());
 
     let explicit_on = zed(root.path(), home.path())
@@ -237,9 +243,18 @@ fn overtake_is_idempotent_and_keeps_git_as_an_unchanged_transport_mirror() {
         .unwrap();
     assert_success(&second, "environment-enabled second zed overtake");
 
-    assert_eq!(fs::read(root.path().join(MANIFEST_FILE)).unwrap(), manifest_once);
-    assert_eq!(fs::read(root.path().join(LOCKFILE_FILE)).unwrap(), lock_once);
-    assert_eq!(fs::read(root.path().join(".gitmodules")).unwrap(), gitmodules_before);
+    assert_eq!(
+        fs::read(root.path().join(MANIFEST_FILE)).unwrap(),
+        manifest_once
+    );
+    assert_eq!(
+        fs::read(root.path().join(LOCKFILE_FILE)).unwrap(),
+        lock_once
+    );
+    assert_eq!(
+        fs::read(root.path().join(".gitmodules")).unwrap(),
+        gitmodules_before
+    );
     assert_eq!(
         git_text(root.path(), &["ls-tree", "HEAD", "--", SUBMODULE_PATH]),
         gitlink_before
@@ -258,8 +273,14 @@ fn overtake_is_idempotent_and_keeps_git_as_an_unchanged_transport_mirror() {
         String::from_utf8_lossy(&explicitly_disabled.stderr)
             .contains("no takeover source selected")
     );
-    assert_eq!(fs::read(root.path().join(MANIFEST_FILE)).unwrap(), manifest_once);
-    assert_eq!(fs::read(root.path().join(LOCKFILE_FILE)).unwrap(), lock_once);
+    assert_eq!(
+        fs::read(root.path().join(MANIFEST_FILE)).unwrap(),
+        manifest_once
+    );
+    assert_eq!(
+        fs::read(root.path().join(LOCKFILE_FILE)).unwrap(),
+        lock_once
+    );
 }
 
 #[test]
@@ -287,17 +308,20 @@ fn failed_overtake_without_a_root_manifest_leaves_no_partial_zed_state() {
         .args(["overtake", "--git-submodules"])
         .output()
         .unwrap();
-    assert_failure(&failed, "manifestless takeover with an unresolved dependency");
-    assert!(
-        String::from_utf8_lossy(&failed.stderr)
-            .contains("restored the prior root manifest")
+    assert_failure(
+        &failed,
+        "manifestless takeover with an unresolved dependency",
     );
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("restored the prior root manifest"));
 
     assert!(!root.path().join(MANIFEST_FILE).exists());
     assert!(!root.path().join(LOCKFILE_FILE).exists());
     assert!(!root.path().join("zed_modules").exists());
     assert!(!root.path().join(zed_cli::transaction::STAGING_DIR).exists());
-    assert_eq!(fs::read(root.path().join(".gitmodules")).unwrap(), gitmodules_before);
+    assert_eq!(
+        fs::read(root.path().join(".gitmodules")).unwrap(),
+        gitmodules_before
+    );
     assert_eq!(
         git_text(root.path(), &["ls-tree", "HEAD", "--", SUBMODULE_PATH]),
         gitlink_before
