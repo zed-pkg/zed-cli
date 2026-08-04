@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   format-evidence:
-    runs-on: ubuntu-24.04
+    runs-on: macos-15
     timeout-minutes: 15
     steps:
       - name: Check out exact feature branch without credentials
