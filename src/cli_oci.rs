@@ -89,6 +89,8 @@ pub enum OciCmd {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use clap::Parser;
 
     use crate::cli::{Cli, Cmd};
@@ -149,10 +151,7 @@ mod tests {
             } => {
                 assert_eq!(destination, "oci://ghcr.io/acme/tool:1.2.3");
                 assert!(target.is_none());
-                assert_eq!(
-                    out.as_deref(),
-                    Some(std::path::Path::new("dist/tool-layout"))
-                );
+                assert_eq!(out.as_deref(), Some(Path::new("dist/tool-layout")));
                 assert!(!json);
             }
             other => panic!("unexpected command: {other:?}"),
@@ -210,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn oci_push_rejects_implicit_or_conflicting_credentials() {
+    fn oci_push_parser_defers_missing_auth_to_runtime_and_rejects_conflicts() {
         assert!(
             Cli::try_parse_from([
                 "zed",
