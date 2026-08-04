@@ -3,7 +3,7 @@ name: materialize typed asdf env routing
 on:
   pull_request:
     branches:
-      - agent/den-1420-asdf-current-main
+      - main
     paths:
       - .github/workflows/materialize-asdf-main-cli.yml
 
@@ -217,14 +217,14 @@ jobs:
           marker = '## Commands\n'
           section = '''## Canonical `zed env` commands
 
-```console
-zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]
-zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]
-```
+          ```console
+          zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]
+          zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]
+          ```
 
-The staged `zed-asdf` executable remains a focused adapter-test surface, but the supported user interface is the typed `zed env` dispatcher. Both routes call the same Rust module and preserve the same read-only, project-local, no-execution contract.
+          The staged `zed-asdf` executable remains a focused adapter-test surface, but the supported user interface is the typed `zed env` dispatcher. Both routes call the same Rust module and preserve the same read-only, project-local, no-execution contract.
 
-'''
+          '''
           if section not in text:
               if marker not in text:
                   text = section + text
@@ -374,7 +374,9 @@ The staged `zed-asdf` executable remains a focused adapter-test surface, but the
       - name: Commit ordinary integration source
         run: |
           set -euo pipefail
-          rm .github/workflows/materialize-asdf-main-cli.yml
+          rm -f \
+            .github/workflows/materialize-asdf-main-cli.yml \
+            .github/workflows/kick-asdf-main-cli-materializer.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
