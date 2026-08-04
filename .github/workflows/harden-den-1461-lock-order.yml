@@ -40,7 +40,7 @@ defaults:
 jobs:
   materialize:
     if: github.actor != 'github-actions[bot]' && (github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'feat/den-1461-mise-lock-contract'))
-    runs-on: windows-2025
+    runs-on: macos-15
     timeout-minutes: 40
     steps:
       - name: Check out implementation branch
@@ -60,9 +60,9 @@ jobs:
       - name: Apply current wire format and semantic hardening
         run: |
           set -euo pipefail
-          python scripts/apply_den1461_current_wire.py
-          python scripts/harden_den1461_lock.py
-          python scripts/fix_den1461_enum_size.py
+          python3 scripts/apply_den1461_current_wire.py
+          python3 scripts/harden_den1461_lock.py
+          python3 scripts/fix_den1461_enum_size.py
           cargo fmt --all
           cargo fmt --all --check
           git diff --check
