@@ -60,7 +60,7 @@ env = "ZED_PKG_GIT_SUBMODULES"
 aliases = ["git-submodules"]
 type = "bool"
 default = "false"
-help = "Enable global Git submodule compatibility for package restoration."
+help = "Global Git submodule compatibility mode for install and overtake."
 
 [commands.develop]
 aliases = ["dev"]
