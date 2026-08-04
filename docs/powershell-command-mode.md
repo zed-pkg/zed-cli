@@ -21,11 +21,18 @@ The no-profile rule applies only when `-c` / `--command` is present. An explicit
 
 PowerShell profiles may contain arbitrary code, environment mutations, credential lookups, network calls, or user-specific aliases. Non-interactive `zed develop` execution must therefore not depend on or execute those profiles unless a future explicit, trusted activation feature defines and obtains a separate consent decision.
 
+The contract is checked at two independent layers:
+
+1. cross-platform argument-vector tests keep PowerShell, cmd.exe, and generic shell dispatch synchronized; and
+2. a native Windows regression executes the real `zed.exe` against actual PowerShell profile locations.
+
 The Windows regression suite creates current-user profile files under a temporary `HOME` and `USERPROFILE`, proves the canary profile loads when PowerShell is started normally, and then proves the real `zed.exe` command path:
 
 - does not execute or emit the profile canary;
 - receives the managed `ZED_DEV` environment;
-- runs from `ZED_DEV_PROJECT_ROOT`; and
+- identifies a project root that owns the fixture manifest; and
 - returns the child PowerShell exit code unchanged.
+
+Using project ownership rather than textual path equality is intentional on Windows: equivalent paths may be rendered with normal drive-letter syntax or the Win32 verbatim `\\?\` prefix. The security assertion concerns the selected project and profile behavior, not one display spelling of the same directory.
 
 The companion independent acceptance is tracked by [DEN-1614](https://linear.app/denman/issue/DEN-1614/zed-e2e-add-windows-clean-room-certification-for-zed-develop). The implementation correction is tracked by [DEN-1616](https://linear.app/denman/issue/DEN-1616/zed-cli-suppress-powershell-profiles-in-zed-develop-command-mode).
