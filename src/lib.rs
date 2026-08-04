@@ -16,6 +16,7 @@ pub mod install_graph;
 pub mod interactive;
 pub mod managed_install;
 pub mod manifestless;
+pub mod nix_bundle_write;
 pub mod nix_export_bundle;
 pub mod nix_export_plan;
 #[path = "ops_entry.rs"]

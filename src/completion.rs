@@ -5,11 +5,13 @@ use std::io;
 use clap_complete::{Shell, generate};
 
 use crate::cli_model;
-use crate::{dev, fetch, git_submodules, nix_export_plan};
+use crate::{dev, fetch, git_submodules, nix_bundle_write, nix_export_plan};
 
 fn root_command() -> clap::Command {
-    git_submodules::augment_root_command(nix_export_plan::augment_root_command(
-        fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
+    git_submodules::augment_root_command(nix_bundle_write::augment_root_command(
+        nix_export_plan::augment_root_command(fetch::augment_root_command(
+            dev::augment_root_command(cli_model::command()),
+        )),
     ))
 }
 
@@ -52,6 +54,8 @@ mod tests {
             "nix",
             "plan",
             "export",
+            "bundle",
+            "write",
             "develop",
             "dev",
             "overtake",
@@ -70,6 +74,8 @@ mod tests {
             "--frozen",
             "--json",
             "--target",
+            "--flake-lock",
+            "--out",
             "--output",
             "--python-venv",
             "--isolated-home",
@@ -94,6 +100,8 @@ mod tests {
             "nix",
             "plan",
             "export",
+            "bundle",
+            "write",
             "develop",
             "dev",
             "overtake",
@@ -112,6 +120,8 @@ mod tests {
             "--frozen",
             "--json",
             "--target",
+            "--flake-lock",
+            "--out",
             "--output",
             "--python-venv",
             "--isolated-home",

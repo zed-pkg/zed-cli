@@ -1,4 +1,4 @@
-# flags-2-env contract for the modular `zed interop nix plan export` command.
+# flags-2-env contract for modular `zed interop nix` commands.
 
 [parse]
 command_env = "ZED_PKG_COMMAND"
@@ -7,51 +7,51 @@ errors_env = "ZED_PKG_PARSE_ERRORS"
 allow_unknown = false
 
 [help]
-url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/nix-export-plan.md"
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/nix-bundle-write.md"
 
 [flags.registry]
 env = "ZED_PKG_REGISTRY"
 aliases = ["registry"]
 type = "string"
 default = "https://registry.zpkg.tech"
-help = "Global registry setting; export planning never reads or emits it."
+help = "Global registry setting; frozen Nix interop never reads or emits it."
 
 [flags.home]
 env = "ZED_PKG_HOME"
 aliases = ["home"]
 type = "string"
-help = "Global Zed home setting; export planning never reads or creates it."
+help = "Global Zed home setting; frozen Nix interop never reads or creates it."
 
 [flags.token]
 env = "ZED_PKG_TOKEN"
 aliases = ["token"]
 type = "string"
-help = "Global bearer token; export planning never reads or emits it."
+help = "Global bearer token; frozen Nix interop never reads or emits it."
 
 [flags.auth_url]
 env = "ZED_PKG_AUTH_URL"
 aliases = ["auth-url"]
 type = "string"
-help = "Global authentication URL; export planning never reads or emits it."
+help = "Global authentication URL; frozen Nix interop never reads or emits it."
 
 [flags.supabase_url]
 env = "ZED_PKG_SUPABASE_URL"
 aliases = ["supabase-url"]
 type = "string"
-help = "Global Supabase URL; export planning never reads or emits it."
+help = "Global Supabase URL; frozen Nix interop never reads or emits it."
 
 [flags.supabase_key]
 env = "ZED_PKG_SUPABASE_KEY"
 aliases = ["supabase-key"]
 type = "string"
-help = "Global Supabase key; export planning never reads or emits it."
+help = "Global Supabase key; frozen Nix interop never reads or emits it."
 
 [flags.interactive]
 env = "ZED_PKG_INTERACTIVE"
 aliases = ["interactive"]
 type = "bool"
 default = "false"
-help = "Global lifecycle confirmation mode; planning is always read-only."
+help = "Global lifecycle confirmation mode; Nix planning and bundle writing are non-interactive."
 
 [commands.interop]
 help = "Typed interoperability commands."
@@ -68,10 +68,22 @@ env = "ZED_PKG_NIX_PLAN_JSON"
 aliases = ["json"]
 type = "bool"
 default = "false"
-help = "Print the canonical compact zed.nix-export-plan/v1 JSON document."
+help = "Print canonical compact JSON for the selected Nix interop operation."
 
 [commands.interop.flags.target]
 env = "ZED_PKG_NIX_TARGET"
 aliases = ["target"]
 type = "string"
-help = "Explicit polyglot target to plan."
+help = "Explicit polyglot target to plan or bundle."
+
+[commands.interop.flags.flake_lock]
+env = "ZED_PKG_NIX_FLAKE_LOCK"
+aliases = ["flake-lock"]
+type = "string"
+help = "Approved immutable flake.lock used by bundle rendering."
+
+[commands.interop.flags.out]
+env = "ZED_PKG_NIX_BUNDLE_OUT"
+aliases = ["out", "output"]
+type = "string"
+help = "New standalone flake directory; existing non-identical state is never overwritten."
