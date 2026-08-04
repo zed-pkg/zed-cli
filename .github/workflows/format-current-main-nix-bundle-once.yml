@@ -1,34 +1,29 @@
-name: Format current-main Nix bundle files once
+name: Materialize current-main Nix bundle rustfmt patch
 
 on:
-  push:
-    branches:
-      - fix/format-current-main-nix-bundle
   pull_request:
     branches:
       - main
     paths:
       - .github/workflows/format-current-main-nix-bundle-once.yml
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: format-current-main-nix-bundle-once
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   format:
-    if: github.actor != 'github-actions[bot]' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: Check out exact feature branch
+      - name: Check out exact repair candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: fix/format-current-main-nix-bundle
-          fetch-depth: 1
-          persist-credentials: true
+          persist-credentials: false
           show-progress: false
 
       - name: Install pinned formatter
@@ -37,7 +32,7 @@ jobs:
           toolchain: stable
           components: rustfmt
 
-      - name: Apply and constrain formatting repair
+      - name: Generate and constrain formatting patch
         shell: bash
         run: |
           set -euo pipefail
@@ -65,24 +60,25 @@ jobs:
                   + ', '.join(sorted(unexpected))
               )
           if not changed:
-              raise SystemExit('current main is already rustfmt-clean; no repair commit needed')
+              raise SystemExit('current main is already rustfmt-clean; no repair needed')
           PY
 
           cargo fmt --all --check
           cargo test --locked --test nix_bundle_write_cli --no-run
           cargo test --locked --test nix_bundle_write_boundaries --no-run
-
-      - name: Commit only permanent formatting changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm .github/workflows/format-current-main-nix-bundle-once.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
+          git diff --binary -- \
             src/nix_bundle_write.rs \
             tests/nix_bundle_write_boundaries.rs \
             tests/nix_bundle_write_cli.rs \
-            .github/workflows/format-current-main-nix-bundle-once.yml
-          git commit -m 'style(DEN-1592): format Nix bundle writer'
-          git push origin HEAD:fix/format-current-main-nix-bundle
+            > "$RUNNER_TEMP/nix-bundle-rustfmt.patch"
+          test -s "$RUNNER_TEMP/nix-bundle-rustfmt.patch"
+          git diff --check
+
+      - name: Upload reviewed formatter patch
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nix-bundle-rustfmt-${{ github.sha }}
+          path: ${{ runner.temp }}/nix-bundle-rustfmt.patch
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: false
