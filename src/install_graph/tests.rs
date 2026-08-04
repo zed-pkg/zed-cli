@@ -557,8 +557,18 @@ fn conflicting_transitive_requirements_fail_in_deterministic_graph_order() {
         message.contains("version conflict for test/leaf"),
         "{message}"
     );
-    assert!(message.contains("resolved 1.0.0"), "{message}");
-    assert!(message.contains("requires `^2`"), "{message}");
+    assert!(
+        message.contains(
+            "`^1` via consumer/app@0.1.0 -> test/root@1.0.0 -> test/left@1.0.0 -> test/leaf"
+        ),
+        "{message}"
+    );
+    assert!(
+        message.contains(
+            "`^2` via consumer/app@0.1.0 -> test/root@1.0.0 -> test/right@1.0.0 -> test/leaf"
+        ),
+        "{message}"
+    );
 }
 
 #[test]

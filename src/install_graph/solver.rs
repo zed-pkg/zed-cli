@@ -3,19 +3,10 @@ use super::*;
 use zed_interfaces::registry::PackageMetadata;
 use zed_interfaces::version::VersionScheme;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PreparedInstall {
     packages: BTreeMap<String, Candidate>,
     pub(crate) report: PrefetchReport,
-}
-
-impl Default for PreparedInstall {
-    fn default() -> Self {
-        Self {
-            packages: BTreeMap::new(),
-            report: PrefetchReport::default(),
-        }
-    }
 }
 
 impl PreparedInstall {
