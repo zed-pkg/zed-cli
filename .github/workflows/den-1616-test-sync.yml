@@ -46,7 +46,7 @@ jobs:
           path = Path('tests/develop_edge_cases.rs')
           text = path.read_text(encoding='utf-8')
           old = '("pwsh", &["-NoLogo", "-Command", script]),'
-          new = '(
+          new = '''(
               "pwsh",
               &[
                   "-NoLogo",
@@ -55,7 +55,7 @@ jobs:
                   "-Command",
                   script,
               ],
-          ),'
+          ),'''
           if text.count(old) != 1:
               raise SystemExit('expected exactly one stale PowerShell protocol vector')
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
