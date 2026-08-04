@@ -48,6 +48,81 @@ pub fn find_root(requested: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+/// Canonical Git-submodule metadata shared by takeover, frozen replay, and
+/// package publication. Keeping parsing and checkout verification in this
+/// subsystem prevents pack/publish policy from drifting from install policy.
+#[derive(Debug)]
+pub(crate) struct PackSubmodules {
+    root: PathBuf,
+    canonical_root: PathBuf,
+    paths: Vec<String>,
+}
+
+impl PackSubmodules {
+    pub(crate) fn canonical_root(&self) -> &Path {
+        &self.canonical_root
+    }
+
+    pub(crate) fn paths(&self) -> impl Iterator<Item = &str> {
+        self.paths.iter().map(String::as_str)
+    }
+
+    pub(crate) fn verify(&self, included: &[String]) -> Result<()> {
+        if included.is_empty() {
+            return Ok(());
+        }
+        checked_git(&self.root, &["cat-file", "-e", "HEAD:.gitmodules"])
+            .context("packing submodule source requires .gitmodules committed at HEAD")?;
+        verify_gitmodules_committed(&self.root)?;
+
+        for relative in included {
+            let configured_child = self.canonical_root.join(relative);
+            let marker = configured_child.join(".git");
+            let marker_metadata = fs::symlink_metadata(&marker).with_context(|| {
+                format!(
+                    "included submodule `{relative}` is not initialized; run `zed install --git-submodules` before packing"
+                )
+            })?;
+            if marker_metadata.file_type().is_symlink() {
+                bail!(
+                    "included submodule `{relative}` has a symlinked .git control path; refusing to package it"
+                );
+            }
+
+            let child = fs::canonicalize(&configured_child)
+                .with_context(|| format!("canonicalizing included submodule `{relative}`"))?;
+            if !child.starts_with(&self.canonical_root) {
+                bail!(
+                    "included submodule `{relative}` resolves outside superproject {}: {}",
+                    self.root.display(),
+                    child.display()
+                );
+            }
+            verify_checkout(&self.root, relative, &child).with_context(|| {
+                format!("verifying included submodule `{relative}` for packing")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn pack_submodules(requested: &Path) -> Result<Option<PackSubmodules>> {
+    let Some(root) = find_root(requested) else {
+        return Ok(None);
+    };
+    let paths = configured_submodules(&root)?
+        .into_iter()
+        .map(|module| module.path)
+        .collect();
+    let canonical_root = fs::canonicalize(&root)
+        .with_context(|| format!("canonicalizing Git superproject {}", root.display()))?;
+    Ok(Some(PackSubmodules {
+        root,
+        canonical_root,
+        paths,
+    }))
+}
+
 /// Synchronize URLs and initialize/update every configured submodule,
 /// recursively, at the exact gitlink commit selected by the superproject.
 pub fn sync(requested: &Path) -> Result<usize> {
