@@ -1,3 +1,4 @@
+# One-shot branch repair; this file deletes itself after committing the focused test update.
 name: repair-polyglot-regression-tests
 
 on:
