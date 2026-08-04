@@ -1,6 +1,12 @@
 name: materialize native task runtime on current main
 
 on:
+  push:
+    branches:
+      - agent/den-1444-native-task-current-main
+    paths:
+      - .github/workflows/materialize-den-1444-current-main.yml
+      - .github/den-1444-materializer-trigger
   pull_request:
     branches: [main]
     paths:
@@ -20,7 +26,7 @@ defaults:
 
 jobs:
   materialize:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'github-actions[bot]'
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
