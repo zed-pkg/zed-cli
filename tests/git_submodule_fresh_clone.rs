@@ -93,6 +93,13 @@ fn zed(project: &Path, home: &Path) -> Command {
     command
 }
 
+fn clean_submodule_status(line: &str) -> bool {
+    !matches!(
+        line.as_bytes().first().copied(),
+        Some(b'-' | b'+' | b'U')
+    )
+}
+
 #[test]
 fn frozen_install_restores_an_overtaken_graph_from_a_fresh_clone() {
     let child = tempfile::tempdir().unwrap();
@@ -145,16 +152,19 @@ fn frozen_install_restores_an_overtaken_graph_from_a_fresh_clone() {
 
     assert!(fresh.join("vendor/client/payload.txt").is_file());
     assert!(fresh.join("zed_modules/acme/client/payload.txt").is_file());
-    assert_eq!(fs::read(fresh.join(MANIFEST_FILE)).unwrap(), expected_manifest);
+    assert_eq!(
+        fs::read(fresh.join(MANIFEST_FILE)).unwrap(),
+        expected_manifest
+    );
     assert_eq!(fs::read(fresh.join(LOCKFILE_FILE)).unwrap(), expected_lock);
 
-    let status = String::from_utf8(git(&fresh, &["submodule", "status", "--recursive"]).stdout)
-        .unwrap();
+    let status =
+        String::from_utf8(git(&fresh, &["submodule", "status", "--recursive"]).stdout).unwrap();
     assert!(
         status
             .lines()
             .filter(|line| !line.trim().is_empty())
-            .all(|line| !matches!(line.as_bytes().first(), Some(b'-' | b'+' | b'U'))),
+            .all(clean_submodule_status),
         "fresh clone retained submodule drift: {status}"
     );
 }
