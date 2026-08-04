@@ -68,6 +68,12 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = false
 
+      - name: Verify immutable shared-contract pin
+        run: |
+          set -euo pipefail
+          grep -F 'rev = "c2e049006453c26ca8ca291783f681fce75cb01f"' Cargo.toml
+          grep -F '#c2e049006453c26ca8ca291783f681fce75cb01f' Cargo.lock
+
       - name: Verify formatting and strict warnings
         run: |
           cargo fmt --all --check
