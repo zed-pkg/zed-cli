@@ -114,23 +114,29 @@ jobs:
                       json: true,
                   };
 
-                  let missing = prepare_registry_config(&options, &destination, None).unwrap_err();
+                  let missing = prepare_registry_config(&options, &destination, None)
+                      .err()
+                      .unwrap();
                   assert!(missing.to_string().contains("choose exactly one OCI authentication mode"));
 
                   options.username = Some("user");
-                  let partial = prepare_registry_config(&options, &destination, None).unwrap_err();
+                  let partial = prepare_registry_config(&options, &destination, None)
+                      .err()
+                      .unwrap();
                   assert!(partial.to_string().contains("did not yield a password"));
 
                   options.username = None;
                   options.password_stdin = true;
-                  let partial =
-                      prepare_registry_config(&options, &destination, Some("pass")).unwrap_err();
+                  let partial = prepare_registry_config(&options, &destination, Some("pass"))
+                      .err()
+                      .unwrap();
                   assert!(partial.to_string().contains("--username is required"));
 
                   options.username = Some("user");
                   options.anonymous = true;
-                  let conflicting =
-                      prepare_registry_config(&options, &destination, Some("pass")).unwrap_err();
+                  let conflicting = prepare_registry_config(&options, &destination, Some("pass"))
+                      .err()
+                      .unwrap();
                   assert!(
                       conflicting
                           .to_string()
@@ -225,4 +231,4 @@ jobs:
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -- "${allowed[@]}"
           git commit -m "fix: validate OCI push option combinations at runtime"
-          git push origin HEAD:${TARGET_BRANCH}
+          git push origin HEAD:agent/oci-oras-push-v1
