@@ -204,7 +204,7 @@ help = "Project a schema-v2 EnvironmentPlan into deterministic manager configura
 text = replace_once(text, verify_command, export_command, "export command registry")
 path.write_text(text, encoding="utf-8")
 
-# Remove a no-longer-used import from the ordinary implementation.
+# Remove a no-longer-used import and harden both output and state paths.
 path = Path("src/mise_export.rs")
 text = path.read_text(encoding="utf-8")
 text = text.replace(
@@ -212,4 +212,151 @@ text = text.replace(
     "use std::collections::BTreeMap;\n",
     1,
 )
+text = replace_once(
+    text,
+    """    let state_path = root.join(EXPORT_STATE_PATH);
+    let mut state = load_state(&state_path)?;
+""",
+    """    let state_path = root.join(EXPORT_STATE_PATH);
+    ensure_no_symlink_components(
+        root,
+        Path::new(EXPORT_STATE_PATH),
+        "mise export state",
+        false,
+    )?;
+    let mut state = load_state(&state_path)?;
+""",
+    "export-state symlink boundary",
+)
+old_function = """fn ensure_no_symlink_components(
+    root: &Path,
+    relative: &Path,
+    kind: &str,
+    require_leaf: bool,
+) -> Result<()> {
+    let mut current = root.to_path_buf();
+    let components = relative.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(value) = component else {
+            bail!("{kind} must be normalized and project-relative");
+        };
+        current.push(value);
+        let leaf = index + 1 == components.len();
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "{kind} crosses a symlink at {}",
+                    current.display()
+                );
+                if !leaf {
+                    ensure!(
+                        metadata.is_dir(),
+                        "{kind} parent is not a directory: {}",
+                        current.display()
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if require_leaf || !leaf {
+                    bail!("{kind} does not exist: {}", current.display());
+                }
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {kind} {}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+"""
+new_function = """fn ensure_no_symlink_components(
+    root: &Path,
+    relative: &Path,
+    kind: &str,
+    require_leaf: bool,
+) -> Result<()> {
+    let mut current = root.to_path_buf();
+    let components = relative.components().collect::<Vec<_>>();
+    let mut missing_suffix = false;
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(value) = component else {
+            bail!("{kind} must be normalized and project-relative");
+        };
+        current.push(value);
+        let leaf = index + 1 == components.len();
+        if missing_suffix {
+            continue;
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) => {
+                ensure!(
+                    !metadata.file_type().is_symlink(),
+                    "{kind} crosses a symlink at {}",
+                    current.display()
+                );
+                if !leaf {
+                    ensure!(
+                        metadata.is_dir(),
+                        "{kind} parent is not a directory: {}",
+                        current.display()
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if require_leaf {
+                    bail!("{kind} does not exist: {}", current.display());
+                }
+                missing_suffix = true;
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to inspect {kind} {}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+"""
+text = replace_once(text, old_function, new_function, "missing-path/symlink validation")
+old_test_tail = """            assert!(export_mise(
+                temp.path(),
+                &plan_path,
+                Path::new("linked/mise.toml"),
+                MiseExportMode::Write,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("symlink"));
+        }
+    }
+}
+"""
+new_test_tail = """            assert!(export_mise(
+                temp.path(),
+                &plan_path,
+                Path::new("linked/mise.toml"),
+                MiseExportMode::Write,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("symlink"));
+
+            fs::remove_file(temp.path().join("linked")).unwrap();
+            std::os::unix::fs::symlink(temp.path(), temp.path().join(".zed")).unwrap();
+            assert!(export_mise(
+                temp.path(),
+                &plan_path,
+                Path::new("mise.toml"),
+                MiseExportMode::Write,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("mise export state crosses a symlink"));
+        }
+    }
+}
+"""
+text = replace_once(text, old_test_tail, new_test_tail, "state symlink regression")
 path.write_text(text, encoding="utf-8")
