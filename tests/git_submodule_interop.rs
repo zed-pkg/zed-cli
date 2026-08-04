@@ -219,13 +219,7 @@ fn git_only_takeover_preserves_all_zed_managed_state() {
     git_ok(&root, &["commit", "-m", "root with Git-only submodule"]);
     git_ok(
         &root,
-        &[
-            "submodule",
-            "deinit",
-            "--force",
-            "--",
-            "vendor/legacy",
-        ],
+        &["submodule", "deinit", "--force", "--", "vendor/legacy"],
     );
     assert!(!root.join("vendor/legacy/README.md").exists());
 
