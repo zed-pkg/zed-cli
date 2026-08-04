@@ -94,10 +94,7 @@ fn zed(project: &Path, home: &Path) -> Command {
 }
 
 fn clean_submodule_status(line: &str) -> bool {
-    !matches!(
-        line.as_bytes().first().copied(),
-        Some(b'-' | b'+' | b'U')
-    )
+    !matches!(line.as_bytes().first().copied(), Some(b'-' | b'+' | b'U'))
 }
 
 #[test]
