@@ -145,7 +145,8 @@ export_arm = """            EnvCmd::Export {
                 json,
             } => {
 """
-text = replace_once(text, verify_arm, export_arm, "main export dispatch")
+if verify_arm in text:
+    text = replace_once(text, verify_arm, export_arm, "main export dispatch")
 path.write_text(text, encoding="utf-8")
 
 # flags-2-env registry and command documentation.
