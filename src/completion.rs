@@ -5,12 +5,12 @@ use std::io;
 use clap_complete::{Shell, generate};
 
 use crate::cli_model;
-use crate::{dev, fetch, git_submodules, nix_bundle_write, nix_export_plan};
+use crate::{dev, fetch, git_submodules, nix_bundle_write, nix_export_plan, oci_command};
 
 fn root_command() -> clap::Command {
-    git_submodules::augment_root_command(nix_bundle_write::augment_root_command(
-        nix_export_plan::augment_root_command(fetch::augment_root_command(
-            dev::augment_root_command(cli_model::command()),
+    oci_command::augment_root_command(git_submodules::augment_root_command(
+        nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
+            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
         )),
     ))
 }
@@ -56,6 +56,8 @@ mod tests {
             "export",
             "bundle",
             "write",
+            "oci",
+            "push",
             "develop",
             "dev",
             "overtake",
@@ -77,6 +79,8 @@ mod tests {
             "--flake-lock",
             "--out",
             "--output",
+            "--password-stdin",
+            "--registry-config",
             "--python-venv",
             "--isolated-home",
         ] {
@@ -102,6 +106,8 @@ mod tests {
             "export",
             "bundle",
             "write",
+            "oci",
+            "push",
             "develop",
             "dev",
             "overtake",
@@ -123,6 +129,8 @@ mod tests {
             "--flake-lock",
             "--out",
             "--output",
+            "--password-stdin",
+            "--registry-config",
             "--python-venv",
             "--isolated-home",
         ] {

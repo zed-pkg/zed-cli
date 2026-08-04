@@ -167,10 +167,7 @@ fn command_creates_idempotent_no_clobber_bundle_from_nested_directory() {
         first_receipt["destination"],
         canonical_bundle.to_string_lossy().as_ref()
     );
-    assert_eq!(
-        first_receipt["bundle_sha256"].as_str().unwrap().len(),
-        64
-    );
+    assert_eq!(first_receipt["bundle_sha256"].as_str().unwrap().len(), 64);
     assert_bundle_shape(&bundle);
     assert_eq!(snapshot(&project), project_before);
     let bundle_before = snapshot(&bundle);
@@ -190,7 +187,10 @@ fn command_creates_idempotent_no_clobber_bundle_from_nested_directory() {
     assert!(second.status.success(), "{}", stderr(&second));
     let second_receipt: Value = serde_json::from_str(stdout(&second).trim()).unwrap();
     assert_eq!(second_receipt["outcome"], "already-current");
-    assert_eq!(first_receipt["bundle_sha256"], second_receipt["bundle_sha256"]);
+    assert_eq!(
+        first_receipt["bundle_sha256"],
+        second_receipt["bundle_sha256"]
+    );
     assert_eq!(snapshot(&bundle), bundle_before);
 
     fs::write(bundle.join("README.md"), b"tampered\n").unwrap();
@@ -357,12 +357,7 @@ fn persisted_command_bundle_checks_and_builds_offline() {
         "--print-out-paths",
         ".#dataset",
     ]);
-    nix(&[
-        "flake",
-        "check",
-        "--offline",
-        "--no-update-lock-file",
-    ]);
+    nix(&["flake", "check", "--offline", "--no-update-lock-file"]);
     let replay = nix(&[
         "build",
         "--offline",
