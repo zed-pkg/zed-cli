@@ -10,8 +10,8 @@ zed develop -c 'pnpm test'
 ```
 
 The command is deliberately a **cross-language environment coordinator**, not a
-replacement for Cargo, npm, pnpm, uv, Go modules, Flutter, Nix, or Zed's normal
-package resolver.
+replacement for Cargo, npm, pnpm, uv, Go modules, Flutter, mise, Nix, or Zed's
+normal package resolver.
 
 ## Startup sequence
 
@@ -20,17 +20,23 @@ package resolver.
 2. In `--nix auto` mode, compose with the nearest `.nix/flake.nix` or
    `flake.nix` by re-entering through `nix develop`. Use `--nix never` to stay
    native or `--nix required` to fail closed.
-3. Unless `--no-install` is present, restore packages through the normal Zed
+3. After any Nix re-entry, `--mise auto` composes with project-local `mise.toml`
+   or `.mise.toml` through `mise exec`. Use `--mise never` to bypass mise or
+   `--mise required` to require both project configuration and the executable.
+4. Unless `--no-install` is present, restore packages through the normal Zed
    manifest/lockfile installer. A manifestless lock is restored frozen and no
    synthetic `.zpkg.toml` is written.
-4. Reuse an existing `.venv`, or create `.zed/dev/python/venv` for a detected
+5. Reuse an existing `.venv`, or create `.zed/dev/python/venv` for a detected
    Python project. Control this with `--python-venv auto|never|required`,
    `--python`, and `--venv`.
-5. Build the managed environment and either enter a real interactive shell,
+6. Build the managed environment and either enter a real interactive shell,
    run `-c/--command`, or emit JSON with `--print-env`.
 
 An interactive invocation requires a terminal. Automation should always use
 `-c` or `--print-env`.
+Non-interactive POSIX commands use `-c` rather than a login shell. This
+preserves the exact PATH assembled by mise, Nix, and Zed instead of allowing login
+startup files to overwrite it, including on macOS.
 
 ## Environment layout
 
@@ -57,12 +63,37 @@ continue to work. `--isolated-home` redirects `HOME`, `XDG_CONFIG_HOME`, and
 `XDG_DATA_HOME` into `.zed/dev` too. Zed does not copy provider credentials or
 production environment files into that directory.
 
-## Nix and direnv
+## Nix, mise, and direnv
 
 `--nix auto` wraps the Zed environment inside the nearest flake's dev shell.
 The child invocation is marked and re-run with `--nix never`, preventing
 recursion. Existing Nix variables are inherited; Zed's explicit managed
 language/cache variables are then overlaid for the child shell.
+
+`--mise auto` looks only for project-local `mise.toml` or `.mise.toml` from the
+selected project up to its Git, Mercurial, or Jujutsu checkout boundary. It
+re-enters through `mise exec -- zed develop ...`, never through a mise task, so
+repository task names cannot recurse back into `zed dev`. The child is marked
+and re-run with `--mise never` and `--nix never`.
+
+Nix is evaluated first. When a repository intentionally declares both, the Nix
+child preserves the requested mise mode and mise is layered inside the Nix
+environment. Use `--nix never --mise auto|required` for the preferred non-Nix
+mise path.
+
+With `--frozen`, mise composition requires the adjacent `mise.lock`, enables
+mise's locked mode, ignores
+`.tool-versions`, and redirects mise global and system configuration into empty
+project-local directories under `.zed/dev/mise`. This prevents user-global
+runtime pins from changing a frozen agent or CI run while leaving ordinary
+non-frozen developer composition compatible with standard mise behavior.
+
+A non-frozen shell already entered by `mise exec` is detected through mise's
+environment diff marker and is not re-entered. Frozen integrated composition
+fails closed when it detects ambient mise state because Zed cannot prove which
+project configuration and lock produced that parent environment. Run the frozen
+command outside the activated shell, or use `--mise never` after an explicit,
+separately verified `mise exec`.
 
 `zed develop` does not require direnv and does not source `.envrc` itself. A
 shell already entered through direnv or `nix develop` is detected through
@@ -75,8 +106,8 @@ Precedence is:
 2. existing `ZED_DEV_*` / `ZED_PKG_*` environment values;
 3. flags-2-env contract defaults.
 
-Inside the spawned process, Nix and inherited shell variables remain available,
-then Zed overlays the documented project-local tool variables.
+Inside the spawned process, Nix, mise, and inherited shell variables remain
+available, then Zed overlays the documented project-local tool variables.
 
 ## AI tool profile
 
@@ -126,6 +157,17 @@ zed dev -c 'cargo test && python -m pytest'
 
 Ambiguous monorepo roots are not guessed; enter the intended workspace first.
 
+### mise-backed non-Nix repository
+
+```sh
+mise install
+zed dev --nix never --mise required -c 'agent-check'
+```
+
+mise selects the pinned runtimes, environment, and tools; Zed restores
+`.zpkg.lock`, exposes `zed_modules/.bin`, and owns the project-local mutable
+language caches. For CI, commit `mise.lock` and add `--frozen`.
+
 ### Nix-backed repository
 
 ```sh
@@ -144,6 +186,7 @@ Every long option has a flags-2-env fallback:
 | `-c`, `--command` | `ZED_DEV_COMMAND` |
 | `--shell` | `ZED_DEV_SHELL` |
 | `--nix` | `ZED_DEV_NIX` |
+| `--mise` | `ZED_DEV_MISE` |
 | `--profile` | `ZED_DEV_PROFILE` |
 | `--no-install` | `ZED_DEV_NO_INSTALL` |
 | `--frozen` | `ZED_PKG_FROZEN` |

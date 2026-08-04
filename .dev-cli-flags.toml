@@ -79,6 +79,13 @@ type = "string"
 default = "auto"
 help = "Nix composition mode: auto, never, or required."
 
+[commands.develop.flags.mise]
+env = "ZED_DEV_MISE"
+aliases = ["mise"]
+type = "string"
+default = "auto"
+help = "mise composition mode: auto, never, or required."
+
 [commands.develop.flags.profile]
 env = "ZED_DEV_PROFILE"
 aliases = ["profile"]

@@ -25,6 +25,7 @@ use crate::{manifestless, ops};
 
 const DEFAULT_VENV: &str = ".zed/dev/python/venv";
 const NIX_REENTRY_ENV: &str = "ZED_DEV_NIX_ACTIVE";
+const MISE_REENTRY_ENV: &str = "ZED_DEV_MISE_ACTIVE";
 const DEV_CONTRACT: &str = include_str!("../.dev-cli-flags.toml");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -34,6 +35,16 @@ pub enum DevNixMode {
     /// Never re-enter through `nix develop`.
     Never,
     /// Require a nearby flake and a working `nix` executable.
+    Required,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DevMiseMode {
+    /// Compose with project-local mise configuration when mise is available.
+    Auto,
+    /// Never re-enter through `mise exec`.
+    Never,
+    /// Require project-local mise configuration and a working `mise` executable.
     Required,
 }
 
@@ -68,6 +79,10 @@ pub struct DevelopArgs {
     /// Whether to compose with a nearby `.nix/flake.nix` or `flake.nix`.
     #[arg(long, value_enum, env = "ZED_DEV_NIX", default_value = "auto")]
     pub nix: DevNixMode,
+
+    /// Whether to compose with project-local `mise.toml` or `.mise.toml`.
+    #[arg(long, value_enum, env = "ZED_DEV_MISE", default_value = "auto")]
+    pub mise: DevMiseMode,
 
     /// Development profile; `ai` adds the opt-in AI tool shim directory.
     #[arg(long, value_enum, env = "ZED_DEV_PROFILE", default_value = "default")]
@@ -218,6 +233,9 @@ pub fn run(requested_root: &Path, cfg: &Config, options: DevelopArgs) -> Result<
     let root = project_root(requested_root);
 
     if let Some(code) = maybe_reenter_through_nix(&root, cfg, &options)? {
+        return Ok(code);
+    }
+    if let Some(code) = maybe_reenter_through_mise(&root, cfg, &options)? {
         return Ok(code);
     }
 
@@ -530,6 +548,8 @@ fn maybe_reenter_through_nix(
         .arg("develop")
         .arg("--nix")
         .arg("never")
+        .arg("--mise")
+        .arg(mise_mode_name(options.mise))
         .arg("--profile")
         .arg(profile_name(options.profile))
         .arg("--python-venv")
@@ -594,6 +614,191 @@ fn nix_flake(root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn maybe_reenter_through_mise(
+    root: &Path,
+    cfg: &Config,
+    options: &DevelopArgs,
+) -> Result<Option<i32>> {
+    if options.mise == DevMiseMode::Never || env::var_os(MISE_REENTRY_ENV).is_some() {
+        return Ok(None);
+    }
+
+    let Some(config) = mise_config(root) else {
+        if options.mise == DevMiseMode::Required {
+            bail!(
+                "--mise required was requested, but no project-local `mise.toml` or `.mise.toml` was found inside the owning checkout for {}",
+                root.display()
+            );
+        }
+        return Ok(None);
+    };
+
+    if env::var_os("__MISE_DIFF").is_some() {
+        if options.frozen {
+            bail!(
+                "--frozen mise composition cannot verify an ambient mise activation; run `zed dev --mise required --frozen` outside an activated mise shell, or use `--mise never` after an explicit `mise exec`"
+            );
+        }
+        return Ok(None);
+    }
+
+    if !program_available("mise") {
+        if options.mise == DevMiseMode::Required {
+            bail!("--mise required was requested, but `mise` is not available on PATH");
+        }
+        eprintln!(
+            "zed develop: found {}, but `mise` is unavailable; continuing with the native Zed environment",
+            config.display()
+        );
+        return Ok(None);
+    }
+
+    let lockfile = mise_lockfile(&config);
+    if options.frozen && !lockfile.is_file() {
+        bail!(
+            "--frozen with {} requires the adjacent mise lockfile {}",
+            config.display(),
+            lockfile.display()
+        );
+    }
+
+    let executable = env::current_exe().context("locating the running zed executable")?;
+    let mut command = Command::new("mise");
+    command
+        .arg("exec")
+        .arg("--")
+        .arg(executable)
+        .arg("develop")
+        .arg("--nix")
+        .arg("never")
+        .arg("--mise")
+        .arg("never")
+        .arg("--profile")
+        .arg(profile_name(options.profile))
+        .arg("--python-venv")
+        .arg(python_venv_mode_name(options.python_venv))
+        .arg("--venv")
+        .arg(&options.venv)
+        .env(MISE_REENTRY_ENV, "1")
+        .env("ZED_PKG_REGISTRY", &cfg.registry)
+        .env("ZED_PKG_HOME", &cfg.home)
+        .env("ZED_PKG_AUTH_URL", &cfg.auth_url)
+        .current_dir(root);
+
+    let boundary = mise_project_boundary(root);
+    if let Some(ceiling) = boundary.parent() {
+        command.env("MISE_CEILING_PATHS", ceiling);
+    }
+
+    if options.frozen {
+        let config_dir = root.join(".zed/dev/mise/config");
+        let system_config_dir = root.join(".zed/dev/mise/system-config");
+        fs::create_dir_all(&config_dir)
+            .with_context(|| format!("creating isolated mise config {}", config_dir.display()))?;
+        fs::create_dir_all(&system_config_dir).with_context(|| {
+            format!(
+                "creating isolated mise system config {}",
+                system_config_dir.display()
+            )
+        })?;
+        let config_filename = config
+            .file_name()
+            .context("mise configuration path has no file name")?;
+        command
+            .env("MISE_LOCKED", "1")
+            .env("MISE_CONFIG_DIR", config_dir)
+            .env("MISE_SYSTEM_CONFIG_DIR", system_config_dir)
+            .env("MISE_OVERRIDE_CONFIG_FILENAMES", config_filename)
+            .env("MISE_OVERRIDE_TOOL_VERSIONS_FILENAMES", "none");
+    }
+
+    if let Some(token) = &cfg.token {
+        command.env("ZED_PKG_TOKEN", token);
+    }
+    if let Some(url) = &cfg.supabase_url {
+        command.env("ZED_PKG_SUPABASE_URL", url);
+    }
+    if let Some(key) = &cfg.supabase_key {
+        command.env("ZED_PKG_SUPABASE_KEY", key);
+    }
+
+    if let Some(shell) = &options.shell {
+        command.arg("--shell").arg(shell);
+    }
+    if let Some(python) = &options.python {
+        command.arg("--python").arg(python);
+    }
+    if options.no_install {
+        command.arg("--no-install");
+    }
+    if options.frozen {
+        command.arg("--frozen");
+    }
+    if options.allow_build {
+        command.arg("--allow-build");
+    }
+    if options.isolated_home {
+        command.arg("--isolated-home");
+    }
+    if options.print_env {
+        command.arg("--print-env");
+    }
+    if let Some(script) = &options.command {
+        command.arg("-c").arg(script);
+    }
+
+    let status = command.status().with_context(|| {
+        format!(
+            "entering mise development environment from {}",
+            config.display()
+        )
+    })?;
+    Ok(Some(status.code().unwrap_or(1)))
+}
+
+fn mise_config(root: &Path) -> Option<PathBuf> {
+    let boundary = mise_project_boundary(root);
+    for candidate in root.ancestors() {
+        for filename in ["mise.toml", ".mise.toml"] {
+            let config = candidate.join(filename);
+            if config.is_file() {
+                return Some(config);
+            }
+        }
+        if candidate == boundary {
+            break;
+        }
+    }
+    None
+}
+
+fn mise_project_boundary(root: &Path) -> PathBuf {
+    root.ancestors()
+        .find(|candidate| {
+            [".git", ".hg", ".jj"]
+                .iter()
+                .any(|marker| candidate.join(marker).exists())
+        })
+        .unwrap_or(root)
+        .to_path_buf()
+}
+
+fn mise_lockfile(config: &Path) -> PathBuf {
+    let directory = config
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    directory.join("mise.lock")
+}
+
+fn mise_mode_name(mode: DevMiseMode) -> &'static str {
+    match mode {
+        DevMiseMode::Auto => "auto",
+        DevMiseMode::Never => "never",
+        DevMiseMode::Required => "required",
+    }
 }
 
 fn profile_name(profile: DevProfile) -> &'static str {
@@ -1063,7 +1268,7 @@ fn configure_shell_arguments(command: &mut Command, shell: &Path, script: Option
             command.args(["-NoLogo", "-Command", script]);
         }
         "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => {
-            command.args(["-lc", script]);
+            command.args(["-c", script]);
         }
         _ => {
             command.args(["-c", script]);
@@ -1080,6 +1285,7 @@ mod tests {
             command: None,
             shell: None,
             nix: DevNixMode::Never,
+            mise: DevMiseMode::Never,
             profile: DevProfile::Default,
             no_install: true,
             frozen: false,
@@ -1090,6 +1296,17 @@ mod tests {
             python: None,
             venv: PathBuf::from(DEFAULT_VENV),
         }
+    }
+
+    #[test]
+    fn noninteractive_posix_commands_do_not_use_login_shells() {
+        let mut command = Command::new("/bin/bash");
+        configure_shell_arguments(&mut command, Path::new("/bin/bash"), Some("true"));
+        let arguments: Vec<OsString> = command.get_args().map(OsStr::to_os_string).collect();
+        assert_eq!(
+            arguments,
+            vec![OsString::from("-c"), OsString::from("true")]
+        );
     }
 
     #[test]
@@ -1121,6 +1338,8 @@ mod tests {
                 command,
                 "--nix",
                 "never",
+                "--mise",
+                "required",
                 "--profile",
                 "ai",
                 "-c",
@@ -1129,6 +1348,7 @@ mod tests {
             .unwrap();
             let DevelopCommand::Develop(args) = cli.command;
             assert_eq!(args.nix, DevNixMode::Never);
+            assert_eq!(args.mise, DevMiseMode::Required);
             assert_eq!(args.profile, DevProfile::Ai);
             assert_eq!(args.command.as_deref(), Some("cargo test"));
         }
@@ -1238,6 +1458,11 @@ mod tests {
                 .get_arguments()
                 .any(|arg| arg.get_long() == Some("nix"))
         );
+        assert!(
+            develop
+                .get_arguments()
+                .any(|arg| arg.get_long() == Some("mise"))
+        );
     }
 
     #[test]
@@ -1276,6 +1501,36 @@ mod tests {
         fs::write(temp.path().join(".nix/flake.nix"), "{}").unwrap();
         fs::write(temp.path().join("flake.nix"), "{}").unwrap();
         assert_eq!(nix_flake(&nested), Some(temp.path().join(".nix")));
+    }
+
+    #[test]
+    fn mise_config_stays_inside_the_owning_vcs_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout");
+        let nested = checkout.join("apps/web");
+        fs::create_dir_all(checkout.join(".git")).unwrap();
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(temp.path().join("mise.toml"), "[tools]\n").unwrap();
+
+        assert_eq!(mise_config(&nested), None);
+
+        fs::write(checkout.join(".mise.toml"), "[tools]\n").unwrap();
+        assert_eq!(mise_config(&nested), Some(checkout.join(".mise.toml")));
+
+        fs::write(checkout.join("mise.toml"), "[tools]\n").unwrap();
+        assert_eq!(mise_config(&nested), Some(checkout.join("mise.toml")));
+    }
+
+    #[test]
+    fn mise_lockfile_is_adjacent_for_both_config_spellings() {
+        assert_eq!(
+            mise_lockfile(Path::new("repo/mise.toml")),
+            PathBuf::from("repo/mise.lock")
+        );
+        assert_eq!(
+            mise_lockfile(Path::new("repo/.mise.toml")),
+            PathBuf::from("repo/mise.lock")
+        );
     }
 
     #[test]
