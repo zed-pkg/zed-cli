@@ -164,6 +164,8 @@ impl From<CompletionShell> for clap_complete::Shell {
 pub enum EnvironmentManagerArg {
     /// Import or verify project-local mise configuration.
     Mise,
+    /// Import or verify project-local asdf configuration and Zed-owned provenance.
+    Asdf,
 }
 
 #[derive(Debug, Subcommand)]
@@ -663,21 +665,31 @@ mod tests {
 
     #[test]
     fn environment_import_and_verify_are_typed() {
-        for action in ["import", "verify"] {
-            let cli = Cli::try_parse_from([
-                "zed",
-                "env",
-                action,
-                "mise",
-                "--config",
-                "mise.toml",
-                "--lock",
-                "mise.lock",
-                "--frozen",
-                "--json",
-            ])
-            .unwrap();
-            assert!(matches!(cli.cmd, Cmd::Env { .. }));
+        for manager in ["mise", "asdf"] {
+            for action in ["import", "verify"] {
+                let cli = Cli::try_parse_from([
+                    "zed",
+                    "env",
+                    action,
+                    manager,
+                    "--config",
+                    if manager == "mise" {
+                        "mise.toml"
+                    } else {
+                        ".tool-versions"
+                    },
+                    "--lock",
+                    if manager == "mise" {
+                        "mise.lock"
+                    } else {
+                        ".zed/asdf.lock.toml"
+                    },
+                    "--frozen",
+                    "--json",
+                ])
+                .unwrap();
+                assert!(matches!(cli.cmd, Cmd::Env { .. }));
+            }
         }
     }
 

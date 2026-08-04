@@ -5,6 +5,15 @@ separate from the main `zed env` dispatcher until the shared mise command branch
 lands; the reusable implementation lives in `zed_cli::asdf_environment` so the
 later wiring step does not need to reimplement parsing or validation.
 
+## Canonical `zed env` commands
+
+```console
+zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]
+zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]
+```
+
+The staged `zed-asdf` executable remains a focused adapter-test surface, but the supported user interface is the typed `zed env` dispatcher. Both routes call the same Rust module and preserve the same read-only, project-local, no-execution contract.
+
 ## Commands
 
 ```text
