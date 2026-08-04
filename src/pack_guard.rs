@@ -81,28 +81,50 @@ impl ArtifactView {
 }
 
 /// Return true only when one authored rule conclusively excludes the complete
-/// submodule subtree. Arbitrary glob probing is unsafe here: a pattern might
-/// exclude every sampled path while leaving an unsampled runtime file eligible.
+/// submodule subtree under the exact glob syntax used by the packer. Arbitrary
+/// probing or normalizing a non-canonical pattern is unsafe: either can claim a
+/// subtree is absent while an unsampled runtime file remains eligible.
 fn explicitly_excludes_tree(relative: &Path, patterns: &[String]) -> bool {
-    let relative = relative.to_string_lossy().replace('\\', "/");
-    let relative = relative.trim_matches('/').to_ascii_lowercase();
+    let relative = relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_ascii_lowercase();
     patterns.iter().any(|pattern| {
-        let normalized = pattern
-            .trim()
-            .replace('\\', "/")
-            .trim_start_matches("./")
-            .trim_matches('/')
-            .to_ascii_lowercase();
-        let Some(prefix) = normalized.strip_suffix("/**") else {
+        let Some(prefix) = canonical_recursive_prefix(pattern) else {
             return false;
         };
-        let prefix = prefix.trim_end_matches('/');
-        !prefix.is_empty()
-            && (relative == prefix
-                || relative
-                    .strip_prefix(prefix)
-                    .is_some_and(|suffix| suffix.starts_with('/')))
+        relative == prefix
+            || relative
+                .strip_prefix(&prefix)
+                .is_some_and(|suffix| suffix.starts_with('/'))
     })
+}
+
+fn canonical_recursive_prefix(pattern: &str) -> Option<String> {
+    if pattern.is_empty()
+        || pattern != pattern.trim()
+        || pattern.contains('\\')
+        || pattern.starts_with('/')
+        || pattern.starts_with("./")
+        || pattern.ends_with('/')
+    {
+        return None;
+    }
+    let prefix = pattern.strip_suffix("/**")?;
+    if prefix.is_empty()
+        || prefix.split('/').any(|segment| {
+            segment.is_empty()
+                || segment == "."
+                || segment == ".."
+                || segment
+                    .bytes()
+                    .any(|byte| matches!(byte, b'*' | b'?' | b'[' | b']' | b'{' | b'}'))
+        })
+    {
+        return None;
+    }
+    Some(prefix.to_ascii_lowercase())
 }
 
 fn artifact_views(
@@ -234,25 +256,31 @@ url = "https://example.invalid/acme/pack-guard.git"
     }
 
     #[test]
-    fn complete_tree_exclusion_requires_an_explicit_recursive_rule() {
+    fn complete_tree_exclusion_requires_an_exact_recursive_rule() {
         let path = Path::new("vendor/client");
         assert!(explicitly_excludes_tree(
             path,
             &["vendor/client/**".to_string()]
         ));
-        assert!(explicitly_excludes_tree(path, &["vendor/**".to_string()]));
-        assert!(!explicitly_excludes_tree(
-            path,
-            &[
-                "vendor/client/.zpkg.toml".to_string(),
-                "vendor/client/src/**".to_string(),
-                "vendor/client/__zed_pack_probe__".to_string(),
-            ]
-        ));
-        assert!(!explicitly_excludes_tree(
-            path,
-            &["vendor/client/*".to_string()]
-        ));
+        assert!(explicitly_excludes_tree(path, &["VENDOR/**".to_string()]));
+
+        for pattern in [
+            "vendor/client/*",
+            "vendor/client/src/**",
+            "/vendor/client/**",
+            "./vendor/client/**",
+            "vendor\\client/**",
+            " vendor/client/**",
+            "vendor/client/** ",
+            "vendor/*/**",
+            "vendor/**/client/**",
+            "vendor/client/**/",
+        ] {
+            assert!(
+                !explicitly_excludes_tree(path, &[pattern.to_string()]),
+                "non-canonical or partial pattern unexpectedly excluded the tree: {pattern}"
+            );
+        }
     }
 
     #[test]
