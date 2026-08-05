@@ -1,12 +1,15 @@
-# Cross-platform release builds (zed-docs issue #9). Cutting a `v*` tag
-# builds `zed` for macOS (Apple Silicon + Intel), Linux (arm64 + x64, both
-# gnu and musl for static/containers), and Windows, then uploads per-target
-# archives and checksums to the GitHub Release.
+# Cross-platform release builds (zed-docs issue #9). Pushing a `release/**`
+# branch publishes retained release-candidate artifacts for review. Cutting a
+# `v*` tag builds the same target set and then uploads the archives and
+# checksums to the GitHub Release.
 name: release
 
 on:
   push:
-    tags: ["v*"]
+    branches:
+      - "release/**"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
