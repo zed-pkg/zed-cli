@@ -11,16 +11,20 @@ language = "rust"
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
 
-[dependencies]
-"zed-pkg/zed-interfaces" = "^0.1.0"
-"zed-pkg/zed-clients" = "^0.1.0"
-
 [build]
 command = "cargo build --release --locked"
 outputs = ["target/release/zed"]
 
 [bin]
 zed = "target/release/zed"
+
+[install]
+adapter = "none"
+dir = ".vendor/.zed"
+
+[dependencies]
+"zed-pkg/zed-clients" = "^0.1.0"
+"zed-pkg/zed-interfaces" = "^0.1.0"
 
 [publish]
 include_readme = true
@@ -43,9 +47,6 @@ exclude = [
 registry = "crates-io"
 package = "zed-cli"
 
-[install]
-adapter = "none"
-dir = ".vendor/.zed"
-
 [scripts]
-test = "cargo test --all-targets --locked"
+test = "bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
+validate-package-graph = "bash scripts/validate-zed-package-graph.sh"
