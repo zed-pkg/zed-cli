@@ -23,6 +23,7 @@ struct ManagedChild {
 }
 
 impl ManagedChild {
+    #[allow(clippy::too_many_arguments)]
     fn spawn(
         role: &str,
         lock_path: &Path,
@@ -118,8 +119,10 @@ impl ManagedChild {
 
     fn kill_and_wait(&mut self) -> Result<ExitStatus> {
         let mut child = self.child.take().expect("managed child still present");
-        child.kill()?;
-        Ok(child.wait()?)
+        let kill_result = child.kill();
+        let wait_result = child.wait();
+        kill_result?;
+        Ok(wait_result?)
     }
 }
 
