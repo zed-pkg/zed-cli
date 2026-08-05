@@ -14,11 +14,14 @@ concurrency:
   group: den-1565-native-lock-cli-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  ZED_INTERFACES_REF: a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660
+
 jobs:
   apply-and-certify:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-22.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -32,10 +35,13 @@ jobs:
           toolchain: stable
           components: rustfmt,clippy
 
-      - name: Add explicit defaults for additive interface fields
+      - name: Upgrade the exact interface pin and initialize additive fields
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import os
+
+          candidate = os.environ["ZED_INTERFACES_REF"]
 
           def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
               file = Path(path)
@@ -47,6 +53,17 @@ jobs:
                   )
               file.write_text(source.replace(old, new), encoding="utf-8")
 
+          replace_exact(
+              "Cargo.toml",
+              'rev = "c2e049006453c26ca8ca291783f681fce75cb01f"',
+              f'rev = "{candidate}"',
+          )
+          replace_exact(
+              ".github/workflows/ci.yml",
+              "dc0e0a0620b9462817950b552d3d334a184b1cb1",
+              candidate,
+              expected=2,
+          )
           replace_exact(
               "src/fetch.rs",
               """            packages,
@@ -85,6 +102,7 @@ jobs:
                       publish: PublishSection::default(),""",
           )
           PY
+          cargo update -p zed-interfaces
 
       - name: Certify complete CLI compatibility
         run: |
@@ -97,6 +115,9 @@ jobs:
 
           changed="$(git diff --name-only | sort)"
           expected="$(printf '%s\n' \
+            .github/workflows/ci.yml \
+            Cargo.lock \
+            Cargo.toml \
             src/fetch.rs \
             src/git_submodules/git.rs \
             src/managed_install.rs \
@@ -108,13 +129,16 @@ jobs:
             exit 1
           }
 
-      - name: Remove builder and commit only certified CLI source
+      - name: Remove builder and commit only certified CLI integration
         run: |
           set -euo pipefail
           rm .github/workflows/den1565-native-lock-compat.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
+            .github/workflows/ci.yml \
+            Cargo.lock \
+            Cargo.toml \
             src/fetch.rs \
             src/git_submodules/git.rs \
             src/managed_install.rs \
@@ -123,5 +147,5 @@ jobs:
             src/r2g.rs \
             .github/workflows/den1565-native-lock-compat.yml
           git diff --cached --check
-          git commit -m 'fix: initialize additive interface fields'
+          git commit -m 'fix: upgrade zed interfaces with additive defaults'
           git push origin HEAD:agent/den-1565-native-lock-cli-compat
