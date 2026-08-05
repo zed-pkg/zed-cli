@@ -1,6 +1,11 @@
 name: materialize deterministic mise export on latest main
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/materialize-den-1462-current-main-v2.yml
   push:
     branches:
       - agent/den-1462-mise-export-current-main-v2
