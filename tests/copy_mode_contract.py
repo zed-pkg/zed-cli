@@ -12,6 +12,9 @@ from pathlib import Path
 from typing import Iterable, NoReturn
 
 
+VOLATILE_PROJECT_STATE = frozenset({".zed/operation.lock"})
+
+
 def fail(message: str) -> NoReturn:
     raise AssertionError(message)
 
@@ -94,6 +97,11 @@ def snapshot(project: Path) -> dict[str, object]:
     for root in project_roots(project):
         for path in assert_regular_tree(root):
             relative = path.relative_to(project).as_posix()
+            # The descriptor lock is durable coordination state, not installed
+            # package output. Its non-authoritative diagnostics intentionally
+            # change on every acquisition (PID, operation, and timestamp).
+            if relative in VOLATILE_PROJECT_STATE:
+                continue
             records.append(
                 {
                     "path": relative,
