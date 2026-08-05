@@ -44,22 +44,18 @@ pub(super) fn fallback_ignored_paths(project: &Path) -> Result<Vec<PathBuf>> {
         .into_iter()
         .filter_entry(|entry| entry.file_name() != OsStr::new(".git"))
     {
-        let entry = entry
-            .with_context(|| format!("walking package worktree {}", project.display()))?;
+        let entry =
+            entry.with_context(|| format!("walking package worktree {}", project.display()))?;
         if !entry.file_type().is_file() {
             continue;
         }
-        let worktree_relative =
-            entry
-                .path()
-                .strip_prefix(&worktree)
-                .with_context(|| {
-                    format!(
-                        "resolving package input {} relative to {}",
-                        entry.path().display(),
-                        worktree.display()
-                    )
-                })?;
+        let worktree_relative = entry.path().strip_prefix(&worktree).with_context(|| {
+            format!(
+                "resolving package input {} relative to {}",
+                entry.path().display(),
+                worktree.display()
+            )
+        })?;
         if path_is_ignored(worktree_relative, &rules)? {
             paths.push(
                 entry
