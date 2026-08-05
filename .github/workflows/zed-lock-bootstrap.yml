@@ -29,7 +29,7 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Apply mechanical compile fixes
+      - name: Apply mechanical test fixes
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -37,18 +37,25 @@ jobs:
           path = Path('crates/zed-lock/src/lib.rs')
           text = path.read_text()
 
-          marker = "impl<G: Send + 'static> LockWaiter<G> {"
-          if "impl<G> Unpin for LockWaiter<G> {}" not in text:
-              text = text.replace(marker, "impl<G> Unpin for LockWaiter<G> {}\n\n" + marker, 1)
+          old_reentry = '''        let error = manager
+              .try_acquire(request)
+              .expect_err("default same-process policy should reject reentry");
+          '''
+          new_reentry = '''        let error = match manager.try_acquire(request) {
+              Ok(_) => panic!("default same-process policy should reject reentry"),
+              Err(error) => error,
+          };
+          '''
+          text = text.replace(old_reentry, new_reentry, 1)
 
-          old = '''        let error = manager
+          old_cap = '''        let error = manager
               .acquire(
                   LockRequest::exclusive(temp.path().join("unrelated.lock"))
                       .operation("over-cap waiter"),
               )
               .expect_err("second waiter should be rejected at the configured cap");
           '''
-          new = '''        let error = match manager.acquire(
+          new_cap = '''        let error = match manager.acquire(
               LockRequest::exclusive(temp.path().join("unrelated.lock"))
                   .operation("over-cap waiter"),
           ) {
@@ -56,7 +63,7 @@ jobs:
               Err(error) => error,
           };
           '''
-          text = text.replace(old, new, 1)
+          text = text.replace(old_cap, new_cap, 1)
           path.write_text(text)
           PY
 
