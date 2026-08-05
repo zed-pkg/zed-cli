@@ -39,14 +39,16 @@ jobs:
 
           package = Path('nix/zed-package.nix')
           text = package.read_text()
-          old = '''        if [[ -e "$work/.zpkg-staging" ]]; then
+          marker = 'operation_lock="$work/.zed/operation.lock"'
+          if marker not in text:
+              old = '''        if [[ -e "$work/.zpkg-staging" ]]; then
                     echo "zed-pkg Nix bridge: successful install left transaction state behind" >&2
                     exit 1
                   fi
 
                   mkdir -p "$out/tree" "$out/metadata"
           '''
-          new = '''        if [[ -e "$work/.zpkg-staging" ]]; then
+              new = '''        if [[ -e "$work/.zpkg-staging" ]]; then
                     echo "zed-pkg Nix bridge: successful install left transaction state behind" >&2
                     exit 1
                   fi
@@ -71,38 +73,19 @@ jobs:
 
                   mkdir -p "$out/tree" "$out/metadata"
           '''
-          if old not in text:
-              raise SystemExit('Nix bridge transaction-state anchor not found')
-          package.write_text(text.replace(old, new, 1))
-
-          workflow = Path('.github/workflows/nix-interop.yml')
-          text = workflow.read_text()
-          old = '''          test ! -e "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
-                    test -f "$deps_a/metadata/bridge.json"
-          '''
-          new = '''          test ! -e "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
-                    test ! -e "$deps_a/tree/.zed/operation.lock"
-                    test -f "$deps_a/metadata/bridge.json"
-          '''
-          if old not in text:
-              raise SystemExit('Nix interop output assertion anchor not found')
-          workflow.write_text(text.replace(old, new, 1))
+              if old not in text:
+                  raise SystemExit('Nix bridge transaction-state anchor not found')
+              package.write_text(text.replace(old, new, 1))
           PY
 
-      - name: Validate patch shape
+      - name: Validate and commit only the product file
         run: |
           set -euo pipefail
           git diff --check
           grep -F 'operation_lock="$work/.zed/operation.lock"' nix/zed-package.nix
-          grep -F 'test ! -e "$deps_a/tree/.zed/operation.lock"' .github/workflows/nix-interop.yml
-
-      - name: Commit ordinary repair source
-        run: |
-          set -euo pipefail
-          rm .github/workflows/fix-nix-interop-operation-lock.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add nix/zed-package.nix .github/workflows/nix-interop.yml .github/workflows/fix-nix-interop-operation-lock.yml
+          git add nix/zed-package.nix
           git diff --cached --check
           git commit -m 'fix: exclude operation-lock diagnostics from Nix fixed outputs'
           git push origin HEAD:fix/nix-interop-exclude-operation-lock
