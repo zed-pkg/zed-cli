@@ -22,12 +22,7 @@ fn zed_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zed"))
 }
 
-fn run_zed(
-    args: &[&str],
-    home: &Path,
-    global_bin: &Path,
-    registry: &Path,
-) -> Output {
+fn run_zed(args: &[&str], home: &Path, global_bin: &Path, registry: &Path) -> Output {
     let mut command = Command::new(zed_bin());
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("ZED_PKG_") {
@@ -113,10 +108,8 @@ fn fixture_package(
 }
 
 fn publish(registry: &FileRegistry, project: &Path) {
-    let manifest = Manifest::parse(
-        &fs::read_to_string(project.join(MANIFEST_FILE)).unwrap(),
-    )
-    .unwrap();
+    let manifest =
+        Manifest::parse(&fs::read_to_string(project.join(MANIFEST_FILE)).unwrap()).unwrap();
     let packed = pack::pack(project, &manifest, None).unwrap();
     let metadata = ops::build_publish_meta(&manifest, &packed, Some("fixture-commit".into()));
     registry.publish(&metadata, &packed.path, None).unwrap();
@@ -206,12 +199,7 @@ fn global_install_restore_and_uninstall_are_hermetic_and_lock_exact() {
             .is_file()
     );
 
-    let listed = run_zed(
-        &["global", "list"],
-        &home,
-        &global_bin,
-        &registry_root,
-    );
+    let listed = run_zed(&["global", "list"], &home, &global_bin, &registry_root);
     assert!(listed.status.success(), "{}", stderr(&listed));
     let listed_text = stdout(&listed);
     assert!(listed_text.contains("acme/tool@0.1.0"), "{listed_text}");
@@ -254,12 +242,7 @@ fn global_install_restore_and_uninstall_are_hermetic_and_lock_exact() {
     assert!(!profile.exists());
     assert!(!global_bin.join(installed_command_name()).exists());
 
-    let final_list = run_zed(
-        &["global", "list"],
-        &home,
-        &global_bin,
-        &registry_root,
-    );
+    let final_list = run_zed(&["global", "list"], &home, &global_bin, &registry_root);
     assert!(final_list.status.success(), "{}", stderr(&final_list));
     assert!(stdout(&final_list).contains("no global package profiles installed"));
 }
