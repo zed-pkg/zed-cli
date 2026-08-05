@@ -32,7 +32,8 @@ impl IgnoreRule {
 pub(super) fn fallback_ignored_paths(project: &Path) -> Result<Vec<PathBuf>> {
     let project = fs::canonicalize(project)
         .with_context(|| format!("canonicalizing package worktree {}", project.display()))?;
-    let rules = fallback_ignore_rules(&project)?;
+    let worktree = find_worktree_root(&project);
+    let rules = fallback_ignore_rules(&worktree, &project)?;
     if rules.is_empty() {
         return Ok(Vec::new());
     }
@@ -48,15 +49,21 @@ pub(super) fn fallback_ignored_paths(project: &Path) -> Result<Vec<PathBuf>> {
         if !entry.file_type().is_file() {
             continue;
         }
-        let relative = entry.path().strip_prefix(&project).with_context(|| {
+        let worktree_relative = entry.path().strip_prefix(&worktree).with_context(|| {
             format!(
                 "resolving package input {} relative to {}",
                 entry.path().display(),
-                project.display()
+                worktree.display()
             )
         })?;
-        if path_is_ignored(relative, &rules)? {
-            paths.push(relative.to_path_buf());
+        if path_is_ignored(worktree_relative, &rules)? {
+            paths.push(
+                entry
+                    .path()
+                    .strip_prefix(&project)
+                    .with_context(|| format!("resolving package path {}", entry.path().display()))?
+                    .to_path_buf(),
+            );
         }
     }
     paths.sort();
@@ -64,21 +71,28 @@ pub(super) fn fallback_ignored_paths(project: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn fallback_ignore_rules(project: &Path) -> Result<Vec<IgnoreRule>> {
+fn find_worktree_root(project: &Path) -> PathBuf {
+    project
+        .ancestors()
+        .find(|ancestor| ancestor.join(".git").exists())
+        .unwrap_or(project)
+        .to_path_buf()
+}
+
+fn fallback_ignore_rules(worktree: &Path, project: &Path) -> Result<Vec<IgnoreRule>> {
     let mut rules = Vec::new();
 
     if let Some(global) = default_global_ignore_file().filter(|path| path.is_file()) {
         append_git_ignore_rules(&global, Path::new(""), &mut rules)?;
     }
 
-    if let Some(git_dir) = git_dir(project)? {
-        let info_exclude = git_dir.join("info/exclude");
+    if let Some(info_exclude) = git_info_exclude(worktree)? {
         if info_exclude.is_file() {
             append_git_ignore_rules(&info_exclude, Path::new(""), &mut rules)?;
         }
     }
 
-    let mut ignore_files = Vec::new();
+    let mut ignore_files = ancestor_ignore_files(worktree, project)?;
     for entry in WalkDir::new(project)
         .follow_links(false)
         .into_iter()
@@ -90,25 +104,52 @@ fn fallback_ignore_rules(project: &Path) -> Result<Vec<IgnoreRule>> {
             ignore_files.push(entry.path().to_path_buf());
         }
     }
-    ignore_files.sort_by(|left, right| {
-        left.components()
-            .count()
-            .cmp(&right.components().count())
-            .then_with(|| left.cmp(right))
-    });
+    dedupe_paths_in_order(&mut ignore_files);
 
     for path in ignore_files {
-        let parent = path.parent().unwrap_or(project);
-        let base = parent.strip_prefix(project).with_context(|| {
+        let parent = path.parent().unwrap_or(worktree);
+        let base = parent.strip_prefix(worktree).with_context(|| {
             format!(
                 "resolving ignore file {} relative to {}",
                 path.display(),
-                project.display()
+                worktree.display()
             )
         })?;
         append_git_ignore_rules(&path, base, &mut rules)?;
     }
     Ok(rules)
+}
+
+fn ancestor_ignore_files(worktree: &Path, project: &Path) -> Result<Vec<PathBuf>> {
+    let mut directories = Vec::new();
+    let mut current = Some(project);
+    while let Some(directory) = current {
+        directories.push(directory.to_path_buf());
+        if directory == worktree {
+            break;
+        }
+        current = directory.parent();
+    }
+    directories.reverse();
+
+    let mut paths = Vec::new();
+    for directory in directories {
+        let ignore = directory.join(".gitignore");
+        if ignore.is_file() {
+            paths.push(ignore);
+        }
+    }
+    Ok(paths)
+}
+
+fn dedupe_paths_in_order(paths: &mut Vec<PathBuf>) {
+    let mut unique = Vec::capacity(paths.len());
+    for path in paths.drain(..) {
+        if !unique.contains(&path) {
+            unique.push(path);
+        }
+    }
+    *paths = unique;
 }
 
 fn default_global_ignore_file() -> Option<PathBuf> {
@@ -118,8 +159,28 @@ fn default_global_ignore_file() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".config/git/ignore"))
 }
 
-fn git_dir(project: &Path) -> Result<Option<PathBuf>> {
-    let marker = project.join(".git");
+fn git_info_exclude(worktree: &Path) -> Result<Option<PathBuf>> {
+    let Some(git_dir) = git_dir(worktree)? else {
+        return Ok(None);
+    };
+    let commondir = git_dir.join("commondir");
+    let common_git_dir = if commondir.is_file() {
+        let value = fs::read_to_string(&commondir)
+            .with_context(|| format!("reading linked worktree commondir {}", commondir.display()))?;
+        let path = PathBuf::from(value.trim());
+        if path.is_absolute() {
+            path
+        } else {
+            git_dir.join(path)
+        }
+    } else {
+        git_dir
+    };
+    Ok(Some(common_git_dir.join("info/exclude")))
+}
+
+fn git_dir(worktree: &Path) -> Result<Option<PathBuf>> {
+    let marker = worktree.join(".git");
     if marker.is_dir() {
         return Ok(Some(marker));
     }
@@ -138,7 +199,7 @@ fn git_dir(project: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(if path.is_absolute() {
         path
     } else {
-        project.join(path)
+        worktree.join(path)
     }))
 }
 
@@ -155,7 +216,7 @@ fn append_git_ignore_rules(path: &Path, base: &Path, rules: &mut Vec<IgnoreRule>
                 GlobBuilder::new(pattern)
                     .literal_separator(true)
                     .build()
-                    .with_context(|| {
+                    .with_context(||  {
                         format!(
                             "invalid Git ignore pattern `{}` in {}:{}",
                             pattern,

@@ -95,6 +95,37 @@ fn gitless_fallback_does_not_reinclude_a_child_of_ignored_parent() {
     assert_eq!(paths, vec![PathBuf::from("cache/value.txt")]);
 }
 
+#[test]
+fn gitless_fallback_honors_worktree_rules_above_a_nested_package() {
+    let worktree = tempfile::tempdir().unwrap();
+    fs::create_dir_all(worktree.path().join(".git/info")).unwrap();
+    let project = worktree.path().join("packages/client");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(worktree.path().join(".gitignore"), "packages/client/secret.env\n").unwrap();
+    fs::write(project.join("secret.env"), "secret\n").unwrap();
+    fs::write(project.join("payload.txt"), "safe\n").unwrap();
+
+    let paths = fallback_ignored_paths(&project).unwrap();
+    assert_eq!(paths, vec![PathBuf::from("secret.env")]);
+}
+
+#[test]
+fn gitless_fallback_reads_linked_worktree_common_excludes() {
+    let root = tempfile::tempdir().unwrap();
+    let worktree = root.path().join("worktree");
+    let git_dir = root.path().join("meta/worktrees/client");
+    fs::create_dir_all(&worktree).unwrap();
+    fs::create_dir_all(&git_dir).unwrap();
+    fs::create_dir_all(root.path().join("meta/info")).unwrap();
+    fs::write(worktree.join(".git"), "gitdir: ../meta/worktrees/client\n").unwrap();
+    fs::write(git_dir.join("commondir"), "../..\n").unwrap();
+    fs::write(root.path().join("meta/info/exclude"), "secret.env\n").unwrap();
+    fs::write(worktree.join("secret.env"), "secret\n").unwrap();
+
+    let paths = fallback_ignored_paths(&worktree).unwrap();
+    assert_eq!(paths, vec![PathBuf::from("secret.env")]);
+}
+
 #[cfg(unix)]
 #[test]
 fn ignored_untracked_input_is_rejected() {
