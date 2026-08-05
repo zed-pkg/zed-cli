@@ -9,6 +9,8 @@ use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::IGNORE_FILE;
 
+#[cfg(test)]
+mod extended_tests;
 mod fallback;
 mod git;
 #[cfg(test)]
