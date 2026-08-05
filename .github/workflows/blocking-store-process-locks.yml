@@ -3,6 +3,7 @@ name: blocking store process locks
 on:
   pull_request:
     paths:
+      - crates/zed-lock/**
       - src/store.rs
       - src/lock_waiter.rs
       - src/lib.rs
@@ -18,6 +19,7 @@ on:
   push:
     branches: [main]
     paths:
+      - crates/zed-lock/**
       - src/store.rs
       - src/lock_waiter.rs
       - src/lib.rs
@@ -47,7 +49,7 @@ jobs:
   linux-kernel-lock:
     name: Linux process-lock and recursive-cache contracts
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Check out zed-cli
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,37 +68,40 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Run zed-lock unit contracts
+        run: cargo test --locked -p zed-lock --lib -- --nocapture
+
+      - name: Run standalone zed-lock cross-process conformance
+        run: cargo test --locked -p zed-lock --test process_conformance -- --nocapture
+
       - name: Prove a separate process blocks until orderly release
-        run: cargo test --locked --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
+        run: cargo test --locked -p zed-cli --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
 
       - name: Prove owner termination releases the descriptor lock
-        run: cargo test --locked --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
-
-      - name: Run evented waiter-thread and channel contracts
-        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
+        run: cargo test --locked -p zed-cli --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
 
       - name: Run the evented waiter against real Linux descriptor locks
-        run: cargo test --locked --test lock_waiter_process_lock -- --nocapture
+        run: cargo test --locked -p zed-cli --test lock_waiter_process_lock -- --nocapture
 
       - name: Run event-driven lock queue, isolation, and crash contracts
-        run: cargo test --locked --test store_lock_evented -- --nocapture
+        run: cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture
 
       - name: Run all store process-lock tests
-        run: cargo test --locked --lib store::tests
+        run: cargo test --locked -p zed-cli --lib store::tests
 
       - name: Run recursive acquisition and cache-race tests
-        run: cargo test --locked --lib install_graph::tests
+        run: cargo test --locked -p zed-cli --lib install_graph::tests
 
       - name: Run the bounded recursive HTTP acquisition contract
-        run: cargo test --locked --test recursive_install_concurrency -- --nocapture
+        run: cargo test --locked -p zed-cli --test recursive_install_concurrency -- --nocapture
 
-      - name: Deny Rust warnings
-        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Deny Rust warnings across the workspace
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
   macos-kernel-lock:
     name: macOS event-driven process-lock contracts
     runs-on: macos-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Check out zed-cli
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -112,8 +117,11 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Run evented waiter-thread and channel contracts
-        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
+      - name: Run zed-lock unit contracts
+        run: cargo test --locked -p zed-lock --lib -- --nocapture
 
-      - name: Run event-driven lock queue, isolation, and crash contracts
-        run: cargo test --locked --test store_lock_evented -- --nocapture
+      - name: Run standalone zed-lock cross-process conformance
+        run: cargo test --locked -p zed-lock --test process_conformance -- --nocapture
+
+      - name: Run event-driven zed-cli lock queue, isolation, and crash contracts
+        run: cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture

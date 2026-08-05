@@ -6,11 +6,13 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - crates/zed-lock/**
       - .github/workflows/standalone-install.yml
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - crates/zed-lock/**
       - .github/workflows/standalone-install.yml
 
 permissions:
@@ -33,7 +35,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: stable
-      - name: Reject checkout-relative dependencies
+      - name: Reject dependencies outside the isolated checkout
         shell: bash
         run: |
           set -euo pipefail
@@ -42,11 +44,49 @@ jobs:
           from pathlib import Path
           import tomllib
 
-          manifest = tomllib.loads(Path("Cargo.toml").read_text())
-          for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-              for name, spec in manifest.get(section, {}).items():
-                  if isinstance(spec, dict) and "path" in spec:
-                      raise SystemExit(f"{section}.{name} is checkout-relative: {spec['path']}")
+          root = Path.cwd().resolve()
+          pending = [root / "Cargo.toml"]
+          visited = set()
+
+          while pending:
+              manifest_path = pending.pop().resolve()
+              if manifest_path in visited:
+                  continue
+              visited.add(manifest_path)
+              manifest = tomllib.loads(manifest_path.read_text())
+
+              dependency_tables = [
+                  (section, manifest.get(section, {}))
+                  for section in ("dependencies", "dev-dependencies", "build-dependencies")
+              ]
+              for target, target_table in manifest.get("target", {}).items():
+                  for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                      dependency_tables.append(
+                          (f"target.{target}.{section}", target_table.get(section, {}))
+                      )
+
+              for section, dependencies in dependency_tables:
+                  for name, spec in dependencies.items():
+                      if not isinstance(spec, dict) or "path" not in spec:
+                          continue
+                      dependency_dir = (manifest_path.parent / spec["path"]).resolve()
+                      try:
+                          dependency_dir.relative_to(root)
+                      except ValueError as error:
+                          raise SystemExit(
+                              f"{manifest_path}:{section}.{name} escapes the isolated checkout: "
+                              f"{spec['path']} -> {dependency_dir}"
+                          ) from error
+
+                      dependency_manifest = dependency_dir / "Cargo.toml"
+                      if not dependency_manifest.is_file():
+                          raise SystemExit(
+                              f"{manifest_path}:{section}.{name} has no in-checkout Cargo.toml: "
+                              f"{dependency_manifest}"
+                          )
+                      pending.append(dependency_manifest)
+
+          print(f"validated {len(visited)} in-checkout Cargo manifest(s)")
           PY
       - name: Install and execute the locked CLI from the isolated checkout
         shell: bash
