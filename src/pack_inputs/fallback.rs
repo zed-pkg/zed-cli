@@ -86,10 +86,10 @@ fn fallback_ignore_rules(worktree: &Path, project: &Path) -> Result<Vec<IgnoreRu
         append_git_ignore_rules(&global, Path::new(""), &mut rules)?;
     }
 
-    if let Some(info_exclude) = git_info_exclude(worktree)? {
-        if info_exclude.is_file() {
-            append_git_ignore_rules(&info_exclude, Path::new(""), &mut rules)?;
-        }
+    if let Some(info_exclude) = git_info_exclude(worktree)?
+        && info_exclude.is_file()
+    {
+        append_git_ignore_rules(&info_exclude, Path::new(""), &mut rules)?;
     }
 
     let mut ignore_files = ancestor_ignore_files(worktree, project)?;
