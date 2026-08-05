@@ -216,7 +216,13 @@ fn polyglot_legal_fixture(
         manifest.to_toml_string().unwrap(),
     )
     .unwrap();
-    fs::write(project.path().join(".gitignore"), "NOTICE.private\n").unwrap();
+    // Ignore only the root release input. A target-owned file with the same
+    // name is a deliberate override and remains tracked.
+    fs::write(
+        project.path().join(".gitignore"),
+        "/NOTICE.private\n",
+    )
+    .unwrap();
     fs::create_dir_all(project.path().join("clients/ts")).unwrap();
     fs::write(
         project.path().join("clients/ts/package.json"),
