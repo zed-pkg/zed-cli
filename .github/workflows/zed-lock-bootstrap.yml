@@ -1,0 +1,83 @@
+name: zed-lock branch bootstrap
+
+on:
+  push:
+    branches:
+      - agent/extract-zed-lock-crate
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zed-lock-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  generate-and-check:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the extraction branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/extract-zed-lock-crate
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Apply mechanical compile fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('crates/zed-lock/src/lib.rs')
+          text = path.read_text()
+
+          marker = "impl<G: Send + 'static> LockWaiter<G> {"
+          if "impl<G> Unpin for LockWaiter<G> {}" not in text:
+              text = text.replace(marker, "impl<G> Unpin for LockWaiter<G> {}\n\n" + marker, 1)
+
+          old = '''        let error = manager
+            .acquire(
+                LockRequest::exclusive(temp.path().join("unrelated.lock"))
+                    .operation("over-cap waiter"),
+            )
+            .expect_err("second waiter should be rejected at the configured cap");
+'''
+          new = '''        let error = match manager.acquire(
+            LockRequest::exclusive(temp.path().join("unrelated.lock"))
+                .operation("over-cap waiter"),
+        ) {
+            Ok(_) => panic!("second waiter should be rejected at the configured cap"),
+            Err(error) => error,
+        };
+'''
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+          PY
+
+      - name: Generate formatter output and workspace lockfile
+        run: |
+          cargo fmt --all
+          cargo generate-lockfile
+
+      - name: Commit generated files to the branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock crates/zed-lock/src/lib.rs crates/zed-lock/tests/process_conformance.rs
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: format zed-lock and update workspace lockfile"
+            git push origin HEAD:agent/extract-zed-lock-crate
+          fi
+
+      - name: Compile and test zed-lock
+        run: cargo test --locked -p zed-lock --all-targets -- --nocapture
+
+      - name: Lint zed-lock
+        run: cargo clippy --locked -p zed-lock --all-targets -- -D warnings
