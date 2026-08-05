@@ -1,0 +1,348 @@
+name: materialize canonical zed task routing
+
+on:
+  push:
+    branches:
+      - feat/den-2443-canonical-task-cli
+    paths:
+      - .github/workflows/materialize-canonical-task-cli.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-canonical-task-cli
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/den-2443-canonical-task-cli
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Add typed task commands to the canonical CLI
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cli = Path('src/cli.rs')
+          text = cli.read_text()
+
+          old = '''    /// Import or verify project-local developer-environment configuration.
+              Env {
+                  #[command(subcommand)]
+                  cmd: EnvCmd,
+              },
+              /// Generate a completion script from the same typed command model used at runtime
+          '''
+          new = '''    /// Import or verify project-local developer-environment configuration.
+              Env {
+                  #[command(subcommand)]
+                  cmd: EnvCmd,
+              },
+              /// List, inspect, graph, or execute native schema-v2 project tasks.
+              Task {
+                  /// Project-local schema-v2 environment plan; conventional names are discovered when omitted.
+                  #[arg(long, env = "ZED_TASK_PLAN")]
+                  plan: Option<PathBuf>,
+                  /// Emit stable machine-readable JSON. Live command execution requires human streaming output.
+                  #[arg(long, env = "ZED_TASK_JSON")]
+                  json: bool,
+                  #[command(subcommand)]
+                  cmd: TaskCmd,
+              },
+              /// Generate a completion script from the same typed command model used at runtime
+          '''
+          if old not in text:
+              raise SystemExit('Cmd::Env insertion anchor not found')
+          text = text.replace(old, new, 1)
+
+          marker = '''#[derive(Debug, Subcommand)]
+          pub enum ReleaseCmd {
+          '''
+          task_enum = '''#[derive(Debug, Subcommand)]
+          pub enum TaskCmd {
+              /// List project tasks in deterministic name order.
+              List {
+                  /// Include tasks marked hidden.
+                  #[arg(long, env = "ZED_TASK_ALL")]
+                  all: bool,
+              },
+              /// Show one task's aliases, dependencies, cache policy, and description.
+              Info { task: String },
+              /// Print the validated task dependency and invocation graph.
+              Graph { task: String },
+              /// Execute one task and its validated dependency graph.
+              Run {
+                  task: String,
+                  /// Plan commands and cache decisions without subprocesses or mutation.
+                  #[arg(long, env = "ZED_TASK_DRY_RUN")]
+                  dry_run: bool,
+                  /// Approve an explicit task confirmation requirement.
+                  #[arg(long, env = "ZED_TASK_YES")]
+                  yes: bool,
+                  /// Maximum number of concurrently running task commands.
+                  #[arg(
+                      long,
+                      env = "ZED_TASK_JOBS",
+                      default_value_t = 1,
+                      value_parser = crate::task_cli::parse_positive_jobs
+                  )]
+                  jobs: usize,
+                  /// Disable content-verified incremental cache reads and writes.
+                  #[arg(long, env = "ZED_TASK_NO_CACHE")]
+                  no_cache: bool,
+                  /// Arguments are exposed through ZED_TASK_ARGC, ZED_TASK_ARGS_JSON, and ZED_TASK_ARG_<n>.
+                  #[arg(last = true, allow_hyphen_values = true)]
+                  args: Vec<String>,
+              },
+          }
+
+          #[derive(Debug, Subcommand)]
+          pub enum ReleaseCmd {
+          '''
+          if marker not in text:
+              raise SystemExit('TaskCmd enum insertion anchor not found')
+          text = text.replace(marker, task_enum, 1)
+
+          test_anchor = '''    #[test]
+              fn completion_shells_are_typed_positionals() {
+          '''
+          test_block = '''    #[test]
+              fn task_commands_are_typed_and_reject_zero_concurrency() {
+                  for args in [
+                      vec!["zed", "task", "list", "--all"],
+                      vec!["zed", "task", "--json", "info", "build"],
+                      vec!["zed", "task", "graph", "build"],
+                      vec!["zed", "task", "run", "build", "--dry-run", "--jobs", "2"],
+                  ] {
+                      let cli = Cli::try_parse_from(args).unwrap();
+                      assert!(matches!(cli.cmd, Cmd::Task { .. }));
+                  }
+
+                  let error = Cli::try_parse_from([
+                      "zed", "task", "run", "build", "--jobs", "0",
+                  ])
+                  .unwrap_err();
+                  assert!(error.to_string().contains("at least one"));
+              }
+
+              #[test]
+              fn completion_shells_are_typed_positionals() {
+          '''
+          if test_anchor not in text:
+              raise SystemExit('typed task test insertion anchor not found')
+          text = text.replace(test_anchor, test_block, 1)
+
+          recursive_old = '''            assert!(
+                      env.starts_with("ZED_PKG_"),
+                      "--{long} env `{env}` must use the ZED_PKG_ prefix"
+                  );
+                  envs.insert(env);
+          '''
+          recursive_new = '''            assert!(
+                      env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                      "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
+                  );
+                  envs.insert(env);
+          '''
+          if recursive_old not in text:
+              raise SystemExit('recursive Clap env assertion not found')
+          text = text.replace(recursive_old, recursive_new, 1)
+
+          file_old = '''                    assert!(
+                          env.starts_with("ZED_PKG_"),
+                          "flag --{} env `{env}` must use the ZED_PKG_ prefix",
+                          name.replace('_', "-")
+                      );
+          '''
+          file_new = '''                    assert!(
+                          env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                          "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
+                          name.replace('_', "-")
+                      );
+          '''
+          if file_old not in text:
+              raise SystemExit('declarative env assertion not found')
+          text = text.replace(file_old, file_new, 1)
+          cli.write_text(text)
+
+          main = Path('src/main.rs')
+          text = main.read_text()
+          old = '''use zed_cli::cli::{
+              AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
+          };
+          '''
+          new = '''use zed_cli::cli::{
+              AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
+              TaskCmd,
+          };
+          '''
+          if old not in text:
+              raise SystemExit('main CLI import anchor not found')
+          text = text.replace(old, new, 1)
+          old = 'use zed_cli::store::Store;\n'
+          new = 'use zed_cli::store::Store;\nuse zed_cli::task_cli::{self, TaskAction};\n'
+          if old not in text:
+              raise SystemExit('task_cli import anchor not found')
+          text = text.replace(old, new, 1)
+
+          marker = '''        Cmd::Completions { shell } => {
+          '''
+          arm = '''        Cmd::Task { plan, json, cmd } => {
+                      let action = match cmd {
+                          TaskCmd::List { all } => TaskAction::List { all },
+                          TaskCmd::Info { task } => TaskAction::Info { task },
+                          TaskCmd::Graph { task } => TaskAction::Graph { task },
+                          TaskCmd::Run {
+                              task,
+                              dry_run,
+                              yes,
+                              jobs,
+                              no_cache,
+                              args,
+                          } => TaskAction::Run {
+                              task,
+                              dry_run,
+                              yes,
+                              jobs,
+                              no_cache,
+                              args,
+                          },
+                      };
+                      task_cli::execute(&cwd, plan.as_deref(), json, action)
+                  }
+                  Cmd::Completions { shell } => {
+          '''
+          if marker not in text:
+              raise SystemExit('main task dispatch anchor not found')
+          main.write_text(text.replace(marker, arm, 1))
+
+          flags = Path('.cli-flags.toml')
+          text = flags.read_text()
+          marker = '''[commands.completions]
+          help = "Generate Bash or Zsh completion from the typed CLI model."
+          '''
+          task_contract = '''[commands.task]
+          help = "List, inspect, graph, or execute native schema-v2 project tasks."
+
+          [commands.task.flags.plan]
+          env = "ZED_TASK_PLAN"
+          aliases = ["plan"]
+          type = "string"
+          help = "Project-local schema-v2 environment plan."
+
+          [commands.task.flags.json]
+          env = "ZED_TASK_JSON"
+          aliases = ["json"]
+          type = "bool"
+          default = "false"
+          help = "Emit stable machine-readable task output."
+
+          [commands.task.commands.list]
+          help = "List project tasks in deterministic name order."
+
+          [commands.task.commands.list.flags.all]
+          env = "ZED_TASK_ALL"
+          aliases = ["all"]
+          type = "bool"
+          default = "false"
+          help = "Include hidden tasks."
+
+          [commands.task.commands.info]
+          help = "Show one task's metadata and dependency classes."
+
+          [commands.task.commands.graph]
+          help = "Print the validated static task graph."
+
+          [commands.task.commands.run]
+          help = "Execute one task and its validated dependency graph."
+
+          [commands.task.commands.run.flags.dry_run]
+          env = "ZED_TASK_DRY_RUN"
+          aliases = ["dry-run"]
+          type = "bool"
+          default = "false"
+          help = "Plan execution without starting subprocesses or writing cache state."
+
+          [commands.task.commands.run.flags.yes]
+          env = "ZED_TASK_YES"
+          aliases = ["yes"]
+          type = "bool"
+          default = "false"
+          help = "Approve explicit task confirmation requirements."
+
+          [commands.task.commands.run.flags.jobs]
+          env = "ZED_TASK_JOBS"
+          aliases = ["jobs"]
+          type = "int"
+          default = "1"
+          help = "Maximum concurrent task command processes."
+
+          [commands.task.commands.run.flags.no_cache]
+          env = "ZED_TASK_NO_CACHE"
+          aliases = ["no-cache"]
+          type = "bool"
+          default = "false"
+          help = "Disable content-verified incremental cache reads and writes."
+
+          [commands.completions]
+          help = "Generate Bash or Zsh completion from the typed CLI model."
+          '''
+          if marker not in text:
+              raise SystemExit('main flags task insertion anchor not found')
+          flags.write_text(text.replace(marker, task_contract, 1))
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          marker = '| `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |\n'
+          row = '| `zed task list\\|info\\|graph\\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |\n'
+          if row not in text:
+              if marker not in text:
+                  raise SystemExit('README task command anchor not found')
+              text = text.replace(marker, marker + row, 1)
+          readme.write_text(text)
+          PY
+
+      - name: Format, test, and lint the canonical route
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib task_runtime::tests
+          cargo test --locked --lib task_cli::tests
+          cargo test --locked --test task_runtime_cli
+          cargo test --locked --test task_main_cli
+          cargo test --locked cli::tests::task_commands_are_typed_and_reject_zero_concurrency
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
+          cargo clippy --locked --bin zed --bin zed-task \
+            --test task_runtime_cli --test task_main_cli -- -D warnings
+
+      - name: Commit ordinary product files
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/cli.rs src/main.rs .cli-flags.toml README.md
+          git diff --cached --check
+          git commit -m 'feat(DEN-2443): expose native tasks through zed task'
+          git push origin HEAD:feat/den-2443-canonical-task-cli
