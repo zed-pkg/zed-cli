@@ -44,18 +44,22 @@ pub(super) fn fallback_ignored_paths(project: &Path) -> Result<Vec<PathBuf>> {
         .into_iter()
         .filter_entry(|entry| entry.file_name() != OsStr::new(".git"))
     {
-        let entry =
-            entry.with_context(|| format!("walking package worktree {}", project.display()))?;
+        let entry = entry
+            .with_context(|| format!("walking package worktree {}", project.display()))?;
         if !entry.file_type().is_file() {
             continue;
         }
-        let worktree_relative = entry.path().strip_prefix(&worktree).with_context(|| {
-            format!(
-                "resolving package input {} relative to {}",
-                entry.path().display(),
-                worktree.display()
-            )
-        })?;
+        let worktree_relative =
+            entry
+                .path()
+                .strip_prefix(&worktree)
+                .with_context(|| {
+                    format!(
+                        "resolving package input {} relative to {}",
+                        entry.path().display(),
+                        worktree.display()
+                    )
+                })?;
         if path_is_ignored(worktree_relative, &rules)? {
             paths.push(
                 entry
@@ -79,7 +83,10 @@ fn find_worktree_root(project: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-fn fallback_ignore_rules(worktree: &Path, project: &Path) -> Result<Vec<IgnoreRule>> {
+fn fallback_ignore_rules(
+    worktree: &Path,
+    project: &Path,
+) -> Result<Vec<IgnoreRule>> {
     let mut rules = Vec::new();
 
     if let Some(global) = default_global_ignore_file().filter(|path| path.is_file()) {
@@ -165,8 +172,9 @@ fn git_info_exclude(worktree: &Path) -> Result<Option<PathBuf>> {
     };
     let commondir = git_dir.join("commondir");
     let common_git_dir = if commondir.is_file() {
-        let value = fs::read_to_string(&commondir)
-            .with_context(|| format!("reading linked worktree commondir {}", commondir.display()))?;
+        let value = fs::read_to_string(&commondir).with_context(|| {
+            format!("reading linked worktree commondir {}", commondir.display())
+        })?;
         let path = PathBuf::from(value.trim());
         if path.is_absolute() {
             path
@@ -195,7 +203,7 @@ fn git_dir(worktree: &Path) -> Result<Option<PathBuf>> {
         .strip_prefix("gitdir:")
         .map(str::trim)
         .context("invalid .git file: expected `gitdir: <path>`")?;
-    let path = PathBuf::from(value);
+    let path = PathBuf:from(value);
     Ok(Some(if path.is_absolute() {
         path
     } else {
@@ -216,7 +224,7 @@ fn append_git_ignore_rules(path: &Path, base: &Path, rules: &mut Vec<IgnoreRule>
                 GlobBuilder::new(pattern)
                     .literal_separator(true)
                     .build()
-                    .with_context(||  {
+                    .with_context(|| {
                         format!(
                             "invalid Git ignore pattern `{}` in {}:{}",
                             pattern,
