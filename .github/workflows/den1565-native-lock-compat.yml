@@ -73,6 +73,14 @@ jobs:
                       nix_adapters: Vec::new(),""",
               expected=2,
           )
+          replace_exact(
+              "tests/frozen_fetch_boundaries.rs",
+              """        packages,
+                  nix_adapters: Vec::new(),""",
+              """        packages,
+                  native_dependencies: Vec::new(),
+                  nix_adapters: Vec::new(),""",
+          )
 
           manifest_pair = (
               """        build_dependencies: BTreeMap::new(),
@@ -123,7 +131,8 @@ jobs:
             src/managed_install.rs \
             src/manifestless.rs \
             src/ops.rs \
-            src/r2g.rs | sort)"
+            src/r2g.rs \
+            tests/frozen_fetch_boundaries.rs | sort)"
           test "$changed" = "$expected" || {
             printf 'unexpected compatibility delta:\n%s\n' "$changed" >&2
             exit 1
@@ -145,6 +154,7 @@ jobs:
             src/manifestless.rs \
             src/ops.rs \
             src/r2g.rs \
+            tests/frozen_fetch_boundaries.rs \
             .github/workflows/den1565-native-lock-compat.yml
           git diff --cached --check
           git commit -m 'fix: upgrade zed interfaces with additive defaults'
