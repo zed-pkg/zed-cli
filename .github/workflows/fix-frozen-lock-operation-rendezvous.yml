@@ -73,7 +73,7 @@ jobs:
           cargo build --locked --bin zed
           root="$RUNNER_TEMP/frozen-lock-operation-rendezvous"
           ZED_FROZEN_LOCK_E2E_ROOT="$root" \
-            tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed"
+            bash tests/frozen-lock-integrity-e2e.sh "$PWD/target/debug/zed"
           test -f "$root/negative-cases/empty-lock/.zed/operation.lock"
           test -z "$(
             find "$root/negative-cases/empty-lock/.zed" -mindepth 1 \
