@@ -44,6 +44,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  ZED_LOCK_COMMIT: a0dc78d385bc3ab553d3027b427f5f1428239c9c
 
 jobs:
   linux-kernel-lock:
@@ -67,7 +68,7 @@ jobs:
 
       - name: Verify the immutable standalone zed-lock source
         run: |
-          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "0fc100afc3cd60b5ce091b4207f910bf08f2cfb7" in source, source; print(source)'
+          cargo metadata --locked --format-version 1 | ZED_LOCK_COMMIT="$ZED_LOCK_COMMIT" python3 -c 'import json,os,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; expected=os.environ["ZED_LOCK_COMMIT"]; assert "github.com/zed-pkg/zed-lock" in source and expected in source, source; print(source)'
           test ! -d crates/zed-lock
 
       - name: Check formatting
@@ -118,7 +119,7 @@ jobs:
 
       - name: Verify the immutable standalone zed-lock source
         run: |
-          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "0fc100afc3cd60b5ce091b4207f910bf08f2cfb7" in source, source; print(source)'
+          cargo metadata --locked --format-version 1 | ZED_LOCK_COMMIT="$ZED_LOCK_COMMIT" python3 -c 'import json,os,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; expected=os.environ["ZED_LOCK_COMMIT"]; assert "github.com/zed-pkg/zed-lock" in source and expected in source, source; print(source)'
           test ! -d crates/zed-lock
 
       - name: Run event-driven zed-cli lock queue, isolation, and crash contracts
