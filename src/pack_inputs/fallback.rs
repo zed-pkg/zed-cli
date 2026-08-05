@@ -83,10 +83,7 @@ fn find_worktree_root(project: &Path) -> PathBuf {
         .to_path_buf()
 }
 
-fn fallback_ignore_rules(
-    worktree: &Path,
-    project: &Path,
-) -> Result<Vec<IgnoreRule>> {
+fn fallback_ignore_rules(worktree: &Path, project: &Path) -> Result<Vec<IgnoreRule>> {
     let mut rules = Vec::new();
 
     if let Some(global) = default_global_ignore_file().filter(|path| path.is_file()) {
@@ -150,7 +147,7 @@ fn ancestor_ignore_files(worktree: &Path, project: &Path) -> Result<Vec<PathBuf>
 }
 
 fn dedupe_paths_in_order(paths: &mut Vec<PathBuf>) {
-    let mut unique = Vec::capacity(paths.len());
+    let mut unique = Vec::with_capacity(paths.len());
     for path in paths.drain(..) {
         if !unique.contains(&path) {
             unique.push(path);
@@ -203,7 +200,7 @@ fn git_dir(worktree: &Path) -> Result<Option<PathBuf>> {
         .strip_prefix("gitdir:")
         .map(str::trim)
         .context("invalid .git file: expected `gitdir: <path>`")?;
-    let path = PathBuf:from(value);
+    let path = PathBuf::from(value);
     Ok(Some(if path.is_absolute() {
         path
     } else {
