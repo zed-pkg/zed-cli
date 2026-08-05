@@ -32,38 +32,37 @@ jobs:
       - name: Apply extraction migrations and mechanical test fixes
         run: |
           python - <<'PY'
+          import re
           from pathlib import Path
 
           lib = Path('crates/zed-lock/src/lib.rs')
           text = lib.read_text()
 
-          old_reentry = '''        let error = manager
-              .try_acquire(request)
-              .expect_err("default same-process policy should reject reentry");
-          '''
-          new_reentry = '''        let error = match manager.try_acquire(request) {
+          text, _ = re.subn(
+              r'''(?ms)^        let error = manager\s*\.try_acquire\(request\)\s*\.expect_err\("default same-process policy should reject reentry"\);''',
+              '''        let error = match manager.try_acquire(request) {
               Ok(_) => panic!("default same-process policy should reject reentry"),
               Err(error) => error,
-          };
-          '''
-          text = text.replace(old_reentry, new_reentry, 1)
-
-          old_cap = '''        let error = manager
-              .acquire(
-                  LockRequest::exclusive(temp.path().join("unrelated.lock"))
-                      .operation("over-cap waiter"),
-              )
-              .expect_err("second waiter should be rejected at the configured cap");
-          '''
-          new_cap = '''        let error = match manager.acquire(
+          };''',
+              text,
+              count=1,
+          )
+          text, _ = re.subn(
+              r'''(?ms)^        let error = manager\s*\.acquire\(\s*LockRequest::exclusive\(temp\.path\(\)\.join\("unrelated\.lock"\)\)\s*\.operation\("over-cap waiter"\),\s*\)\s*\.expect_err\("second waiter should be rejected at the configured cap"\);''',
+              '''        let error = match manager.acquire(
               LockRequest::exclusive(temp.path().join("unrelated.lock"))
                   .operation("over-cap waiter"),
           ) {
               Ok(_) => panic!("second waiter should be rejected at the configured cap"),
               Err(error) => error,
-          };
-          '''
-          text = text.replace(old_cap, new_cap, 1)
+          };''',
+              text,
+              count=1,
+          )
+          if '.expect_err("default same-process policy should reject reentry")' in text:
+              raise SystemExit('reentry test assertion was not migrated')
+          if '.expect_err("second waiter should be rejected at the configured cap")' in text:
+              raise SystemExit('waiter-cap assertion was not migrated')
           lib.write_text(text)
 
           store = Path('src/store.rs')
@@ -164,11 +163,12 @@ jobs:
           )?;
           '''
           text = text.replace(old_artifact, new_artifact, 1)
+          if 'pub struct ProcessLock' in text or 'ProcessLock::acquire' in text:
+              raise SystemExit('zed-cli Store was not fully migrated to zed-lock')
           store.write_text(text)
 
           cargo = Path('Cargo.toml')
-          cargo_text = cargo.read_text()
-          cargo_text = cargo_text.replace('fs2 = "0.4.3"\n', '', 1)
+          cargo_text = cargo.read_text().replace('fs2 = "0.4.3"\n', '', 1)
           cargo.write_text(cargo_text)
           PY
 
