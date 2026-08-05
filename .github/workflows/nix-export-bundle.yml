@@ -33,6 +33,9 @@ concurrency:
   group: nix-export-bundle-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  ZED_INTERFACES_SHA: a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660
+
 jobs:
   bundle:
     name: Deterministic bundle on ${{ matrix.os }}
@@ -62,8 +65,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "c2e049006453c26ca8ca291783f681fce75cb01f"' Cargo.toml
-          grep -F '#c2e049006453c26ca8ca291783f681fce75cb01f' Cargo.lock
+          grep -F "rev = \"$ZED_INTERFACES_SHA\"" Cargo.toml
+          grep -F "#$ZED_INTERFACES_SHA" Cargo.lock
 
       - name: Check formatting and warnings
         run: |

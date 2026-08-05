@@ -352,6 +352,8 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
         workspace: None,
         dependencies: BTreeMap::new(),
         build_dependencies: BTreeMap::new(),
+        native_dependencies: Default::default(),
+        hooks: Default::default(),
         build: None,
         overrides: Default::default(),
         bin: BTreeMap::new(),

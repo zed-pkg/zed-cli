@@ -115,6 +115,7 @@ fn write_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
     let lock = Lockfile {
         version: Lockfile::CURRENT_VERSION,
         packages,
+        native_dependencies: Vec::new(),
         nix_adapters: Vec::new(),
     };
     let bytes = lock.to_toml_string().unwrap().into_bytes();
