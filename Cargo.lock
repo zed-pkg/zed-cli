@@ -2033,6 +2033,7 @@ dependencies = [
  "dirs",
  "flags2env",
  "flate2",
+ "fs2",
  "globset",
  "hex",
  "reqwest",
