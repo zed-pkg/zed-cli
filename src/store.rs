@@ -6,10 +6,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use zed_interfaces::manifest::is_sha256_hex;
 use zed_interfaces::paths::{ARCHIVE_ROOT, STORE_PKG_DIR, build_entry_rel, store_entry_rel};
+use zed_lock::{LockClass, LockManager, LockRequest};
 
 use crate::pack::sha256_file;
 
@@ -55,38 +55,18 @@ fn require_build_key(key: &str) -> Result<()> {
     Ok(())
 }
 
-/// A descriptor-backed process lock held for the life of the guard.
-///
-/// Acquisition uses the operating system's blocking lock primitive directly:
-/// `flock`/`fcntl` semantics on Unix and `LockFileEx` semantics on Windows via
-/// `fs2`. Contended callers sleep in the kernel and wake when the owner drops
-/// the descriptor or exits. There is no retry timer, jitter loop, stale-file
-/// reclamation, or userspace polling.
-pub struct ProcessLock {
-    _file: fs::File,
-}
+/// Compatibility name for the descriptor-backed guard supplied by `zed-lock`.
+pub type ProcessLock = zed_lock::LockGuard;
 
-impl ProcessLock {
-    fn acquire(path: &Path, waiting_on: &str) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(path)
-            .with_context(|| format!("opening lock file {}", path.display()))?;
-
-        file.lock_exclusive().with_context(|| {
-            format!(
-                "waiting for {waiting_on} through operating-system lock {}",
-                path.display()
-            )
-        })?;
-        Ok(Self { _file: file })
-    }
+fn acquire_process_lock(path: &Path, waiting_on: &str, class: LockClass) -> Result<ProcessLock> {
+    LockManager::global().acquire_blocking(
+        LockRequest::exclusive(path)
+            .operation(waiting_on)
+            .class(class)
+            // Store workers are independent tasks that may intentionally
+            // contend inside one process. The kernel remains authoritative.
+            .queue_same_process(),
+    )
 }
 
 /// What `Store::gc` did (or, with `dry_run`, would do).
@@ -194,7 +174,11 @@ impl Store {
     /// Serializes the whole install (refs.json + lockfile writes) against
     /// other zed processes. Held by the caller for the duration of install.
     pub fn install_lock(&self) -> Result<ProcessLock> {
-        ProcessLock::acquire(&self.locks_dir().join("install.lock"), "the install lock")
+        acquire_process_lock(
+            &self.locks_dir().join("install.lock"),
+            "the install lock",
+            LockClass::ProjectMutation,
+        )
     }
 
     /// Verify the archive hash and extract it into the store. Idempotent and
