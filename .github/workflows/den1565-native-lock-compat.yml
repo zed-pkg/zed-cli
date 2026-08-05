@@ -64,23 +64,6 @@ jobs:
               candidate,
               expected=4,
           )
-          replace_exact(
-              "src/fetch.rs",
-              """            packages,
-                      nix_adapters: Vec::new(),""",
-              """            packages,
-                      native_dependencies: Vec::new(),
-                      nix_adapters: Vec::new(),""",
-              expected=2,
-          )
-          replace_exact(
-              "tests/frozen_fetch_boundaries.rs",
-              """        packages,
-                  nix_adapters: Vec::new(),""",
-              """        packages,
-                  native_dependencies: Vec::new(),
-                  nix_adapters: Vec::new(),""",
-          )
 
           manifest_pair = (
               """        build_dependencies: BTreeMap::new(),
@@ -109,6 +92,53 @@ jobs:
                       hooks: Default::default(),
                       publish: PublishSection::default(),""",
           )
+
+          touched: list[str] = []
+          inserted = 0
+          for root in [Path("src"), Path("tests")]:
+              for file in sorted(root.rglob("*.rs")):
+                  lines = file.read_text(encoding="utf-8").splitlines(keepends=True)
+                  output: list[str] = []
+                  file_insertions = 0
+                  for line in lines:
+                      if "nix_adapters:" in line:
+                          previous = next(
+                              (item.strip() for item in reversed(output) if item.strip()),
+                              "",
+                          )
+                          if not previous.startswith("native_dependencies:"):
+                              indentation = line[: len(line) - len(line.lstrip())]
+                              output.append(
+                                  f"{indentation}native_dependencies: Vec::new(),\n"
+                              )
+                              file_insertions += 1
+                  
+                      output.append(line)
+
+                  if file_insertions:
+                      file.write_text("".join(output), encoding="utf-8")
+                      touched.append(file.as_posix())
+                      inserted += file_insertions
+
+          required = {
+              "src/fetch.rs",
+              "tests/frozen_fetch_boundaries.rs",
+              "tests/frozen_fetch_cli.rs",
+          }
+          missing = required.difference(touched)
+          if missing:
+              raise SystemExit(
+                  "expected additive Lockfile literals were not found in: "
+                  + ", ".join(sorted(missing))
+              )
+          Path("/tmp/den1565-lockfile-literals.txt").write_text(
+              "\n".join(touched) + "\n",
+              encoding="utf-8",
+          )
+          print(
+              f"initialized native_dependencies in {inserted} Lockfile literals "
+              f"across {len(touched)} files"
+          )
           PY
           cargo update -p zed-interfaces
 
@@ -121,20 +151,23 @@ jobs:
           cargo clippy --locked --all-targets --all-features -- -D warnings
           git diff --check
 
-          changed="$(git diff --name-only | sort)"
-          expected="$(printf '%s\n' \
+          fixed="$(printf '%s\n' \
             .github/workflows/ci.yml \
             Cargo.lock \
             Cargo.toml \
-            src/fetch.rs \
             src/git_submodules/git.rs \
             src/managed_install.rs \
             src/manifestless.rs \
             src/ops.rs \
-            src/r2g.rs \
-            tests/frozen_fetch_boundaries.rs | sort)"
+            src/r2g.rs)"
+          expected="$({
+            printf '%s\n' "$fixed"
+            cat /tmp/den1565-lockfile-literals.txt
+          } | sed '/^$/d' | sort -u)"
+          changed="$(git diff --name-only | sort -u)"
           test "$changed" = "$expected" || {
-            printf 'unexpected compatibility delta:\n%s\n' "$changed" >&2
+            printf 'expected compatibility delta:\n%s\nactual delta:\n%s\n' \
+              "$expected" "$changed" >&2
             exit 1
           }
 
@@ -148,14 +181,13 @@ jobs:
             .github/workflows/ci.yml \
             Cargo.lock \
             Cargo.toml \
-            src/fetch.rs \
             src/git_submodules/git.rs \
             src/managed_install.rs \
             src/manifestless.rs \
             src/ops.rs \
             src/r2g.rs \
-            tests/frozen_fetch_boundaries.rs \
             .github/workflows/den1565-native-lock-compat.yml
+          xargs -r git add < /tmp/den1565-lockfile-literals.txt
           git diff --cached --check
           git commit -m 'fix: upgrade zed interfaces with additive defaults'
           git push origin HEAD:agent/den-1565-native-lock-cli-compat
