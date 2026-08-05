@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail, ensure};
 use globset::GlobBuilder;
 use walkdir::WalkDir;
 
+use super::fallback::find_worktree_root;
 use super::{IGNORED_INPUT_ALLOW_FILE, MAX_GIT_OUTPUT_BYTES};
-use crate::pack_inputs::fallback::find_worktree_root;
 
 #[derive(Debug)]
 struct GitContext {
@@ -117,19 +117,20 @@ pub(super) fn ignored_input_patterns(project: &Path) -> Result<Vec<String>> {
     })?;
     let root_relative = root_relative
         .to_str()
-        .with_context(|| format!("`{IGNORED_INPUT_ALLOW_FILE}` has a non-UTF-8 repository path"))?;
+        .with_context(|| format!("`{IGNORED_INPUT_ALLOW_FILE}` has a non-UTF-8 repository path"))?
+        .replace(std::path::MAIN_SEPARATOR, "/");
 
     let tracked = run_git(
         &root,
         &root,
-        &["ls-files", "--error-unmatch", "--", root_relative],
+        &["ls-files", "--error-unmatch", "--", &root_relative],
     )?;
     ensure!(
         tracked.status.success(),
         "`{IGNORED_INPUT_ALLOW_FILE}` must be tracked before it can admit ignored publication inputs"
     );
-    require_clean(&root, root_relative, false)?;
-    require_clean(&root, root_relative, true)?;
+    require_clean(&root, &root_relative, false)?;
+    require_clean(&root, &root_relative, true)?;
 
     let mut patterns = Vec::new();
     for (index, line) in fs::read_to_string(&path)
@@ -276,7 +277,7 @@ fn stdout_line(output: &Output, label: &str) -> Result<String> {
     );
     let value = std::str::from_utf8(&output.stdout)
         .with_context(|| format!("Git returned a non-UTF-8 {label}"))?;
-    let value = value.trim_end_matches(['\r', '\n']);
+    let value = value.trim_end_matches(|character| character == '\r' || character == '\n');
     ensure!(!value.is_empty(), "Git returned an empty {label}");
     Ok(value.to_string())
 }
