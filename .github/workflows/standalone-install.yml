@@ -6,13 +6,11 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - crates/zed-lock/**
       - .github/workflows/standalone-install.yml
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - crates/zed-lock/**
       - .github/workflows/standalone-install.yml
 
 permissions:
@@ -40,6 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e ../zed-interfaces
+          test ! -d crates/zed-lock
           python3 - <<'PY'
           from pathlib import Path
           import tomllib
@@ -88,6 +87,11 @@ jobs:
 
           print(f"validated {len(visited)} in-checkout Cargo manifest(s)")
           PY
+      - name: Verify the immutable standalone zed-lock source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "0fc100afc3cd60b5ce091b4207f910bf08f2cfb7" in source, source; print(source)'
       - name: Install and execute the locked CLI from the isolated checkout
         shell: bash
         run: |
