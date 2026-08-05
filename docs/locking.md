@@ -56,7 +56,8 @@ this single-authority model.
 ## Guarantees and non-guarantees
 
 - Only one exclusive guard for a lock identity is live at a time.
-- Normal guard drop and process termination release the local descriptor lock.
+- Normal guard drop, panic unwinding, and process termination release the local
+  descriptor lock.
 - Unrelated lock identities remain independently acquirable.
 - Waiters are awakened by the operating system; production acquisition has no
   retry timer or jitter loop.
@@ -91,9 +92,15 @@ The focused lock suite covers:
 - unrelated lock classes and independent Zed homes proceeding concurrently;
 - identical build keys serializing while distinct build keys proceed;
 - stable lock-file rendezvous after owner death;
-- waiter timeout reuse, acquisition-error propagation, waiter-thread panic
-  reporting, and dropped-receiver guard cleanup; and
-- Linux, macOS, and Windows execution of the process-lock contracts.
+- repeated caller timeouts retaining exactly one native blocking acquisition
+  request rather than creating a retry loop;
+- waiter acquisition-error propagation, waiter-thread panic reporting, and
+  dropped-receiver guard cleanup;
+- a real Linux descriptor lock being transferred through the completion
+  channel without premature release;
+- Linux panic unwinding waking a blocked waiter and symlink aliases contending
+  on the same lock inode; and
+- Linux, macOS, and Windows execution of the broader process-lock contracts.
 
 Tests use child-process markers and bounded waits only for orchestration and
 failure detection. Production lock acquisition remains one blocking operating-
