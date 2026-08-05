@@ -4,8 +4,12 @@ on:
   pull_request:
     paths:
       - src/store.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
       - src/install_graph.rs
       - src/install_graph/**
+      - tests/evented_process_lock.rs
+      - docs/locking.md
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/blocking-store-process-locks.yml
@@ -13,8 +17,12 @@ on:
     branches: [main]
     paths:
       - src/store.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
       - src/install_graph.rs
       - src/install_graph/**
+      - tests/evented_process_lock.rs
+      - docs/locking.md
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/blocking-store-process-locks.yml
@@ -59,6 +67,12 @@ jobs:
 
       - name: Prove owner termination releases the descriptor lock
         run: cargo test --locked --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
+
+      - name: Run evented waiter unit contracts
+        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
+
+      - name: Run evented kernel-lock handoff tests
+        run: cargo test --locked --test evented_process_lock -- --nocapture
 
       - name: Run all store process-lock tests
         run: cargo test --locked --lib store::tests
