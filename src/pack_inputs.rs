@@ -13,7 +13,7 @@ mod fallback;
 #[cfg(test)]
 mod tests;
 
-use fallback::fallback_ignored_paths;
+use fallback::{fallback_ignored_paths, find_worktree_root};
 
 const MAX_REPORTED_INPUTS: usize = 20;
 
@@ -239,13 +239,15 @@ struct IgnoredInputs {
 fn git_ignored_command(project: &Path) -> Result<Command> {
     let project = fs::canonicalize(project)
         .with_context(|| format!("canonicalizing package worktree {}", project.display()))?;
+    let worktree = find_worktree_root(&project);
     let mut command = Command::new("git");
     command
         // Containerized copies can retain host ownership and trigger Git's
-        // dubious-ownership protection. Trust only this exact canonical tree
-        // for this read-only process; never mutate user or repository config.
+        // dubious-ownership protection. Trust only the exact canonical
+        // worktree that owns this package for this read-only process; never
+        // mutate user or repository config.
         .arg("-c")
-        .arg(format!("safe.directory={}", project.display()))
+        .arg(format!("safe.directory={}", worktree.display()))
         .arg("-C")
         .arg(&project)
         .args([
