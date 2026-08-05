@@ -101,7 +101,11 @@ fn gitless_fallback_honors_worktree_rules_above_a_nested_package() {
     fs::create_dir_all(worktree.path().join(".git/info")).unwrap();
     let project = worktree.path().join("packages/client");
     fs::create_dir_all(&project).unwrap();
-    fs::write(worktree.path().join(".gitignore"), "packages/client/secret.env\n").unwrap();
+    fs::write(
+        worktree.path().join(".gitignore"),
+        "packages/client/secret.env\n",
+    )
+    .unwrap();
     fs::write(project.join("secret.env"), "secret\n").unwrap();
     fs::write(project.join("payload.txt"), "safe\n").unwrap();
 
