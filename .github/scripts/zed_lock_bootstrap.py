@@ -32,6 +32,11 @@ def update_zed_lock_tests() -> None:
         text,
         count=1,
     )
+    text = text.replace(
+        'assert!(error.to_string().contains("waiter limit reached"));',
+        'assert!(format!("{error:#}").contains("waiter limit reached"));',
+        1,
+    )
 
     forbidden = (
         '.expect_err("default same-process policy should reject reentry")',
