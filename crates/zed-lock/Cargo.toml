@@ -5,7 +5,7 @@ edition = "2024"
 description = "Kernel-backed, event-driven file locking for zed-pkg"
 license = "MIT"
 repository = "https://github.com/zed-pkg/zed-lock"
-rust-version = "1.85"
+rust-version = "1.88"
 keywords = ["locking", "flock", "lockfile", "concurrency", "zed-pkg"]
 categories = ["concurrency", "filesystem"]
 
