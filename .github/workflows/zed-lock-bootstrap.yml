@@ -16,7 +16,7 @@ concurrency:
 jobs:
   generate-and-check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Check out the extraction branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -29,13 +29,13 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Apply mechanical test fixes
+      - name: Apply extraction migrations and mechanical test fixes
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('crates/zed-lock/src/lib.rs')
-          text = path.read_text()
+          lib = Path('crates/zed-lock/src/lib.rs')
+          text = lib.read_text()
 
           old_reentry = '''        let error = manager
               .try_acquire(request)
@@ -64,7 +64,112 @@ jobs:
           };
           '''
           text = text.replace(old_cap, new_cap, 1)
-          path.write_text(text)
+          lib.write_text(text)
+
+          store = Path('src/store.rs')
+          text = store.read_text()
+          text = text.replace(
+              'use fs2::FileExt;\n',
+              'use zed_lock::{LockClass, LockManager, LockRequest};\n',
+              1,
+          )
+
+          old_lock = '''/// A descriptor-backed process lock held for the life of the guard.
+          ///
+          /// Acquisition uses the operating system's blocking lock primitive directly:
+          /// `flock`/`fcntl` semantics on Unix and `LockFileEx` semantics on Windows via
+          /// `fs2`. Contended callers sleep in the kernel and wake when the owner drops
+          /// the descriptor or exits. There is no retry timer, jitter loop, stale-file
+          /// reclamation, or userspace polling.
+          pub struct ProcessLock {
+              _file: fs::File,
+          }
+
+          impl ProcessLock {
+              fn acquire(path: &Path, waiting_on: &str) -> Result<Self> {
+                  if let Some(parent) = path.parent() {
+                      fs::create_dir_all(parent)?;
+                  }
+                  let file = fs::OpenOptions::new()
+                      .create(true)
+                      .read(true)
+                      .write(true)
+                      .truncate(false)
+                      .open(path)
+                      .with_context(|| format!("opening lock file {}", path.display()))?;
+
+                  file.lock_exclusive().with_context(|| {
+                      format!(
+                          "waiting for {waiting_on} through operating-system lock {}",
+                          path.display()
+                      )
+                  })?;
+                  Ok(Self { _file: file })
+              }
+          }
+          '''
+          new_lock = '''/// Compatibility name for the descriptor-backed guard supplied by `zed-lock`.
+          pub type ProcessLock = zed_lock::LockGuard;
+
+          fn acquire_process_lock(
+              path: &Path,
+              waiting_on: &str,
+              class: LockClass,
+          ) -> Result<ProcessLock> {
+              LockManager::global().acquire_blocking(
+                  LockRequest::exclusive(path)
+                      .operation(waiting_on)
+                      .class(class)
+                      // Store workers are independent tasks that may intentionally
+                      // contend inside one process. The kernel remains authoritative.
+                      .queue_same_process(),
+              )
+          }
+          '''
+          if old_lock in text:
+              text = text.replace(old_lock, new_lock, 1)
+
+          old_build = '''        ProcessLock::acquire(
+              &self
+                  .locks_dir()
+                  .join(format!("build-{platform}-{key}.lock")),
+              &format!("the build of {key}"),
+          )
+          '''
+          new_build = '''        acquire_process_lock(
+              &self
+                  .locks_dir()
+                  .join(format!("build-{platform}-{key}.lock")),
+              &format!("the build of {key}"),
+              LockClass::Build,
+          )
+          '''
+          text = text.replace(old_build, new_build, 1)
+
+          text = text.replace(
+              '        ProcessLock::acquire(&self.locks_dir().join("install.lock"), "the install lock")\n',
+              '        acquire_process_lock(\n            &self.locks_dir().join("install.lock"),\n            "the install lock",\n            LockClass::ProjectMutation,\n        )\n',
+              1,
+          )
+
+          old_artifact = '''        let _lock = ProcessLock::acquire(
+              &self.locks_dir().join(format!("{expected_sha256}.lock")),
+              &format!("extraction of {expected_sha256}"),
+          )?;
+          '''
+          new_artifact = '''        let _lock = acquire_process_lock(
+              &self.locks_dir().join(format!("{expected_sha256}.lock")),
+              &format!("extraction of {expected_sha256}"),
+              LockClass::Artifact,
+          )?;
+          '''
+          text = text.replace(old_artifact, new_artifact, 1)
+          store.write_text(text)
+
+          cargo = Path('Cargo.toml')
+          cargo_text = cargo.read_text()
+          cargo_text = cargo_text.replace('fs2 = "0.4.3"\n', '', 1)
+          cargo.write_text(cargo_text)
           PY
 
       - name: Generate formatter output and workspace lockfile
@@ -72,18 +177,24 @@ jobs:
           cargo fmt --all
           cargo generate-lockfile
 
-      - name: Commit generated files to the branch
+      - name: Commit generated and migrated files to the branch
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock crates/zed-lock/src/lib.rs crates/zed-lock/tests/process_conformance.rs
+          git add Cargo.toml Cargo.lock src/store.rs crates/zed-lock/src/lib.rs crates/zed-lock/tests/process_conformance.rs
           if ! git diff --cached --quiet; then
-            git commit -m "chore: format zed-lock and update workspace lockfile"
+            git commit -m "refactor: migrate store locks to zed-lock"
             git push origin HEAD:agent/extract-zed-lock-crate
           fi
 
       - name: Compile and test zed-lock
         run: cargo test --locked -p zed-lock --all-targets -- --nocapture
 
-      - name: Lint zed-lock
-        run: cargo clippy --locked -p zed-lock --all-targets -- -D warnings
+      - name: Compile and test migrated store locking
+        run: |
+          cargo test --locked -p zed-cli --lib store::tests -- --nocapture
+          cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture
+          cargo test --locked -p zed-cli --test lock_waiter_process_lock -- --nocapture
+
+      - name: Lint the complete workspace
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
