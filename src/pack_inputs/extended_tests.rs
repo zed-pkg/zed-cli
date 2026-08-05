@@ -75,11 +75,7 @@ fn allowlist_patterns_are_bounded_and_project_relative() {
     ] {
         assert!(git::validate_allow_pattern(invalid).is_err(), "{invalid}");
     }
-    for valid in [
-        "generated.wasm",
-        "dist/**/*.wasm",
-        "clients/*/generated/**",
-    ] {
+    for valid in ["generated.wasm", "dist/**/*.wasm", "clients/*/generated/**"] {
         git::validate_allow_pattern(valid).unwrap();
     }
 }
@@ -130,8 +126,7 @@ fn untracked_allowlist_cannot_relax_the_publication_boundary() {
     git(project.path(), &["add", "--", ".gitignore"]);
     git(project.path(), &["commit", "-m", "ignore generated input"]);
 
-    let error =
-        preflight_git_ignored(project.path(), &harden_manifest(manifest(""))).unwrap_err();
+    let error = preflight_git_ignored(project.path(), &harden_manifest(manifest(""))).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("must be tracked"), "{message}");
 }
@@ -155,8 +150,7 @@ fn dirty_allowlist_cannot_relax_the_publication_boundary() {
     git(project.path(), &["commit", "-m", "track allowlist"]);
     fs::write(project.path().join(IGNORED_INPUT_ALLOW_FILE), "**\n").unwrap();
 
-    let error =
-        preflight_git_ignored(project.path(), &harden_manifest(manifest(""))).unwrap_err();
+    let error = preflight_git_ignored(project.path(), &harden_manifest(manifest(""))).unwrap_err();
     let message = format!("{error:#}");
     assert!(message.contains("committed and clean"), "{message}");
 }
