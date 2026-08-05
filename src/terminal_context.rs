@@ -399,10 +399,10 @@ impl Probe {
     }
 
     fn color_enabled(&self, tty: bool, ci: bool, dumb: bool) -> bool {
-        if let Some(value) = self.first(&["ZED_PKG_FORCE_COLOR", "F2E_FORCE_COLOR"]) {
-            if !value.eq_ignore_ascii_case("auto") {
-                return value_truthy(value);
-            }
+        if let Some(value) = self.first(&["ZED_PKG_FORCE_COLOR", "F2E_FORCE_COLOR"])
+            && !value.eq_ignore_ascii_case("auto")
+        {
+            return value_truthy(value);
         }
         if self.has("NO_COLOR") {
             return false;
@@ -467,7 +467,7 @@ fn contains_ci(value: &str, needle: &str) -> bool {
 
 fn classify_shell(value: &str) -> ShellFamily {
     let base = value
-        .rsplit(|character| character == '/' || character == '\\')
+        .rsplit(['/', '\\'])
         .next()
         .unwrap_or(value)
         .to_ascii_lowercase();
