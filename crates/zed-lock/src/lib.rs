@@ -8,8 +8,8 @@
 //! network dependency in the local path.
 
 use std::collections::HashSet;
-use std::future::Future;
 use std::fs::{self, File, OpenOptions};
+use std::future::Future;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -126,9 +126,10 @@ impl OwnerInfo {
         let hostname = std::env::var("HOSTNAME")
             .ok()
             .or_else(|| std::env::var("COMPUTERNAME").ok());
-        let executable = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()));
+        let executable = std::env::current_exe().ok().and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
         let thread = thread::current().name().map(str::to_owned);
         Self {
             pid: std::process::id(),
@@ -367,9 +368,8 @@ impl LockManager {
                     None,
                     Some(error.to_string()),
                 );
-                Err(error).with_context(|| {
-                    format!("trying operating-system lock {}", identity.display())
-                })
+                Err(error)
+                    .with_context(|| format!("trying operating-system lock {}", identity.display()))
             }
         }
     }
@@ -407,11 +407,7 @@ impl LockManager {
     /// Wait up to a deadline. On Unix, timeout detaches the still-kernel-blocked
     /// worker; if that request is later granted, failed delivery drops the guard
     /// immediately. No ownership can leak past the timeout.
-    pub fn acquire_timeout(
-        &self,
-        request: LockRequest,
-        timeout: Duration,
-    ) -> Result<LockGuard> {
+    pub fn acquire_timeout(&self, request: LockRequest, timeout: Duration) -> Result<LockGuard> {
         let started = Instant::now();
         let mut waiter = self.acquire(request.clone())?;
         match waiter.wait_timeout(timeout)? {
@@ -705,6 +701,8 @@ pub struct LockWaiter<G> {
     on_cancel: Option<Box<dyn FnOnce() + Send + 'static>>,
 }
 
+impl<G> Unpin for LockWaiter<G> {}
+
 impl<G: Send + 'static> LockWaiter<G> {
     pub fn spawn(
         label: impl Into<String>,
@@ -890,10 +888,7 @@ impl<G> Drop for LockWaiter<G> {
             drop(result);
         }
 
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(JoinHandle::is_finished)
+        if self.worker.as_ref().is_some_and(JoinHandle::is_finished)
             && let Some(worker) = self.worker.take()
         {
             let _ = worker.join();
@@ -997,9 +992,7 @@ mod tests {
 
     use anyhow::{Result, anyhow};
 
-    use super::{
-        LockClass, LockEventKind, LockManager, LockRequest, LockWaiter, lock_unpoison,
-    };
+    use super::{LockClass, LockEventKind, LockManager, LockRequest, LockWaiter, lock_unpoison};
 
     #[test]
     fn repeated_timeouts_keep_one_acquisition_request() -> Result<()> {
@@ -1032,8 +1025,8 @@ mod tests {
     fn default_policy_rejects_same_process_reentry() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let manager = LockManager::default();
-        let request = LockRequest::exclusive(temp.path().join("same.lock"))
-            .operation("same-process reentry");
+        let request =
+            LockRequest::exclusive(temp.path().join("same.lock")).operation("same-process reentry");
         let _guard = manager.acquire_blocking(request.clone())?;
         let error = manager
             .try_acquire(request)

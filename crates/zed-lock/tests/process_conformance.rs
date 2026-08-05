@@ -180,9 +180,8 @@ fn process_helper() -> Result<()> {
 fn contended_process_wakes_after_descriptor_release() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let lock_path = temp.path().join("handoff.lock");
-    let owner = LockManager::default().acquire_blocking(
-        LockRequest::exclusive(&lock_path).operation("parent owner"),
-    )?;
+    let owner = LockManager::default()
+        .acquire_blocking(LockRequest::exclusive(&lock_path).operation("parent owner"))?;
     let attempting = temp.path().join("waiter-attempting");
     let acquired = temp.path().join("waiter-acquired");
     let mut waiter = ManagedChild::spawn(
@@ -256,9 +255,8 @@ fn independent_lock_identities_progress_concurrently() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let held_path = temp.path().join("held.lock");
     let independent_path = temp.path().join("independent.lock");
-    let owner = LockManager::default().acquire_blocking(
-        LockRequest::exclusive(&held_path).operation("unrelated owner"),
-    )?;
+    let owner = LockManager::default()
+        .acquire_blocking(LockRequest::exclusive(&held_path).operation("unrelated owner"))?;
     let attempting = temp.path().join("independent-attempting");
     let acquired = temp.path().join("independent-acquired");
     let mut independent = ManagedChild::spawn(
