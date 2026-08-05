@@ -25,6 +25,7 @@ dir = ".vendor/.zed"
 [dependencies]
 "zed-pkg/zed-clients" = "^0.1.0"
 "zed-pkg/zed-interfaces" = "^0.1.0"
+"zed-pkg/zed-lib" = "^0.1.0"
 
 [publish]
 include_readme = true
