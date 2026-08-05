@@ -81,7 +81,7 @@ jobs:
           $packages = @($metadata.packages | Where-Object { $_.name -eq 'zed-lock' })
           if ($packages.Count -ne 1) { throw "expected one zed-lock package, found $($packages.Count)" }
           $source = [string]$packages[0].source
-          if (-not $source.Contains('github.com/zed-pkg/zed-lock') -or -not $source.Contains('0fc100afc3cd60b5ce091b4207f910bf08f2cfb7')) { throw "unexpected zed-lock source: $source" }
+          if (-not $source.Contains('github.com/zed-pkg/zed-lock') -or -not $source.Contains('a0dc78d385bc3ab553d3027b427f5f1428239c9c')) { throw "unexpected zed-lock source: $source" }
           if (Test-Path zed-cli/crates/zed-lock) { throw 'in-tree zed-lock copy still exists' }
           Write-Output $source
 
