@@ -62,7 +62,7 @@ jobs:
               ".github/workflows/ci.yml",
               "dc0e0a0620b9462817950b552d3d334a184b1cb1",
               candidate,
-              expected=2,
+              expected=4,
           )
           replace_exact(
               "src/fetch.rs",
