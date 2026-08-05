@@ -8,15 +8,10 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: materialize-nix-operation-lock-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   materialize:
-    if: github.repository == 'zed-pkg/zed-cli' && github.ref == 'refs/heads/agent/fix-nix-operation-lock-determinism-20260805'
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
       - name: Check out exact repair branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -24,80 +19,25 @@ jobs:
           ref: agent/fix-nix-operation-lock-determinism-20260805
           persist-credentials: true
           fetch-depth: 0
-      - name: Install pinned Nix
-        uses: cachix/install-nix-action@8aa03977d8d733052d78f4e008a241fd1dbf36b3
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-            accept-flake-config = false
-      - name: Apply the focused fixed-output exclusion
+      - name: Apply the focused source patch
+        run: python3 scripts/materialize_nix_operation_lock_fix.py
+      - name: Verify the exact ordinary-source delta
+        shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          bridge_path = Path('nix/zed-package.nix')
-          bridge = bridge_path.read_text(encoding='utf-8')
-          old = '''        if [[ -e "$work/.zpkg-staging" ]]; then
-          echo "zed-pkg Nix bridge: successful install left transaction state behind" >&2
-          exit 1
-        fi
-
-        mkdir -p "$out/tree" "$out/metadata"
-'''
-          new = '''        if [[ -e "$work/.zpkg-staging" ]]; then
-          echo "zed-pkg Nix bridge: successful install left transaction state behind" >&2
-          exit 1
-        fi
-
-        # The durable project operation descriptor coordinates concurrent
-        # mutations, but its PID, operation name, and timestamp diagnostics are
-        # intentionally acquisition-specific. It is project state, not package
-        # output, so exporting it would make a recursive fixed output unstable.
-        operation_lock="$work/.zed/operation.lock"
-        if [[ -e "$operation_lock" ]]; then
-          if [[ ! -f "$operation_lock" || -L "$operation_lock" ]]; then
-            echo "zed-pkg Nix bridge: operation lock must be a regular file" >&2
-            exit 1
-          fi
-          rm "$operation_lock"
-          rmdir "$work/.zed" 2>/dev/null || true
-        fi
-
-        mkdir -p "$out/tree" "$out/metadata"
-'''
-          if bridge.count(old) != 1:
-              raise SystemExit('expected one Nix bridge transaction-state boundary')
-          bridge_path.write_text(bridge.replace(old, new), encoding='utf-8')
-
-          workflow_path = Path('.github/workflows/nix-interop.yml')
-          workflow = workflow_path.read_text(encoding='utf-8')
-          old_assertions = '''          test -f "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/package.json"
-          test -f "$deps_a/tree/node_modules/@zed-pkg/docker-node-lib/package.json"
-          test ! -e "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
-'''
-          new_assertions = '''          test -f "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/package.json"
-          test -f "$deps_a/tree/node_modules/@zed-pkg/docker-node-lib/package.json"
-          test ! -e "$deps_a/tree/.vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt"
-          test ! -e "$deps_a/tree/.zed/operation.lock"
-'''
-          if workflow.count(old_assertions) != 1:
-              raise SystemExit('expected one fixed-output assertion block')
-          workflow_path.write_text(
-              workflow.replace(old_assertions, new_assertions),
-              encoding='utf-8',
-          )
-          PY
-          nix-instantiate --parse nix/zed-package.nix >/dev/null
+          set -euo pipefail
           git diff --check
-          test "$(git diff --name-only | sort)" = $'.github/workflows/nix-interop.yml\nnix/zed-package.nix'
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/nix-interop.yml' 'nix/zed-package.nix' | sort)"
+          test "$actual" = "$expected"
       - name: Commit ordinary source and remove materializer
+        shell: bash
         run: |
-          rm .github/workflows/materialize-nix-operation-lock-fix.yml
+          set -euo pipefail
+          rm \
+            .github/workflows/materialize-nix-operation-lock-fix.yml \
+            scripts/materialize_nix_operation_lock_fix.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add \
-            .github/workflows/materialize-nix-operation-lock-fix.yml \
-            .github/workflows/nix-interop.yml \
-            nix/zed-package.nix
+          git add -A
           git commit -m 'fix: exclude volatile operation lock from Nix fixed output'
           git push origin HEAD:agent/fix-nix-operation-lock-determinism-20260805
