@@ -1,3 +1,7 @@
+[workspace]
+members = ["crates/zed-lock"]
+resolver = "3"
+
 [package]
 name = "zed-cli"
 version = "0.1.0"
@@ -16,6 +20,7 @@ path = "src/lib.rs"
 
 [dependencies]
 zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660" }
+zed-lock = { path = "crates/zed-lock" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
@@ -34,6 +39,5 @@ tempfile = "3"
 toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
-fs2 = "0.4.3"
 flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
