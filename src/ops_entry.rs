@@ -38,8 +38,8 @@ impl std::error::Error for GitLockFinalizeError {}
 mod implementation;
 
 pub use implementation::{
-    InstallOutcome, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean, find, gc, init,
-    login, org_audit, org_claim, run, split_key, store_prune, store_status, uninstall, yank,
+    InstallOutcome, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean, find, gc, login,
+    org_audit, org_claim, run, split_key, store_prune, store_status, yank,
 };
 
 pub(crate) use implementation::{
@@ -59,6 +59,17 @@ fn with_pack_guard<T>(project: &Path, action: impl FnOnce() -> Result<T>) -> Res
     config::with_manifest_override(project, manifest_text, action)
 }
 
+pub fn init(
+    project: &Path,
+    org: Option<String>,
+    name: Option<String>,
+    interactive_mode: bool,
+) -> Result<()> {
+    crate::project_lock::with_lock(project, "initialize Zed package", || {
+        implementation::init(project, org, name, interactive_mode)
+    })
+}
+
 pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<crate::pack::PackagedTarget>> {
     with_pack_guard(project, || implementation::pack_cmd(project, out))
 }
@@ -76,17 +87,21 @@ pub fn publish(
 }
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
-    crate::git_submodules::preflight_gitmodules_metadata(project)?;
-    crate::git_submodules::preflight_mutation(project)?;
-    crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))?;
-    crate::git_submodules::refresh_lock_extensions(project)
+    crate::project_lock::with_lock(project, "add Zed dependency", || {
+        crate::git_submodules::preflight_gitmodules_metadata(project)?;
+        crate::git_submodules::preflight_mutation(project)?;
+        crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))?;
+        crate::git_submodules::refresh_lock_extensions(project)
+    })
 }
 
 pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
-    crate::git_submodules::preflight_gitmodules_metadata(project)?;
-    crate::git_submodules::preflight_mutation(project)?;
-    crate::config::with_install_prefetch(cfg, || implementation::remove(project, cfg, spec))?;
-    crate::git_submodules::refresh_lock_extensions(project)
+    crate::project_lock::with_lock(project, "remove Zed dependency", || {
+        crate::git_submodules::preflight_gitmodules_metadata(project)?;
+        crate::git_submodules::preflight_mutation(project)?;
+        crate::config::with_install_prefetch(cfg, || implementation::remove(project, cfg, spec))?;
+        crate::git_submodules::refresh_lock_extensions(project)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -100,39 +115,46 @@ pub fn install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
-    crate::git_submodules::preflight_gitmodules_metadata(project)?;
-    let git_lock = crate::git_submodules::prepare_install(project, frozen)?;
-    let outcome = if frozen {
-        crate::install_graph::prefetch(project, cfg, true)?;
-        implementation::install(
-            project,
-            cfg,
-            true,
-            mode,
-            adapter,
-            allow_build,
-            target,
-            allow_ecosystem_mismatch,
-        )?
+    let operation = if frozen {
+        "restore frozen Zed dependency graph"
     } else {
-        let prepared = crate::install_graph::prepare(project, cfg)?;
-        config::with_resolved_requirements(project, prepared.exact_requirements(), || {
+        "install recursive Zed dependency graph"
+    };
+    crate::project_lock::with_lock(project, operation, || {
+        crate::git_submodules::preflight_gitmodules_metadata(project)?;
+        let git_lock = crate::git_submodules::prepare_install(project, frozen)?;
+        let outcome = if frozen {
+            crate::install_graph::prefetch(project, cfg, true)?;
             implementation::install(
                 project,
                 cfg,
-                false,
+                true,
                 mode,
                 adapter,
                 allow_build,
                 target,
                 allow_ecosystem_mismatch,
-            )
-        })?
-    };
-    crate::dart_wiring::rewrite_if_present(project)
-        .context("finalizing Dart package-manager wiring")?;
-    git_lock.finish(project).context(GitLockFinalizeError)?;
-    Ok(outcome)
+            )?
+        } else {
+            let prepared = crate::install_graph::prepare(project, cfg)?;
+            config::with_resolved_requirements(project, prepared.exact_requirements(), || {
+                implementation::install(
+                    project,
+                    cfg,
+                    false,
+                    mode,
+                    adapter,
+                    allow_build,
+                    target,
+                    allow_ecosystem_mismatch,
+                )
+            })?
+        };
+        crate::dart_wiring::rewrite_if_present(project)
+            .context("finalizing Dart package-manager wiring")?;
+        git_lock.finish(project).context(GitLockFinalizeError)?;
+        Ok(outcome)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -145,20 +167,28 @@ pub(crate) fn install_frozen_lock_only(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
-    crate::git_submodules::preflight_gitmodules_metadata(project)?;
-    let git_lock = crate::git_submodules::prepare_install(project, true)?;
-    crate::install_graph::prefetch(project, cfg, true)?;
-    let outcome = implementation::install_frozen_lock_only(
-        project,
-        cfg,
-        mode,
-        adapter,
-        allow_build,
-        target,
-        allow_ecosystem_mismatch,
-    )?;
-    crate::dart_wiring::rewrite_if_present(project)
-        .context("finalizing Dart package-manager wiring")?;
-    git_lock.finish(project).context(GitLockFinalizeError)?;
-    Ok(outcome)
+    crate::project_lock::with_lock(project, "restore manifestless frozen Zed graph", || {
+        crate::git_submodules::preflight_gitmodules_metadata(project)?;
+        let git_lock = crate::git_submodules::prepare_install(project, true)?;
+        crate::install_graph::prefetch(project, cfg, true)?;
+        let outcome = implementation::install_frozen_lock_only(
+            project,
+            cfg,
+            mode,
+            adapter,
+            allow_build,
+            target,
+            allow_ecosystem_mismatch,
+        )?;
+        crate::dart_wiring::rewrite_if_present(project)
+            .context("finalizing Dart package-manager wiring")?;
+        git_lock.finish(project).context(GitLockFinalizeError)?;
+        Ok(outcome)
+    })
+}
+
+pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
+    crate::project_lock::with_lock(project, "uninstall Zed dependency graph", || {
+        implementation::uninstall(project, cfg, specs)
+    })
 }
