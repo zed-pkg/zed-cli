@@ -3,8 +3,8 @@ name: blocking store process locks
 on:
   pull_request:
     paths:
-      - crates/zed-lock/**
       - src/store.rs
+      - src/project_lock.rs
       - src/lock_waiter.rs
       - src/lib.rs
       - src/install_graph.rs
@@ -19,8 +19,8 @@ on:
   push:
     branches: [main]
     paths:
-      - crates/zed-lock/**
       - src/store.rs
+      - src/project_lock.rs
       - src/lock_waiter.rs
       - src/lib.rs
       - src/install_graph.rs
@@ -47,7 +47,7 @@ env:
 
 jobs:
   linux-kernel-lock:
-    name: Linux process-lock and recursive-cache contracts
+    name: Linux zed-cli locking integration contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -65,14 +65,13 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
+      - name: Verify the immutable standalone zed-lock source
+        run: |
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "0fc100afc3cd60b5ce091b4207f910bf08f2cfb7" in source, source; print(source)'
+          test ! -d crates/zed-lock
+
       - name: Check formatting
         run: cargo fmt --all --check
-
-      - name: Run zed-lock unit contracts
-        run: cargo test --locked -p zed-lock --lib -- --nocapture
-
-      - name: Run standalone zed-lock cross-process conformance
-        run: cargo test --locked -p zed-lock --test process_conformance -- --nocapture
 
       - name: Prove a separate process blocks until orderly release
         run: cargo test --locked -p zed-cli --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
@@ -95,11 +94,11 @@ jobs:
       - name: Run the bounded recursive HTTP acquisition contract
         run: cargo test --locked -p zed-cli --test recursive_install_concurrency -- --nocapture
 
-      - name: Deny Rust warnings across the workspace
-        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Deny Rust warnings across zed-cli targets
+        run: cargo clippy --locked -p zed-cli --all-targets -- -D warnings
 
   macos-kernel-lock:
-    name: macOS event-driven process-lock contracts
+    name: macOS zed-cli locking integration contracts
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -117,11 +116,10 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Run zed-lock unit contracts
-        run: cargo test --locked -p zed-lock --lib -- --nocapture
-
-      - name: Run standalone zed-lock cross-process conformance
-        run: cargo test --locked -p zed-lock --test process_conformance -- --nocapture
+      - name: Verify the immutable standalone zed-lock source
+        run: |
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "0fc100afc3cd60b5ce091b4207f910bf08f2cfb7" in source, source; print(source)'
+          test ! -d crates/zed-lock
 
       - name: Run event-driven zed-cli lock queue, isolation, and crash contracts
         run: cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture
