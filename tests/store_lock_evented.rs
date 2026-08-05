@@ -94,7 +94,11 @@ impl ManagedChild {
 
     fn assert_running(&mut self) {
         let status = self.child_mut().try_wait().expect("checking child status");
-        assert!(status.is_none(), "{} exited unexpectedly: {status:?}", self.label);
+        assert!(
+            status.is_none(),
+            "{} exited unexpectedly: {status:?}",
+            self.label
+        );
     }
 
     fn wait_success(&mut self) {
@@ -138,8 +142,7 @@ fn process_lock_helper() {
     };
     let role = role.to_string_lossy().into_owned();
     let home = PathBuf::from(std::env::var_os(HELPER_HOME).expect("helper home"));
-    let attempting =
-        PathBuf::from(std::env::var_os(HELPER_ATTEMPTING).expect("attempting marker"));
+    let attempting = PathBuf::from(std::env::var_os(HELPER_ATTEMPTING).expect("attempting marker"));
     let acquired = PathBuf::from(std::env::var_os(HELPER_ACQUIRED).expect("acquired marker"));
     let hold_ms = std::env::var(HELPER_HOLD_MS)
         .expect("helper hold duration")
@@ -180,7 +183,10 @@ fn process_lock_helper() {
 
     if let Some(path) = critical_section {
         fs::remove_dir(&path).unwrap_or_else(|error| {
-            panic!("removing critical-section marker {}: {error}", path.display())
+            panic!(
+                "removing critical-section marker {}: {error}",
+                path.display()
+            )
         });
     }
     drop(guard);
