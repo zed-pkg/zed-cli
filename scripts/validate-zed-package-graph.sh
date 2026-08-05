@@ -18,11 +18,6 @@ done
 grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must be .vendor/.zed' >&2; exit 1; }
 grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
 
-if [[ -f .zpkg.lock ]] && [[ "$(wc -c < .zpkg.lock)" -le 12 ]]; then
-  echo '.zpkg.lock is an empty placeholder; regenerate it with the resolver or remove it' >&2
-  exit 1
-fi
-
 if grep -Fq '"zed-pkg/zed-lib"' .zpkg.toml || grep -Fq '"zed-pkg/zed-libs"' .zpkg.toml; then
   echo 'do not invent an umbrella zed-lib coordinate; import the concrete zed-lock package' >&2
   exit 1
@@ -79,7 +74,21 @@ if clients_path:
         errors.append("zed-clients must retain its Rust SDK target")
 
 
+def normalized_placeholder(path: pathlib.Path) -> bool:
+    if not path.is_file():
+        return False
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+    return text == "version = 1"
+
+
 def comparable_files(package_root: pathlib.Path) -> dict[str, bytes]:
+    """Return the extracted Rust package surface shared by both repositories.
+
+    The standalone repository may add repository-level CI and Python metadata
+    contract tests. Those are not part of the Rust crate extraction and must not
+    force the transitional internal copy to duplicate repository governance.
+    """
+
     selected: dict[str, bytes] = {}
     for relative in ("Cargo.toml", "LICENSE", "SECURITY.md"):
         path = package_root / relative
@@ -87,14 +96,30 @@ def comparable_files(package_root: pathlib.Path) -> dict[str, bytes]:
             errors.append(f"missing lock package file: {path}")
             continue
         selected[relative] = path.read_bytes()
-    for directory in ("src", "tests", "examples"):
-        base = package_root / directory
-        if not base.is_dir():
-            errors.append(f"missing lock package directory: {base}")
-            continue
-        for path in sorted(base.rglob("*")):
+
+    source_root = package_root / "src"
+    if not source_root.is_dir():
+        errors.append(f"missing lock package directory: {source_root}")
+    else:
+        for path in sorted(source_root.rglob("*")):
             if path.is_file():
                 selected[path.relative_to(package_root).as_posix()] = path.read_bytes()
+
+    rust_tests = package_root / "tests"
+    if not rust_tests.is_dir():
+        errors.append(f"missing lock package directory: {rust_tests}")
+    else:
+        for path in sorted(rust_tests.rglob("*.rs")):
+            selected[path.relative_to(package_root).as_posix()] = path.read_bytes()
+
+    examples = package_root / "examples"
+    if not examples.is_dir():
+        errors.append(f"missing lock package directory: {examples}")
+    else:
+        for path in sorted(examples.rglob("*")):
+            if path.is_file():
+                selected[path.relative_to(package_root).as_posix()] = path.read_bytes()
+
     return selected
 
 
@@ -123,8 +148,7 @@ if lock_path:
             errors.append("zed-lock must declare the canonical crates-io/zed-lock native route")
 
     lock_root = lock_path.parent
-    placeholder = lock_root / ".zpkg.lock"
-    if placeholder.exists() and placeholder.stat().st_size <= 12:
+    if normalized_placeholder(lock_root / ".zpkg.lock"):
         errors.append("zed-lock must not ship an empty placeholder .zpkg.lock")
 
     internal_files = comparable_files(root / "crates/zed-lock")
@@ -133,7 +157,7 @@ if lock_path:
         missing_external = sorted(internal_files.keys() - external_files.keys())
         missing_internal = sorted(external_files.keys() - internal_files.keys())
         errors.append(
-            "zed-lock source inventory differs between CLI and standalone package; "
+            "zed-lock Rust package inventory differs between CLI and standalone package; "
             f"missing externally={missing_external}, missing internally={missing_internal}"
         )
     else:
@@ -146,6 +170,11 @@ else:
     print(
         "warning: no external zed-lock manifest supplied; cross-repository package and source checks skipped",
         file=sys.stderr,
+    )
+
+if normalized_placeholder(root / ".zpkg.lock"):
+    errors.append(
+        ".zpkg.lock is an empty placeholder; regenerate it with the resolver or remove it"
     )
 
 if errors:
