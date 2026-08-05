@@ -33,6 +33,8 @@ pub fn parse() -> Cli {
 /// remains the embedded compatibility key for this migration window so older
 /// scripts continue to work without changing the typed `Cmd::Install` shape.
 pub fn prepare_environment(args: &[OsString]) {
+    crate::terminal_context::publish_process_environment();
+
     let canonical = std::env::var_os(DO_NOT_WRITE_NEW_MANIFEST_ENV);
     let legacy = std::env::var_os(LEGACY_ALLOW_NO_MANIFEST_ENV);
 
