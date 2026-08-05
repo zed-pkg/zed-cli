@@ -40,12 +40,7 @@ pub fn parse_positive_jobs(value: &str) -> std::result::Result<usize, String> {
 }
 
 /// Execute one task command through the shared schema-v2 runtime.
-pub fn execute(
-    root: &Path,
-    plan: Option<&Path>,
-    json: bool,
-    action: TaskAction,
-) -> Result<()> {
+pub fn execute(root: &Path, plan: Option<&Path>, json: bool, action: TaskAction) -> Result<()> {
     let runtime = TaskRuntime::load(root, plan)?;
     match action {
         TaskAction::List { all } => print_list(&runtime, all, json),
@@ -73,11 +68,7 @@ pub fn execute(
     }
 }
 
-pub fn execute_current_dir(
-    plan: Option<PathBuf>,
-    json: bool,
-    action: TaskAction,
-) -> Result<()> {
+pub fn execute_current_dir(plan: Option<PathBuf>, json: bool, action: TaskAction) -> Result<()> {
     let root = std::env::current_dir()?;
     execute(&root, plan.as_deref(), json, action)
 }
