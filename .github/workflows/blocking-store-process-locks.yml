@@ -4,10 +4,13 @@ on:
   pull_request:
     paths:
       - src/store.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
       - src/install_graph.rs
       - src/install_graph/**
       - tests/store_lock_evented.rs
       - tests/recursive_install_concurrency.rs
+      - docs/locking.md
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/blocking-store-process-locks.yml
@@ -15,10 +18,13 @@ on:
     branches: [main]
     paths:
       - src/store.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
       - src/install_graph.rs
       - src/install_graph/**
       - tests/store_lock_evented.rs
       - tests/recursive_install_concurrency.rs
+      - docs/locking.md
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/blocking-store-process-locks.yml
@@ -64,6 +70,9 @@ jobs:
       - name: Prove owner termination releases the descriptor lock
         run: cargo test --locked --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
 
+      - name: Run evented waiter-thread and channel contracts
+        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
+
       - name: Run event-driven lock queue, isolation, and crash contracts
         run: cargo test --locked --test store_lock_evented -- --nocapture
 
@@ -97,6 +106,9 @@ jobs:
           rustup default stable
           rustc --version --verbose
           cargo --version --verbose
+
+      - name: Run evented waiter-thread and channel contracts
+        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
 
       - name: Run event-driven lock queue, isolation, and crash contracts
         run: cargo test --locked --test store_lock_evented -- --nocapture
