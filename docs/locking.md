@@ -199,7 +199,7 @@ crate is tracked by:
 - [GitHub issue #180](https://github.com/zed-pkg/zed-cli/issues/180);
 - [Linear DEN-2076](https://linear.app/denman/issue/DEN-2076/zed-lock-create-event-driven-cross-platform-process-lock-library-and);
 - the [canonical Linear architecture document](https://linear.app/denman/document/zed-lock-event-driven-cross-platform-locking-architecture-and-b19dc7a81fe5);
-- [`zed-docs` doc 28](https://github.com/zed-pkg/zed-docs/blob/main/docs/28-zed-lock-evented-cross-platform-locking.md).
+- [`zed-docs` doc 31](https://github.com/zed-pkg/zed-docs/blob/main/docs/31-zed-lock-evented-cross-platform-locking.md).
 
 The planned crate should expose reviewed equivalents of:
 
