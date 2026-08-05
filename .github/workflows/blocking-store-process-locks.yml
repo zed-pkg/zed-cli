@@ -9,6 +9,7 @@ on:
       - src/install_graph.rs
       - src/install_graph/**
       - tests/store_lock_evented.rs
+      - tests/lock_waiter_process_lock.rs
       - tests/recursive_install_concurrency.rs
       - docs/locking.md
       - Cargo.toml
@@ -23,6 +24,7 @@ on:
       - src/install_graph.rs
       - src/install_graph/**
       - tests/store_lock_evented.rs
+      - tests/lock_waiter_process_lock.rs
       - tests/recursive_install_concurrency.rs
       - docs/locking.md
       - Cargo.toml
@@ -72,6 +74,9 @@ jobs:
 
       - name: Run evented waiter-thread and channel contracts
         run: cargo test --locked --lib lock_waiter::tests -- --nocapture
+
+      - name: Run the evented waiter against real Linux descriptor locks
+        run: cargo test --locked --test lock_waiter_process_lock -- --nocapture
 
       - name: Run event-driven lock queue, isolation, and crash contracts
         run: cargo test --locked --test store_lock_evented -- --nocapture
