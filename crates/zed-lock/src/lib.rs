@@ -1062,7 +1062,7 @@ mod tests {
             Ok(_) => panic!("second waiter should be rejected at the configured cap"),
             Err(error) => error,
         };
-        assert!(error.to_string().contains("waiter limit reached"));
+        assert!(format!("{error:#}").contains("waiter limit reached"));
 
         drop(waiter);
         drop(owner);
