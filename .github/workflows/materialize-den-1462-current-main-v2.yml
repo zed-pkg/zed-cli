@@ -1,0 +1,196 @@
+name: materialize deterministic mise export on latest main
+
+on:
+  push:
+    branches:
+      - agent/den-1462-mise-export-current-main-v2
+    paths:
+      - .github/workflows/materialize-den-1462-current-main-v2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-den-1462-current-main-v2
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out latest-main carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/den-1462-mise-export-current-main-v2
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Materialize reviewed product sources
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            feat/den-1462-mise-export \
+            agent/den-1462-mise-export-current-main
+
+          for path in \
+            src/mise_export.rs \
+            tests/mise_export_cli.rs \
+            docs/mise-export.md; do
+            mkdir -p "$(dirname "$path")"
+            git show "origin/feat/den-1462-mise-export:$path" > "$path"
+          done
+
+          # Preserve the additional real-CLI reserved-path regression coverage
+          # added during the first current-main review.
+          git show \
+            origin/agent/den-1462-mise-export-current-main:tests/mise_export_reserved_paths_cli.rs \
+            > tests/mise_export_reserved_paths_cli.rs
+
+          for script in \
+            apply_den1462_mise_export.py \
+            harden_den1462_export.py \
+            fix_den1462_flags_contract.py \
+            fix_den1462_selector_paths.py \
+            fix_den1462_bool_conflicts.py; do
+            git show "origin/feat/den-1462-mise-export:scripts/$script" > "/tmp/$script"
+          done
+
+          python3 /tmp/apply_den1462_mise_export.py
+          python3 /tmp/harden_den1462_export.py
+          python3 /tmp/fix_den1462_flags_contract.py
+          python3 /tmp/fix_den1462_selector_paths.py
+          python3 /tmp/fix_den1462_bool_conflicts.py
+
+      - name: Verify the typed conflict-safe write boundary
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          text = Path('src/mise_export.rs').read_text(encoding='utf-8')
+          required = (
+              "struct MiseWriteRequest<'a>",
+              "MiseExportMode::Write => write_export(MiseWriteRequest {",
+              "fn write_export(request: MiseWriteRequest<'_>)",
+          )
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f'typed mise write boundary is incomplete: {missing}')
+          if "fn write_export(\n    root: &Path," in text:
+              raise SystemExit('loose mise write argument list remains')
+          PY
+
+      - name: Make CLI subprocesses hermetic
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/mise_export_cli.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''    Command::new(zed_bin())
+              .args(args)
+              .current_dir(project)
+              .env("HOME", home)
+              .env("USERPROFILE", home)
+              .env("XDG_CONFIG_HOME", home.join(".config"))
+              .env("ZED_PKG_HOME", home.join(".zed-pkg"))
+              .env("PATH", empty_path)
+              .env_remove("ZED_PKG_ENV_PLAN")
+              .env_remove("ZED_PKG_ENV_OUTPUT")
+              .env_remove("ZED_PKG_ENV_JSON")
+              .env_remove("ZED_PKG_ENV_CHECK")
+              .env_remove("ZED_PKG_ENV_WRITE")
+              .env_remove("ZED_PKG_UPDATE_CHECK")
+              .output()
+              .unwrap()
+          '''
+          new = '''    let mut command = Command::new(zed_bin());
+          for (key, _) in std::env::vars_os() {
+              if key.to_string_lossy().starts_with("ZED_PKG_") {
+                  command.env_remove(key);
+              }
+          }
+          command
+              .args(args)
+              .current_dir(project)
+              .env("HOME", home)
+              .env("USERPROFILE", home)
+              .env("XDG_CONFIG_HOME", home.join(".config"))
+              .env("ZED_PKG_HOME", home.join(".zed-pkg"))
+              .env("PATH", empty_path)
+              .output()
+              .unwrap()
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'starts_with("ZED_PKG_")' not in text:
+              raise SystemExit('mise CLI subprocess environment anchor not found')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Document the typed command on latest main
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          readme = Path('README.md')
+          text = readme.read_text(encoding='utf-8')
+          verify_row = '| `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |\n'
+          export_row = '| `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |\n'
+          if export_row not in text:
+              if verify_row not in text:
+                  raise SystemExit('README environment command anchor not found')
+              text = text.replace(verify_row, verify_row + export_row, 1)
+          readme.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate the rebased product surface
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+          cargo test --locked mise_export
+          cargo test --locked --test mise_export_cli
+          cargo test --locked --test mise_export_reserved_paths_cli
+          cargo test --locked cli::tests::environment_export_is_typed_and_rejects_ambiguous_write_modes
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit ordinary product source only
+        run: |
+          set -euo pipefail
+          rm .github/workflows/materialize-den-1462-current-main-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            .cli-flags.toml \
+            README.md \
+            docs/mise-export.md \
+            src/cli.rs \
+            src/lib.rs \
+            src/main.rs \
+            src/mise_export.rs \
+            tests/mise_export_cli.rs \
+            tests/mise_export_reserved_paths_cli.rs \
+            .github/workflows/materialize-den-1462-current-main-v2.yml
+          git diff --cached --check
+          git commit -m 'feat(DEN-1462): export deterministic conflict-safe mise config'
+          git push origin HEAD:agent/den-1462-mise-export-current-main-v2
