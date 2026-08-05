@@ -16,6 +16,7 @@ pub mod git_submodules;
 pub mod global;
 pub mod install_graph;
 pub mod interactive;
+pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
 pub mod mise_lock;
