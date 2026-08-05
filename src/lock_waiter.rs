@@ -224,9 +224,7 @@ mod tests {
 
         release_sender.send(()).unwrap();
         assert!(
-            waiter
-                .wait_timeout(Duration::from_secs(1))?
-                .is_some(),
+            waiter.wait_timeout(Duration::from_secs(1))?.is_some(),
             "the original request did not deliver its completion event"
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
