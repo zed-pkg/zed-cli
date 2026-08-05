@@ -179,6 +179,24 @@ rec {
           exit 1
         fi
 
+        # `.zed/operation.lock` is a durable local rendezvous point whose
+        # diagnostic payload contains process/host/timing data. Descriptor
+        # ownership—not those bytes—is authoritative. It must not enter a
+        # recursive fixed output or identical frozen installs hash differently.
+        operation_lock="$work/.zed/operation.lock"
+        if [[ -L "$operation_lock" ]]; then
+          echo "zed-pkg Nix bridge: operation lock must not be a symlink" >&2
+          exit 1
+        fi
+        if [[ -e "$operation_lock" ]]; then
+          if [[ ! -f "$operation_lock" ]]; then
+            echo "zed-pkg Nix bridge: operation lock must be a regular file" >&2
+            exit 1
+          fi
+          rm -f -- "$operation_lock"
+          rmdir "$work/.zed" 2>/dev/null || true
+        fi
+
         mkdir -p "$out/tree" "$out/metadata"
         shopt -s dotglob nullglob
         for entry in "$work"/*; do
