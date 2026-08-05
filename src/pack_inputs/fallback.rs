@@ -71,7 +71,7 @@ pub(super) fn fallback_ignored_paths(project: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn find_worktree_root(project: &Path) -> PathBuf {
+pub(super) fn find_worktree_root(project: &Path) -> PathBuf {
     project
         .ancestors()
         .find(|ancestor| ancestor.join(".git").exists())
