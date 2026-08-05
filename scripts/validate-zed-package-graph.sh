@@ -107,9 +107,10 @@ if lock_path:
         errors.append("sibling lock package must be hardened version 0.1.1")
     if package.get("repository", {}).get("url") != "https://github.com/zed-pkg/zed-lock":
         errors.append("sibling lock package must declare the canonical repository")
-    if lock_package.get("targets", {}).get("rust", {}).get("dir") != ".":
+    rust_target = lock_package.get("targets", {}).get("rust", {})
+    if rust_target.get("dir") != ".":
         errors.append("zed-lock must publish its root Rust target")
-    native = lock_package.get("publish", {}).get("native", {})
+    native = rust_target.get("native", {})
     if native.get("registry") != "crates-io" or native.get("package") != "zed-lock":
         errors.append("zed-lock must retain its crates-io native publication route")
     sibling_placeholder = lock_path.parent / ".zpkg.lock"
