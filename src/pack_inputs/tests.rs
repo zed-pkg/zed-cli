@@ -59,6 +59,35 @@ fn git_query_trusts_only_the_canonical_project_path() {
 }
 
 #[test]
+fn git_query_trusts_the_owning_worktree_for_a_nested_package() {
+    let worktree = tempfile::tempdir().unwrap();
+    fs::create_dir_all(worktree.path().join(".git")).unwrap();
+    let project = worktree.path().join("packages/client");
+    fs::create_dir_all(&project).unwrap();
+
+    let canonical_worktree = fs::canonicalize(worktree.path()).unwrap();
+    let canonical_project = fs::canonicalize(&project).unwrap();
+    let command = git_ignored_command(&project).unwrap();
+    let args = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        args.get(1),
+        Some(&format!(
+            "safe.directory={}",
+            canonical_worktree.display()
+        ))
+    );
+    assert_eq!(
+        args.get(3),
+        Some(&canonical_project.to_string_lossy().into_owned())
+    );
+    assert!(!args.iter().any(|arg| arg == "safe.directory=*"));
+}
+
+#[test]
 fn gitless_fallback_honors_nested_rules_and_negation() {
     let project = tempfile::tempdir().unwrap();
     fs::create_dir_all(project.path().join("nested/cache")).unwrap();
