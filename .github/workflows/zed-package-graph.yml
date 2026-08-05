@@ -6,6 +6,7 @@ on:
       - ".zpkg.toml"
       - ".zpkg.lock"
       - "Cargo.toml"
+      - "Cargo.lock"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
@@ -15,6 +16,7 @@ on:
       - ".zpkg.toml"
       - ".zpkg.lock"
       - "Cargo.toml"
+      - "Cargo.lock"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
@@ -30,28 +32,40 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - name: Check out exact CLI revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: zed-cli
           persist-credentials: false
+
       - name: Check out canonical interfaces package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
           path: zed-interfaces
           persist-credentials: false
+
       - name: Check out canonical clients package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-clients
           path: zed-clients
           persist-credentials: false
+
+      - name: Check out exact hardened locking package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-lock
+          ref: a0dc78d385bc3ab553d3027b427f5f1428239c9c
+          path: zed-lock
+          persist-credentials: false
+
       - name: Validate native and Zed package edges
         working-directory: zed-cli
         run: |
           bash scripts/validate-zed-package-graph.sh \
             ../zed-interfaces/.zpkg.toml \
-            ../zed-clients/.zpkg.toml
+            ../zed-clients/.zpkg.toml \
+            ../zed-lock/.zpkg.toml
