@@ -34,6 +34,7 @@ pub mod r2g;
 pub mod registry;
 pub mod release;
 pub mod store;
+pub mod task_cli;
 pub mod task_runtime;
 pub mod transaction;
 pub mod update;
