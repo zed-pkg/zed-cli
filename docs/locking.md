@@ -189,30 +189,36 @@ artifact while this process waits.
 - hooks, adapters, rollback, references, and project materialization;
 - the bounded five-worker recursive installer.
 
-## Standalone zed-lock extraction
+## Standalone zed-lock repository and release
 
-The runtime-neutral helper-thread prototype landed in
-[`zed-pkg/zed-cli#178`](https://github.com/zed-pkg/zed-cli/pull/178).
-Extraction into a dedicated `github.com/zed-pkg/zed-lock` repository and Rust
-crate is tracked by:
+The canonical local-lock implementation now lives in the public
+[`zed-pkg/zed-lock`](https://github.com/zed-pkg/zed-lock) repository.
+`zed-cli` consumes immutable commit
+`0fc100afc3cd60b5ce091b4207f910bf08f2cfb7`, which is also the source of the
+[`v0.1.0` release](https://github.com/zed-pkg/zed-lock/releases/tag/v0.1.0).
 
-- [GitHub issue #180](https://github.com/zed-pkg/zed-cli/issues/180);
-- [Linear DEN-2076](https://linear.app/denman/issue/DEN-2076/zed-lock-create-event-driven-cross-platform-process-lock-library-and);
-- the [canonical Linear architecture document](https://linear.app/denman/document/zed-lock-event-driven-cross-platform-locking-architecture-and-b19dc7a81fe5);
-- [`zed-docs` doc 31](https://github.com/zed-pkg/zed-docs/blob/main/docs/31-zed-lock-evented-cross-platform-locking.md).
+The release contains the packaged `zed-lock-0.1.0.crate` archive and a
+SHA-256 sidecar. The crate archive digest is
+`2850b39d1906433ea584fb649934936137dae873eaecf127666f5d88740b3f20`.
 
-The planned crate should expose reviewed equivalents of:
+Ownership is deliberately split:
 
-```rust
-let guard = LockFile::open(path)?.acquire_exclusive().await?;
-let guard = LockFile::open(path)?.acquire_exclusive_blocking()?;
-let maybe_guard = LockFile::open(path)?.try_acquire_exclusive()?;
-```
+- `zed-lock` owns native acquisition, waiter resources, canonical identity,
+  guard lifetime, timeout/cancellation cleanup, lock ordering, structured
+  events, package metadata, and crate-level cross-platform conformance;
+- `zed-cli` owns project and store integration, post-wake revalidation,
+  recursive planning, downloads, staging, atomic publication, rollback, and
+  command-level process tests;
+- `zed-pkg-test/concurrent-install-locking` independently pins the same
+  immutable standalone commit and validates contention, crash recovery,
+  timeout, cancellation, aliasing, ordering, and protected counters on
+  Linux, macOS, and Windows.
 
-The core remains independent of Tokio, the Zed CLI, and the Zed registry at
-runtime. Optional adapters may integrate with specific runtimes without making
-them dependencies of the ownership model.
-
+The old in-tree workspace copy has been removed so there is one production
+source of truth. Remaining backend hardening—native Windows cancellation,
+descriptor/handle inheritance, network-filesystem capability classification,
+deeper alias testing, and expanded fault injection—is tracked in
+[`zed-pkg/zed-lock#3`](https://github.com/zed-pkg/zed-lock/issues/3).
 ## Distributed coordination
 
 Fiducia remains opt-in for shared mutable state spanning hosts or process
@@ -247,8 +253,9 @@ The focused lock suite covers:
 - a real Linux descriptor lock being transferred through the completion channel
   without premature release;
 - Linux panic unwinding waking a blocked waiter;
-- symlink, case, and path aliases contending on one canonical lock identity;
-- close-on-exec/non-inheritable descriptor and handle behavior;
+- Unix symlink and canonical path aliases contending on one lock identity;
+- standalone Linux, macOS, and Windows crate conformance plus separate
+  zed-cli integration tests;
 - five recursive workers and several CLI processes publishing one absent
   artifact once in aggregate;
 - Linux, macOS, and Windows execution of the shared process-lock contracts;
