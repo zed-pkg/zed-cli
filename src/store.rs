@@ -163,11 +163,12 @@ impl Store {
     /// Serializes one artifact's build (per platform + key) across processes.
     pub fn build_lock(&self, platform: &str, key: &str) -> Result<ProcessLock> {
         require_build_key(key)?;
-        ProcessLock::acquire(
+        acquire_process_lock(
             &self
                 .locks_dir()
                 .join(format!("build-{platform}-{key}.lock")),
             &format!("the build of {key}"),
+            LockClass::Build,
         )
     }
 
@@ -201,9 +202,10 @@ impl Store {
         }
         // Only one process extracts this sha at a time; the rest wait here
         // and then see has()==true.
-        let _lock = ProcessLock::acquire(
+        let _lock = acquire_process_lock(
             &self.locks_dir().join(format!("{expected_sha256}.lock")),
             &format!("extraction of {expected_sha256}"),
+            LockClass::Artifact,
         )?;
         if self.has(expected_sha256) {
             self.touch_last_used(expected_sha256);

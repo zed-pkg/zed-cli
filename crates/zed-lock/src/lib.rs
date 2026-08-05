@@ -1028,9 +1028,10 @@ mod tests {
         let request =
             LockRequest::exclusive(temp.path().join("same.lock")).operation("same-process reentry");
         let _guard = manager.acquire_blocking(request.clone())?;
-        let error = manager
-            .try_acquire(request)
-            .expect_err("default same-process policy should reject reentry");
+        let error = match manager.try_acquire(request) {
+            Ok(_) => panic!("default same-process policy should reject reentry"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("same process already owns"));
         Ok(())
     }
@@ -1055,12 +1056,12 @@ mod tests {
             thread::yield_now();
         }
         assert_eq!(manager.active_waiters(), 1);
-        let error = manager
-            .acquire(
-                LockRequest::exclusive(temp.path().join("unrelated.lock"))
-                    .operation("over-cap waiter"),
-            )
-            .expect_err("second waiter should be rejected at the configured cap");
+        let error = match manager.acquire(
+            LockRequest::exclusive(temp.path().join("unrelated.lock")).operation("over-cap waiter"),
+        ) {
+            Ok(_) => panic!("second waiter should be rejected at the configured cap"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("waiter limit reached"));
 
         drop(waiter);
