@@ -1,0 +1,127 @@
+name: DEN-1565 certify additive interface compatibility
+
+on:
+  push:
+    branches:
+      - agent/den-1565-native-lock-cli-compat
+    paths:
+      - .github/workflows/den1565-native-lock-compat.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1565-native-lock-cli-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-certify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: agent/den-1565-native-lock-cli-compat
+          persist-credentials: true
+          show-progress: false
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Add explicit defaults for additive interface fields
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              source = file.read_text(encoding="utf-8")
+              count = source.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"{path}: expected {expected} matches for compatibility patch, found {count}"
+                  )
+              file.write_text(source.replace(old, new), encoding="utf-8")
+
+          replace_exact(
+              "src/fetch.rs",
+              """            packages,
+                      nix_adapters: Vec::new(),""",
+              """            packages,
+                      native_dependencies: Vec::new(),
+                      nix_adapters: Vec::new(),""",
+              expected=2,
+          )
+
+          manifest_pair = (
+              """        build_dependencies: BTreeMap::new(),
+                  build: None,""",
+              """        build_dependencies: BTreeMap::new(),
+                  native_dependencies: Default::default(),
+                  hooks: Default::default(),
+                  build: None,""",
+          )
+          for file in [
+              "src/git_submodules/git.rs",
+              "src/managed_install.rs",
+              "src/manifestless.rs",
+              "src/r2g.rs",
+          ]:
+              replace_exact(file, *manifest_pair)
+
+          replace_exact(
+              "src/ops.rs",
+              """            dependencies: build_deps,
+                      build_dependencies: BTreeMap::new(),
+                      publish: PublishSection::default(),""",
+              """            dependencies: build_deps,
+                      build_dependencies: BTreeMap::new(),
+                      native_dependencies: Default::default(),
+                      hooks: Default::default(),
+                      publish: PublishSection::default(),""",
+          )
+          PY
+
+      - name: Certify complete CLI compatibility
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          git diff --check
+
+          changed="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' \
+            src/fetch.rs \
+            src/git_submodules/git.rs \
+            src/managed_install.rs \
+            src/manifestless.rs \
+            src/ops.rs \
+            src/r2g.rs | sort)"
+          test "$changed" = "$expected" || {
+            printf 'unexpected compatibility delta:\n%s\n' "$changed" >&2
+            exit 1
+          }
+
+      - name: Remove builder and commit only certified CLI source
+        run: |
+          set -euo pipefail
+          rm .github/workflows/den1565-native-lock-compat.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            src/fetch.rs \
+            src/git_submodules/git.rs \
+            src/managed_install.rs \
+            src/manifestless.rs \
+            src/ops.rs \
+            src/r2g.rs \
+            .github/workflows/den1565-native-lock-compat.yml
+          git diff --cached --check
+          git commit -m 'fix: initialize additive interface fields'
+          git push origin HEAD:agent/den-1565-native-lock-cli-compat
