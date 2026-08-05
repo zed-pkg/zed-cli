@@ -75,10 +75,7 @@ fn git_query_trusts_the_owning_worktree_for_a_nested_package() {
 
     assert_eq!(
         args.get(1),
-        Some(&format!(
-            "safe.directory={}",
-            canonical_worktree.display()
-        ))
+        Some(&format!("safe.directory={}", canonical_worktree.display()))
     );
     assert_eq!(
         args.get(3),
