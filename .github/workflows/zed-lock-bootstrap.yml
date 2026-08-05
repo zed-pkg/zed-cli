@@ -15,7 +15,6 @@ concurrency:
 
 jobs:
   generate-and-check:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -43,20 +42,20 @@ jobs:
               text = text.replace(marker, "impl<G> Unpin for LockWaiter<G> {}\n\n" + marker, 1)
 
           old = '''        let error = manager
-            .acquire(
-                LockRequest::exclusive(temp.path().join("unrelated.lock"))
-                    .operation("over-cap waiter"),
-            )
-            .expect_err("second waiter should be rejected at the configured cap");
-'''
+              .acquire(
+                  LockRequest::exclusive(temp.path().join("unrelated.lock"))
+                      .operation("over-cap waiter"),
+              )
+              .expect_err("second waiter should be rejected at the configured cap");
+          '''
           new = '''        let error = match manager.acquire(
-            LockRequest::exclusive(temp.path().join("unrelated.lock"))
-                .operation("over-cap waiter"),
-        ) {
-            Ok(_) => panic!("second waiter should be rejected at the configured cap"),
-            Err(error) => error,
-        };
-'''
+              LockRequest::exclusive(temp.path().join("unrelated.lock"))
+                  .operation("over-cap waiter"),
+          ) {
+              Ok(_) => panic!("second waiter should be rejected at the configured cap"),
+              Err(error) => error,
+          };
+          '''
           text = text.replace(old, new, 1)
           path.write_text(text)
           PY
