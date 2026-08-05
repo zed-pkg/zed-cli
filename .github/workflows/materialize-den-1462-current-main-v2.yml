@@ -2,8 +2,7 @@ name: materialize deterministic mise export on latest main
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
     paths:
       - .github/workflows/materialize-den-1462-current-main-v2.yml
   push:
@@ -44,23 +43,23 @@ jobs:
           toolchain: stable
           components: rustfmt,clippy
 
-      - name: Materialize reviewed product sources
+      - name: Materialize reviewed product sources and tests
         run: |
           set -euo pipefail
           git fetch --no-tags origin \
             feat/den-1462-mise-export \
             agent/den-1462-mise-export-current-main
 
-          for path in \
-            src/mise_export.rs \
-            tests/mise_export_cli.rs \
-            docs/mise-export.md; do
-            mkdir -p "$(dirname "$path")"
-            git show "origin/feat/den-1462-mise-export:$path" > "$path"
-          done
+          mkdir -p src docs tests
+          git show origin/feat/den-1462-mise-export:src/mise_export.rs > src/mise_export.rs
+          git show origin/feat/den-1462-mise-export:docs/mise-export.md > docs/mise-export.md
 
-          # Preserve the additional real-CLI reserved-path regression coverage
-          # added during the first current-main review.
+          # These are ordinary-source tests from the first current-main carrier;
+          # they already remove every inherited ZED_PKG_* variable and add the
+          # reviewed real-CLI reserved-path regression coverage.
+          git show \
+            origin/agent/den-1462-mise-export-current-main:tests/mise_export_cli.rs \
+            > tests/mise_export_cli.rs
           git show \
             origin/agent/den-1462-mise-export-current-main:tests/mise_export_reserved_paths_cli.rs \
             > tests/mise_export_reserved_paths_cli.rs
@@ -80,72 +79,27 @@ jobs:
           python3 /tmp/fix_den1462_selector_paths.py
           python3 /tmp/fix_den1462_bool_conflicts.py
 
-      - name: Verify the typed conflict-safe write boundary
+      - name: Verify typed and hermetic boundaries
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          text = Path('src/mise_export.rs').read_text(encoding='utf-8')
+          implementation = Path('src/mise_export.rs').read_text(encoding='utf-8')
           required = (
               "struct MiseWriteRequest<'a>",
               "MiseExportMode::Write => write_export(MiseWriteRequest {",
               "fn write_export(request: MiseWriteRequest<'_>)",
           )
-          missing = [item for item in required if item not in text]
+          missing = [item for item in required if item not in implementation]
           if missing:
               raise SystemExit(f'typed mise write boundary is incomplete: {missing}')
-          if "fn write_export(\n    root: &Path," in text:
+          if "fn write_export(\n    root: &Path," in implementation:
               raise SystemExit('loose mise write argument list remains')
-          PY
 
-      - name: Make CLI subprocesses hermetic
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('tests/mise_export_cli.rs')
-          text = path.read_text(encoding='utf-8')
-          old = '''    Command::new(zed_bin())
-              .args(args)
-              .current_dir(project)
-              .env("HOME", home)
-              .env("USERPROFILE", home)
-              .env("XDG_CONFIG_HOME", home.join(".config"))
-              .env("ZED_PKG_HOME", home.join(".zed-pkg"))
-              .env("PATH", empty_path)
-              .env_remove("ZED_PKG_ENV_PLAN")
-              .env_remove("ZED_PKG_ENV_OUTPUT")
-              .env_remove("ZED_PKG_ENV_JSON")
-              .env_remove("ZED_PKG_ENV_CHECK")
-              .env_remove("ZED_PKG_ENV_WRITE")
-              .env_remove("ZED_PKG_UPDATE_CHECK")
-              .output()
-              .unwrap()
-          '''
-          new = '''    let mut command = Command::new(zed_bin());
-          for (key, _) in std::env::vars_os() {
-              if key.to_string_lossy().starts_with("ZED_PKG_") {
-                  command.env_remove(key);
-              }
-          }
-          command
-              .args(args)
-              .current_dir(project)
-              .env("HOME", home)
-              .env("USERPROFILE", home)
-              .env("XDG_CONFIG_HOME", home.join(".config"))
-              .env("ZED_PKG_HOME", home.join(".zed-pkg"))
-              .env("PATH", empty_path)
-              .output()
-              .unwrap()
-          '''
-          if old in text:
-              text = text.replace(old, new, 1)
-          elif 'starts_with("ZED_PKG_")' not in text:
-              raise SystemExit('mise CLI subprocess environment anchor not found')
-          path.write_text(text, encoding='utf-8')
+          tests = Path('tests/mise_export_cli.rs').read_text(encoding='utf-8')
+          if 'starts_with("ZED_PKG_")' not in tests:
+              raise SystemExit('mise CLI subprocesses do not clear inherited ZED_PKG_* state')
           PY
 
       - name: Document the typed command on latest main
