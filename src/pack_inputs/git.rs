@@ -277,7 +277,7 @@ fn stdout_line(output: &Output, label: &str) -> Result<String> {
     );
     let value = std::str::from_utf8(&output.stdout)
         .with_context(|| format!("Git returned a non-UTF-8 {label}"))?;
-    let value = value.trim_end_matches(|character| character == '\r' || character == '\n');
+    let value = value.trim_end_matches(['\r', '\n']);
     ensure!(!value.is_empty(), "Git returned an empty {label}");
     Ok(value.to_string())
 }
