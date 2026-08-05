@@ -127,10 +127,9 @@ impl<G> Drop for LockWaiter<G> {
             .worker
             .as_ref()
             .is_some_and(|worker| worker.is_finished())
+            && let Some(worker) = self.worker.take()
         {
-            if let Some(worker) = self.worker.take() {
-                let _ = worker.join();
-            }
+            let _ = worker.join();
         }
     }
 }
@@ -156,7 +155,8 @@ fn waiter_thread_name(label: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, mpsc};
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
@@ -184,6 +184,52 @@ mod tests {
             Some(42),
             "the original waiter should still deliver the eventual result"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_timeouts_do_not_repeat_the_native_acquisition_request() -> Result<()> {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let worker_attempts = Arc::clone(&attempts);
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let mut waiter = LockWaiter::spawn("unit-single-request", move || {
+            worker_attempts.fetch_add(1, Ordering::SeqCst);
+            started_sender
+                .send(())
+                .map_err(|_| anyhow!("start receiver closed"))?;
+            release_receiver
+                .recv()
+                .map_err(|_| anyhow!("release channel closed"))?;
+            Ok(())
+        })?;
+
+        started_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .map_err(|_| anyhow!("waiter did not start its acquisition request"))?;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(
+            waiter.wait_timeout(Duration::from_millis(20))?.is_none(),
+            "the blocked acquisition completed before release"
+        );
+        assert!(
+            waiter.wait_timeout(Duration::from_millis(20))?.is_none(),
+            "the blocked acquisition completed before release"
+        );
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "timeouts must not turn one blocking request into a retry loop"
+        );
+
+        release_sender.send(()).unwrap();
+        assert!(
+            waiter
+                .wait_timeout(Duration::from_secs(1))?
+                .is_some(),
+            "the original request did not deliver its completion event"
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
