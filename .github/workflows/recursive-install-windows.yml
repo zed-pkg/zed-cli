@@ -6,7 +6,10 @@ on:
       - src/install_graph.rs
       - src/install_graph/**
       - src/store.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
       - tests/store_lock_evented.rs
+      - docs/locking.md
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/recursive-install-windows.yml
@@ -16,7 +19,10 @@ on:
       - src/install_graph.rs
       - src/install_graph/**
       - src/store.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
       - tests/store_lock_evented.rs
+      - docs/locking.md
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/recursive-install-windows.yml
@@ -69,6 +75,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check --manifest-path zed-cli/Cargo.toml
+
+      - name: Run evented waiter-thread and channel contracts
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml --lib lock_waiter::tests -- --nocapture
 
       - name: Run event-driven lock queue, isolation, and crash contracts
         run: cargo test --locked --manifest-path zed-cli/Cargo.toml --test store_lock_evented -- --nocapture
