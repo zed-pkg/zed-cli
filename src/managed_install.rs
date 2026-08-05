@@ -464,6 +464,8 @@ fn generated_manifest(
         workspace: None,
         dependencies,
         build_dependencies: BTreeMap::new(),
+        native_dependencies: Default::default(),
+        hooks: Default::default(),
         build: None,
         overrides: Default::default(),
         bin: BTreeMap::new(),

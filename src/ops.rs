@@ -1960,6 +1960,8 @@ fn build_artifact(
             },
             dependencies: build_deps,
             build_dependencies: BTreeMap::new(),
+            native_dependencies: Default::default(),
+            hooks: Default::default(),
             publish: PublishSection::default(),
             scripts: ScriptsSection::default(),
             bin: BTreeMap::new(),
