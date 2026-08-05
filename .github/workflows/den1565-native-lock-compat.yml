@@ -112,7 +112,6 @@ jobs:
                                   f"{indentation}native_dependencies: Vec::new(),\n"
                               )
                               file_insertions += 1
-                  
                       output.append(line)
 
                   if file_insertions:
@@ -171,22 +170,19 @@ jobs:
             exit 1
           }
 
-      - name: Remove builder and commit only certified CLI integration
+      - name: Commit and push certified source integration
         run: |
           set -euo pipefail
-          rm .github/workflows/den1565-native-lock-compat.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add \
-            .github/workflows/ci.yml \
             Cargo.lock \
             Cargo.toml \
             src/git_submodules/git.rs \
             src/managed_install.rs \
             src/manifestless.rs \
             src/ops.rs \
-            src/r2g.rs \
-            .github/workflows/den1565-native-lock-compat.yml
+            src/r2g.rs
           xargs -r git add < /tmp/den1565-lockfile-literals.txt
           git diff --cached --check
           git commit -m 'fix: upgrade zed interfaces with additive defaults'
