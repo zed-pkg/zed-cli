@@ -184,7 +184,20 @@ assert_atomic_failure() {
     || fail "$label rewrote its rejected lock"
   [[ ! -e "$root/zed_modules" ]] || fail "$label materialized zed_modules"
   [[ ! -e "$root/node_modules" ]] || fail "$label materialized node_modules"
-  [[ ! -e "$root/.zed" ]] || fail "$label materialized native adapter state"
+  if [[ -e "$root/.zed" ]]; then
+    [[ -d "$root/.zed" && ! -L "$root/.zed" ]] \
+      || fail "$label created unsafe .zed state"
+    unexpected_state="$(
+      find "$root/.zed" -mindepth 1 \
+        ! -path "$root/.zed/operation.lock" -print -quit
+    )"
+    [[ -z "$unexpected_state" ]] \
+      || fail "$label materialized native adapter state: $unexpected_state"
+    if [[ -e "$root/.zed/operation.lock" ]]; then
+      [[ -f "$root/.zed/operation.lock" && ! -L "$root/.zed/operation.lock" ]] \
+        || fail "$label left an unsafe operation lock"
+    fi
+  fi
   if [[ -d "$root/.zpkg-staging" ]]; then
     [[ -z "$(find "$root/.zpkg-staging" -mindepth 1 -print -quit)" ]] \
       || fail "$label left transaction state"
