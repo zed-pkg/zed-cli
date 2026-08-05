@@ -179,6 +179,20 @@ rec {
           exit 1
         fi
 
+        # `.zed/operation.lock` is durable mutable-checkout coordination state.
+        # It carries operation/process diagnostics and must never enter a
+        # recursive fixed output. Deterministic adapter-owned state such as
+        # `.zed/node_path` remains in the materialized package tree.
+        operation_lock="$work/.zed/operation.lock"
+        if [[ -e "$operation_lock" ]]; then
+          if [[ -L "$operation_lock" || ! -f "$operation_lock" ]]; then
+            echo "zed-pkg Nix bridge: operation lock is not a regular file" >&2
+            exit 1
+          fi
+          rm -f "$operation_lock"
+          rmdir "$work/.zed" 2>/dev/null || true
+        fi
+
         mkdir -p "$out/tree" "$out/metadata"
         shopt -s dotglob nullglob
         for entry in "$work"/*; do
@@ -313,6 +327,8 @@ rec {
             exit 1
           fi
         done < <(find "$out/tree" -type l -print0)
+
+        test ! -e "$out/tree/.zed/operation.lock"
 
         runHook postInstall
       '';
