@@ -35,10 +35,19 @@ operational composition.
 
 The original standalone lock extraction was published as v0.1.0 at commit
 `0fc100afc3cd60b5ce091b4207f910bf08f2cfb7`. That release is immutable and is
-not retargeted. Version 0.1.1 adds the actual Rust 1.88 MSRV, corrected Zed
-package metadata, fail-closed package/provenance contracts, three-platform
-conformance, and reviewed crate/checksum artifacts without changing the locking
-API.
+not retargeted.
+
+The hardened v0.1.1 release is published from exact merge commit
+`a0dc78d385bc3ab553d3027b427f5f1428239c9c`. It contains:
+
+- `zed-lock-0.1.1.crate`, 20,183 bytes, GitHub asset digest
+  `sha256:ccb609710619dac7e80620a63b8f006c039602d36e543482e48c62a46205a6ac`;
+- `zed-lock-0.1.1.crate.sha256`, generated and verified in the same immutable
+  release job.
+
+Version 0.1.1 adds the actual Rust 1.88 MSRV, corrected Zed package metadata,
+fail-closed package/provenance contracts, and Linux/macOS/Windows conformance
+without changing the locking API.
 
 The in-tree `crates/zed-lock` copy was removed by the standalone dependency
 migration and must not return. `Cargo.lock` must contain exactly one `zed-lock`
@@ -75,5 +84,5 @@ gate checks:
 - rejection of stale placeholder locks;
 - standalone lock provenance, changelog, security, and package-contract files.
 
-The dependency-pin PR regenerates `Cargo.lock` with Cargo and verifies that no
-non-`zed-lock` package entry changes before the ordinary full CLI matrix runs.
+The dependency-pin PR regenerated `Cargo.lock` with Cargo and proved that no
+non-`zed-lock` package entry changed before the ordinary full CLI matrix runs.
