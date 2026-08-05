@@ -3,19 +3,38 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::IGNORE_FILE;
 
 mod fallback;
+mod git;
 #[cfg(test)]
 mod tests;
 
 use fallback::{fallback_ignored_paths, find_worktree_root};
 
+pub(crate) const IGNORED_INPUT_ALLOW_FILE: &str = ".zedinclude";
+pub(super) const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPORTED_INPUTS: usize = 20;
+
+/// Keep publication-control metadata out of package payloads. The allowlist is
+/// interpreted only after Git proves it is tracked and clean.
+pub(crate) fn harden_manifest(mut manifest: Manifest) -> Manifest {
+    for pattern in [IGNORED_INPUT_ALLOW_FILE, "**/.zedinclude"] {
+        if !manifest
+            .publish
+            .exclude
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(pattern))
+        {
+            manifest.publish.exclude.push(pattern.to_string());
+        }
+    }
+    manifest
+}
 
 /// Refuse to publish an untracked Git-ignored file unless the package rules
 /// independently exclude it from every artifact. Git ignore state is a local
@@ -27,12 +46,15 @@ const MAX_REPORTED_INPUTS: usize = 20;
 /// the publication boundary in slim runtime images at the cost of a possible
 /// false positive for a tracked file that also matches an ignore rule.
 pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Result<usize> {
-    let ignored = git_ignored_inputs(project)?;
+    let project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing package root {}", project.display()))?;
+    let ignored = git_ignored_inputs(&project)?;
+    let allowed = allow_glob_set(&ignored.allow_patterns)?;
     if ignored.paths.is_empty() {
         return Ok(0);
     }
 
-    let views = artifact_views(project, manifest)?;
+    let views = artifact_views(&project, manifest)?;
     let mut unsafe_inputs = Vec::new();
 
     for relative in &ignored.paths {
@@ -58,17 +80,14 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
                 candidate.display()
             )
         })?;
-        let artifacts = views
-            .iter()
-            .filter(|view| view.includes(&candidate))
-            .map(|view| view.label.clone())
-            .collect::<Vec<_>>();
-        if !artifacts.is_empty() {
-            unsafe_inputs.push(UnsafeInput {
-                path: relative.clone(),
-                artifacts,
-            });
+        let artifacts = artifact_labels(&project, &candidate, manifest, &views);
+        if artifacts.is_empty() || allowed.is_match(relative) {
+            continue;
         }
+        unsafe_inputs.push(UnsafeInput {
+            path: relative.clone(),
+            artifacts,
+        });
     }
 
     if !unsafe_inputs.is_empty() {
@@ -93,7 +112,7 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
             ));
         }
         let fallback_note = if ignored.conservative {
-            "\nGit was unavailable, so Zed conservatively treated every ignore-matched file as potentially untracked. Install Git to preserve tracked-file exceptions."
+            "\nGit was unavailable, so Zed conservatively treated every ignore-matched file as potentially untracked. Install Git to preserve tracked-file exceptions and use a reviewed .zedinclude allowlist."
         } else {
             ""
         };
@@ -101,14 +120,14 @@ pub(crate) fn preflight_git_ignored(project: &Path, manifest: &Manifest) -> Resu
         bail!(
             concat!(
                 "refusing to pack {} {} file(s) that remain eligible for publication:{}{}\n",
-                "Git ignore rules are not publication rules. Add explicit [publish].exclude entries, or a {} rule ",
-                "for a whole-tree package, then retry."
+                "Git ignore rules are not publication rules. Add explicit [publish].exclude entries, add a {} rule for a whole-tree package, force-track exact release inputs, or narrowly admit generated inputs with a tracked and clean {} file."
             ),
             total,
             classification,
             details,
             fallback_note,
-            IGNORE_FILE
+            IGNORE_FILE,
+            IGNORED_INPUT_ALLOW_FILE
         );
     }
 
@@ -168,7 +187,12 @@ impl ArtifactView {
         let Ok(relative) = candidate.strip_prefix(&self.source) else {
             return false;
         };
-        self.always.is_match(relative) || !self.excludes.is_match(relative)
+        self.includes_relative(relative)
+    }
+
+    fn includes_relative(&self, relative: &Path) -> bool {
+        !relative.as_os_str().is_empty()
+            && (self.always.is_match(relative) || !self.excludes.is_match(relative))
     }
 }
 
@@ -198,6 +222,55 @@ fn artifact_views(project: &Path, manifest: &Manifest) -> Result<Vec<ArtifactVie
         )?);
     }
     Ok(views)
+}
+
+fn artifact_labels(
+    project: &Path,
+    candidate: &Path,
+    manifest: &Manifest,
+    views: &[ArtifactView],
+) -> Vec<String> {
+    let mut labels = views
+        .iter()
+        .filter(|view| view.includes(candidate))
+        .map(|view| view.label.clone())
+        .collect::<Vec<_>>();
+
+    if !manifest.is_polyglot() || !is_root_legal_file(project, candidate) {
+        return labels;
+    }
+    let Some(name) = candidate.file_name() else {
+        return labels;
+    };
+    let relative = Path::new(name);
+    for view in views {
+        // A root target already includes the candidate through the ordinary
+        // source walk. Other targets receive it through copy_root_legal_files,
+        // unless their source already supplies a file with the same name.
+        if view.source == project
+            || view.source.join(name).exists()
+            || !view.includes_relative(relative)
+        {
+            continue;
+        }
+        labels.push(format!("{} via root legal-file copy", view.label));
+    }
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+fn is_root_legal_file(project: &Path, path: &Path) -> bool {
+    if path.parent() != Some(project) {
+        return false;
+    }
+    let Some(name) = path.file_name() else {
+        return false;
+    };
+    let upper = name.to_string_lossy().to_ascii_uppercase();
+    ["LICENSE", "LICENCE", "COPYING", "NOTICE"]
+        .iter()
+        .any(|prefix| upper.starts_with(prefix))
 }
 
 fn append_ignore_file(path: &Path, patterns: &mut Vec<String>) -> Result<()> {
@@ -230,9 +303,26 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
+fn allow_glob_set(patterns: &[String]) -> Result<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .case_insensitive(true)
+                .build()
+                .with_context(|| {
+                    format!("invalid `{IGNORED_INPUT_ALLOW_FILE}` pattern `{pattern}`")
+                })?,
+        );
+    }
+    Ok(builder.build()?)
+}
+
 #[derive(Debug)]
 struct IgnoredInputs {
     paths: Vec<PathBuf>,
+    allow_patterns: Vec<String>,
     conservative: bool,
 }
 
@@ -259,7 +349,8 @@ fn git_ignored_command(project: &Path) -> Result<Command> {
             "--",
             ".",
         ])
-        .env("GIT_OPTIONAL_LOCKS", "0");
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
     Ok(command)
 }
 
@@ -269,6 +360,7 @@ fn git_ignored_inputs(project: &Path) -> Result<IgnoredInputs> {
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Ok(IgnoredInputs {
                 paths: fallback_ignored_paths(project)?,
+                allow_patterns: Vec::new(),
                 conservative: true,
             });
         }
@@ -282,11 +374,17 @@ fn git_ignored_inputs(project: &Path) -> Result<IgnoredInputs> {
         }
     };
 
+    ensure!(
+        output.stdout.len() <= MAX_GIT_OUTPUT_BYTES && output.stderr.len() <= MAX_GIT_OUTPUT_BYTES,
+        "Git output exceeded the {}-byte packaging safety limit",
+        MAX_GIT_OUTPUT_BYTES
+    );
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("not a git repository") || stderr.contains("not inside a work tree") {
             return Ok(IgnoredInputs {
                 paths: fallback_ignored_paths(project)?,
+                allow_patterns: Vec::new(),
                 conservative: true,
             });
         }
@@ -307,10 +405,12 @@ fn git_ignored_inputs(project: &Path) -> Result<IgnoredInputs> {
         )?;
         paths.push(PathBuf::from(path));
     }
+    paths.extend(git::nested_ignored_paths(project)?);
     paths.sort();
     paths.dedup();
     Ok(IgnoredInputs {
         paths,
+        allow_patterns: git::ignored_input_patterns(project)?,
         conservative: false,
     })
 }
