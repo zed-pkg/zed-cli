@@ -151,7 +151,11 @@ fn acquire_process_lock(path: &Path, waiting_on: &str, class: LockClass) -> Resu
 def update_manifest() -> None:
     path = ROOT / "Cargo.toml"
     text = path.read_text(encoding="utf-8")
-    text = text.replace('fs2 = "0.4.3"\n', "", 1)
+    if 'fs2 = "0.4.3"\n' not in text:
+        anchor = 'walkdir = "2"\n'
+        if anchor not in text:
+            raise RuntimeError("cannot place the remaining fs2 compatibility dependency")
+        text = text.replace(anchor, anchor + 'fs2 = "0.4.3"\n', 1)
     path.write_text(text, encoding="utf-8")
 
 
