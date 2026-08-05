@@ -158,15 +158,33 @@ impl TerminalContext {
     fn environment(self) -> [(&'static str, String); 18] {
         [
             ("ZED_PKG_CONTEXT_VERSION", CONTEXT_VERSION.to_string()),
-            ("ZED_PKG_CONTEXT_STDIN_TTY", bool_text(self.stdin_tty).into()),
-            ("ZED_PKG_CONTEXT_STDOUT_TTY", bool_text(self.stdout_tty).into()),
-            ("ZED_PKG_CONTEXT_STDERR_TTY", bool_text(self.stderr_tty).into()),
-            ("ZED_PKG_CONTEXT_INTERACTIVE", bool_text(self.interactive).into()),
-            ("ZED_PKG_CONTEXT_CAN_PROMPT", bool_text(self.can_prompt).into()),
+            (
+                "ZED_PKG_CONTEXT_STDIN_TTY",
+                bool_text(self.stdin_tty).into(),
+            ),
+            (
+                "ZED_PKG_CONTEXT_STDOUT_TTY",
+                bool_text(self.stdout_tty).into(),
+            ),
+            (
+                "ZED_PKG_CONTEXT_STDERR_TTY",
+                bool_text(self.stderr_tty).into(),
+            ),
+            (
+                "ZED_PKG_CONTEXT_INTERACTIVE",
+                bool_text(self.interactive).into(),
+            ),
+            (
+                "ZED_PKG_CONTEXT_CAN_PROMPT",
+                bool_text(self.can_prompt).into(),
+            ),
             ("ZED_PKG_CONTEXT_CI", bool_text(self.ci).into()),
             ("ZED_PKG_CONTEXT_DUMB", bool_text(self.dumb).into()),
             ("ZED_PKG_CONTEXT_NESTED", bool_text(self.nested).into()),
-            ("ZED_PKG_CONTEXT_OUTPUT_MODE", self.output_mode.as_str().into()),
+            (
+                "ZED_PKG_CONTEXT_OUTPUT_MODE",
+                self.output_mode.as_str().into(),
+            ),
             ("ZED_PKG_CONTEXT_SHELL", self.shell.as_str().into()),
             (
                 "ZED_PKG_CONTEXT_SHELL_SOURCE",
@@ -236,10 +254,7 @@ impl Probe {
             &["ZED_PKG_FORCE_STDERR_TTY", "F2E_FORCE_STDERR_TTY"],
             self.stderr_tty,
         );
-        let ci = self.forced_bool(
-            &["ZED_PKG_FORCE_CI", "F2E_FORCE_CI"],
-            self.detect_ci(),
-        );
+        let ci = self.forced_bool(&["ZED_PKG_FORCE_CI", "F2E_FORCE_CI"], self.detect_ci());
         let dumb = self
             .get("TERM")
             .is_some_and(|value| value.eq_ignore_ascii_case("dumb"));
@@ -343,9 +358,7 @@ impl Probe {
         if let Some(shell) = self.get("COMSPEC").filter(|value| !value.is_empty()) {
             return (classify_shell(shell), ShellSource::ComSpec);
         }
-        if let Some(shell) = self
-            .first(&["ZED_PKG_CONTEXT_SHELL", "F2E_CONTEXT_SHELL"])
-        {
+        if let Some(shell) = self.first(&["ZED_PKG_CONTEXT_SHELL", "F2E_CONTEXT_SHELL"]) {
             return (classify_shell(shell), ShellSource::ParentContext);
         }
         (ShellFamily::Unknown, ShellSource::Unknown)
@@ -399,9 +412,10 @@ impl Probe {
         {
             return true;
         }
-        if self.get("CLICOLOR").is_some_and(|value| {
-            value == "0" || value.eq_ignore_ascii_case("false")
-        }) {
+        if self
+            .get("CLICOLOR")
+            .is_some_and(|value| value == "0" || value.eq_ignore_ascii_case("false"))
+        {
             return false;
         }
         tty && !ci && !dumb
@@ -446,7 +460,9 @@ fn value_truthy(value: &str) -> bool {
 }
 
 fn contains_ci(value: &str, needle: &str) -> bool {
-    value.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
+    value
+        .to_ascii_lowercase()
+        .contains(&needle.to_ascii_lowercase())
 }
 
 fn classify_shell(value: &str) -> ShellFamily {
@@ -542,14 +558,19 @@ mod tests {
         terminal.stdout_tty = true;
         assert!(!terminal.detect().color_stdout);
 
-        terminal.env.insert("ZED_PKG_FORCE_COLOR".into(), "1".into());
+        terminal
+            .env
+            .insert("ZED_PKG_FORCE_COLOR".into(), "1".into());
         assert!(terminal.detect().color_stdout);
     }
 
     #[test]
     fn shell_classifier_handles_paths_and_common_families() {
         assert_eq!(classify_shell("/opt/homebrew/bin/bash"), ShellFamily::Bash);
-        assert_eq!(classify_shell("C:\\Program Files\\PowerShell\\7\\pwsh.exe"), ShellFamily::PowerShell);
+        assert_eq!(
+            classify_shell("C:\\Program Files\\PowerShell\\7\\pwsh.exe"),
+            ShellFamily::PowerShell
+        );
         assert_eq!(classify_shell("nu"), ShellFamily::Nushell);
         assert_eq!(classify_shell("dash"), ShellFamily::Sh);
         assert_eq!(classify_shell("custom-shell"), ShellFamily::Unknown);
