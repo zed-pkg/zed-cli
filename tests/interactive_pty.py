@@ -24,7 +24,12 @@ def main() -> int:
 
     pid, fd = os.forkpty()
     if pid == 0:
-        os.execvp(command[0], command)
+        environment = os.environ.copy()
+        # This harness intentionally simulates a human terminal even when the
+        # parent test runner is CI. Production commands still detect CI unless
+        # a caller explicitly supplies the same documented override.
+        environment["ZED_PKG_FORCE_CI"] = "0"
+        os.execvpe(command[0], command, environment)
 
     deadline = time.monotonic() + 120
     output = bytearray()

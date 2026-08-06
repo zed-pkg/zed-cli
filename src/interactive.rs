@@ -2,17 +2,18 @@
 //!
 //! `--interactive` is deliberately global: command implementations can place
 //! checkpoints immediately before the mutation they own instead of relying on
-//! one coarse prompt in `main`. Redirected stdin never counts as consent.
+//! one coarse prompt in `main`. Redirected input or diagnostics never count as
+//! consent, and CI or a dumb terminal disables prompting.
 
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, Write};
 
 use anyhow::{Result, bail};
 
 /// Confirm one mutation when interactive mode is enabled.
 ///
-/// A negative answer, EOF, or non-terminal stdin aborts before the caller
-/// performs the described step. Non-interactive mode remains automation-safe
-/// and never reads stdin.
+/// A negative answer, EOF, or a process context that cannot safely prompt
+/// aborts before the caller performs the described step. Non-interactive mode
+/// remains automation-safe and never reads stdin.
 pub fn confirm(enabled: bool, step: &str) -> Result<()> {
     if !enabled {
         return Ok(());
@@ -20,12 +21,18 @@ pub fn confirm(enabled: bool, step: &str) -> Result<()> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut output = io::stderr();
-    confirm_with(enabled, stdin.is_terminal(), step, &mut input, &mut output)
+    confirm_with(
+        enabled,
+        crate::terminal_context::current().can_prompt,
+        step,
+        &mut input,
+        &mut output,
+    )
 }
 
 fn confirm_with<R: BufRead, W: Write>(
     enabled: bool,
-    terminal: bool,
+    can_prompt: bool,
     step: &str,
     input: &mut R,
     output: &mut W,
@@ -33,8 +40,10 @@ fn confirm_with<R: BufRead, W: Write>(
     if !enabled {
         return Ok(());
     }
-    if !terminal {
-        bail!("--interactive requires an interactive terminal; `{step}` was not started");
+    if !can_prompt {
+        bail!(
+            "--interactive requires terminal stdin and stderr outside CI or a dumb terminal; `{step}` was not started"
+        );
     }
     write!(output, "interactive: {step}? [y/N] ")?;
     output.flush()?;
@@ -91,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn redirected_input_and_eof_fail_closed() {
+    fn unsafe_context_and_eof_fail_closed() {
         let redirected = confirm_with(
             true,
             false,
@@ -101,7 +110,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(redirected.contains("interactive terminal"));
+        assert!(redirected.contains("terminal stdin and stderr"));
 
         let eof = confirm_with(
             true,
