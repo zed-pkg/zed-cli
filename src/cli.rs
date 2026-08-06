@@ -245,6 +245,19 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: EnvCmd,
     },
+    /// Statically inspect package, lock, materialization, and interop state
+    /// without mutating the workspace or contacting the registry by default.
+    Inspect {
+        /// Workspace to inspect; defaults to the current directory.
+        #[arg(long, visible_alias = "root", value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        /// Emit one schema-versioned JSON document for IDEs and automation.
+        #[arg(long)]
+        json: bool,
+        /// Query public registry metadata for CLI and dependency updates.
+        #[arg(long)]
+        network: bool,
+    },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {
         #[arg(value_enum)]
@@ -661,6 +674,44 @@ mod tests {
         .unwrap();
         assert!(!cli.globals.git_submodules);
         assert!(matches!(cli.cmd, Cmd::Install { .. }));
+    }
+
+    #[test]
+    fn inspection_is_typed_and_network_is_opt_in() {
+        let cli = Cli::try_parse_from([
+            "zed",
+            "inspect",
+            "--workspace",
+            "/workspace",
+            "--json",
+            "--network",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Inspect {
+                workspace,
+                json,
+                network,
+            } => {
+                assert_eq!(
+                    workspace.as_deref(),
+                    Some(std::path::Path::new("/workspace"))
+                );
+                assert!(json);
+                assert!(network);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["zed", "inspect", "--json"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Inspect {
+                workspace: None,
+                json: true,
+                network: false
+            }
+        ));
     }
 
     #[test]

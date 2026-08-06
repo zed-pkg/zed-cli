@@ -31,6 +31,8 @@ use git::{
     warn_on_repository_mismatch,
 };
 
+const MAX_INTEROP_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
+
 pub use cli::{OvertakeArgs, augment_root_command, dispatch};
 pub(crate) use lock::{preflight_mutation, prepare_install, refresh_lock_extensions};
 
@@ -53,6 +55,90 @@ pub fn find_root(requested: &Path) -> Option<PathBuf> {
         .ancestors()
         .find(|candidate| has_gitmodules_entry(candidate))
         .map(Path::to_path_buf)
+}
+
+/// Whether the nearest Zed manifest explicitly opts into consuming the
+/// checkout's `.gitmodules` transport metadata. The shared manifest contract
+/// owns this field; reading it as TOML here keeps older CLI builds able to
+/// diagnose the opt-in while the interfaces dependency rolls forward.
+pub fn manifest_consumes_gitmodules(requested: &Path) -> Result<bool> {
+    let manifest = requested
+        .ancestors()
+        .map(|candidate| candidate.join(MANIFEST_FILE))
+        .find(|candidate| candidate.exists());
+    let Some(manifest) = manifest else {
+        return Ok(false);
+    };
+    Ok(manifest_gitmodules_consumption_from_file(&manifest)?.unwrap_or(false))
+}
+
+pub(crate) fn manifest_gitmodules_consumption(project: &Path) -> Result<Option<bool>> {
+    let manifest = project.join(MANIFEST_FILE);
+    if !manifest.exists() {
+        return Ok(None);
+    }
+    manifest_gitmodules_consumption_from_file(&manifest)
+}
+
+fn manifest_gitmodules_consumption_from_file(manifest: &Path) -> Result<Option<bool>> {
+    let metadata = fs::symlink_metadata(&manifest)
+        .with_context(|| format!("inspecting {}", manifest.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "{} must be a regular file before Git-submodule consumption can be enabled",
+            manifest.display()
+        );
+    }
+    if metadata.len() > MAX_INTEROP_MANIFEST_BYTES {
+        bail!(
+            "{} exceeds the {}-byte Git-interop inspection limit",
+            manifest.display(),
+            MAX_INTEROP_MANIFEST_BYTES
+        );
+    }
+    let document: toml::Value = toml::from_str(
+        &fs::read_to_string(&manifest)
+            .with_context(|| format!("reading {}", manifest.display()))?,
+    )
+    .with_context(|| format!("parsing {}", manifest.display()))?;
+    let value = document
+        .get("interop")
+        .and_then(|value| value.get("git"))
+        .and_then(|value| value.get("consume_gitmodules"));
+    match value {
+        None => Ok(None),
+        Some(toml::Value::Boolean(value)) => Ok(Some(*value)),
+        Some(_) => bail!(
+            "[interop.git].consume_gitmodules in {} must be a boolean",
+            manifest.display()
+        ),
+    }
+}
+
+pub(crate) fn set_manifest_consumes_gitmodules(
+    manifest_text: &str,
+    consumes_gitmodules: bool,
+) -> Result<String> {
+    let mut document: toml::Value = toml::from_str(manifest_text)
+        .context("parsing manifest before updating Git interop declaration")?;
+    let root = document
+        .as_table_mut()
+        .context("manifest root must be a TOML table")?;
+    let interop = root
+        .entry("interop")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("[interop] must be a TOML table")?;
+    let git = interop
+        .entry("git")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .context("[interop.git] must be a TOML table")?;
+    git.insert(
+        "consume_gitmodules".to_string(),
+        toml::Value::Boolean(consumes_gitmodules),
+    );
+    toml::to_string_pretty(&document).context("serializing manifest with Git interop declaration")
 }
 
 fn verify_gitmodules_worktree_regular(project: &Path) -> Result<()> {
@@ -395,7 +481,7 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     workspace.members.dedup();
     root.validate()
         .context("validating overtaken root manifest")?;
-    let manifest_text = root.to_toml_string()?;
+    let manifest_text = set_manifest_consumes_gitmodules(&root.to_toml_string()?, true)?;
 
     ensure_manifest_unchanged(&manifest_path, previous_manifest.as_deref())?;
     let mut transaction = ProjectTransaction::begin(&project)?;

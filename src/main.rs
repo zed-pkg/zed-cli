@@ -13,6 +13,7 @@ use zed_cli::environment;
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
+use zed_cli::inspection;
 use zed_cli::managed_install;
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
@@ -161,7 +162,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let cfg = Config::from_globals(&cli.globals)?;
     let git_submodules = cli.globals.git_submodules;
     let cwd = std::env::current_dir()?;
-    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+    let read_only_inspection = matches!(&cli.cmd, Cmd::Inspect { .. });
+    if !read_only_inspection && cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Every live project transaction already owns this kernel-backed
         // install lock. Recover under the same lock so a concurrent process
         // cannot mistake an in-flight rollback journal for an abandoned one.
@@ -183,7 +185,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
-            if git_submodules {
+            if git_submodules || submodules::manifest_consumes_gitmodules(&cwd)? {
                 submodules::sync(&cwd)?;
             }
             managed_install::install(
@@ -247,6 +249,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
         },
+        Cmd::Inspect {
+            workspace,
+            json,
+            network,
+        } => {
+            let root = workspace.as_deref().unwrap_or(&cwd);
+            let report = inspection::inspect(root, &cfg, network)?;
+            inspection::print(&report, json)
+        }
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

@@ -326,7 +326,12 @@ pub fn read_manifest(project: &Path) -> Result<Manifest> {
 }
 
 pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
-    let text = manifest.to_toml_string()?;
+    let mut text = manifest.to_toml_string()?;
+    if let Some(consumes_gitmodules) =
+        crate::git_submodules::manifest_gitmodules_consumption(project)?
+    {
+        text = crate::git_submodules::set_manifest_consumes_gitmodules(&text, consumes_gitmodules)?;
+    }
     fs::write(project.join(MANIFEST_FILE), text)?;
     Ok(())
 }
@@ -369,6 +374,24 @@ url = "https://localhost/manifestless/consumer"
 
         assert!(read_manifest(project.path()).is_err());
         assert!(!project.path().join(MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn manifest_rewrite_preserves_gitmodules_consumption_declaration() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(MANIFEST_FILE),
+            format!("{BASIC_MANIFEST}\n[interop.git]\nconsume_gitmodules = true\n"),
+        )
+        .unwrap();
+        let manifest = read_manifest(project.path()).unwrap();
+
+        write_manifest(project.path(), &manifest).unwrap();
+
+        assert_eq!(
+            crate::git_submodules::manifest_gitmodules_consumption(project.path()).unwrap(),
+            Some(true)
+        );
     }
 
     #[test]
