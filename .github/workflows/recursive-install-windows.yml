@@ -8,6 +8,7 @@ on:
       - src/store.rs
       - src/project_lock.rs
       - src/lock_waiter.rs
+      - src/terminal_context.rs
       - src/lib.rs
       - tests/store_lock_evented.rs
       - docs/locking.md
@@ -22,6 +23,7 @@ on:
       - src/store.rs
       - src/project_lock.rs
       - src/lock_waiter.rs
+      - src/terminal_context.rs
       - src/lib.rs
       - tests/store_lock_evented.rs
       - docs/locking.md
@@ -87,6 +89,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check --manifest-path zed-cli/Cargo.toml
+
+      - name: Run terminal-context contracts on Windows
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib terminal_context::tests -- --nocapture
 
       - name: Run event-driven zed-cli lock queue, isolation, and crash contracts
         run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --test store_lock_evented -- --nocapture
