@@ -126,6 +126,13 @@ type = "bool"
 default = "false"
 help = "Install packages whose ecosystem this project does not have."
 
+[flags.allow_ecosystem_mismatch]
+env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
+aliases = ["allow-ecosystem-mismatch"]
+type = "bool"
+default = "false"
+help = "Install packages whose ecosystem this project does not have."
+
 [flags.force]
 env = "ZED_PKG_FORCE"
 aliases = ["force"]
