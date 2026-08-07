@@ -3,7 +3,6 @@ name: blocking store process locks
 on:
   pull_request:
     paths:
-      - crates/zed-lock/**
       - src/store.rs
       - src/project_lock.rs
       - src/lock_waiter.rs
@@ -20,7 +19,6 @@ on:
   push:
     branches: [main]
     paths:
-      - crates/zed-lock/**
       - src/store.rs
       - src/project_lock.rs
       - src/lock_waiter.rs
@@ -74,12 +72,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all --check
-
-      - name: Run zed-lock unit contracts
-        run: cargo test --locked -p zed-lock --lib -- --nocapture
-
-      - name: Run standalone zed-lock cross-process conformance
-        run: cargo test --locked -p zed-lock --test process_conformance -- --nocapture
 
       - name: Prove a separate process blocks until orderly release
         run: cargo test --locked -p zed-cli --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture

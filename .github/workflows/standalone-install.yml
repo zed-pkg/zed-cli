@@ -6,13 +6,11 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - crates/zed-lock/**
       - .github/workflows/standalone-install.yml
   pull_request:
     paths:
       - Cargo.toml
       - Cargo.lock
-      - crates/zed-lock/**
       - .github/workflows/standalone-install.yml
 
 permissions:
