@@ -13,7 +13,10 @@ fn main() {
 }
 
 fn run_validate(args: ValidateArgs) -> Result<i32> {
-    let report = validate_catalog(&args.root, &args.catalog, args.strict, args.offline)?;
+    if !args.offline {
+        bail!("online validation is not implemented; pass --offline");
+    }
+    let report = validate_catalog(&args.root, &args.catalog, args.strict, true)?;
     match args.format {
         OutputFormat::Human => print_human(&report),
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
@@ -44,6 +47,15 @@ fn validate_catalog(
         bail!(
             "catalog {} must be a real directory inside the superproject",
             catalog.display()
+        );
+    }
+    let catalog = fs::canonicalize(&catalog)
+        .with_context(|| format!("canonicalizing catalog directory {}", catalog.display()))?;
+    if !catalog.starts_with(&root) {
+        bail!(
+            "catalog {} escapes the superproject root {}",
+            catalog.display(),
+            root.display()
         );
     }
 

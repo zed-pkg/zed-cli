@@ -135,6 +135,31 @@ fn normalize_repository_url(value: &str) -> String {
     normalized
 }
 
+fn is_explicit_github_repository(value: &str) -> bool {
+    let normalized = normalize_repository_url(value);
+    let Some(identity) = normalized.strip_prefix("github.com/") else {
+        return false;
+    };
+    let mut parts = identity.split('/');
+    matches!(parts.next(), Some(part) if !part.is_empty())
+        && matches!(parts.next(), Some(part) if !part.is_empty())
+        && parts.next().is_none()
+}
+
+fn is_regular_file_within_root(root: &Path, relative: &str) -> bool {
+    if validate_relative_path(relative).is_err() {
+        return false;
+    }
+    let candidate = root.join(relative);
+    let Ok(metadata) = fs::symlink_metadata(&candidate) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return false;
+    }
+    fs::canonicalize(candidate).is_ok_and(|resolved| resolved.starts_with(root))
+}
+
 fn validate_relative_path(value: &str) -> Result<()> {
     if value.is_empty()
         || value.trim() != value

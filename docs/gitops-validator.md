@@ -38,8 +38,10 @@ zed-gitops validate --root . --offline --strict --format sarif
 - the retained static Application is a regular parent-owned file.
 
 The command does not read Kubernetes credentials, clone private repositories,
-resolve remote branch tips, or apply manifests. Policy failures exit with code
-2; tool/configuration failures exit with code 1.
+resolve remote branch tips, or apply manifests. Online validation is not implemented
+yet, so invocations must pass `--offline`; omitting it fails explicitly instead of
+misreporting a local-only run as online evidence. Policy failures exit with code 2;
+tool/configuration failures exit with code 1.
 
 ## Ownership boundary
 

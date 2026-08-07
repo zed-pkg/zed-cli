@@ -98,6 +98,14 @@ fn validate_record(
             app,
         ));
     }
+    if !is_explicit_github_repository(&inventory.repository) {
+        diagnostics.push(Diagnostic::error(
+            "inventory.repository",
+            "inventory repository must identify exactly one GitHub owner/repository",
+            relative,
+            app,
+        ));
+    }
     if !is_exact_sha1(&inventory.revision) {
         diagnostics.push(Diagnostic::error(
             "inventory.revision",
@@ -288,30 +296,16 @@ fn validate_record(
             relative,
             app,
         ));
-    } else {
-        let static_path = root.join(&migration.static_application);
-        match fs::symlink_metadata(&static_path) {
-            Ok(metadata)
-                if metadata.is_file() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => diagnostics.push(Diagnostic::error(
-                "migration.static-application-missing",
-                format!(
-                    "static Application path is not a regular file: {}",
-                    migration.static_application
-                ),
-                relative,
-                app,
-            )),
-            Err(_) => diagnostics.push(Diagnostic::error(
-                "migration.static-application-missing",
-                format!(
-                    "static Application path does not exist: {}",
-                    migration.static_application
-                ),
-                relative,
-                app,
-            )),
-        }
+    } else if !is_regular_file_within_root(root, &migration.static_application) {
+        diagnostics.push(Diagnostic::error(
+            "migration.static-application-missing",
+            format!(
+                "static Application path must be a regular file within the superproject: {}",
+                migration.static_application
+            ),
+            relative,
+            app,
+        ));
     }
 }
 
