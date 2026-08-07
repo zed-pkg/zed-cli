@@ -44,6 +44,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
+  ZED_LOCK_COMMIT: a0dc78d385bc3ab553d3027b427f5f1428239c9c
 
 jobs:
   linux-kernel-lock:

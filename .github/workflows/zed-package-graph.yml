@@ -35,18 +35,20 @@ jobs:
     timeout-minutes: 12
     steps:
       - name: Check out exact CLI revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: zed-cli
           persist-credentials: false
+
       - name: Check out canonical interfaces package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
           path: zed-interfaces
           persist-credentials: false
+
       - name: Check out canonical clients package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-clients
           path: zed-clients

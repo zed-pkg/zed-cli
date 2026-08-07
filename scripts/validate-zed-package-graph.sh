@@ -15,13 +15,14 @@ for dependency in \
   grep -Fq "$dependency" .zpkg.toml || { printf 'missing canonical Zed dependency: %s\n' "$dependency" >&2; exit 1; }
 done
 
-grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must be .vendor/.zed' >&2; exit 1; }
-grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
-
-if [[ -f .zpkg.lock ]] && [[ "$(wc -c < .zpkg.lock)" -le 12 ]]; then
-  echo '.zpkg.lock is an empty placeholder; regenerate it with the resolver or remove it' >&2
+grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || {
+  echo 'Zed install directory must be .vendor/.zed' >&2
   exit 1
-fi
+}
+grep -Fq '".vendor/.zed/**"' .zpkg.toml || {
+  echo 'publish exclusions must omit materialized Zed dependencies' >&2
+  exit 1
+}
 
 if [[ -d crates/zed-lock ]]; then
   echo 'the extracted lock crate must remain independently owned; do not restore crates/zed-lock' >&2
@@ -41,6 +42,7 @@ import sys
 import tomllib
 
 root = pathlib.Path.cwd()
+interfaces_arg, clients_arg, lock_arg, lock_commit, lock_version = sys.argv[1:]
 manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
@@ -50,6 +52,16 @@ expected_lock_source = (
     "git+https://github.com/zed-pkg/zed-lock.git?"
     f"rev={expected_lock_revision}#{expected_lock_revision}"
 )
+
+
+def normalized_placeholder(path: pathlib.Path) -> bool:
+    if not path.is_file():
+        return False
+    return (
+        path.read_text(encoding="utf-8").replace("\r\n", "\n").strip()
+        == "version = 1"
+    )
+
 
 repository = manifest.get("package", {}).get("repository", {})
 if repository.get("url") != "https://github.com/zed-pkg/zed-cli":
