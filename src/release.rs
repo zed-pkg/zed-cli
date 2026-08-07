@@ -254,6 +254,17 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
             NativeRegistry::GoModules => {
                 validate_go_manifest(&target_root.join("go.mod"), &route.target, &route.package)?;
             }
+            // Routes to the remaining hosts are planned and published, but
+            // their native manifest is not yet cross-checked against the
+            // route: each format needs its own parser (`.cabal`, `mix.exs`,
+            // `*.rockspec`, `DESCRIPTION`, `Package.swift`, …) and a wrong one
+            // would reject valid releases.
+            //
+            // Skipping is the honest gap, and the narrow one: manifest parsing
+            // catches an invalid package identity before this runs, and
+            // `zed release publish` still refuses to overwrite a published
+            // version with different content.
+            _ => {}
         }
     }
     Ok(())
