@@ -1,0 +1,117 @@
+name: durable first-install manifests
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/durable-first-install.yml"
+      - "tests/durable-first-install-e2e.sh"
+      - "tests/fixtures/docker-install/node-lib/**"
+      - "src/managed_install.rs"
+      - "src/manifestless.rs"
+      - "src/cli_model.rs"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/ops.rs"
+      - "src/config.rs"
+      - "src/transaction.rs"
+      - ".cli-flags.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/durable-first-install.yml"
+      - "tests/durable-first-install-e2e.sh"
+      - "tests/fixtures/docker-install/node-lib/**"
+      - "src/managed_install.rs"
+      - "src/manifestless.rs"
+      - "src/cli_model.rs"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/ops.rs"
+      - "src/config.rs"
+      - "src/transaction.rs"
+      - ".cli-flags.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  durable-first-install:
+    name: first install, rollback, and concurrency on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zed-cli
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out the pinned interface contract
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install the pinned Rust toolchain action
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Install mold on Linux
+        if: runner.os == 'Linux'
+        uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444
+        with:
+          make-default: true
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: zed-cli
+
+      - name: Build the exact zed executable under test
+        working-directory: zed-cli
+        run: cargo build --locked --bin zed
+
+      - name: Check the host canary syntax
+        working-directory: zed-cli
+        run: bash -n tests/durable-first-install-e2e.sh
+
+      - name: Exercise durable and explicit ephemeral first installs
+        working-directory: zed-cli
+        env:
+          ZED_DURABLE_E2E_ROOT: ${{ runner.temp }}/durable-first-install
+          ZED_DURABLE_E2E_KEEP: "1"
+        shell: bash
+        run: |
+          set -o pipefail
+          bash tests/durable-first-install-e2e.sh "$PWD/target/debug/zed" \
+            2>&1 | tee "$RUNNER_TEMP/durable-first-install.log"
+
+      - name: Upload bounded failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: durable-first-install-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/durable-first-install.log
+            ${{ runner.temp }}/durable-first-install/*.log
+          if-no-files-found: warn
+          retention-days: 1
+          include-hidden-files: true

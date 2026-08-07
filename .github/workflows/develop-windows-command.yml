@@ -1,0 +1,71 @@
+name: develop Windows command contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/dev.rs'
+      - 'tests/develop_windows_profile_contract.rs'
+      - '.github/workflows/develop-windows-command.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/dev.rs'
+      - 'tests/develop_windows_profile_contract.rs'
+      - '.github/workflows/develop-windows-command.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: develop-windows-command-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-command-mode:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Validate formatting and focused unit contracts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo fmt --all -- --check
+          cargo test --locked --lib powershell_command_mode_disables_profiles_and_interaction
+          cargo test --locked --lib interactive_powershell_retains_native_startup_semantics
+          cargo test --locked --lib cmd_command_mode_disables_autorun
+
+      - name: Run the native Windows profile canary
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --locked --test develop_windows_profile_contract -- --nocapture
+
+      - name: Deny warnings in the touched library target
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo clippy --locked --lib -- -D warnings
+
+      - name: Prove the source checkout stayed clean
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git status --short
+          if (git status --porcelain=v1 --untracked-files=all) {
+            throw 'Windows command-contract validation mutated the source checkout.'
+          }

@@ -1,0 +1,5 @@
+[package]
+name = "acme-browser-report"
+version = "1.2.3"
+edition = "2024"
+publish = ["crates-io"]

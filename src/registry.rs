@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use semver::{Version, VersionReq};
 use zed_interfaces::registry::{
-    self, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
-    SearchResponse, VersionMetadata, YankRequest, YankResponse,
+    self, AuditLogResponse, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,
+    PublishResponse, SearchResponse, VersionMetadata, YankRequest, YankResponse,
 };
 
 /// Hard ceiling on artifact download size (bytes); the registry-reported
@@ -43,6 +43,13 @@ pub trait Registry {
         yanked: bool,
         token: Option<&str>,
     ) -> Result<YankResponse>;
+    /// The org's audit log, newest first (owner-scoped; zed-docs issue #7).
+    fn audit_log(
+        &self,
+        org: &str,
+        limit: Option<u64>,
+        token: Option<&str>,
+    ) -> Result<AuditLogResponse>;
 }
 
 pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
@@ -161,6 +168,7 @@ impl Registry for FileRegistry {
             repo_url: meta.manifest.package.repository.url.clone(),
             version_scheme: meta.manifest.package.version_scheme,
             latest: None,
+            tags: meta.manifest.package.keywords.clone(),
             versions: Vec::new(),
         });
         if !pkg.versions.contains(version) {
@@ -170,6 +178,9 @@ impl Registry for FileRegistry {
         pkg.version_scheme = meta.manifest.package.version_scheme;
         pkg.latest = pkg.versions.first().cloned();
         pkg.description = meta.manifest.package.description.clone();
+        // Keywords are refreshed from the newest publish, the same way the
+        // description is, so discovery reflects the current manifest.
+        pkg.tags = meta.manifest.package.keywords.clone();
         fs::write(
             self.package_json(org, name),
             serde_json::to_string_pretty(&pkg)?,
@@ -215,6 +226,22 @@ impl Registry for FileRegistry {
         })
     }
 
+    /// A `file://` registry is a plain directory with no server enforcing
+    /// authority, so there is no trustworthy "who did what" to report. Say so
+    /// rather than returning an empty log that could be mistaken for "nothing
+    /// ever happened".
+    fn audit_log(
+        &self,
+        _org: &str,
+        _limit: Option<u64>,
+        _token: Option<&str>,
+    ) -> Result<AuditLogResponse> {
+        bail!(
+            "a file:// registry keeps no audit log (no server records who acted); \
+             point --registry at a zed-api-server to read one"
+        )
+    }
+
     fn search(&self, query: &str) -> Result<SearchResponse> {
         let mut items = Vec::new();
         let packages_root = self.root.join("packages");
@@ -244,6 +271,7 @@ impl Registry for FileRegistry {
                             name: meta.name,
                             description: meta.description,
                             latest: meta.latest,
+                            tags: meta.tags,
                         });
                     }
                 }
@@ -317,6 +345,23 @@ impl HttpRegistry {
             ),
         }
     }
+
+    /// Resolve an artifact URL without defeating an explicit registry
+    /// override. A server's ordinary `/v1/artifacts/<sha>` URL is only its
+    /// public canonical address, so mirrors, port-forwards, and local
+    /// registries must fetch that route from `self.base`. A genuinely
+    /// external/presigned object URL (different path and/or signed query) is
+    /// still honored.
+    fn artifact_download_url(&self, raw: &str, sha256: &str) -> Result<reqwest::Url> {
+        let artifact_path = registry::artifact_path(sha256);
+        if raw.starts_with("http") {
+            let advertised = self.allowed_download_url(raw)?;
+            if advertised.path() != artifact_path || advertised.query().is_some() {
+                return Ok(advertised);
+            }
+        }
+        reqwest::Url::parse(&self.url(&artifact_path)).context("registry url is valid")
+    }
 }
 
 impl Registry for HttpRegistry {
@@ -337,12 +382,7 @@ impl Registry for HttpRegistry {
     }
 
     fn download(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
-        let url = if version.download_url.starts_with("http") {
-            self.allowed_download_url(&version.download_url)?
-        } else {
-            reqwest::Url::parse(&self.url(&registry::artifact_path(&version.sha256)))
-                .context("registry url is valid")?
-        };
+        let url = self.artifact_download_url(&version.download_url, &version.sha256)?;
         let response = Self::check(self.client.get(url).send()?)?;
         fs::create_dir_all(dest.parent().context("dest has parent")?)?;
         // Bound what we write to disk: the declared size (when sane) plus
@@ -430,5 +470,50 @@ impl Registry for HttpRegistry {
             request = request.bearer_auth(token);
         }
         Ok(Self::check(request.send()?)?.json()?)
+    }
+
+    fn audit_log(
+        &self,
+        org: &str,
+        limit: Option<u64>,
+        token: Option<&str>,
+    ) -> Result<AuditLogResponse> {
+        let mut request = self.client.get(self.url(&registry::audit_path(org)));
+        if let Some(limit) = limit {
+            request = request.query(&[("limit", limit.to_string())]);
+        }
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        Ok(Self::check(request.send()?)?.json()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpRegistry;
+
+    #[test]
+    fn canonical_artifact_url_respects_registry_override() {
+        let registry = HttpRegistry::new("http://127.0.0.1:18080".into()).unwrap();
+        let url = registry
+            .artifact_download_url("https://registry.zpkg.tech/v1/artifacts/abc123", "abc123")
+            .unwrap();
+        assert_eq!(url.as_str(), "http://127.0.0.1:18080/v1/artifacts/abc123");
+    }
+
+    #[test]
+    fn presigned_external_artifact_url_is_preserved() {
+        let registry = HttpRegistry::new("https://registry.zpkg.tech".into()).unwrap();
+        let url = registry
+            .artifact_download_url(
+                "https://objects.example.test/bucket/abc123?X-Amz-Signature=signed",
+                "abc123",
+            )
+            .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://objects.example.test/bucket/abc123?X-Amz-Signature=signed"
+        );
     }
 }

@@ -1,0 +1,63 @@
+name: repository hardening
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hardening-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflow-policy:
+    name: GitHub Actions fail-closed policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run policy unit tests
+        run: python3 -m unittest -v tests/workflow_policy_test.py
+      - name: Audit every workflow
+        run: python3 scripts/audit-github-actions.py
+
+  locked-rust-contract:
+    name: Locked Rust metadata, tests, and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: zed-cli
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+      - name: Verify lockfile-resolved metadata
+        working-directory: zed-cli
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: Check every target
+        working-directory: zed-cli
+        run: cargo check --locked --all-targets
+      - name: Run every test target
+        working-directory: zed-cli
+        run: cargo test --locked --all-targets
+      - name: Deny warnings
+        working-directory: zed-cli
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Verify formatting
+        working-directory: zed-cli
+        run: cargo fmt --check

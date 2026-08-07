@@ -1,203 +1,438 @@
-# Declarative registry of every `zed` CLI flag and its `ZED_PKG_*` environment
-# variable, per the flags-2-env convention (github.com/oresoftware/flags-2-env).
-#
-# TOML only (like `.zpkg.toml`). This file is the human-readable source of
-# truth for the flags-2-env mapping; the `cli_flags_toml_is_in_sync_with_clap`
-# test in src/cli.rs asserts it matches the clap definition exactly, so the two
-# can never drift. When you add or change a flag in src/cli.rs, update the
-# matching `[[flag]]` entry here.
-#
-# `command` is the subcommand the flag belongs to ("*" = a global flag valid on
-# every command). `env` is the flag's `ZED_PKG_*` fallback. `default` is
-# informational.
+# flags-2-env contract for zed. clap remains the typed command parser; this
+# file is the portable flag/env and nested-command description shared with
+# github.com/ORESoftware/flags-2-env.
 
-# --- global ---------------------------------------------------------------
+[parse]
+command_env = "ZED_PKG_COMMAND"
+unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
+errors_env = "ZED_PKG_PARSE_ERRORS"
+allow_unknown = false
 
-[[flag]]
-command = "*"
-long = "registry"
+[help]
+url = "https://github.com/zed-pkg/zed-cli"
+
+[flags.registry]
 env = "ZED_PKG_REGISTRY"
+aliases = ["registry"]
+type = "string"
 default = "https://registry.zpkg.tech"
-about = "Registry base URL (http(s):// or file:///… for a local registry)"
+help = "Registry base URL."
 
-[[flag]]
-command = "*"
-long = "home"
+[flags.home]
 env = "ZED_PKG_HOME"
-default = "~/.zed-pkg"
-about = "zed home directory (store, cache, credentials)"
+aliases = ["home"]
+type = "string"
+help = "Zed home directory; defaults to ~/.zed-pkg."
 
-[[flag]]
-command = "*"
-long = "token"
+[flags.token]
 env = "ZED_PKG_TOKEN"
-about = "Registry auth token; overrides saved credentials"
+aliases = ["token"]
+type = "string"
+help = "Explicit registry bearer token."
 
-# --- init -----------------------------------------------------------------
+[flags.auth_url]
+env = "ZED_PKG_AUTH_URL"
+aliases = ["auth-url"]
+type = "string"
+help = "shared-auth base URL."
 
-[[flag]]
-command = "init"
-long = "org"
+[flags.supabase_url]
+env = "ZED_PKG_SUPABASE_URL"
+aliases = ["supabase-url"]
+type = "string"
+help = "Supabase project URL."
+
+[flags.supabase_key]
+env = "ZED_PKG_SUPABASE_KEY"
+aliases = ["supabase-key"]
+type = "string"
+help = "Supabase publishable/anon key."
+
+[flags.org]
 env = "ZED_PKG_ORG"
-about = "Org namespace for the new manifest"
+aliases = ["org"]
+type = "string"
+help = "Organization slug."
 
-[[flag]]
-command = "init"
-long = "name"
+[flags.name]
 env = "ZED_PKG_NAME"
-about = "Package name for the new manifest (defaults to the directory name)"
+aliases = ["name"]
+type = "string"
+help = "Package or display name, depending on command."
 
-# --- install --------------------------------------------------------------
+[flags.interactive]
+env = "ZED_PKG_INTERACTIVE"
+aliases = ["interactive"]
+type = "bool"
+default = "false"
+help = "Confirm each mutating lifecycle step in a real terminal."
 
-[[flag]]
-command = "install"
-long = "frozen"
+[flags.frozen]
 env = "ZED_PKG_FROZEN"
+aliases = ["frozen"]
+type = "bool"
 default = "false"
-about = "Install exactly what .zpkg.lock pins; fail on any drift"
+help = "Install exactly what the lockfile pins."
 
-[[flag]]
-command = "install"
-long = "install-mode"
+[flags.install_mode]
 env = "ZED_PKG_INSTALL_MODE"
+aliases = ["install-mode"]
+type = "string"
 default = "symlink"
-about = "symlink (pnpm-style) or copy (self-contained, for container builds)"
+help = "Install using symlinks or copies."
 
-[[flag]]
-command = "install"
-long = "adapter"
+[flags.adapter]
 env = "ZED_PKG_ADAPTER"
+aliases = ["adapter"]
+type = "string"
 default = "auto"
-about = "Ecosystem linking: auto | none | node | java"
+help = "Ecosystem adapter."
 
-[[flag]]
-command = "install"
-long = "allow-build"
+[flags.allow_build]
 env = "ZED_PKG_ALLOW_BUILD"
+aliases = ["allow-build"]
+type = "bool"
 default = "false"
-about = "Run dependencies' [build] commands (package-author code; off by default)"
+help = "Allow dependency build hooks."
 
-# --- build ----------------------------------------------------------------
+[flags.target]
+env = "ZED_PKG_TARGET"
+aliases = ["target"]
+type = "string"
+help = "Polyglot package target."
 
-[[flag]]
-command = "build"
-long = "force"
+# flags2env treats aliases as public option spellings, so the canonical CLI
+# spelling is listed explicitly. The old environment key and aliases remain
+# during the compatibility window so existing scripts keep working while
+# receiving a deprecation warning at runtime.
+[flags.do_not_write_new_manifest]
+env = "ZED_PKG_ALLOW_NO_MANIFEST"
+aliases = ["do-not-write-new-manifest", "allow-no-manifest", "skip-manifest"]
+type = "bool"
+default = "false"
+help = "Do not create a new .zpkg.toml when installing into a project without one."
+
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Enable global Git submodule compatibility for install and overtake; accepts explicit true/false."
+
+[flags.allow_ecosystem_mismatch]
+env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
+aliases = ["allow-ecosystem-mismatch"]
+type = "bool"
+default = "false"
+help = "Install packages whose ecosystem this project does not have."
+
+[flags.allow_ecosystem_mismatch]
+env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
+aliases = ["allow-ecosystem-mismatch"]
+type = "bool"
+default = "false"
+help = "Install packages whose ecosystem this project does not have."
+
+[flags.force]
 env = "ZED_PKG_FORCE"
+aliases = ["force"]
+type = "bool"
 default = "false"
-about = "Rebuild even when the build cache already has an entry"
+help = "Force the command's operation."
 
-# --- gc -------------------------------------------------------------------
-
-[[flag]]
-command = "gc"
-long = "older-than"
+[flags.older_than]
 env = "ZED_PKG_GC_OLDER_THAN"
+aliases = ["older-than"]
+type = "string"
 default = "90d"
-about = "Remove entries not accessed within this window (e.g. 90d, 2w, 12h)"
+help = "Garbage collection age cutoff."
 
-[[flag]]
-command = "gc"
-long = "dry-run"
-env = "ZED_PKG_GC_DRY_RUN"
-default = "false"
-about = "Report what would be removed without deleting anything"
-
-# --- pack -----------------------------------------------------------------
-
-[[flag]]
-command = "pack"
-long = "out"
-env = "ZED_PKG_PACK_OUT"
-default = ".zed/pack"
-about = "Output directory for the packed artifact"
-
-# --- publish --------------------------------------------------------------
-
-[[flag]]
-command = "publish"
-long = "dry-run"
+[flags.dry_run]
 env = "ZED_PKG_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
 default = "false"
-about = "Pack and verify, but do not upload"
+help = "Report changes without applying them."
 
-[[flag]]
-command = "publish"
-long = "allow-dirty"
+[flags.out]
+env = "ZED_PKG_PACK_OUT"
+aliases = ["out"]
+type = "string"
+help = "Packed artifact output path."
+
+[flags.allow_dirty]
 env = "ZED_PKG_ALLOW_DIRTY"
+aliases = ["allow-dirty"]
+type = "bool"
 default = "false"
-about = "Skip the clean-worktree check"
+help = "Allow publishing from a dirty worktree."
 
-[[flag]]
-command = "publish"
-long = "skip-vcs-checks"
+[flags.skip_vcs_checks]
 env = "ZED_PKG_SKIP_VCS_CHECKS"
+aliases = ["skip-vcs-checks"]
+type = "bool"
 default = "false"
-about = "Skip tag/commit verification (loud warning)"
+help = "Skip publish provenance checks."
 
-# --- yank -----------------------------------------------------------------
-
-[[flag]]
-command = "yank"
-long = "undo"
+[flags.undo]
 env = "ZED_PKG_YANK_UNDO"
+aliases = ["undo"]
+type = "bool"
 default = "false"
-about = "Restore a previously yanked version"
+help = "Undo a yank."
 
-# --- r2g (alias: test-local) ----------------------------------------------
-
-[[flag]]
-command = "r2g"
-long = "docker"
+[flags.docker]
 env = "ZED_PKG_R2G_DOCKER"
+aliases = ["docker"]
+type = "bool"
 default = "false"
-about = "Run the install + smoke test inside a throwaway OCI container"
+help = "Run r2g in a container."
 
-[[flag]]
-command = "r2g"
-long = "image"
+[flags.image]
 env = "ZED_PKG_R2G_IMAGE"
+aliases = ["image"]
+type = "string"
 default = "debian:stable-slim"
-about = "Base image for --docker"
+help = "r2g container image."
 
-[[flag]]
-command = "r2g"
-long = "runtime"
+[flags.runtime]
 env = "ZED_PKG_R2G_RUNTIME"
-about = "Container runtime for --docker: docker | podman (auto-detected)"
+aliases = ["runtime"]
+type = "string"
+help = "r2g container runtime."
 
-[[flag]]
-command = "r2g"
-long = "r2g-root"
+[flags.r2g_root]
 env = "ZED_PKG_R2G_ROOT"
-default = "<zed home>/r2g"
-about = "Parent directory for the throwaway consumer project and its store"
+aliases = ["r2g-root"]
+type = "string"
+help = "r2g workspace root."
 
-[[flag]]
-command = "r2g"
-long = "clean"
+[flags.clean]
 env = "ZED_PKG_R2G_CLEAN"
+aliases = ["clean"]
+type = "bool"
 default = "false"
-about = "Delete the throwaway workspace after a successful run"
+help = "Clean a successful r2g workspace."
 
-# --- self-update (alias: update) ------------------------------------------
-
-[[flag]]
-command = "self-update"
-long = "check"
+[flags.check]
 env = "ZED_PKG_UPDATE_CHECK"
+aliases = ["check"]
+type = "bool"
 default = "false"
-about = "Only report whether an update is available; don't install"
+help = "Check for an update without installing it."
 
-[[flag]]
-command = "self-update"
-long = "force"
-env = "ZED_PKG_UPDATE_FORCE"
-default = "false"
-about = "Reinstall even if already on the latest version"
-
-[[flag]]
-command = "self-update"
-long = "skip-checksum"
+[flags.skip_checksum]
 env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
+aliases = ["skip-checksum"]
+type = "bool"
 default = "false"
-about = "Skip the SHA256SUMS integrity check (unsafe; local testing only)"
+help = "Skip release checksum verification."
+
+[flags.limit]
+env = "ZED_PKG_AUDIT_LIMIT"
+aliases = ["limit"]
+type = "int"
+help = "Maximum audit entries."
+
+[flags.email]
+env = "ZED_PKG_AUTH_EMAIL"
+aliases = ["email"]
+type = "string"
+help = "Account email."
+
+[flags.provider]
+env = "ZED_PKG_AUTH_PROVIDER"
+aliases = ["provider"]
+type = "string"
+default = "auto"
+help = "Authentication provider: auto, shared-auth, or supabase."
+
+[flags.display_name]
+env = "ZED_PKG_AUTH_DISPLAY_NAME"
+aliases = ["display-name"]
+type = "string"
+help = "Account display name."
+
+[flags.password_stdin]
+env = "ZED_PKG_AUTH_PASSWORD_STDIN"
+aliases = ["password-stdin"]
+type = "bool"
+default = "false"
+help = "Read one password line from stdin."
+
+[flags.env_config]
+env = "ZED_PKG_ENV_CONFIG"
+aliases = ["config"]
+type = "string"
+help = "Project-local environment-manager config path."
+
+[flags.env_lock]
+env = "ZED_PKG_ENV_LOCK"
+aliases = ["lock"]
+type = "string"
+help = "Project-local environment-manager lockfile path."
+
+[flags.env_json]
+env = "ZED_PKG_ENV_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit environment interoperability output as JSON."
+
+[commands.init]
+help = "Create a package manifest."
+
+[commands.add]
+help = "Add a dependency."
+
+[commands.remove]
+help = "Remove a dependency."
+
+[commands.install]
+aliases = ["i"]
+help = "Install dependencies."
+
+[commands.overtake]
+help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
+
+[commands.uninstall]
+aliases = ["un"]
+help = "Remove materialized dependencies while retaining the lockfile."
+
+[commands.env]
+help = "Import and verify project-local developer environments."
+
+[commands.env.commands.import]
+help = "Import manager-native state as a normalized EnvironmentPlan."
+
+[commands.env.commands.verify]
+help = "Verify config/lock coverage and normalized environment identity."
+
+[commands.completions]
+help = "Generate Bash or Zsh completion from the typed CLI model."
+
+[commands.build]
+help = "Run dependency build hooks."
+
+[commands.run]
+help = "Run a dependency executable."
+allow_unknown = true
+
+[commands.gc]
+help = "Garbage-collect caches and stores."
+
+[commands.gc.flags.dry_run]
+env = "ZED_PKG_GC_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Report garbage collection without deleting."
+
+[commands.find]
+help = "Search the registry."
+
+[commands.pack]
+help = "Pack an artifact."
+
+[commands.release]
+help = "Coordinate Zed and native-registry releases."
+
+[commands.release.commands.plan]
+help = "Print a credential-free deterministic release plan."
+
+[commands.release.commands.plan.flags.release_json]
+env = "ZED_PKG_RELEASE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit the release plan as JSON."
+
+[commands.release.commands.preflight]
+help = "Run fixed credential-free native package preflight adapters."
+
+[commands.publish]
+help = "Publish an artifact."
+
+[commands.yank]
+help = "Yank or restore a version."
+
+[commands.r2g]
+aliases = ["test-local"]
+help = "Roundtrip-test a package."
+
+[commands.self-update]
+aliases = ["update"]
+help = "Update the zed binary."
+
+[commands.self-update.flags.force]
+env = "ZED_PKG_UPDATE_FORCE"
+aliases = ["force"]
+type = "bool"
+default = "false"
+help = "Reinstall even when already current."
+
+[commands.login]
+aliases = ["signin"]
+help = "Sign in."
+
+[commands.logout]
+aliases = ["signout"]
+help = "Sign out."
+
+[commands.signup]
+aliases = ["register"]
+help = "Create an account."
+
+[commands.auth]
+help = "Account authentication."
+
+[commands.auth.commands.login]
+aliases = ["signin"]
+help = "Sign in."
+
+[commands.auth.commands.signup]
+aliases = ["register"]
+help = "Create an account."
+
+[commands.auth.commands.signout]
+aliases = ["logout"]
+help = "Sign out."
+
+[commands.auth.commands.status]
+help = "Show authentication status."
+
+[commands.auth.commands.refresh]
+help = "Rotate authentication tokens."
+
+[commands.auth.commands.token]
+help = "Print the current access token."
+
+[commands.auth.commands.import-token]
+help = "Save a legacy opaque registry token."
+
+[commands.org]
+help = "Organization operations."
+
+[commands.org.commands.claim]
+help = "Claim an organization."
+
+[commands.org.commands.audit]
+help = "Read an organization audit log."
+
+[commands.store]
+help = "Global store operations."
+
+[commands.store.commands.status]
+help = "Show store status."
+
+[commands.store.commands.path]
+help = "Print the store path."
+
+[commands.store.commands.prune]
+help = "Prune unreferenced store entries."
+
+[commands.cache]
+help = "Download cache operations."
+
+[commands.cache.commands.clean]
+help = "Clean the download cache."

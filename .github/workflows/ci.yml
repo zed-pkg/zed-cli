@@ -2,6 +2,7 @@
 # mold as the linker on Linux, and cargo-nextest for parallel tests.
 # The toolchain is pinned via rust-toolchain.toml so the cache key stays stable.
 name: ci
+
 on:
   push:
     branches: [main]
@@ -23,18 +24,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@stable
-      # mold: a much faster linker (Linux only). make-default wires it in as
-      # the system linker, so cargo/rustc use it with no extra RUSTFLAGS.
+        with:
+          components: rustfmt, clippy
       - name: Install mold (fast linker)
         if: runner.os == 'Linux'
         uses: rui314/setup-mold@v1
         with:
           make-default: true
-      # sccache was removed after repeated GitHub cache-service outages took
-      # CI down mid-build (even health-probed); rust-cache below degrades
-      # gracefully during outages and covers the cross-run caching need.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: zed-cli
@@ -46,7 +45,727 @@ jobs:
       - name: Test (nextest)
         run: cargo nextest run
         working-directory: zed-cli
-      # nextest does not run doctests; keep them covered (cargo test used to).
       - name: Doctests
         run: cargo test --doc
         working-directory: zed-cli
+      - name: Clippy
+        if: runner.os == 'Linux'
+        run: cargo clippy --all-targets -- -D warnings
+        working-directory: zed-cli
+
+  docker-install:
+    name: Docker install boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+      - name: Build a container with the zed CLI
+        run: |
+          docker build \
+            --file zed-cli/.github/docker/install-test.Dockerfile \
+            --tag zed-pkg/install-test \
+            .
+      - name: Prepare hermetic fixtures
+        run: |
+          cp -R zed-cli/tests/fixtures/docker-install "$RUNNER_TEMP/fixtures"
+          mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/zed-home"
+      - name: Publish the zed-pkg fixture inside Docker
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-lib:/package" \
+            --volume "$RUNNER_TEMP/registry:/registry" \
+            --workdir /package \
+            zed-pkg/install-test \
+            zed publish --registry file:///registry --skip-vcs-checks
+      - name: Symlink install works when the store is mounted
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            sh -euc '
+              zed install \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode symlink
+              test -L .vendor/.zed/zed-pkg/docker-node-lib
+              test -L node_modules/@zed-pkg/docker-node-lib
+              node src/main.js
+            '
+      - name: Store-backed links do not cross an unmounted boundary
+        run: |
+          if docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work:ro" \
+            --workdir /work \
+            node:22-bookworm-slim \
+            node src/main.js
+          then
+            echo "expected the unmounted store-backed symlinks to fail"
+            exit 1
+          fi
+      - name: Frozen copy install is self-contained
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            sh -euc '
+              zed install \
+                --frozen \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode copy
+              test ! -L .vendor/.zed/zed-pkg/docker-node-lib
+              test ! -L node_modules/@zed-pkg/docker-node-lib
+              test -z "$(find .vendor/.zed node_modules/@zed-pkg -type l -print -quit)"
+              node src/main.js
+            '
+      - name: Copy install runs in a fresh runtime container
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work:ro" \
+            --workdir /work \
+            node:22-bookworm-slim \
+            node src/main.js
+
+      - name: Uninstall removes materialized files but retains the lock
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed uninstall --home /zed-home
+          test -f "$RUNNER_TEMP/fixtures/node-app/.zpkg.lock"
+          test ! -e "$RUNNER_TEMP/fixtures/node-app/.vendor/.zed"
+          test ! -e "$RUNNER_TEMP/fixtures/node-app/node_modules/@zed-pkg/docker-node-lib"
+          test ! -e "$RUNNER_TEMP/fixtures/node-app/.zpkg-staging"
+
+      - name: Frozen reinstall is the exact inverse of uninstall
+        run: |
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-app:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            sh -euc '
+              zed install \
+                --frozen \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode copy
+              node src/main.js
+            '
+          test ! -e "$RUNNER_TEMP/fixtures/node-app/.zpkg-staging"
+
+      - name: Interactive checkpoints fail closed and hard exits recover
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="$(docker create zed-pkg/install-test)"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/usr/local/bin/zed" "$RUNNER_TEMP/zed"
+          chmod +x "$RUNNER_TEMP/zed"
+          app="$RUNNER_TEMP/fixtures/node-app"
+
+          if printf 'yes\n' | (
+            cd "$app"
+            "$RUNNER_TEMP/zed" --interactive --home "$RUNNER_TEMP/zed-home" uninstall
+          ); then
+            echo "redirected stdin unexpectedly satisfied --interactive" >&2
+            exit 1
+          fi
+          test -d "$app/.vendor/.zed/zed-pkg/docker-node-lib"
+          test ! -e "$app/.zpkg-staging"
+
+          (
+            cd "$app"
+            python3 "$GITHUB_WORKSPACE/zed-cli/tests/interactive_pty.py" kill-after=2 -- \
+              "$RUNNER_TEMP/zed" --interactive \
+                --registry "file://$RUNNER_TEMP/registry" \
+                --home "$RUNNER_TEMP/zed-home" \
+                install --frozen --install-mode copy
+          )
+          test -d "$app/.zpkg-staging"
+
+          (
+            cd "$app"
+            "$RUNNER_TEMP/zed" \
+              --registry "file://$RUNNER_TEMP/registry" \
+              --home "$RUNNER_TEMP/zed-home" \
+              install --frozen --install-mode copy
+            python3 "$GITHUB_WORKSPACE/zed-cli/tests/interactive_pty.py" yes -- \
+              "$RUNNER_TEMP/zed" --interactive \
+                --registry "file://$RUNNER_TEMP/registry" \
+                --home "$RUNNER_TEMP/zed-home" \
+                install --frozen --install-mode copy
+            node src/main.js
+          )
+          test ! -e "$app/.zpkg-staging"
+
+      - name: r2g proves the packed library on the host and in OCI
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="$(docker create zed-pkg/install-test)"
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp "$container:/usr/local/bin/zed" "$RUNNER_TEMP/zed"
+          chmod +x "$RUNNER_TEMP/zed"
+
+          (
+            cd "$RUNNER_TEMP/fixtures/node-lib"
+            "$RUNNER_TEMP/zed" \
+              --home "$RUNNER_TEMP/r2g-home" \
+              r2g --r2g-root "$RUNNER_TEMP/r2g-host"
+            "$RUNNER_TEMP/zed" \
+              --home "$RUNNER_TEMP/r2g-home" \
+              r2g --docker --image node:22-bookworm-slim \
+              --r2g-root "$RUNNER_TEMP/r2g-oci"
+          )
+          test "$(find "$RUNNER_TEMP/r2g-host" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1
+          test "$(find "$RUNNER_TEMP/r2g-oci" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1
+          find "$RUNNER_TEMP/r2g-host" "$RUNNER_TEMP/r2g-oci" \
+            -mindepth 1 -maxdepth 1 -type d -print \
+            | grep -Eq '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+
+  cross-org-lifecycle:
+    name: zed-pkg-test ${{ matrix.ecosystem }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ecosystem: [node, rust]
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      ECOSYSTEM: ${{ matrix.ecosystem }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg-test/${{ matrix.ecosystem }}-lib
+          path: fixture-lib
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg-test/${{ matrix.ecosystem }}-app
+          path: fixture-app
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zed-cli
+
+      - name: Build the current zed CLI
+        working-directory: zed-cli
+        run: cargo build --release --locked --bin zed
+
+      - name: Verify, publish, and r2g the real library on the host
+        shell: bash
+        run: |
+          set -euo pipefail
+          zed="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          registry="$RUNNER_TEMP/registry"
+          home="$RUNNER_TEMP/zed-home"
+          mkdir -p "$registry" "$home"
+          case "$ECOSYSTEM" in
+            node) (cd fixture-lib && npm test) ;;
+            rust)
+              cp -R fixture-lib "$RUNNER_TEMP/rust-lib-test"
+              (cd "$RUNNER_TEMP/rust-lib-test" && cargo test --all-targets)
+              ;;
+          esac
+          (
+            cd fixture-lib
+            "$zed" --registry "file://$registry" publish --skip-vcs-checks
+            "$zed" --home "$home" r2g --r2g-root "$RUNNER_TEMP/r2g-host"
+          )
+
+      - name: Host install, uninstall, and frozen reinstall
+        shell: bash
+        run: |
+          set -euo pipefail
+          zed="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          registry="$RUNNER_TEMP/registry"
+          home="$RUNNER_TEMP/zed-home"
+          package="zed-pkg-test/$ECOSYSTEM-lib"
+          (
+            cd fixture-app
+            "$zed" --registry "file://$registry" --home "$home" \
+              install --install-mode symlink
+            case "$ECOSYSTEM" in
+              node) npm start ;;
+              rust) CARGO_TARGET_DIR="$RUNNER_TEMP/host-target" cargo run --quiet ;;
+            esac
+            "$zed" --home "$home" uninstall
+            test -f .zpkg.lock
+            test ! -e ".vendor/.zed/$package"
+            test ! -e .zpkg-staging
+            "$zed" --registry "file://$registry" --home "$home" \
+              install --frozen --install-mode copy
+            test ! -L ".vendor/.zed/$package"
+            case "$ECOSYSTEM" in
+              node)
+                test ! -L "node_modules/@zed-pkg-test/$ECOSYSTEM-lib"
+                npm start
+                ;;
+              rust) CARGO_TARGET_DIR="$RUNNER_TEMP/host-target" cargo run --quiet ;;
+            esac
+          )
+
+      - name: r2g the real library in a fresh OCI runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          zed="$GITHUB_WORKSPACE/zed-cli/target/release/zed"
+          image="node:22-bookworm-slim"
+          if [[ "$ECOSYSTEM" == rust ]]; then image="rust:bookworm"; fi
+          (
+            cd fixture-lib
+            "$zed" --home "$RUNNER_TEMP/zed-home" \
+              r2g --docker --image "$image" --r2g-root "$RUNNER_TEMP/r2g-oci"
+          )
+
+      - name: Build the current CLI into the ecosystem OCI image
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime_image="node:22-bookworm-slim"
+          if [[ "$ECOSYSTEM" == rust ]]; then runtime_image="rust:bookworm"; fi
+          docker build \
+            --build-arg "RUNTIME_IMAGE=$runtime_image" \
+            --tag "zed-pkg-test/$ECOSYSTEM-current" \
+            --file - \
+            . <<'DOCKERFILE'
+          ARG RUNTIME_IMAGE=node:22-bookworm-slim
+          FROM rust:bookworm AS zed-builder
+          WORKDIR /src
+          COPY zed-interfaces ./zed-interfaces
+          COPY zed-cli ./zed-cli
+          WORKDIR /src/zed-cli
+          RUN cargo build --release --locked --bin zed
+          FROM ${RUNTIME_IMAGE}
+          COPY --from=zed-builder /src/zed-cli/target/release/zed /usr/local/bin/zed
+          WORKDIR /work
+          DOCKERFILE
+
+      - name: OCI publish, install, uninstall, frozen reinstall, and fresh runtime
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="$RUNNER_TEMP/oci-registry"
+          home="$RUNNER_TEMP/oci-home"
+          package="zed-pkg-test/$ECOSYSTEM-lib"
+          image="zed-pkg-test/$ECOSYSTEM-current"
+          runtime_image="node:22-bookworm-slim"
+          if [[ "$ECOSYSTEM" == rust ]]; then runtime_image="rust:bookworm"; fi
+          mkdir -p "$registry" "$home"
+
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/fixture-lib:/source:ro" \
+            --volume "$registry:/registry" \
+            --workdir /tmp \
+            "$image" \
+            sh -euc '
+              cp -a /source /tmp/package
+              cd /tmp/package
+              zed publish --registry file:///registry --skip-vcs-checks
+            '
+
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/fixture-app:/work" \
+            --volume "$registry:/registry:ro" \
+            --volume "$home:/zed-home" \
+            --workdir /work \
+            "$image" \
+            sh -euc "
+              zed uninstall --home /zed-home
+              test -f .zpkg.lock
+              test ! -e '.vendor/.zed/$package'
+              zed install --frozen \
+                --registry file:///registry \
+                --home /zed-home \
+                --install-mode copy
+              test ! -L '.vendor/.zed/$package'
+            "
+
+          if [[ "$ECOSYSTEM" == node ]]; then
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE/fixture-app:/work:ro" \
+              --workdir /work \
+              "$runtime_image" \
+              npm start
+          else
+            docker run --rm \
+              --volume "$GITHUB_WORKSPACE/fixture-app:/work:ro" \
+              --workdir /work \
+              "$runtime_image" \
+              sh -euc 'CARGO_TARGET_DIR=/tmp/target cargo run --quiet'
+          fi
+          test ! -e "$GITHUB_WORKSPACE/fixture-app/.zpkg-staging"
+
+  first-install-manifest:
+    name: Durable first-install manifest and explicit ephemeral mode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+      - name: Build the real CLI container
+        run: |
+          docker build \
+            --file zed-cli/.github/docker/install-test.Dockerfile \
+            --tag zed-pkg/install-test \
+            .
+      - name: Prepare the local registry and consumers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -R zed-cli/tests/fixtures/docker-install "$RUNNER_TEMP/fixtures"
+          mkdir -p "$RUNNER_TEMP/registry" "$RUNNER_TEMP/zed-home"
+          docker run --rm \
+            --volume "$RUNNER_TEMP/fixtures/node-lib:/package" \
+            --volume "$RUNNER_TEMP/registry:/registry" \
+            --workdir /package \
+            zed-pkg/install-test \
+            zed publish --registry file:///registry --skip-vcs-checks
+
+          for name in durable failed ephemeral canonical-env legacy frozen frozen-restore; do
+            root="$RUNNER_TEMP/consumer-$name"
+            mkdir -p "$root/src"
+            cp "$RUNNER_TEMP/fixtures/node-app/package.json" "$root/package.json"
+            cp "$RUNNER_TEMP/fixtures/node-app/src/main.js" "$root/src/main.js"
+          done
+
+          nested="$RUNNER_TEMP/consumer-nested/apps/web"
+          mkdir -p "$nested/src/deep"
+          cp "$RUNNER_TEMP/fixtures/node-app/package.json" "$nested/package.json"
+          cp "$RUNNER_TEMP/fixtures/node-app/src/main.js" "$nested/src/main.js"
+
+      - name: Default first install creates a durable, usable, non-publishable manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/consumer-durable"
+          docker run --rm \
+            --volume "$root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work/src \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@^1 \
+              --registry file:///registry \
+              --home /zed-home/durable \
+              --install-mode copy
+
+          test -f "$root/.zpkg.toml"
+          test -f "$root/.zpkg.lock"
+          test -d "$root/zed_modules/zed-pkg/docker-node-lib"
+          test -d "$root/node_modules/@zed-pkg/docker-node-lib"
+          grep -F 'org = "zed-local"' "$root/.zpkg.toml"
+          grep -F 'keywords = ["zed-generated-consumer"]' "$root/.zpkg.toml"
+          grep -F '"zed-pkg/docker-node-lib" = "^1"' "$root/.zpkg.toml"
+          grep -F 'adapter = "node"' "$root/.zpkg.toml"
+          docker run --rm \
+            --volume "$root:/work:ro" \
+            --workdir /work \
+            node:22-bookworm-slim \
+            node src/main.js
+
+          if docker run --rm \
+            --volume "$root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed publish --registry file:///registry --dry-run --skip-vcs-checks \
+              >"$RUNNER_TEMP/generated-publish.log" 2>&1
+          then
+            echo "generated consumer manifest unexpectedly published" >&2
+            exit 1
+          fi
+          grep -F 'auto-generated local consumer manifest' "$RUNNER_TEMP/generated-publish.log"
+
+          docker run --rm \
+            --volume "$root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install --frozen --do-not-write-new-manifest \
+              --registry file:///registry \
+              --home /zed-home/durable \
+              --install-mode copy \
+              >"$RUNNER_TEMP/existing-flag.log" 2>&1
+          grep -F 'has no effect because .zpkg.toml already exists' "$RUNNER_TEMP/existing-flag.log"
+
+      - name: Failed resolution removes the exact generated manifest and project outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/consumer-failed"
+          if docker run --rm \
+            --volume "$root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@=9.9.9 \
+              --registry file:///registry \
+              --home /zed-home/failed \
+              --install-mode copy
+          then
+            echo "missing version unexpectedly installed" >&2
+            exit 1
+          fi
+          test ! -e "$root/.zpkg.toml"
+          test ! -e "$root/.zpkg.lock"
+          test ! -e "$root/zed_modules"
+          test ! -e "$root/node_modules/@zed-pkg/docker-node-lib"
+
+      - name: Canonical flag, canonical environment, and legacy alias preserve ephemeral installs
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/consumer-ephemeral"
+          docker run --rm \
+            --volume "$root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@^1 \
+              --do-not-write-new-manifest \
+              --registry file:///registry \
+              --home /zed-home/ephemeral \
+              --install-mode copy
+          test ! -e "$root/.zpkg.toml"
+          test -f "$root/.zpkg.lock"
+
+          env_root="$RUNNER_TEMP/consumer-canonical-env"
+          docker run --rm \
+            --env ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=1 \
+            --volume "$env_root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@^1 \
+              --registry file:///registry \
+              --home /zed-home/canonical-env \
+              --install-mode copy
+          test ! -e "$env_root/.zpkg.toml"
+          test -f "$env_root/.zpkg.lock"
+
+          legacy_root="$RUNNER_TEMP/consumer-legacy"
+          docker run --rm \
+            --volume "$legacy_root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@^1 \
+              --skip-manifest \
+              --registry file:///registry \
+              --home /zed-home/legacy \
+              --install-mode copy \
+              >"$RUNNER_TEMP/legacy-alias.log" 2>&1
+          test ! -e "$legacy_root/.zpkg.toml"
+          test -f "$legacy_root/.zpkg.lock"
+          grep -F -- '--skip-manifest is deprecated' "$RUNNER_TEMP/legacy-alias.log"
+
+      - name: Lock-only frozen restore remains explicit
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$RUNNER_TEMP/consumer-frozen"
+          docker run --rm \
+            --volume "$source_root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@^1 \
+              --do-not-write-new-manifest \
+              --registry file:///registry \
+              --home /zed-home/frozen \
+              --install-mode copy
+
+          restore_root="$RUNNER_TEMP/consumer-frozen-restore"
+          cp "$source_root/.zpkg.lock" "$restore_root/.zpkg.lock"
+          if docker run --rm \
+            --volume "$restore_root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install --frozen \
+              --registry file:///registry \
+              --home /zed-home/frozen \
+              --install-mode copy
+          then
+            echo "lock-only restore without the explicit flag unexpectedly succeeded" >&2
+            exit 1
+          fi
+          test ! -e "$restore_root/.zpkg.toml"
+
+          docker run --rm \
+            --volume "$restore_root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work \
+            zed-pkg/install-test \
+            zed install --frozen --do-not-write-new-manifest \
+              --registry file:///registry \
+              --home /zed-home/frozen \
+              --install-mode copy
+          test ! -e "$restore_root/.zpkg.toml"
+          cmp -s "$source_root/.zpkg.lock" "$restore_root/.zpkg.lock"
+          test -d "$restore_root/zed_modules/zed-pkg/docker-node-lib"
+
+      - name: One clear nested native project receives the generated manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/consumer-nested"
+          docker run --rm \
+            --volume "$root:/work" \
+            --volume "$RUNNER_TEMP/registry:/registry:ro" \
+            --volume "$RUNNER_TEMP/zed-home:/zed-home" \
+            --workdir /work/apps/web/src/deep \
+            zed-pkg/install-test \
+            zed install zed-pkg/docker-node-lib@^1 \
+              --registry file:///registry \
+              --home /zed-home/nested \
+              --install-mode copy
+          test ! -e "$root/.zpkg.toml"
+          test ! -e "$root/.zpkg.lock"
+          test -f "$root/apps/web/.zpkg.toml"
+          test -f "$root/apps/web/.zpkg.lock"
+          test -d "$root/apps/web/zed_modules/zed-pkg/docker-node-lib"
+
+  shell-contract:
+    name: Bash, Zsh, and terminal help contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: zed-cli
+      - uses: actions/checkout@v4
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Zsh
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends zsh
+      - name: Verify the immutable parser lock and build the real executable
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -F 'rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7"' Cargo.toml
+          grep -F '2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7' Cargo.lock
+          cargo build --locked --bin zed
+      - name: Terminal help exposes the synchronized install contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$GITHUB_WORKSPACE/zed-cli/target/debug/zed"
+          script -qec "$bin --help" "$RUNNER_TEMP/zed-help.txt" >/dev/null
+          script -qec "$bin install --help" "$RUNNER_TEMP/install-help.txt" >/dev/null
+          grep -F -- "completions" "$RUNNER_TEMP/zed-help.txt"
+          grep -F -- "uninstall" "$RUNNER_TEMP/zed-help.txt"
+          grep -F -- "--interactive" "$RUNNER_TEMP/zed-help.txt"
+          grep -F -- "--do-not-write-new-manifest" "$RUNNER_TEMP/install-help.txt"
+          grep -F -- "--allow-no-manifest" "$RUNNER_TEMP/install-help.txt"
+          grep -F -- "--skip-manifest" "$RUNNER_TEMP/install-help.txt"
+          grep -F -- "Do not create a new .zpkg.toml" "$RUNNER_TEMP/install-help.txt"
+          ZED_PKG_ALLOW_NO_MANIFEST=invalid \
+            "$bin" install --allow-no-manifest --help >/dev/null
+          ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=invalid \
+            "$bin" install --do-not-write-new-manifest --help >/dev/null
+          if ZED_PKG_ALLOW_NO_MANIFEST=invalid "$bin" install --help >/dev/null 2>&1
+          then
+            echo "invalid legacy boolean environment value unexpectedly passed startup validation" >&2
+            exit 1
+          fi
+          if ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=invalid "$bin" install --help >/dev/null 2>&1
+          then
+            echo "invalid canonical boolean environment value unexpectedly passed startup validation" >&2
+            exit 1
+          fi
+          if ZED_PKG_INTERACTIVE=invalid "$bin" --help >/dev/null 2>&1
+          then
+            echo "invalid interactive boolean unexpectedly passed startup validation" >&2
+            exit 1
+          fi
+      - name: Bash completion parses, registers, and offers real candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$GITHUB_WORKSPACE/zed-cli/target/debug/zed"
+          completion="$RUNNER_TEMP/zed.bash"
+          "$bin" completions bash > "$completion"
+          bash -n "$completion"
+          grep -F -- "--do-not-write-new-manifest" "$completion"
+          grep -F -- "--allow-no-manifest" "$completion"
+          grep -F -- "--skip-manifest" "$completion"
+          bash --noprofile --norc -c '
+            set -euo pipefail
+            source "$1"
+            complete -p zed | grep -F _zed
+            COMP_WORDS=(zed "")
+            COMP_CWORD=1
+            COMP_LINE="zed "
+            COMP_POINT=${#COMP_LINE}
+            _zed zed "" zed
+            printf "%s\n" "${COMPREPLY[@]}" | grep -Fx install
+          ' bash "$completion"
+      - name: Zsh completion parses, registers, and autoloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$GITHUB_WORKSPACE/zed-cli/target/debug/zed"
+          dir="$RUNNER_TEMP/zfunc"
+          mkdir -p "$dir"
+          "$bin" completions zsh > "$dir/_zed"
+          zsh -n "$dir/_zed"
+          grep -F -- "--do-not-write-new-manifest" "$dir/_zed"
+          grep -F -- "--allow-no-manifest" "$dir/_zed"
+          grep -F -- "--skip-manifest" "$dir/_zed"
+          zsh -f -c '
+            set -eu
+            fpath=("$1" $fpath)
+            autoload -Uz compinit
+            compinit -i -D
+            [[ ${_comps[zed]-} == _zed ]]
+            autoload +X _zed
+            whence -w _zed | grep -F function
+          ' zsh "$dir"

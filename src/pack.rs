@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
@@ -12,6 +12,17 @@ use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{ARCHIVE_ROOT, IGNORE_FILE, PACK_OUT_DIR};
+
+/// One independently publishable artifact produced from a source manifest.
+/// A single-language manifest yields one item with `target = None`; a
+/// polyglot manifest yields one item per declared target. A target rooted at
+/// `dir = "."` is the canonical whole-repository package and is published
+/// under the root manifest's exact `org/name` identity.
+pub struct PackagedTarget {
+    pub target: Option<String>,
+    pub manifest: Manifest,
+    pub packed: PackResult,
+}
 
 pub struct PackResult {
     pub path: PathBuf,
@@ -40,6 +51,142 @@ pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Resu
     pack_format(project, manifest, out_dir, ArtifactFormat::TarGz)
 }
 
+/// Fan a source repository out into independently publishable target packages.
+///
+/// Each language target is re-rooted in an isolated artifact:
+/// `clients/ts/package.json` becomes `pkg/package.json`, not
+/// `pkg/clients/ts/package.json`. Other language directories are never staged
+/// into a target artifact. A target whose `dir = "."` retains the complete
+/// source repository and is canonicalized to the root manifest's exact package
+/// identity, regardless of a legacy target-level `name`. A derived,
+/// single-target `.zpkg.toml` is written at every artifact root.
+pub fn pack_all(
+    project: &Path,
+    manifest: &Manifest,
+    out_dir: Option<&Path>,
+) -> Result<Vec<PackagedTarget>> {
+    if !manifest.is_polyglot() {
+        return Ok(vec![PackagedTarget {
+            target: None,
+            manifest: manifest.clone(),
+            packed: pack(project, manifest, out_dir)?,
+        }]);
+    }
+
+    let output = out_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project.join(PACK_OUT_DIR));
+    let mut packages = Vec::with_capacity(manifest.targets.len());
+
+    for (target, _) in manifest.target_package_names() {
+        let mut derived = manifest
+            .manifest_for_target(&target)
+            .with_context(|| format!("target `{target}` disappeared during packing"))?;
+        let section = manifest
+            .targets
+            .get(&target)
+            .with_context(|| format!("target `{target}` disappeared during packing"))?;
+        let source = project.join(&section.dir);
+        if !source.is_dir() {
+            bail!(
+                "target `{target}` source root `{}` is not a directory",
+                section.dir
+            );
+        }
+
+        // A root target is the repository's canonical package. Older manifests
+        // named it `<package>-repository` to avoid a schema-level name clash;
+        // the emitted artifact must nevertheless use the exact root identity
+        // so `zed install org/repository-name` works as expected.
+        if section.dir == "." {
+            derived.package.name = manifest.package.name.clone();
+        } else if source.join(zed_interfaces::paths::MANIFEST_FILE).exists() {
+            bail!(
+                "target `{target}` contains its own {}; declare packages only in the repository-root manifest",
+                zed_interfaces::paths::MANIFEST_FILE
+            );
+        }
+
+        let staging = tempfile::tempdir().context("create target packing directory")?;
+        copy_files(&source, staging.path(), &derived)?;
+        copy_root_legal_files(project, staging.path())?;
+        fs::write(
+            staging.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            derived.to_toml_string()?,
+        )?;
+
+        let packed = pack_format(
+            staging.path(),
+            &derived,
+            Some(&output),
+            ArtifactFormat::TarGz,
+        )?;
+        packages.push(PackagedTarget {
+            target: Some(target),
+            manifest: derived,
+            packed,
+        });
+    }
+    Ok(packages)
+}
+
+fn copy_files(source: &Path, destination: &Path, manifest: &Manifest) -> Result<()> {
+    let excludes = glob_set(&effective_excludes(
+        &manifest.publish.exclude,
+        manifest.publish.include_readme,
+    ))?;
+    let always: Vec<String> = ALWAYS_INCLUDE
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+    let always = glob_set(&always)?;
+    for entry in WalkDir::new(source)
+        .min_depth(1)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let rel = entry.path().strip_prefix(source)?;
+        if !always.is_match(rel) && excludes.is_match(rel) {
+            continue;
+        }
+        let dest = destination.join(rel);
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(entry.path(), &dest)?;
+    }
+    Ok(())
+}
+
+/// Preserve repository-level license/notice files when a language directory
+/// does not carry its own copy. These are the only source-root files allowed
+/// into a target artifact.
+fn copy_root_legal_files(project: &Path, destination: &Path) -> Result<()> {
+    for entry in fs::read_dir(project)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name();
+        let upper = name.to_string_lossy().to_ascii_uppercase();
+        if !["LICENSE", "LICENCE", "COPYING", "NOTICE"]
+            .iter()
+            .any(|prefix| upper.starts_with(prefix))
+        {
+            continue;
+        }
+        let dest = destination.join(&name);
+        if !dest.exists() {
+            fs::copy(entry.path(), dest)?;
+        }
+    }
+    Ok(())
+}
+
 /// Build the pruned, deterministic artifact for the project in the given
 /// format (`tar.gz` or `zip`). Entries are rooted under `pkg/`, sorted by
 /// path, with zeroed timestamps and ids so the same tree always produces the
@@ -59,6 +206,9 @@ pub fn pack_format(
     if !modules_dir.is_empty() {
         extra.push(format!("{modules_dir}/**"));
     }
+    // Interrupted lifecycle operations retain UUID-v4 rollback data here.
+    // It is local recovery state and must never enter a published artifact.
+    extra.push(format!("{}{}", crate::transaction::STAGING_DIR, "/**"));
     let ignore_file = project.join(IGNORE_FILE);
     if ignore_file.exists() {
         for line in fs::read_to_string(&ignore_file)?.lines() {
@@ -195,4 +345,176 @@ pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
         hasher.update(&buf[..n]);
     }
     Ok((hex::encode(hasher.finalize()), size))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use flate2::read::GzDecoder;
+
+    use super::*;
+
+    fn archive_files(path: &Path) -> BTreeSet<String> {
+        let file = fs::File::open(path).unwrap();
+        let mut archive = tar::Archive::new(GzDecoder::new(file));
+        archive
+            .entries()
+            .unwrap()
+            .map(|entry| entry.unwrap().path().unwrap().to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn polyglot_pack_re_roots_and_isolates_every_target() {
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir_all(project.path().join("clients/ts/src")).unwrap();
+        fs::create_dir_all(project.path().join("clients/java/src")).unwrap();
+        fs::write(
+            project.path().join("clients/ts/package.json"),
+            r#"{"name":"@acme/client"}"#,
+        )
+        .unwrap();
+        fs::write(project.path().join("clients/ts/src/index.js"), "export {};").unwrap();
+        fs::write(
+            project.path().join("clients/java/pom.xml"),
+            "<project></project>",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("clients/java/src/Client.java"),
+            "class Client {}",
+        )
+        .unwrap();
+        fs::write(project.path().join("LICENSE"), "MIT").unwrap();
+
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "clients"
+version = "1.2.3"
+
+[package.repository]
+url = "https://github.com/acme/clients"
+
+[targets.nodejs]
+dir = "clients/ts"
+adapter = "node"
+
+[targets.java]
+dir = "clients/java"
+adapter = "java"
+"#;
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
+
+        let packages = pack_all(project.path(), &manifest, None).unwrap();
+        assert_eq!(packages.len(), 2);
+        assert!(packages.iter().all(|package| package.target.is_some()));
+
+        let node = packages
+            .iter()
+            .find(|package| package.target.as_deref() == Some("nodejs"))
+            .unwrap();
+        assert_eq!(node.manifest.package.name, "clients-nodejs");
+        let node_files = archive_files(&node.packed.path);
+        assert!(node_files.contains("pkg/.zpkg.toml"));
+        assert!(node_files.contains("pkg/package.json"));
+        assert!(node_files.contains("pkg/src/index.js"));
+        assert!(node_files.contains("pkg/LICENSE"));
+        assert!(!node_files.iter().any(|path| path.contains("clients/")));
+        assert!(!node_files.iter().any(|path| path.ends_with("pom.xml")));
+
+        let java = packages
+            .iter()
+            .find(|package| package.target.as_deref() == Some("java"))
+            .unwrap();
+        assert_eq!(java.manifest.package.name, "clients-java");
+        let java_files = archive_files(&java.packed.path);
+        assert!(java_files.contains("pkg/pom.xml"));
+        assert!(java_files.contains("pkg/src/Client.java"));
+        assert!(!java_files.iter().any(|path| path.ends_with("package.json")));
+    }
+
+    #[test]
+    fn whole_repository_target_uses_the_canonical_package_identity() {
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir_all(project.path().join("clients/ts/src")).unwrap();
+        fs::write(
+            project.path().join("clients/ts/package.json"),
+            r#"{"name":"@acme/client"}"#,
+        )
+        .unwrap();
+        fs::write(project.path().join("clients/ts/src/index.js"), "export {};").unwrap();
+        fs::write(project.path().join("LICENSE"), "MIT").unwrap();
+
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "clients"
+version = "1.2.3"
+
+[package.repository]
+url = "https://github.com/acme/clients"
+
+[publish]
+exclude = [".zed-pack/**"]
+
+[targets.repository]
+dir = "."
+name = "clients-repository"
+
+[targets.nodejs]
+dir = "clients/ts"
+adapter = "node"
+"#;
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
+
+        let packages = pack_all(project.path(), &manifest, None).unwrap();
+        assert_eq!(packages.len(), 2);
+
+        let repository = packages
+            .iter()
+            .find(|package| package.target.as_deref() == Some("repository"))
+            .unwrap();
+        assert_eq!(repository.manifest.package.name, "clients");
+        assert!(!repository.manifest.is_polyglot());
+        assert_eq!(
+            repository
+                .packed
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            "acme-clients-1.2.3.tar.gz"
+        );
+
+        let files = archive_files(&repository.packed.path);
+        assert!(files.contains("pkg/.zpkg.toml"));
+        assert!(files.contains("pkg/clients/ts/package.json"));
+        assert!(files.contains("pkg/clients/ts/src/index.js"));
+        assert!(files.contains("pkg/LICENSE"));
+        assert!(
+            !files.iter().any(|path| path.starts_with("pkg/.zed-pack/")),
+            "the pack output directory must never be packed into the repository target"
+        );
+
+        let node = packages
+            .iter()
+            .find(|package| package.target.as_deref() == Some("nodejs"))
+            .unwrap();
+        assert_eq!(node.manifest.package.name, "clients-nodejs");
+        let node_files = archive_files(&node.packed.path);
+        assert!(node_files.contains("pkg/package.json"));
+        assert!(!node_files.iter().any(|path| path.contains("clients/")));
+    }
 }

@@ -1,16 +1,23 @@
-# Cross-platform release builds (zed-docs issue #9). Cutting a `v*` tag
-# builds `zed` for macOS (Apple Silicon + Intel), Linux (arm64 + x64, both
-# gnu and musl for static/containers), and Windows, then uploads per-target
-# archives to the GitHub Release. The Homebrew formula and container images
-# consume these artifacts.
+# Cross-platform release builds (zed-docs issue #9). Pushing a `release/**`
+# branch publishes retained release-candidate artifacts for review. Cutting a
+# `v*` tag builds the same target set and then uploads the archives and
+# checksums to the GitHub Release.
 name: release
+
 on:
   push:
-    tags: ["v*"]
+    branches:
+      - "release/**"
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -21,7 +28,7 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-apple-darwin
-            os: macos-13
+            os: macos-15-intel
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-unknown-linux-gnu
@@ -33,60 +40,91 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: zed-cli
-      - uses: actions/checkout@v4
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
-      - uses: dtolnay/rust-toolchain@stable
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
-      # cross-compile Linux targets without a local cross toolchain
-      - name: Install cross
+      - name: Install pinned cross compiler driver
         if: contains(matrix.target, 'linux')
-        run: cargo install cross --locked || true
-      - name: Build
+        run: cargo install cross --locked --version 0.2.5
+      - name: Build locked release binary
         working-directory: zed-cli
         shell: bash
         run: |
-          if [[ "${{ matrix.target }}" == *linux* ]] && command -v cross >/dev/null; then
-            cross build --release --target ${{ matrix.target }}
+          set -euo pipefail
+          if [[ "${{ matrix.target }}" == *linux* ]]; then
+            cross build --locked --release --target "${{ matrix.target }}"
           else
-            rustup target add ${{ matrix.target }} || true
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --locked --release --target "${{ matrix.target }}"
           fi
-      - name: Package
+      - name: Package binary and checksum
         working-directory: zed-cli
         shell: bash
         run: |
+          set -euo pipefail
           bin=zed
           [[ "${{ matrix.target }}" == *windows* ]] && bin=zed.exe
-          dir=target/${{ matrix.target }}/release
-          name=zed-${{ matrix.target }}
+          dir="target/${{ matrix.target }}/release"
+          name="zed-${{ matrix.target }}"
           mkdir -p dist
           if [[ "${{ matrix.target }}" == *windows* ]]; then
             (cd "$dir" && 7z a "$OLDPWD/dist/$name.zip" "$bin")
+            archive="$name.zip"
           else
             tar -C "$dir" -czf "dist/$name.tar.gz" "$bin"
+            archive="$name.tar.gz"
           fi
-      - uses: actions/upload-artifact@v4
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd dist && sha256sum "$archive" > "$archive.sha256")
+          else
+            (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
+          fi
+          test -s "dist/$archive"
+          test -s "dist/$archive.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: zed-${{ matrix.target }}
           path: zed-cli/dist/*
+          if-no-files-found: error
+          retention-days: 7
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - name: Verify every release checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' checksums < <(find dist -type f -name '*.sha256' -print0 | sort -z)
+          test "${#checksums[@]}" -eq 7
+          for checksum in "${checksums[@]}"; do
+            directory="$(dirname "$checksum")"
+            filename="$(basename "$checksum")"
+            (cd "$directory" && sha256sum --check "$filename")
+          done
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: dist/*
+          fail_on_unmatched_files: true
           generate_release_notes: true

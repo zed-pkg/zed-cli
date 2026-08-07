@@ -1,0 +1,125 @@
+name: blocking store process locks
+
+on:
+  pull_request:
+    paths:
+      - src/store.rs
+      - src/project_lock.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
+      - src/install_graph.rs
+      - src/install_graph/**
+      - tests/store_lock_evented.rs
+      - tests/lock_waiter_process_lock.rs
+      - tests/recursive_install_concurrency.rs
+      - docs/locking.md
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/blocking-store-process-locks.yml
+  push:
+    branches: [main]
+    paths:
+      - src/store.rs
+      - src/project_lock.rs
+      - src/lock_waiter.rs
+      - src/lib.rs
+      - src/install_graph.rs
+      - src/install_graph/**
+      - tests/store_lock_evented.rs
+      - tests/lock_waiter_process_lock.rs
+      - tests/recursive_install_concurrency.rs
+      - docs/locking.md
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/blocking-store-process-locks.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blocking-store-process-locks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  linux-kernel-lock:
+    name: Linux zed-cli locking integration contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust with formatting and lint support
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Verify the immutable standalone zed-lock source
+        run: |
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "a0dc78d385bc3ab553d3027b427f5f1428239c9c" in source, source; print(source)'
+          test ! -d crates/zed-lock
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Prove a separate process blocks until orderly release
+        run: cargo test --locked -p zed-cli --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
+
+      - name: Prove owner termination releases the descriptor lock
+        run: cargo test --locked -p zed-cli --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
+
+      - name: Run the evented waiter against real Linux descriptor locks
+        run: cargo test --locked -p zed-cli --test lock_waiter_process_lock -- --nocapture
+
+      - name: Run event-driven lock queue, isolation, and crash contracts
+        run: cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture
+
+      - name: Run all store process-lock tests
+        run: cargo test --locked -p zed-cli --lib store::tests
+
+      - name: Run recursive acquisition and cache-race tests
+        run: cargo test --locked -p zed-cli --lib install_graph::tests
+
+      - name: Run the bounded recursive HTTP acquisition contract
+        run: cargo test --locked -p zed-cli --test recursive_install_concurrency -- --nocapture
+
+      - name: Deny Rust warnings across zed-cli targets
+        run: cargo clippy --locked -p zed-cli --all-targets -- -D warnings
+
+  macos-kernel-lock:
+    name: macOS zed-cli locking integration contracts
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Verify the immutable standalone zed-lock source
+        run: |
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "a0dc78d385bc3ab553d3027b427f5f1428239c9c" in source, source; print(source)'
+          test ! -d crates/zed-lock
+
+      - name: Run event-driven zed-cli lock queue, isolation, and crash contracts
+        run: cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture

@@ -1,0 +1,115 @@
+name: recursive install windows locking
+
+on:
+  pull_request:
+    paths:
+      - src/install_graph.rs
+      - src/install_graph/**
+      - src/store.rs
+      - src/project_lock.rs
+      - src/lock_waiter.rs
+      - src/terminal_context.rs
+      - src/lib.rs
+      - tests/store_lock_evented.rs
+      - docs/locking.md
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/recursive-install-windows.yml
+  push:
+    branches: [main]
+    paths:
+      - src/install_graph.rs
+      - src/install_graph/**
+      - src/store.rs
+      - src/project_lock.rs
+      - src/lock_waiter.rs
+      - src/terminal_context.rs
+      - src/lib.rs
+      - tests/store_lock_evented.rs
+      - docs/locking.md
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/recursive-install-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recursive-install-windows-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  windows-kernel-lock:
+    name: Windows zed-cli process lock and shared-home races
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out pinned zed-interfaces sibling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust with formatting support
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Verify the immutable standalone zed-lock source
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 --manifest-path zed-cli/Cargo.toml | ConvertFrom-Json
+          $packages = @($metadata.packages | Where-Object { $_.name -eq 'zed-lock' })
+          if ($packages.Count -ne 1) { throw "expected one zed-lock package, found $($packages.Count)" }
+          $source = [string]$packages[0].source
+          if (-not $source.Contains('github.com/zed-pkg/zed-lock') -or -not $source.Contains('a0dc78d385bc3ab553d3027b427f5f1428239c9c')) { throw "unexpected zed-lock source: $source" }
+          if (Test-Path zed-cli/crates/zed-lock) { throw 'in-tree zed-lock copy still exists' }
+          Write-Output $source
+
+      - name: Check formatting
+        run: cargo fmt --all --check --manifest-path zed-cli/Cargo.toml
+
+      - name: Run terminal-context contracts on Windows
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib terminal_context::tests -- --nocapture
+
+      - name: Run event-driven zed-cli lock queue, isolation, and crash contracts
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --test store_lock_evented -- --nocapture
+
+      - name: Prove a separate process blocks on the same artifact lock
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib install_graph::tests::artifact_waiters_block_until_the_owner_releases_the_kernel_lock -- --exact --nocapture
+
+      - name: Prove concurrent prefetches deduplicate a shared artifact
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib install_graph::tests::concurrent_prefetches_share_one_artifact_download -- --exact --nocapture
+
+      - name: Prove recursive and transactional paths share one lock
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib install_graph::tests::legacy_and_recursive_acquisition_paths_share_one_download_lock -- --exact --nocapture
+
+      - name: Prove failed downloads leave no cache publication
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib install_graph::tests::failed_downloads_remove_staging_files_and_never_publish_cache_entries -- --exact --nocapture
+
+      - name: Prove the lower-level store lock blocks across processes
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
+
+      - name: Prove owner termination releases the lower-level store lock
+        run: cargo test --locked --manifest-path zed-cli/Cargo.toml -p zed-cli --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture

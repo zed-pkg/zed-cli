@@ -1,0 +1,100 @@
+name: standalone locked install
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/standalone-install.yml
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/standalone-install.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: standalone-locked-install-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out zed-cli without sibling repositories
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+      - name: Reject dependencies outside the isolated checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e ../zed-interfaces
+          test ! -d crates/zed-lock
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          root = Path.cwd().resolve()
+          pending = [root / "Cargo.toml"]
+          visited = set()
+
+          while pending:
+              manifest_path = pending.pop().resolve()
+              if manifest_path in visited:
+                  continue
+              visited.add(manifest_path)
+              manifest = tomllib.loads(manifest_path.read_text())
+
+              dependency_tables = [
+                  (section, manifest.get(section, {}))
+                  for section in ("dependencies", "dev-dependencies", "build-dependencies")
+              ]
+              for target, target_table in manifest.get("target", {}).items():
+                  for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                      dependency_tables.append(
+                          (f"target.{target}.{section}", target_table.get(section, {}))
+                      )
+
+              for section, dependencies in dependency_tables:
+                  for name, spec in dependencies.items():
+                      if not isinstance(spec, dict) or "path" not in spec:
+                          continue
+                      dependency_dir = (manifest_path.parent / spec["path"]).resolve()
+                      try:
+                          dependency_dir.relative_to(root)
+                      except ValueError as error:
+                          raise SystemExit(
+                              f"{manifest_path}:{section}.{name} escapes the isolated checkout: "
+                              f"{spec['path']} -> {dependency_dir}"
+                          ) from error
+
+                      dependency_manifest = dependency_dir / "Cargo.toml"
+                      if not dependency_manifest.is_file():
+                          raise SystemExit(
+                              f"{manifest_path}:{section}.{name} has no in-checkout Cargo.toml: "
+                              f"{dependency_manifest}"
+                          )
+                      pending.append(dependency_manifest)
+
+          print(f"validated {len(visited)} in-checkout Cargo manifest(s)")
+          PY
+      - name: Verify the immutable standalone zed-lock source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "a0dc78d385bc3ab553d3027b427f5f1428239c9c" in source, source; print(source)'
+      - name: Install and execute the locked CLI from the isolated checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install --path . --locked --root "$RUNNER_TEMP/zed-root"
+          "$RUNNER_TEMP/zed-root/bin/zed" --help >/dev/null

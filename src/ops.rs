@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -6,6 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use zed_interfaces::language::{Ecosystem, Language, detect_ecosystems};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
     BuildSection, Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
@@ -18,9 +19,11 @@ use zed_interfaces::version::{self, Requirement};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
+use crate::interactive;
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, human_size, require_sha256};
+use crate::transaction::ProjectTransaction;
 use crate::vcs::verify_publish_provenance;
 
 pub fn split_key(key: &str) -> Result<(String, String)> {
@@ -53,7 +56,12 @@ fn validate_version_metadata(vm: &VersionMetadata) -> Result<()> {
 // ---------------------------------------------------------------------------
 // init
 
-pub fn init(dir: &Path, org: Option<String>, name: Option<String>) -> Result<()> {
+pub fn init(
+    dir: &Path,
+    org: Option<String>,
+    name: Option<String>,
+    interactive_mode: bool,
+) -> Result<()> {
     let manifest_path = dir.join(MANIFEST_FILE);
     if manifest_path.exists() {
         bail!("{MANIFEST_FILE} already exists in {}", dir.display());
@@ -64,6 +72,13 @@ pub fn init(dir: &Path, org: Option<String>, name: Option<String>) -> Result<()>
             .unwrap_or_else(|| "my-package".to_string())
     });
     let org = org.unwrap_or_else(|| "your-org".to_string());
+    interactive::confirm(
+        interactive_mode,
+        &format!(
+            "create {MANIFEST_FILE} for {org}/{name} in {}",
+            dir.display()
+        ),
+    )?;
     let repo_url = Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(dir)
@@ -105,14 +120,25 @@ exclude = []
     fs::write(&manifest_path, template)?;
 
     let gitignore = dir.join(".gitignore");
-    let ignore_lines = format!("{MODULES_DIR}/\n.zed/\n");
+    let ignore_lines = [
+        format!("{MODULES_DIR}/"),
+        ".zed/".to_string(),
+        format!("{}/", crate::transaction::STAGING_DIR),
+    ];
     if gitignore.exists() {
-        let current = fs::read_to_string(&gitignore)?;
-        if !current.contains(MODULES_DIR) {
-            fs::write(&gitignore, format!("{current}\n{ignore_lines}"))?;
+        let mut current = fs::read_to_string(&gitignore)?;
+        for ignore in &ignore_lines {
+            if !current.lines().any(|line| line.trim() == ignore) {
+                if !current.is_empty() && !current.ends_with('\n') {
+                    current.push('\n');
+                }
+                current.push_str(ignore);
+                current.push('\n');
+            }
         }
+        fs::write(&gitignore, current)?;
     } else {
-        fs::write(&gitignore, ignore_lines)?;
+        fs::write(&gitignore, ignore_lines.join("\n") + "\n")?;
     }
     println!("wrote {MANIFEST_FILE} for {org}/{name}");
     Ok(())
@@ -193,6 +219,51 @@ fn collect_members(root: &Path, globs: &[String]) -> WorkspaceInfo {
     info
 }
 
+fn collect_workspace_links_for_frozen(
+    project: &Path,
+    manifest: &Manifest,
+    workspace: Option<&WorkspaceInfo>,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let Some(workspace) = workspace else {
+        return Ok(BTreeMap::new());
+    };
+
+    let mut links = BTreeMap::new();
+    let mut pending: VecDeque<(String, String)> = manifest
+        .dependencies
+        .iter()
+        .map(|(key, requirement)| (key.clone(), requirement.clone()))
+        .collect();
+
+    while let Some((raw_key, requirement_text)) = pending.pop_front() {
+        let (org, name) = split_key(&raw_key)?;
+        let key = format!("{org}/{name}");
+        let Some(member_dir) = workspace.members.get(&key) else {
+            continue;
+        };
+        let member_manifest = read_manifest(member_dir).with_context(|| {
+            format!(
+                "reading workspace member `{key}` from {}",
+                member_dir.display()
+            )
+        })?;
+        let requirement = Requirement::parse(&requirement_text);
+        if !requirement.matches(&member_manifest.package.version) {
+            bail!(
+                "workspace member {key}@{} does not satisfy `{requirement_text}`",
+                member_manifest.package.version
+            );
+        }
+        if member_dir == project || links.contains_key(&key) {
+            continue;
+        }
+        links.insert(key, member_dir.clone());
+        pending.extend(member_manifest.dependencies);
+    }
+
+    Ok(links)
+}
+
 // ---------------------------------------------------------------------------
 // install
 
@@ -203,14 +274,17 @@ pub struct InstallOutcome {
 
 fn ensure_artifact(reg: &dyn Registry, store: &Store, vm: &VersionMetadata) -> Result<PathBuf> {
     validate_version_metadata(vm)?;
-    if store.has(&vm.sha256) {
-        return Ok(store.pkg_dir(&vm.sha256));
-    }
-    let cached = store.cached_artifact(&vm.sha256);
-    if !cached.exists() {
-        reg.download(vm, &cached)?;
-    }
-    store.add_artifact(&cached, &vm.sha256)
+    crate::install_graph::ensure_artifact(reg, store, vm)
+        .map(|(package_dir, _downloaded)| package_dir)
+}
+
+#[cfg(test)]
+pub(crate) fn legacy_ensure_artifact_for_test(
+    reg: &dyn Registry,
+    store: &Store,
+    vm: &VersionMetadata,
+) -> Result<PathBuf> {
+    ensure_artifact(reg, store, vm)
 }
 
 fn replace_dest(dest: &Path) -> Result<()> {
@@ -238,6 +312,28 @@ fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the requested mode once, before any project output is written.
+/// Windows cannot create Zed's Unix store-backed directory links reliably;
+/// report that platform decision and use the portable ownership model.
+fn effective_install_mode(mode: InstallMode) -> InstallMode {
+    #[cfg(unix)]
+    {
+        mode
+    }
+    #[cfg(not(unix))]
+    {
+        match mode {
+            InstallMode::Symlink => {
+                eprintln!(
+                    "warning: symlink install mode is unavailable on this platform; using copy mode"
+                );
+                InstallMode::Copy
+            }
+            InstallMode::Copy => InstallMode::Copy,
+        }
+    }
+}
+
 fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
     fs::create_dir_all(dest.parent().context("dest has parent")?)?;
     replace_dest(dest)?;
@@ -246,7 +342,7 @@ fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
             #[cfg(unix)]
             std::os::unix::fs::symlink(src, dest)?;
             #[cfg(not(unix))]
-            copy_dir(src, dest)?;
+            bail!("symlink install mode was not normalized before materialization");
         }
         InstallMode::Copy => copy_dir(src, dest)?,
     }
@@ -276,12 +372,20 @@ fn resolve_target(project: &Path, manifest: &Manifest, flag: Option<&str>) -> Op
     detect_target(project)
 }
 
-/// Infer the ecosystem from the files a project keeps at its root. Ordered so
-/// the most specific marker wins when a repo carries several (a Next.js app
-/// with a Dockerfile is still `node`).
-fn detect_target(project: &Path) -> Option<String> {
+/// Infer the ecosystem from the files a project keeps at its root. A native
+/// package-manager manifest is authoritative; source-layout inference is only a
+/// fallback for intentionally pre-manifest project skeletons.
+pub(crate) fn detect_target(project: &Path) -> Option<String> {
+    detect_native_manifest_target(project).or_else(|| detect_structure_target(project))
+}
+
+/// Detect only authoritative native manifests. Manifestless root selection uses
+/// this separately so a nearer `main.go` or `src/main.rs` cannot outrank the
+/// actual `go.mod` or `Cargo.toml` that owns the project.
+pub(crate) fn detect_native_manifest_target(project: &Path) -> Option<String> {
     const MARKERS: &[(&str, &str)] = &[
         ("package.json", "node"),
+        ("tsconfig.json", "node"),
         ("Cargo.toml", "rust"),
         ("go.mod", "go"),
         ("pyproject.toml", "python"),
@@ -296,6 +400,14 @@ fn detect_target(project: &Path) -> Option<String> {
         ("build.gradle.kts", "java"),
         ("Gemfile", "ruby"),
         ("composer.json", "php"),
+        ("Package.swift", "swift"),
+        ("shard.yml", "crystal"),
+        ("dune-project", "ocaml"),
+        ("build.zig.zon", "zig"),
+        ("DESCRIPTION", "r"),
+        // Julia's Project.toml is checked after the more specific markers
+        // above so a repo carrying both is not mistaken for Julia.
+        ("Project.toml", "julia"),
         ("CMakeLists.txt", "cpp"),
     ];
     MARKERS
@@ -304,20 +416,491 @@ fn detect_target(project: &Path) -> Option<String> {
         .map(|(_, target)| (*target).to_string())
 }
 
-/// Pick the ecosystem adapter from what the project looks like: Node
-/// projects resolve from node_modules/, JVM projects need a classpath,
-/// Rust/others use zed_modules/ directly.
-fn detect_adapter(project: &Path) -> Adapter {
-    if project.join("package.json").exists() {
-        Adapter::Node
-    } else if project.join("pom.xml").exists()
-        || project.join("build.gradle").exists()
-        || project.join("build.gradle.kts").exists()
-    {
-        Adapter::Java
-    } else {
-        Adapter::None
+/// Detect bounded source layouts for projects that intentionally do not yet
+/// have their ecosystem manifest. This is weaker evidence than a native
+/// manifest and must never move an install below an authoritative ancestor.
+pub(crate) fn detect_structure_target(project: &Path) -> Option<String> {
+    const STRUCTURE_MARKERS: &[(&str, &str)] = &[
+        ("src/main.rs", "rust"),
+        ("src/lib.rs", "rust"),
+        ("src/index.ts", "node"),
+        ("src/main.ts", "node"),
+        ("src/index.js", "node"),
+        ("src/main.js", "node"),
+        ("main.go", "go"),
+        ("cmd/main.go", "go"),
+        ("main.py", "python"),
+        ("app.py", "python"),
+        ("src/main.py", "python"),
+        ("lib/main.dart", "dart"),
+        ("src/main.gleam", "gleam"),
+        ("src/main/java", "java"),
+        ("src/main/kotlin", "java"),
+    ];
+    STRUCTURE_MARKERS
+        .iter()
+        .find(|(marker, _)| project.join(marker).exists())
+        .map(|(_, target)| (*target).to_string())
+}
+
+/// Pick the ecosystem adapter from the same language inference used for target
+/// slicing so marker-only and structure-only consumer folders agree.
+///
+/// Deriving from `detect_target` rather than a second marker table is what keeps
+/// the two from drifting: a project that resolves the `golang` slice of a
+/// dependency necessarily gets the Go adapter that wires it.
+pub(crate) fn detect_adapter(project: &Path) -> Adapter {
+    match detect_target(project).as_deref() {
+        Some("node") => Adapter::Node,
+        Some("java") => Adapter::Java,
+        Some("go") => Adapter::Go,
+        Some("python") => Adapter::Python,
+        Some("rust") => Adapter::Rust,
+        Some("dart") => Adapter::Dart,
+        // Every other language installs into zed_modules/ and is described in
+        // .zed/paths.json; only these six have native wiring zed can emit.
+        _ => Adapter::None,
     }
+}
+
+fn named_adapter(value: &str) -> Result<Adapter> {
+    match value {
+        "node" => Ok(Adapter::Node),
+        "java" => Ok(Adapter::Java),
+        "go" => Ok(Adapter::Go),
+        "python" => Ok(Adapter::Python),
+        "rust" => Ok(Adapter::Rust),
+        "dart" => Ok(Adapter::Dart),
+        "none" => Ok(Adapter::None),
+        other => bail!(
+            "unsupported install adapter `{other}`; expected one of {}",
+            zed_interfaces::manifest::ADAPTERS.join(", ")
+        ),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn every_manifest_adapter_name_maps_to_an_adapter() {
+    // `ADAPTERS` in zed-interfaces is what validates manifests; this mapping is
+    // what acts on them. If they drift, a manifest passes validation and then
+    // fails at install with "unsupported adapter".
+    for name in zed_interfaces::manifest::ADAPTERS {
+        assert!(
+            named_adapter(name).is_ok(),
+            "manifest accepts adapter `{name}` but the CLI cannot map it"
+        );
+    }
+}
+
+/// Every ecosystem this project's own root files identify. A set, because
+/// polyglot repos are normal: a Rust service with a TypeScript frontend is both
+/// `cargo` and `npm`, and a dependency for either legitimately belongs there.
+///
+/// An unreadable directory yields an empty set, which
+/// [`ecosystem_mismatch`] treats as "cannot verify" rather than "wrong".
+fn project_ecosystems(project: &Path) -> BTreeSet<Ecosystem> {
+    let Ok(entries) = fs::read_dir(project) else {
+        return BTreeSet::new();
+    };
+    let names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    detect_ecosystems(names.iter().map(String::as_str))
+}
+
+/// Names of sibling packages that would suit this project, for a wrong-language
+/// install. Derived locally from the naming convention — `<base>-<language>` —
+/// by swapping the dependency's language suffix for one matching an ecosystem
+/// the project actually has.
+///
+/// These are suggestions, not registry lookups: the message says "try", because
+/// a repo need not publish every language.
+fn sibling_suggestions(
+    dep_name: &str,
+    dep_language: Language,
+    wanted: &BTreeSet<Ecosystem>,
+) -> Vec<String> {
+    let suffix = format!("-{}", dep_language.as_str());
+    let Some(base) = dep_name.strip_suffix(&suffix) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = LANGUAGES_BY_ECOSYSTEM
+        .iter()
+        .filter(|(eco, _)| wanted.contains(eco))
+        .map(|(_, lang)| format!("{base}-{lang}"))
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// The languages worth suggesting per ecosystem — the ones these client repos
+/// actually publish. Deliberately not every [`Language`]: suggesting `-clojure`
+/// to a Gradle user because Clojure is a JVM language would be noise.
+const LANGUAGES_BY_ECOSYSTEM: &[(Ecosystem, &str)] = &[
+    (Ecosystem::Npm, "nodejs"),
+    (Ecosystem::Jvm, "java"),
+    (Ecosystem::Jvm, "kotlin"),
+    (Ecosystem::Gomod, "golang"),
+    (Ecosystem::Pypi, "python"),
+    (Ecosystem::Cargo, "rust"),
+    (Ecosystem::Pub, "dart"),
+    (Ecosystem::Gem, "ruby"),
+    (Ecosystem::Composer, "php"),
+    (Ecosystem::Nuget, "csharp"),
+    (Ecosystem::Swiftpm, "swift"),
+    (Ecosystem::Hex, "gleam"),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct GoDirectiveVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+fn parse_go_directive(text: &str) -> Option<(GoDirectiveVersion, String)> {
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("go") {
+            continue;
+        }
+        let token = fields.next()?;
+        let mut parts = token.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next().map(str::parse).transpose().ok()?.unwrap_or(0);
+        if parts.next().is_some() {
+            return None;
+        }
+        return Some((
+            GoDirectiveVersion {
+                major,
+                minor,
+                patch,
+            },
+            token.to_string(),
+        ));
+    }
+    None
+}
+
+/// A go.work file must declare a Go version at least as new as every module it
+/// includes. Start from Zed's compatibility floor and select the highest
+/// numeric `go` directive from the consumer and installed package modules.
+fn required_go_work_version(project: &Path, paths: &[PathBuf]) -> String {
+    let mut selected = (
+        GoDirectiveVersion {
+            major: 1,
+            minor: 21,
+            patch: 0,
+        },
+        "1.21".to_string(),
+    );
+    for root in std::iter::once(project).chain(paths.iter().map(PathBuf::as_path)) {
+        let Ok(document) = fs::read_to_string(root.join("go.mod")) else {
+            continue;
+        };
+        let Some(candidate) = parse_go_directive(&document) else {
+            continue;
+        };
+        if candidate.0 > selected.0 {
+            selected = candidate;
+        }
+    }
+    selected.1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CargoPatchEntry {
+    package: String,
+    config_path: String,
+}
+
+fn cargo_package_name(root: &Path) -> Result<Option<String>> {
+    let manifest_path = root.join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let document = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let document: toml::Value = toml::from_str(&document)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let Some(package) = document.get("package") else {
+        return Ok(None);
+    };
+    let package = package
+        .as_table()
+        .with_context(|| format!("{}: [package] must be a table", manifest_path.display()))?;
+    let name = package
+        .get("name")
+        .and_then(toml::Value::as_str)
+        .with_context(|| format!("{}: [package].name is required", manifest_path.display()))?;
+    if name.trim().is_empty() {
+        bail!(
+            "{}: [package].name must not be empty",
+            manifest_path.display()
+        );
+    }
+    Ok(Some(name.to_string()))
+}
+
+fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
+    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+    for path in paths {
+        let Some(package) = cargo_package_name(path)? else {
+            eprintln!(
+                "warning: {} has no root [package].name; emitting a Cargo paths override without a crates.io patch entry",
+                path.display()
+            );
+            continue;
+        };
+        let config_path = relative_to(project, path);
+        if let Some(existing) = entries.get(&package)
+            && existing != &config_path
+        {
+            bail!(
+                "installed Rust crates `{}` and `{}` both declare package name `{package}`; Cargo cannot patch one crate name to two paths",
+                existing,
+                config_path
+            );
+        }
+        entries.insert(package, config_path);
+    }
+    Ok(entries
+        .into_iter()
+        .map(|(package, config_path)| CargoPatchEntry {
+            package,
+            config_path,
+        })
+        .collect())
+}
+
+fn toml_basic_string(value: &str) -> Result<String> {
+    serde_json::to_string(value).context("quoting a generated Cargo configuration string")
+}
+
+/// Emit the native wiring file for each adapter that needs one.
+///
+/// Go and Python get zero-touch integration: both honor an environment variable
+/// (`GOWORK`, `PYTHONPATH`), so pointing the toolchain at the generated file is
+/// the whole setup. Cargo and pub have **no** such override — nothing outside
+/// `Cargo.toml` / `pubspec.yaml` can add a dependency path — so those two get a
+/// fragment plus the one line to paste. Saying so is better than emitting a
+/// file that silently does nothing.
+fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>>) -> Result<()> {
+    let zed_dir = project.join(".zed");
+    for (adapter, paths) in roots {
+        if paths.is_empty() {
+            continue;
+        }
+        let mut rel: Vec<String> = paths.iter().map(|p| relative_to(project, p)).collect();
+        rel.sort();
+        rel.dedup();
+        fs::create_dir_all(&zed_dir)?;
+        match adapter {
+            Adapter::Go => {
+                // A go.work `use` block is the only non-invasive way to add
+                // modules to a Go build; editing go.mod `replace` lines would
+                // mean rewriting a file the user owns. Go resolves every path
+                // relative to the go.work file itself, which lives in `.zed/`,
+                // not relative to the process working directory.
+                let mut work_paths: Vec<String> = std::iter::once(project)
+                    .chain(paths.iter().map(PathBuf::as_path))
+                    .map(|path| {
+                        pathdiff_relative(&zed_dir, path)
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .collect();
+                work_paths.sort();
+                work_paths.dedup();
+                let version = required_go_work_version(project, paths);
+                let mut doc = format!("go {version}\n\nuse (\n");
+                for path in &work_paths {
+                    doc.push_str(&format!("\t{path}\n"));
+                }
+                doc.push_str(")\n");
+                let path = zed_dir.join("go.work");
+                fs::write(&path, doc)?;
+                println!(
+                    "wrote {} ({} module(s)); use: GOWORK=\"$(pwd)/.zed/go.work\" go build ...",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Python => {
+                let path = zed_dir.join("pythonpath");
+                fs::write(&path, format!("{}\n", rel.join(":")))?;
+                println!(
+                    "wrote {} ({} path(s)); use: PYTHONPATH=\"$(cat .zed/pythonpath)\" python ...",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Rust => {
+                // Cargo's `paths` override can replace a package that already
+                // participates in resolution, but it cannot introduce an
+                // unpublished crate by itself. Pair it with config-level
+                // `[patch.crates-io]` entries so a normal version dependency can
+                // resolve to the installed Zed crate without touching the
+                // consumer's Cargo.toml.
+                let mut config_paths: Vec<String> = paths
+                    .iter()
+                    .map(|path| relative_to(project, path))
+                    .collect();
+                config_paths.sort();
+                config_paths.dedup();
+                let patches = cargo_patch_entries(project, paths)?;
+
+                let mut doc = String::from(
+                    "# Generated by `zed install` for this project root.\n\
+                     # Copy or merge this fragment into .cargo/config.toml.\n\
+                     # The consumer's Cargo.toml remains unchanged.\n",
+                );
+                doc.push_str("paths = [\n");
+                for path in &config_paths {
+                    doc.push_str(&format!("    {},\n", toml_basic_string(path)?));
+                }
+                doc.push_str("]\n");
+                if !patches.is_empty() {
+                    doc.push_str("\n[patch.crates-io]\n");
+                    for patch in &patches {
+                        doc.push_str(&format!(
+                            "{} = {{ path = {} }}\n",
+                            toml_basic_string(&patch.package)?,
+                            toml_basic_string(&patch.config_path)?,
+                        ));
+                    }
+                }
+                let path = zed_dir.join("cargo-paths.toml");
+                fs::write(&path, doc)?;
+                println!(
+                    "wrote {} ({} crate(s)); copy or merge into .cargo/config.toml",
+                    path.display(),
+                    config_paths.len()
+                );
+            }
+            Adapter::Dart => {
+                let mut doc = String::from(
+                    "# Generated by `zed install`. pub has no environment-variable\n\
+                     # path override; merge these entries under `dependencies:` in\n\
+                     # your pubspec.yaml.\n",
+                );
+                for p in &rel {
+                    let name = Path::new(p)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| p.clone());
+                    doc.push_str(&format!("{name}:\n  path: {p}\n"));
+                }
+                let path = zed_dir.join("pub-deps.yaml");
+                fs::write(&path, doc)?;
+                println!(
+                    "wrote {} ({} package(s)); pub needs this merged into pubspec.yaml manually",
+                    path.display(),
+                    rel.len()
+                );
+            }
+            Adapter::Auto | Adapter::None | Adapter::Node | Adapter::Java => {}
+        }
+    }
+    Ok(())
+}
+
+/// One installed package, as recorded in `.zed/paths.json`.
+struct WiredPackage {
+    key: String,
+    version: String,
+    language: Language,
+    ecosystem: Ecosystem,
+    path: PathBuf,
+}
+
+/// Write `.zed/paths.json`: every installed package with its language,
+/// ecosystem and project-relative path.
+///
+/// This is the adapter-independent contract. zed federates ~30 ecosystems but
+/// can only ship first-class wiring for a handful, so rather than leave the
+/// rest with nothing, every install emits one machine-readable index any build
+/// system — Makefile, CMake, sbt, a shell script — can read to find what was
+/// installed. Written for *all* adapters, including node and java, so tooling
+/// never has to care which one ran.
+fn write_paths_index(project: &Path, modules_dir: &str, packages: &[WiredPackage]) -> Result<()> {
+    let entries: Vec<serde_json::Value> = packages
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "package": p.key,
+                "version": p.version,
+                "language": p.language.as_str(),
+                "ecosystem": p.ecosystem.as_str(),
+                "path": relative_to(project, &p.path),
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "modules_dir": modules_dir,
+        "packages": entries,
+    });
+    let path = project.join(".zed").join("paths.json");
+    fs::create_dir_all(path.parent().context("paths.json parent")?)?;
+    fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&doc)?))?;
+    Ok(())
+}
+
+/// `path` expressed relative to `project` when it sits underneath it, else
+/// absolute. Keeps the emitted wiring files portable across the symlink/copy
+/// modes and usable from inside a container build.
+fn relative_to(project: &Path, path: &Path) -> String {
+    path.strip_prefix(project)
+        .map(|rel| rel.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string_lossy().to_string())
+}
+
+/// The error text for installing a single-language package into a project that
+/// cannot consume it — `None` when the install is fine.
+///
+/// This is the guard that makes per-language packages safe: without it a Node
+/// project can `zed add acme/acme-clients-java` and get a tree of `.java` files
+/// its toolchain will never look at, with no complaint at any point.
+///
+/// Deliberately permissive in two cases, because a false rejection is worse
+/// than a missed catch:
+///   * the dependency claims no ecosystem (`universal`) — nothing to contradict;
+///   * the project has no recognizable ecosystem at all (a fresh dir, a plain
+///     Makefile) — unverifiable, so it is allowed through.
+fn ecosystem_mismatch(
+    dep_key: &str,
+    dep_name: &str,
+    dep_language: Language,
+    dep_ecosystem: Ecosystem,
+    project: &BTreeSet<Ecosystem>,
+) -> Option<String> {
+    if dep_ecosystem.is_default() || project.is_empty() || project.contains(&dep_ecosystem) {
+        return None;
+    }
+    let found: Vec<&str> = project.iter().map(|e| e.as_str()).collect();
+    let mut message = format!(
+        "`{dep_key}` targets the `{dep_ecosystem}` ecosystem, but this project looks like `{}`",
+        found.join("`, `")
+    );
+    let suggestions = sibling_suggestions(dep_name, dep_language, project);
+    if !suggestions.is_empty() {
+        let (org, _) = dep_key.split_once('/').unwrap_or(("", dep_key));
+        let listed: Vec<String> = suggestions
+            .iter()
+            .map(|name| format!("{org}/{name}"))
+            .collect();
+        message.push_str(&format!("\n  try instead: {}", listed.join(" or ")));
+    }
+    message.push_str(
+        "\n  if this is deliberate, re-run with --allow-ecosystem-mismatch \
+         (ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH=1)",
+    );
+    Some(message)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -329,6 +912,59 @@ pub fn install(
     adapter: Adapter,
     allow_build: bool,
     target: Option<&str>,
+    allow_ecosystem_mismatch: bool,
+) -> Result<InstallOutcome> {
+    install_with_frozen_policy(
+        project,
+        cfg,
+        frozen,
+        mode,
+        adapter,
+        allow_build,
+        target,
+        true,
+        allow_ecosystem_mismatch,
+    )
+}
+
+/// Restore every package pinned by an existing lockfile when there is no
+/// persistent consumer manifest. The lock still verifies package identities,
+/// versions, registry metadata, and artifact hashes; only manifest-drift
+/// validation is inapplicable because no manifest exists to compare against.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn install_frozen_lock_only(
+    project: &Path,
+    cfg: &Config,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+    allow_ecosystem_mismatch: bool,
+) -> Result<InstallOutcome> {
+    install_with_frozen_policy(
+        project,
+        cfg,
+        true,
+        mode,
+        adapter,
+        allow_build,
+        target,
+        false,
+        allow_ecosystem_mismatch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_with_frozen_policy(
+    project: &Path,
+    cfg: &Config,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    target: Option<&str>,
+    validate_manifest_requirements: bool,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
     let store = Store::new(&cfg.home);
     // Serialize against concurrent `zed install` processes (other terminals,
@@ -343,7 +979,134 @@ pub fn install(
         adapter,
         allow_build,
         target,
+        validate_manifest_requirements,
+        allow_ecosystem_mismatch,
     )
+}
+
+fn validate_frozen_manifest_requirements(
+    manifest: &Manifest,
+    lock: &Lockfile,
+    workspace: Option<&WorkspaceInfo>,
+    enforce: bool,
+) -> Result<()> {
+    if !enforce {
+        return Ok(());
+    }
+    for (key, req_str) in &manifest.dependencies {
+        let (org, name) = split_key(key)?;
+        if workspace.is_some_and(|ws| ws.members.contains_key(key)) {
+            continue;
+        }
+        let entry = lock
+            .find(&org, &name)
+            .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
+        let req = Requirement::parse(req_str);
+        if !req.matches(&entry.version) {
+            bail!(
+                "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
+                entry.version
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Write a newly resolved lockfile. A frozen install is a verifier and
+/// materializer only: it must preserve the caller's exact lock bytes,
+/// including comments and provenance fields newer than this CLI knows.
+fn write_resolved_lockfile(
+    lock_path: &Path,
+    frozen: bool,
+    resolved: &BTreeMap<String, VersionMetadata>,
+    registry: &str,
+) -> Result<()> {
+    if frozen {
+        return Ok(());
+    }
+    let mut lock = Lockfile::default();
+    for vm in resolved.values() {
+        lock.upsert(LockedPackage {
+            org: vm.org.clone(),
+            name: vm.name.clone(),
+            version: vm.version.clone(),
+            sha256: vm.sha256.clone(),
+            size: vm.size,
+            format: vm.format,
+            vcs_tag: vm.vcs_tag.clone(),
+            vcs_commit: vm.vcs_commit.clone(),
+            source: registry.to_string(),
+        });
+    }
+    fs::write(lock_path, lock.to_toml_string()?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn frozen_lock_write_preserves_exact_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let lock_path = dir.path().join(LOCKFILE_FILE);
+    let original = b"# retained provenance and formatting
+version = 1
+";
+    fs::write(&lock_path, original).unwrap();
+
+    write_resolved_lockfile(
+        &lock_path,
+        true,
+        &BTreeMap::new(),
+        "file:///temporary-registry-mirror",
+    )
+    .unwrap();
+
+    assert_eq!(fs::read(&lock_path).unwrap(), original);
+}
+
+fn locked_version_metadata(locked: &LockedPackage) -> VersionMetadata {
+    VersionMetadata {
+        org: locked.org.clone(),
+        name: locked.name.clone(),
+        version: locked.version.clone(),
+        sha256: locked.sha256.clone(),
+        size: locked.size,
+        format: locked.format,
+        vcs_tag: locked.vcs_tag.clone(),
+        vcs_commit: locked.vcs_commit.clone(),
+        // Never consumed while the store or verified cache owns the
+        // bytes. If local verification fails, ensure_artifact falls
+        // back to the configured registry and reports that failure.
+        download_url: String::new(),
+        published_at: "1970-01-01T00:00:00Z".to_string(),
+        yanked: false,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn frozen_local_metadata_preserves_lock_identity_and_provenance() {
+    let locked = LockedPackage {
+        org: "acme".to_string(),
+        name: "tool".to_string(),
+        version: "1.2.3".to_string(),
+        sha256: "a".repeat(64),
+        size: 42,
+        format: zed_interfaces::artifact::ArtifactFormat::TarGz,
+        vcs_tag: "v1.2.3".to_string(),
+        vcs_commit: Some("b".repeat(40)),
+        source: "https://registry.invalid".to_string(),
+    };
+    let metadata = locked_version_metadata(&locked);
+    assert_eq!(metadata.org, locked.org);
+    assert_eq!(metadata.name, locked.name);
+    assert_eq!(metadata.version, locked.version);
+    assert_eq!(metadata.sha256, locked.sha256);
+    assert_eq!(metadata.size, locked.size);
+    assert_eq!(metadata.format, locked.format);
+    assert_eq!(metadata.vcs_tag, locked.vcs_tag);
+    assert_eq!(metadata.vcs_commit, locked.vcs_commit);
+    assert!(metadata.download_url.is_empty());
+    assert!(!metadata.yanked);
 }
 
 /// Install body, called with the store lock already held. Split out so the
@@ -359,13 +1122,32 @@ fn install_locked(
     adapter: Adapter,
     allow_build: bool,
     target: Option<&str>,
+    validate_manifest_requirements: bool,
+    allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    let mode = effective_install_mode(mode);
+    let manifest = read_manifest(project)?;
+    let configured_adapter = manifest
+        .install
+        .adapter
+        .as_deref()
+        .map(named_adapter)
+        .transpose()?;
+    // CLI selection wins, then the consumer manifest, then project markers.
+    // If all three leave us at `none`, each dependency may still request its
+    // own adapter. Per-target publish manifests use that last path so a
+    // `*-nodejs` package wires itself into node_modules even in a freshly
+    // initialized project with no package.json yet.
+    let use_dependency_adapters = adapter == Adapter::Auto
+        && configured_adapter.is_none()
+        && detect_adapter(project) == Adapter::None;
     let adapter = match adapter {
-        Adapter::Auto => detect_adapter(project),
+        Adapter::Auto => configured_adapter.unwrap_or_else(|| detect_adapter(project)),
         other => other,
     };
-    let manifest = read_manifest(project)?;
     let resolved_target = resolve_target(project, &manifest, target);
+    // Computed once: the guard consults it per dependency.
+    let project_ecos = project_ecosystems(project);
     let reg = registry_for(&cfg.registry)?;
     let lock_path = project.join(LOCKFILE_FILE);
 
@@ -377,25 +1159,14 @@ fn install_locked(
         let text = fs::read_to_string(&lock_path)
             .with_context(|| format!("--frozen requires {LOCKFILE_FILE}"))?;
         let lock = Lockfile::parse(&text)?;
-        for (key, req_str) in &manifest.dependencies {
-            let (org, name) = split_key(key)?;
-            if workspace
-                .as_ref()
-                .is_some_and(|ws| ws.members.contains_key(key))
-            {
-                continue;
-            }
-            let entry = lock
-                .find(&org, &name)
-                .with_context(|| format!("--frozen: `{key}` is not in {LOCKFILE_FILE}"))?;
-            let req = Requirement::parse(req_str);
-            if !req.matches(&entry.version) {
-                bail!(
-                    "--frozen: lockfile pins {key}@{} which no longer satisfies `{req_str}`",
-                    entry.version
-                );
-            }
-        }
+        validate_frozen_manifest_requirements(
+            &manifest,
+            &lock,
+            workspace.as_ref(),
+            validate_manifest_requirements,
+        )?;
+        workspace_links =
+            collect_workspace_links_for_frozen(project, &manifest, workspace.as_ref())?;
         for locked in &lock.packages {
             if !is_slug(&locked.org) || !is_slug(&locked.name) {
                 bail!(
@@ -405,16 +1176,25 @@ fn install_locked(
                 );
             }
             require_sha256(&locked.sha256)?;
-            let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
-            if vm.sha256 != locked.sha256 {
-                bail!(
-                    "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
-                    locked.full_name(),
-                    locked.version,
-                    locked.sha256,
-                    vm.sha256
-                );
-            }
+            let vm = if store.has(&locked.sha256) || store.cached_artifact(&locked.sha256).is_file()
+            {
+                // The lock already carries every immutable field needed
+                // to authenticate locally cached bytes. Avoid turning an
+                // exact frozen replay into a registry availability check.
+                locked_version_metadata(locked)
+            } else {
+                let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
+                if vm.sha256 != locked.sha256 {
+                    bail!(
+                        "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
+                        locked.full_name(),
+                        locked.version,
+                        locked.sha256,
+                        vm.sha256
+                    );
+                }
+                vm
+            };
             validate_version_metadata(&vm)?;
             resolved.insert(locked.full_name(), vm);
         }
@@ -431,13 +1211,24 @@ fn install_locked(
             if let Some(ws) = &workspace
                 && let Some(member_dir) = ws.members.get(&key)
             {
+                let member_manifest = read_manifest(member_dir).with_context(|| {
+                    format!(
+                        "reading workspace member `{key}` from {}",
+                        member_dir.display()
+                    )
+                })?;
+                let requirement = Requirement::parse(&req_str);
+                if !requirement.matches(&member_manifest.package.version) {
+                    bail!(
+                        "workspace member {key}@{} does not satisfy `{req_str}`",
+                        member_manifest.package.version
+                    );
+                }
                 if member_dir != project && !workspace_links.contains_key(&key) {
                     workspace_links.insert(key.clone(), member_dir.clone());
-                    if let Ok(member_manifest) = read_manifest(member_dir) {
-                        for (sub_key, sub_req) in member_manifest.dependencies {
-                            let (sub_org, sub_name) = split_key(&sub_key)?;
-                            queue.push_back((sub_org, sub_name, sub_req));
-                        }
+                    for (sub_key, sub_req) in member_manifest.dependencies {
+                        let (sub_org, sub_name) = split_key(&sub_key)?;
+                        queue.push_back((sub_org, sub_name, sub_req));
                     }
                 }
                 continue;
@@ -498,11 +1289,55 @@ fn install_locked(
 
     let modules_dir = manifest.modules_dir();
     let modules = project.join(modules_dir);
+    let previous_lock = fs::read_to_string(&lock_path)
+        .ok()
+        .and_then(|text| Lockfile::parse(&text).ok())
+        .unwrap_or_default();
+    let had_node_adapter = project.join(".zed").join("node_path").is_file();
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "materialize {} resolved package(s) in {}",
+            resolved.len() + workspace_links.len(),
+            modules.display()
+        ),
+    )?;
+    let mut transaction = ProjectTransaction::begin(project)?;
+    eprintln!(
+        "transaction {}: staging install rollback data",
+        transaction.id()
+    );
+    transaction.backup(&modules)?;
+    transaction.backup(&lock_path)?;
+    transaction.backup(&project.join(".zed").join("node_path"))?;
+    transaction.backup(&project.join(".zed").join("classpath"))?;
+    if had_node_adapter {
+        for locked in &previous_lock.packages {
+            transaction.backup(
+                &project
+                    .join("node_modules")
+                    .join(format!("@{}", locked.org))
+                    .join(&locked.name),
+            )?;
+        }
+    }
+
     let mut installed = Vec::new();
     let mut shas = Vec::new();
     let mut jars: Vec<String> = Vec::new();
     let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();
+    let mut used_node_adapter = false;
+    let mut used_java_adapter = false;
+    // Adapters whose wiring is one project-level file rather than per-package
+    // links: the installed roots each one needs to list.
+    let mut wired_roots: BTreeMap<Adapter, Vec<PathBuf>> = BTreeMap::new();
+    // Every installed package, for the adapter-independent `.zed/paths.json`.
+    let mut wired_packages: Vec<WiredPackage> = Vec::new();
     for vm in resolved.values() {
+        interactive::confirm(
+            cfg.interactive,
+            &format!("install {}/{}@{}", vm.org, vm.name, vm.version),
+        )?;
         let pkg_dir = ensure_artifact(reg.as_ref(), store, vm)?;
         let pkg_manifest = read_manifest(&pkg_dir).ok();
         // A [build] step (the package's own, or the consumer's override)
@@ -523,6 +1358,22 @@ fn install_locked(
             )?,
             None => pkg_dir.clone(),
         };
+        // A per-language package (e.g. `acme-clients-java`) states the
+        // ecosystem it is for. Refuse to drop it into a project that has no
+        // such toolchain: the files would sit in zed_modules/ unread, and the
+        // consumer would debug a "missing" client that installed "fine".
+        if !allow_ecosystem_mismatch
+            && let Some(pm) = pkg_manifest.as_ref()
+            && let Some(problem) = ecosystem_mismatch(
+                key.as_str(),
+                &vm.name,
+                pm.package.language,
+                pm.package.ecosystem(),
+                &project_ecos,
+            )
+        {
+            bail!("{problem}");
+        }
         // Polyglot dependency: narrow the link source to this consumer's
         // language subtree, so a Python project gets `python/` at its import
         // root instead of a tree with the Node and Go sources beside it.
@@ -555,15 +1406,28 @@ fn install_locked(
                 bins.insert(bin_name.clone(), dest.join(rel_target));
             }
         }
-        match adapter {
+        let dependency_adapter = if use_dependency_adapters {
+            pkg_manifest
+                .as_ref()
+                .and_then(|pm| pm.install.adapter.as_deref())
+                .map(named_adapter)
+                .transpose()?
+                .unwrap_or(adapter)
+        } else {
+            adapter
+        };
+        match dependency_adapter {
             Adapter::Node => {
+                used_node_adapter = true;
                 let node_dest = project
                     .join("node_modules")
                     .join(format!("@{}", vm.org))
                     .join(&vm.name);
+                transaction.backup(&node_dest)?;
                 link_or_copy(&link_src, &node_dest, mode)?;
             }
             Adapter::Java => {
+                used_java_adapter = true;
                 // Classpath entries point at the project-local link so the
                 // file works in both symlink and copy (container) modes.
                 for entry in walkdir::WalkDir::new(&dest)
@@ -576,24 +1440,139 @@ fn install_locked(
                     }
                 }
             }
+            // Go, Python, Rust and Dart need no per-package linking: their
+            // wiring is one project-level file listing the installed roots,
+            // written after the loop. Record the root and move on.
+            Adapter::Go => wired_roots
+                .entry(Adapter::Go)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Python => wired_roots
+                .entry(Adapter::Python)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Rust => wired_roots
+                .entry(Adapter::Rust)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Dart => wired_roots
+                .entry(Adapter::Dart)
+                .or_default()
+                .push(dest.clone()),
             Adapter::Auto | Adapter::None => {}
         }
+        wired_packages.push(WiredPackage {
+            key: format!("{}/{}", vm.org, vm.name),
+            version: vm.version.clone(),
+            language: pkg_manifest
+                .as_ref()
+                .map(|pm| pm.package.language)
+                .unwrap_or_default(),
+            ecosystem: pkg_manifest
+                .as_ref()
+                .map(|pm| pm.package.ecosystem())
+                .unwrap_or_default(),
+            path: dest.clone(),
+        });
         installed.push((format!("{}/{}", vm.org, vm.name), vm.version.clone()));
         shas.push(vm.sha256.clone());
     }
     for (key, member_dir) in &workspace_links {
+        interactive::confirm(cfg.interactive, &format!("link workspace package {key}"))?;
         let (org, name) = split_key(key)?;
-        let dest = modules.join(&org).join(&name);
-        link_or_copy(member_dir, &dest, InstallMode::Symlink)?;
-        if let Ok(member_manifest) = read_manifest(member_dir) {
-            for (bin_name, rel_target) in &member_manifest.bin {
-                bins.insert(bin_name.clone(), dest.join(rel_target));
-            }
+        let member_manifest = read_manifest(member_dir).with_context(|| {
+            format!(
+                "reading workspace member `{key}` from {}",
+                member_dir.display()
+            )
+        })?;
+        if !allow_ecosystem_mismatch
+            && let Some(problem) = ecosystem_mismatch(
+                key,
+                &name,
+                member_manifest.package.language,
+                member_manifest.package.ecosystem(),
+                &project_ecos,
+            )
+        {
+            bail!("{problem}");
         }
+
+        let dest = modules.join(&org).join(&name);
+        // Workspace dependencies obey the same ownership decision as registry
+        // packages. Copy mode must remain self-contained after the member source
+        // directory leaves the Docker/OCI build context.
+        link_or_copy(member_dir, &dest, mode)?;
+        for (bin_name, rel_target) in &member_manifest.bin {
+            bins.insert(bin_name.clone(), dest.join(rel_target));
+        }
+
+        let dependency_adapter = if use_dependency_adapters {
+            member_manifest
+                .install
+                .adapter
+                .as_deref()
+                .map(named_adapter)
+                .transpose()?
+                .unwrap_or(adapter)
+        } else {
+            adapter
+        };
+        match dependency_adapter {
+            Adapter::Node => {
+                used_node_adapter = true;
+                let node_dest = project
+                    .join("node_modules")
+                    .join(format!("@{org}"))
+                    .join(&name);
+                transaction.backup(&node_dest)?;
+                link_or_copy(member_dir, &node_dest, mode)?;
+            }
+            Adapter::Java => {
+                used_java_adapter = true;
+                for entry in walkdir::WalkDir::new(&dest)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|entry| entry.ok())
+                {
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "jar")
+                    {
+                        jars.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+            Adapter::Go => wired_roots
+                .entry(Adapter::Go)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Python => wired_roots
+                .entry(Adapter::Python)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Rust => wired_roots
+                .entry(Adapter::Rust)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Dart => wired_roots
+                .entry(Adapter::Dart)
+                .or_default()
+                .push(dest.clone()),
+            Adapter::Auto | Adapter::None => {}
+        }
+        wired_packages.push(WiredPackage {
+            key: key.clone(),
+            version: "workspace".to_string(),
+            language: member_manifest.package.language,
+            ecosystem: member_manifest.package.ecosystem(),
+            path: dest,
+        });
         installed.push((key.clone(), "workspace".to_string()));
     }
     hoist_bins(&modules, &bins, mode)?;
-    if adapter == Adapter::Java {
+    if used_java_adapter {
         jars.sort();
         let classpath_file = project.join(".zed").join("classpath");
         fs::create_dir_all(classpath_file.parent().context("classpath parent")?)?;
@@ -604,7 +1583,7 @@ fn install_locked(
             jars.len()
         );
     }
-    if adapter == Adapter::Node {
+    if used_node_adapter {
         // Complement npm rather than replace it: the per-package
         // node_modules/@<org>/<name> links above already resolve, and this
         // NODE_PATH points Node at the zed tree root so `require("<org>/<name>")`
@@ -617,23 +1596,24 @@ fn install_locked(
             node_path_file.display()
         );
     }
+    write_toolchain_wiring(project, &wired_roots)?;
+    write_paths_index(project, modules_dir, &wired_packages)?;
 
-    let mut lock = Lockfile::default();
-    for vm in resolved.values() {
-        lock.upsert(LockedPackage {
-            org: vm.org.clone(),
-            name: vm.name.clone(),
-            version: vm.version.clone(),
-            sha256: vm.sha256.clone(),
-            size: vm.size,
-            format: vm.format,
-            vcs_tag: vm.vcs_tag.clone(),
-            vcs_commit: vm.vcs_commit.clone(),
-            source: cfg.registry.clone(),
-        });
-    }
-    fs::write(&lock_path, lock.to_toml_string()?)?;
+    let transaction_summary = if frozen {
+        format!(
+            "preserve {LOCKFILE_FILE} byte-for-byte, update project references, and commit transaction {}",
+            transaction.id()
+        )
+    } else {
+        format!(
+            "write {LOCKFILE_FILE}, update project references, and commit transaction {}",
+            transaction.id()
+        )
+    };
+    interactive::confirm(cfg.interactive, &transaction_summary)?;
+    write_resolved_lockfile(&lock_path, frozen, &resolved, &cfg.registry)?;
     store.record_project(project, shas)?;
+    transaction.commit()?;
 
     for (name, version) in &installed {
         println!("installed {name}@{version}");
@@ -660,6 +1640,231 @@ fn install_locked(
         }
     );
     Ok(InstallOutcome { installed })
+}
+
+/// Remove materialized dependencies without changing the manifest or lock.
+///
+/// Keeping `.zpkg.lock` is intentional: `zed install --frozen` is the exact
+/// inverse and proves uninstall/reinstall reproducibility. Every project-tree
+/// mutation is covered by a UUID-v4 transaction.
+pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
+    let lock_path = project.join(LOCKFILE_FILE);
+    let text = fs::read_to_string(&lock_path)
+        .with_context(|| format!("zed uninstall requires {LOCKFILE_FILE}"))?;
+    let lock = Lockfile::parse(&text).with_context(|| format!("invalid {LOCKFILE_FILE}"))?;
+
+    // Workspace packages deliberately do not appear in the artifact lock: the
+    // lock records immutable registry hashes, while workspace members are live
+    // source projections. Reconstruct the active workspace graph from the same
+    // manifest boundary used by frozen install so a workspace-only project can
+    // still uninstall and later restore its exact materialized graph.
+    let manifest = read_manifest(project).ok();
+    let workspace = find_workspace(project);
+    let workspace_links = match manifest.as_ref() {
+        Some(manifest) => {
+            collect_workspace_links_for_frozen(project, manifest, workspace.as_ref())?
+        }
+        None => BTreeMap::new(),
+    };
+    let total_materialized = lock.packages.len() + workspace_links.len();
+    if total_materialized == 0 {
+        println!("nothing to uninstall");
+        return Ok(());
+    }
+
+    let mut targets = BTreeSet::new();
+    if specs.is_empty() {
+        targets.extend(lock.packages.iter().map(LockedPackage::full_name));
+        targets.extend(workspace_links.keys().cloned());
+    } else {
+        for spec in specs {
+            if spec.contains('@') {
+                bail!("uninstall accepts package identities without versions (expected org/name)");
+            }
+            let (org, name) = split_key(spec)?;
+            let key = format!("{org}/{name}");
+            if workspace_links.contains_key(&key) {
+                bail!(
+                    "selective uninstall of workspace package `{key}` is not supported; run `zed uninstall` without package arguments to remove the complete materialized graph while retaining {LOCKFILE_FILE}"
+                );
+            }
+            if lock.find(&org, &name).is_none() {
+                bail!("{key} is neither pinned by {LOCKFILE_FILE} nor an active workspace package");
+            }
+            targets.insert(key);
+        }
+    }
+
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "uninstall {} package(s) from {} while retaining {LOCKFILE_FILE}",
+            targets.len(),
+            project.display()
+        ),
+    )?;
+
+    let store = Store::new(&cfg.home);
+    let _install_lock = store.install_lock()?;
+    let modules_dir = manifest
+        .as_ref()
+        .map(|manifest| manifest.modules_dir().to_string())
+        .unwrap_or_else(|| MODULES_DIR.to_string());
+    let modules = project.join(&modules_dir);
+    let had_node_adapter = project.join(".zed").join("node_path").is_file();
+    let had_java_adapter = project.join(".zed").join("classpath").is_file();
+    let uninstall_all = targets.len() == total_materialized;
+
+    let mut transaction = ProjectTransaction::begin(project)?;
+    eprintln!(
+        "transaction {}: staging uninstall rollback data",
+        transaction.id()
+    );
+    if uninstall_all {
+        transaction.backup(&modules)?;
+        // These files are all generated projections of the materialized graph.
+        // Remove them transactionally on a full uninstall so no toolchain sees
+        // stale package paths while the retained lock waits for frozen restore.
+        for generated in [
+            "paths.json",
+            "node_path",
+            "classpath",
+            "go.work",
+            "pythonpath",
+            "cargo-paths.toml",
+            "pub-deps.yaml",
+        ] {
+            transaction.backup(&project.join(".zed").join(generated))?;
+        }
+    } else {
+        transaction.backup(&modules.join(BIN_DIR))?;
+        if had_java_adapter {
+            transaction.backup(&project.join(".zed").join("classpath"))?;
+        }
+    }
+
+    for key in &targets {
+        interactive::confirm(cfg.interactive, &format!("unmaterialize {key}"))?;
+        let (org, name) = split_key(key)?;
+        if !uninstall_all {
+            transaction.backup(&modules.join(&org).join(&name))?;
+        }
+        if had_node_adapter {
+            transaction.backup(
+                &project
+                    .join("node_modules")
+                    .join(format!("@{org}"))
+                    .join(&name),
+            )?;
+        }
+    }
+
+    let remaining: Vec<&LockedPackage> = lock
+        .packages
+        .iter()
+        .filter(|package| !targets.contains(&package.full_name()))
+        .collect();
+    let remaining_workspace = workspace_links
+        .keys()
+        .filter(|key| !targets.contains(*key))
+        .count();
+    if !uninstall_all {
+        let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut mode = InstallMode::Copy;
+        let mut jars = Vec::new();
+        for package in &remaining {
+            let installed = modules.join(&package.org).join(&package.name);
+            if fs::symlink_metadata(&installed)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                mode = InstallMode::Symlink;
+            }
+            if let Ok(package_manifest) = read_manifest(&installed) {
+                for (name, target) in package_manifest.bin {
+                    bins.insert(name, installed.join(target));
+                }
+            }
+            if had_java_adapter && installed.exists() {
+                for entry in walkdir::WalkDir::new(&installed)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|entry| entry.ok())
+                {
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "jar")
+                    {
+                        jars.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        // Selective uninstall currently targets registry packages only. Keep
+        // workspace bins and Java entries in the rebuilt aggregate projections.
+        for key in workspace_links.keys().filter(|key| !targets.contains(*key)) {
+            let (org, name) = split_key(key)?;
+            let installed = modules.join(&org).join(&name);
+            if fs::symlink_metadata(&installed)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                mode = InstallMode::Symlink;
+            }
+            if let Ok(package_manifest) = read_manifest(&installed) {
+                for (bin_name, target) in package_manifest.bin {
+                    bins.insert(bin_name, installed.join(target));
+                }
+            }
+            if had_java_adapter && installed.exists() {
+                for entry in walkdir::WalkDir::new(&installed)
+                    .follow_links(true)
+                    .into_iter()
+                    .filter_map(|entry| entry.ok())
+                {
+                    if entry
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "jar")
+                    {
+                        jars.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+        hoist_bins(&modules, &bins, mode)?;
+        if had_java_adapter && !jars.is_empty() {
+            jars.sort();
+            jars.dedup();
+            let classpath = project.join(".zed").join("classpath");
+            fs::create_dir_all(classpath.parent().context("classpath parent")?)?;
+            fs::write(classpath, jars.join(":") + "\n")?;
+        }
+    }
+
+    let remaining_total = remaining.len() + remaining_workspace;
+    interactive::confirm(
+        cfg.interactive,
+        &format!(
+            "record {remaining_total} remaining installed package(s) and commit transaction {}",
+            transaction.id()
+        ),
+    )?;
+    store.record_project(
+        project,
+        remaining
+            .iter()
+            .map(|package| package.sha256.clone())
+            .collect(),
+    )?;
+    transaction.commit()?;
+
+    for key in &targets {
+        println!("uninstalled {key}");
+    }
+    println!(
+        "{remaining_total} package(s) remain materialized; {LOCKFILE_FILE} retained for frozen reinstall"
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -748,9 +1953,15 @@ fn build_artifact(
                     url: "https://localhost/zed-build/staging".to_string(),
                 },
                 keywords: Vec::new(),
+                // A synthetic staging manifest, not a published package: no
+                // language claim, so nothing ecosystem-gates it.
+                language: Default::default(),
+                ecosystem: Default::default(),
             },
             dependencies: build_deps,
             build_dependencies: BTreeMap::new(),
+            native_dependencies: Default::default(),
+            hooks: Default::default(),
             publish: PublishSection::default(),
             scripts: ScriptsSection::default(),
             bin: BTreeMap::new(),
@@ -774,6 +1985,13 @@ fn build_artifact(
             // Build dependencies are toolchain, not the consumer's language:
             // take them whole rather than slicing them to a target.
             None,
+            // The staging manifest is synthesized from build_deps a few lines
+            // up, so requirement validation is trivially satisfied; keep it on
+            // so a genuinely unsatisfiable build dep still surfaces here.
+            true,
+            // Not ecosystem-gated, for the same reason as the target above: a
+            // Java codegen tool is a legitimate build dep of a Python package.
+            true,
         )?;
     }
 
@@ -908,10 +2126,14 @@ pub fn build_cmd(project: &Path, cfg: &Config, force: bool) -> Result<()> {
 
 /// Hoist package-declared executables into `zed_modules/.bin/<name>` so
 /// `zed run` and PATH-prepending wrappers find them without polluting the OS
-/// PATH. Symlink installs get relative symlinks (they survive moving the
-/// project); copy installs get real file copies so container image layers
-/// stay self-contained.
-fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, mode: InstallMode) -> Result<()> {
+/// PATH.
+///
+/// Hoisted bins are deliberately project-owned copies in both install modes.
+/// In symlink mode the package target may resolve into the immutable global
+/// store; chmod'ing that target would mutate the shared store inode for every
+/// consumer. Copying the usually-small executable and setting permissions on
+/// the destination preserves the store while retaining runnable bins.
+fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, _mode: InstallMode) -> Result<()> {
     if bins.is_empty() {
         return Ok(());
     }
@@ -925,38 +2147,15 @@ fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, mode: InstallMod
             );
             continue;
         }
+        let destination = bin_dir.join(name);
+        replace_dest(&destination)?;
+        fs::copy(target, &destination)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let metadata = fs::metadata(target)?;
-            let mut permissions = metadata.permissions();
-            if permissions.mode() & 0o111 == 0 {
-                permissions.set_mode(0o755);
-                let _ = fs::set_permissions(target, permissions);
-            }
-        }
-        let link = bin_dir.join(name);
-        replace_dest(&link)?;
-        match mode {
-            InstallMode::Symlink => {
-                #[cfg(unix)]
-                {
-                    let rel = pathdiff_relative(&bin_dir, target);
-                    std::os::unix::fs::symlink(&rel, &link)?;
-                }
-                #[cfg(not(unix))]
-                fs::copy(target, &link).map(|_| ())?;
-            }
-            InstallMode::Copy => {
-                fs::copy(target, &link)?;
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    let mut perms = fs::metadata(&link)?.permissions();
-                    perms.set_mode(perms.mode() | 0o755);
-                    fs::set_permissions(&link, perms)?;
-                }
-            }
+            let mut permissions = fs::metadata(&destination)?.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            fs::set_permissions(&destination, permissions)?;
         }
     }
     Ok(())
@@ -1050,7 +2249,7 @@ pub fn yank(cfg: &Config, spec: &str, undo: bool) -> Result<()> {
     let (key, version) = spec.split_once('@').context("expected org/name@version")?;
     let (org, name) = split_key(key)?;
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
+    let token = cfg.resolve_token()?;
     let response = reg.yank(&org, &name, version, !undo, token.as_deref())?;
     println!(
         "{} {}/{}@{}",
@@ -1113,12 +2312,86 @@ pub fn gc(cfg: &Config, older_than: &str, dry_run: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 // add / remove
 
+/// Candidate package names to try for `name`, in priority order, when routing a
+/// multi-language repo to the variant this project can build against.
+///
+/// A repo publishing per-language packages has no package at its bare name — a
+/// polyglot `zed publish` emits only `<name>-<language>`. So `zed add
+/// acme/acme-clients` in a Gradle project should reach `acme-clients-java`, and
+/// `zed add acme/acme-clients-node` should reach `-nodejs` when that is the
+/// spelling the author chose. Both are the same operation: append or swap a
+/// language suffix and see what exists.
+///
+/// Returns names *excluding* `name` itself; the caller tries the exact name
+/// first so an existing package always wins over any inference.
+fn language_route_candidates(name: &str, project_language: Option<&str>) -> Vec<String> {
+    let mut candidates = Vec::new();
+    let mut push = |candidate: String| {
+        if candidate != name && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    };
+
+    // Case 1: the name already ends in a language this project shares — the
+    // author just spelled it differently (`-node` vs `-nodejs`, `-go` vs
+    // `-golang`). Offer every synonym of that language.
+    for (token, language) in KNOWN_LANGUAGE_TOKENS {
+        if let Some(base) = name.strip_suffix(&format!("-{token}")) {
+            for (other, other_language) in KNOWN_LANGUAGE_TOKENS {
+                if other_language == language {
+                    push(format!("{base}-{other}"));
+                }
+            }
+        }
+    }
+
+    // Case 2: a bare repo name plus what this project is. Try the canonical
+    // token first, then its synonyms, so `-nodejs` beats `-js`.
+    if let Some(detected) = project_language
+        && let Some(language) = Language::from_token(detected)
+        && !language.is_default()
+    {
+        push(format!("{name}-{}", language.as_str()));
+        for (token, token_language) in KNOWN_LANGUAGE_TOKENS {
+            if *token_language == language {
+                push(format!("{name}-{token}"));
+            }
+        }
+    }
+    candidates
+}
+
+/// Suffix spellings worth probing, paired with the language they mean. Only the
+/// forms a package author plausibly publishes under — not every alias
+/// [`Language::from_token`] accepts, since each entry costs a registry lookup.
+const KNOWN_LANGUAGE_TOKENS: &[(&str, Language)] = &[
+    ("nodejs", Language::Nodejs),
+    ("node", Language::Nodejs),
+    ("typescript", Language::Nodejs),
+    ("ts", Language::Nodejs),
+    ("js", Language::Nodejs),
+    ("golang", Language::Golang),
+    ("go", Language::Golang),
+    ("python", Language::Python),
+    ("py", Language::Python),
+    ("java", Language::Java),
+    ("kotlin", Language::Kotlin),
+    ("rust", Language::Rust),
+    ("dart", Language::Dart),
+    ("ruby", Language::Ruby),
+    ("php", Language::Php),
+    ("csharp", Language::Csharp),
+    ("dotnet", Language::Csharp),
+    ("swift", Language::Swift),
+    ("gleam", Language::Gleam),
+];
+
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let (rest, req) = match spec.split_once('@') {
         Some((rest, req)) => (rest.to_string(), Some(req.to_string())),
         None => (spec.to_string(), None),
     };
-    let (org, name) = split_key(&rest)?;
+    let (org, mut name) = split_key(&rest)?;
     let req = match req {
         Some(req) => {
             if req.trim().is_empty() {
@@ -1129,7 +2402,48 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
         }
         None => {
             let reg = registry_for(&cfg.registry)?;
-            let pkg = reg.get_package(&org, &name)?;
+            // Exact name first: an existing package always beats inference.
+            let pkg = match reg.get_package(&org, &name) {
+                Ok(pkg) => pkg,
+                Err(original) => {
+                    // Nothing published under that name. Route to the language
+                    // variant this project can actually consume, rather than
+                    // making the user work out the suffix themselves.
+                    let detected = detect_target(project);
+                    let candidates = language_route_candidates(&name, detected.as_deref());
+                    let routed = candidates
+                        .iter()
+                        .find_map(|candidate| {
+                            reg.get_package(&org, candidate)
+                                .ok()
+                                .map(|pkg| (candidate.clone(), pkg))
+                        })
+                        .ok_or_else(|| {
+                            if candidates.is_empty() {
+                                original
+                            } else {
+                                anyhow::anyhow!(
+                                    "no package `{org}/{name}`; also tried {} for this project",
+                                    candidates
+                                        .iter()
+                                        .map(|c| format!("`{org}/{c}`"))
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                )
+                            }
+                        })?;
+                    println!(
+                        "{org}/{name} is not published; using {org}/{} for this project{}",
+                        routed.0,
+                        detected
+                            .as_deref()
+                            .map(|d| format!(" ({d})"))
+                            .unwrap_or_default()
+                    );
+                    name = routed.0;
+                    routed.1
+                }
+            };
             let latest = pkg
                 .latest
                 .with_context(|| format!("{org}/{name} has no published versions"))?;
@@ -1144,19 +2458,33 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     manifest
         .dependencies
         .insert(format!("{org}/{name}"), req.clone());
-    write_manifest(project, &manifest)?;
-    println!("added {org}/{name} = \"{req}\"");
-    install(
-        project,
-        cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-        false,
-        // Re-install after the manifest edit; the target comes from
-        // [install].target or project inference, same as a bare `zed install`.
-        None,
+    interactive::confirm(
+        cfg.interactive,
+        &format!("add {org}/{name} = \"{req}\" to {MANIFEST_FILE}"),
     )?;
+    let manifest_text = manifest.to_toml_string()?;
+    // Install against the proposed manifest in memory. The persistent
+    // manifest changes only after the transactional install succeeds.
+    crate::config::with_manifest_override(project, manifest_text, || {
+        install(
+            project,
+            cfg,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+            // Re-install after the manifest edit; the target comes from
+            // [install].target or project inference, same as a bare `zed install`.
+            None,
+            false,
+        )
+        .map(|_| ())
+    })?;
+    let mut manifest_transaction = ProjectTransaction::begin(project)?;
+    manifest_transaction.backup(&project.join(MANIFEST_FILE))?;
+    write_manifest(project, &manifest)?;
+    manifest_transaction.commit()?;
+    println!("added {org}/{name} = \"{req}\"");
     Ok(())
 }
 
@@ -1170,41 +2498,65 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     {
         bail!("{org}/{name} is not a dependency");
     }
+    interactive::confirm(
+        cfg.interactive,
+        &format!("remove {org}/{name} from {MANIFEST_FILE} and reinstall"),
+    )?;
+    let manifest_text = manifest.to_toml_string()?;
+    crate::config::with_manifest_override(project, manifest_text, || {
+        install(
+            project,
+            cfg,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+            // Re-install after the manifest edit; the target comes from
+            // [install].target or project inference, same as a bare `zed install`.
+            None,
+            false,
+        )
+        .map(|_| ())
+    })?;
+    let mut manifest_transaction = ProjectTransaction::begin(project)?;
+    manifest_transaction.backup(&project.join(MANIFEST_FILE))?;
     write_manifest(project, &manifest)?;
+    manifest_transaction.commit()?;
     // Unlink from wherever install put it ([install].dir, default zed_modules),
     // otherwise a relocated tree keeps a stale copy of a removed dependency.
     let dest = project.join(manifest.modules_dir()).join(&org).join(&name);
     replace_dest(&dest)?;
     println!("removed {org}/{name}");
-    install(
-        project,
-        cfg,
-        false,
-        InstallMode::Symlink,
-        Adapter::None,
-        false,
-        // Re-install after the manifest edit; the target comes from
-        // [install].target or project inference, same as a bare `zed install`.
-        None,
-    )?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // pack / publish
 
-pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<PackResult> {
+pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<pack::PackagedTarget>> {
     let manifest = read_manifest(project)?;
-    let result = pack::pack(project, &manifest, out)?;
-    println!("packed {}", result.path.display());
-    println!(
-        "  sha256 {}\n  size {} ({} files, {} excluded by publish rules)",
-        result.sha256,
-        human_size(result.size),
-        result.file_count,
-        result.excluded_count
-    );
-    Ok(result)
+    let packages = pack::pack_all(project, &manifest, out)?;
+    for package in &packages {
+        println!(
+            "packed {}@{}{}",
+            package.manifest.full_name(),
+            package.manifest.package.version,
+            package
+                .target
+                .as_deref()
+                .map(|target| format!(" (target {target})"))
+                .unwrap_or_default()
+        );
+        println!("  {}", package.packed.path.display());
+        println!(
+            "  sha256 {}\n  size {} ({} files, {} excluded by publish rules)",
+            package.packed.sha256,
+            human_size(package.packed.size),
+            package.packed.file_count,
+            package.packed.excluded_count
+        );
+    }
+    Ok(packages)
 }
 
 pub fn build_publish_meta(
@@ -1240,28 +2592,62 @@ pub fn publish(
         Some(verify_publish_provenance(vcs, project, &tag, allow_dirty)?)
     };
 
-    let packed = pack_cmd(project, None)?;
-    let meta = build_publish_meta(&manifest, &packed, commit);
+    let packages = pack_cmd(project, None)?;
 
     if dry_run {
-        println!(
-            "dry run: would publish {}@{} (tag {}, sha256 {}) to {}",
-            manifest.full_name(),
-            manifest.package.version,
-            meta.vcs_tag,
-            meta.sha256,
-            cfg.registry
-        );
+        for package in &packages {
+            let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
+            println!(
+                "dry run: would publish {}@{} (tag {}, sha256 {}) to {}",
+                package.manifest.full_name(),
+                package.manifest.package.version,
+                meta.vcs_tag,
+                meta.sha256,
+                cfg.registry
+            );
+        }
         return Ok(());
     }
 
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
-    let response = reg.publish(&meta, &packed.path, token.as_deref())?;
-    println!(
-        "published {}/{}@{} to {}",
-        response.org, response.name, response.version, cfg.registry
-    );
+    let token = cfg.resolve_token()?;
+    for package in &packages {
+        let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
+        let identity = &package.manifest.package;
+        // Multi-package releases cannot be a single HTTP transaction. Make
+        // retries safe instead: an already-published byte-identical target is
+        // accepted, while a same-version/different-hash target remains an
+        // immutable-version error.
+        if let Ok(existing) = reg.get_version(&identity.org, &identity.name, &identity.version) {
+            if existing.sha256 == meta.sha256 {
+                println!(
+                    "already published {}/{}@{} with identical sha256; skipping",
+                    identity.org, identity.name, identity.version
+                );
+                continue;
+            }
+            bail!(
+                "{}/{}@{} already exists with sha256 {}; refusing to replace it with {}",
+                identity.org,
+                identity.name,
+                identity.version,
+                existing.sha256,
+                meta.sha256
+            );
+        }
+        interactive::confirm(
+            cfg.interactive,
+            &format!(
+                "publish {}/{}@{} (sha256 {}) to {}",
+                identity.org, identity.name, identity.version, meta.sha256, cfg.registry
+            ),
+        )?;
+        let response = reg.publish(&meta, &package.packed.path, token.as_deref())?;
+        println!(
+            "published {}/{}@{} to {}",
+            response.org, response.name, response.version, cfg.registry
+        );
+    }
     Ok(())
 }
 
@@ -1321,13 +2707,62 @@ pub fn org_claim(cfg: &Config, slug: &str) -> Result<()> {
         bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
     }
     let reg = registry_for(&cfg.registry)?;
-    let token = cfg.resolve_token();
+    let token = cfg.resolve_token()?;
     let response = reg.claim_org(slug, token.as_deref())?;
     if response.created {
         println!("claimed org `{}`", response.slug);
     } else {
         println!("org `{}` already exists", response.slug);
     }
+    Ok(())
+}
+
+/// `zed org audit <slug>` — print the org's audit trail, newest first
+/// (owner-scoped; zed-docs issue #7 governance).
+pub fn org_audit(cfg: &Config, slug: &str, limit: Option<u64>) -> Result<()> {
+    if !zed_interfaces::manifest::is_slug(slug) {
+        bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
+    }
+    let reg = registry_for(&cfg.registry)?;
+    let token = cfg.resolve_token()?;
+    let log = reg.audit_log(slug, limit, token.as_deref())?;
+    if log.entries.is_empty() {
+        println!("no audit entries for org `{}`", log.org);
+        return Ok(());
+    }
+    // Widths from the data so columns line up without truncating real values.
+    let action_w = log
+        .entries
+        .iter()
+        .map(|e| e.action.len())
+        .max()
+        .unwrap_or(6);
+    let actor_w = log
+        .entries
+        .iter()
+        .map(|e| e.actor_token_name.len() + e.actor_role.len() + 2)
+        .max()
+        .unwrap_or(10);
+    for entry in &log.entries {
+        let actor = format!("{}({})", entry.actor_token_name, entry.actor_role);
+        println!(
+            "{}  {:<action_w$}  {:<actor_w$}  {}{}",
+            entry.at,
+            entry.action,
+            actor,
+            entry.subject,
+            entry
+                .detail
+                .as_deref()
+                .map(|d| format!("  [{d}]"))
+                .unwrap_or_default()
+        );
+    }
+    println!(
+        "{} entr{}",
+        log.entries.len(),
+        if log.entries.len() == 1 { "y" } else { "ies" }
+    );
     Ok(())
 }
 
@@ -1407,6 +2842,256 @@ mod tests {
     }
 
     #[test]
+    fn go_workspace_paths_are_relative_to_the_generated_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package).unwrap();
+        let roots = BTreeMap::from([(Adapter::Go, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
+        assert!(document.contains("\t..\n"), "{document}");
+        assert!(
+            document.contains("\t../zed_modules/acme/tool\n"),
+            "{document}"
+        );
+        assert!(!document.contains("\t./\n"), "{document}");
+        assert!(!document.contains("\t./zed_modules"), "{document}");
+    }
+
+    #[test]
+    fn go_workspace_uses_the_highest_module_go_directive() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let first = project.join("zed_modules/acme/first");
+        let second = project.join("zed_modules/acme/second");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(
+            project.join("go.mod"),
+            r#"module example.com/app
+
+go 1.22
+"#,
+        )
+        .unwrap();
+        fs::write(
+            first.join("go.mod"),
+            r#"module example.com/first
+
+go 1.21
+"#,
+        )
+        .unwrap();
+        fs::write(
+            second.join("go.mod"),
+            r#"module example.com/second
+
+go 1.24.1 // minimum toolchain
+"#,
+        )
+        .unwrap();
+        let roots = BTreeMap::from([(Adapter::Go, vec![first, second])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let document = fs::read_to_string(project.join(".zed/go.work")).unwrap();
+        assert_eq!(document.lines().next(), Some("go 1.24.1"), "{document}");
+    }
+
+    #[test]
+    fn malformed_go_directives_do_not_lower_the_safe_default() {
+        assert_eq!(required_go_work_version(Path::new("/missing"), &[]), "1.21");
+        assert!(parse_go_directive("module example.com/app go latest").is_none());
+        assert!(parse_go_directive("go 1").is_none());
+    }
+
+    #[test]
+    fn rust_cargo_config_introduces_an_unpublished_crate_by_package_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "tool-crate"
+version = "1.2.3"
+edition = "2021"
+"#,
+        )
+        .unwrap();
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots).unwrap();
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&generated).unwrap();
+        assert_eq!(parsed["paths"][0].as_str(), Some("zed_modules/acme/tool"));
+        assert_eq!(
+            parsed["patch"]["crates-io"]["tool-crate"]["path"].as_str(),
+            Some("zed_modules/acme/tool")
+        );
+        assert!(generated.contains("merge this fragment into .cargo/config.toml"));
+    }
+
+    #[test]
+    fn rust_cargo_config_rejects_two_paths_for_one_crate_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("consumer");
+        let first = project.join("zed_modules/acme/first");
+        let second = project.join("zed_modules/acme/second");
+        for package in [&first, &second] {
+            fs::create_dir_all(package).unwrap();
+            fs::write(
+                package.join("Cargo.toml"),
+                r#"[package]
+name = "duplicate-crate"
+version = "1.0.0"
+"#,
+            )
+            .unwrap();
+        }
+        let roots = BTreeMap::from([(Adapter::Rust, vec![first, second])]);
+
+        let error = write_toolchain_wiring(&project, &roots)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate-crate"), "{error}");
+        assert!(error.contains("two paths"), "{error}");
+    }
+
+    #[test]
+    fn frozen_workspace_resolution_expands_transitive_members_and_validates_versions() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let app = root.join("apps/cli");
+        let utils = root.join("packages/utils");
+        let core = root.join("packages/core");
+        for directory in [&app, &utils, &core] {
+            fs::create_dir_all(directory).unwrap();
+        }
+
+        fs::write(
+            root.join(MANIFEST_FILE),
+            r#"[package]
+org = "zedtest"
+name = "workspace-root"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/workspace-root"
+
+[workspace]
+members = ["packages/*", "apps/*"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            core.join(MANIFEST_FILE),
+            r#"[package]
+org = "zedtest"
+name = "ws-core"
+version = "1.2.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/ws-core"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            utils.join(MANIFEST_FILE),
+            r#"[package]
+org = "zedtest"
+name = "ws-utils"
+version = "1.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/ws-utils"
+
+[dependencies]
+"zedtest/ws-core" = "^1"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            app.join(MANIFEST_FILE),
+            r#"[package]
+org = "zedtest"
+name = "ws-cli"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/ws-cli"
+
+[dependencies]
+"zedtest/ws-utils" = "^1"
+"#,
+        )
+        .unwrap();
+
+        let manifest = read_manifest(&app).unwrap();
+        let workspace = find_workspace(&app).unwrap();
+        let links = collect_workspace_links_for_frozen(&app, &manifest, Some(&workspace)).unwrap();
+        assert_eq!(
+            links.keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "zedtest/ws-core".to_string(),
+                "zedtest/ws-utils".to_string()
+            ]
+        );
+        assert_eq!(links["zedtest/ws-core"], core);
+        assert_eq!(links["zedtest/ws-utils"], utils);
+
+        let incompatible = manifest
+            .to_toml_string()
+            .unwrap()
+            .replace("\"^1\"", "\"^2\"");
+        fs::write(app.join(MANIFEST_FILE), incompatible).unwrap();
+        let manifest = read_manifest(&app).unwrap();
+        let error = collect_workspace_links_for_frozen(&app, &manifest, Some(&workspace))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ws-utils@1.1.0"), "{error}");
+        assert!(error.contains("does not satisfy `^2`"), "{error}");
+    }
+
+    #[test]
+    fn lock_only_frozen_restore_skips_only_the_missing_manifest_comparison() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "consumer"
+name = "app"
+version = "0.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://localhost/consumer/app"
+
+[dependencies]
+"acme/http-kit" = "^1"
+"#,
+        )
+        .unwrap();
+        let empty_lock = Lockfile::default();
+
+        let enforced = validate_frozen_manifest_requirements(&manifest, &empty_lock, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(enforced.contains("acme/http-kit"));
+        assert!(
+            validate_frozen_manifest_requirements(&manifest, &empty_lock, None, false,).is_ok()
+        );
+    }
+
+    #[test]
     fn split_key_accepts_org_name_and_keeps_nested_slashes_in_name() {
         assert_eq!(
             split_key("acme/http-kit").unwrap(),
@@ -1424,5 +3109,233 @@ mod tests {
         for bad in ["noslash", "/name", "org/", "/"] {
             assert!(split_key(bad).is_err(), "`{bad}` must not split");
         }
+    }
+
+    fn ecos(list: &[Ecosystem]) -> BTreeSet<Ecosystem> {
+        list.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_matching_ecosystem_installs_without_complaint() {
+        assert!(
+            ecosystem_mismatch(
+                "acme/acme-clients-java",
+                "acme-clients-java",
+                Language::Java,
+                Ecosystem::Jvm,
+                &ecos(&[Ecosystem::Jvm]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_wrong_language_package_is_refused_and_names_the_right_one() {
+        // The core guard: a Java client in a Node project would sit in
+        // zed_modules/ unread, so this must fail loudly and point at the
+        // sibling that would work.
+        let msg = ecosystem_mismatch(
+            "acme/acme-clients-java",
+            "acme-clients-java",
+            Language::Java,
+            Ecosystem::Jvm,
+            &ecos(&[Ecosystem::Npm]),
+        )
+        .expect("a jvm package in an npm-only project must be refused");
+        assert!(msg.contains("`jvm`"), "{msg}");
+        assert!(msg.contains("`npm`"), "{msg}");
+        assert!(msg.contains("acme/acme-clients-nodejs"), "{msg}");
+        // The escape hatch is discoverable from the error itself.
+        assert!(msg.contains("--allow-ecosystem-mismatch"), "{msg}");
+    }
+
+    #[test]
+    fn a_polyglot_project_accepts_a_package_for_any_of_its_ecosystems() {
+        // A Rust service with a TS frontend legitimately consumes either.
+        let project = ecos(&[Ecosystem::Cargo, Ecosystem::Npm]);
+        for (name, lang, eco) in [
+            ("acme-clients-nodejs", Language::Nodejs, Ecosystem::Npm),
+            ("acme-clients-rust", Language::Rust, Ecosystem::Cargo),
+        ] {
+            assert!(
+                ecosystem_mismatch(&format!("acme/{name}"), name, lang, eco, &project).is_none(),
+                "{name} must install in a cargo+npm project"
+            );
+        }
+        // …but still not a third one it has no toolchain for.
+        assert!(
+            ecosystem_mismatch(
+                "acme/acme-clients-golang",
+                "acme-clients-golang",
+                Language::Golang,
+                Ecosystem::Gomod,
+                &project,
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn an_untagged_package_is_never_gated() {
+        // Every package published before language tagging claims no ecosystem;
+        // gating those would break existing installs everywhere.
+        assert!(
+            ecosystem_mismatch(
+                "acme/http-kit",
+                "http-kit",
+                Language::Universal,
+                Ecosystem::Universal,
+                &ecos(&[Ecosystem::Npm]),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_project_with_no_recognizable_ecosystem_is_not_gated() {
+        // Unverifiable is not the same as wrong: a fresh directory or a plain
+        // Makefile project must still be able to install anything.
+        assert!(
+            ecosystem_mismatch(
+                "acme/acme-clients-java",
+                "acme-clients-java",
+                Language::Java,
+                Ecosystem::Jvm,
+                &BTreeSet::new(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn jvm_projects_are_offered_both_jvm_language_variants() {
+        let msg = ecosystem_mismatch(
+            "acme/acme-clients-nodejs",
+            "acme-clients-nodejs",
+            Language::Nodejs,
+            Ecosystem::Npm,
+            &ecos(&[Ecosystem::Jvm]),
+        )
+        .expect("npm package in a jvm project must be refused");
+        assert!(msg.contains("acme/acme-clients-java"), "{msg}");
+        assert!(msg.contains("acme/acme-clients-kotlin"), "{msg}");
+    }
+
+    #[test]
+    fn a_package_not_following_the_suffix_convention_still_errors_without_suggestions() {
+        // A single-language package whose name does not end in its language
+        // cannot have siblings guessed, but must still be refused.
+        let msg = ecosystem_mismatch(
+            "acme/jackson-helpers",
+            "jackson-helpers",
+            Language::Java,
+            Ecosystem::Jvm,
+            &ecos(&[Ecosystem::Npm]),
+        )
+        .expect("still a mismatch");
+        assert!(msg.contains("`jvm`"), "{msg}");
+        assert!(!msg.contains("try instead"), "no basis to suggest: {msg}");
+    }
+
+    #[test]
+    fn detect_adapter_recognizes_each_supported_toolchain() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (marker, expected) in [
+            ("package.json", Adapter::Node),
+            ("go.mod", Adapter::Go),
+            ("pyproject.toml", Adapter::Python),
+            ("Cargo.toml", Adapter::Rust),
+            ("pubspec.yaml", Adapter::Dart),
+            ("pom.xml", Adapter::Java),
+        ] {
+            let dir = tmp.path().join(marker.replace('.', "_"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(marker), "").unwrap();
+            assert_eq!(detect_adapter(&dir), expected, "marker {marker}");
+        }
+        // No marker at all must stay `None`, so a fresh project can still fall
+        // through to each dependency's own declared adapter.
+        let empty = tmp.path().join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert_eq!(detect_adapter(&empty), Adapter::None);
+    }
+
+    #[test]
+    fn project_ecosystems_reads_the_real_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("package.json"), "{}").unwrap();
+        fs::write(tmp.path().join("Cargo.toml"), "").unwrap();
+        let found = project_ecosystems(tmp.path());
+        assert!(found.contains(&Ecosystem::Npm));
+        assert!(found.contains(&Ecosystem::Cargo));
+        assert!(!found.contains(&Ecosystem::Jvm));
+    }
+
+    #[test]
+    fn a_bare_repo_name_routes_to_the_project_language() {
+        // `zed add acme/acme-clients` in a Gradle project should reach the Java
+        // package; the canonical token is tried before any synonym.
+        let c = language_route_candidates("acme-clients", Some("java"));
+        assert_eq!(c.first().map(String::as_str), Some("acme-clients-java"));
+
+        let node = language_route_candidates("acme-clients", Some("node"));
+        assert_eq!(
+            node.first().map(String::as_str),
+            Some("acme-clients-nodejs")
+        );
+        assert!(node.contains(&"acme-clients-ts".to_string()));
+
+        let go = language_route_candidates("acme-clients", Some("go"));
+        assert_eq!(go.first().map(String::as_str), Some("acme-clients-golang"));
+    }
+
+    #[test]
+    fn a_misspelled_language_suffix_routes_to_its_synonyms() {
+        // `-node` must reach `-nodejs` and vice versa, so a user who guesses
+        // either spelling lands on whichever the author published.
+        let from_short = language_route_candidates("acme-clients-node", None);
+        assert!(
+            from_short.contains(&"acme-clients-nodejs".to_string()),
+            "{from_short:?}"
+        );
+        let from_long = language_route_candidates("acme-clients-nodejs", None);
+        assert!(
+            from_long.contains(&"acme-clients-node".to_string()),
+            "{from_long:?}"
+        );
+
+        let go = language_route_candidates("acme-clients-go", None);
+        assert!(go.contains(&"acme-clients-golang".to_string()), "{go:?}");
+    }
+
+    #[test]
+    fn routing_never_suggests_the_name_that_was_asked_for() {
+        // The caller already tried the exact name; repeating it would be a
+        // wasted registry round-trip and a confusing message.
+        for name in ["acme-clients", "acme-clients-java", "acme-clients-nodejs"] {
+            let c = language_route_candidates(name, Some("java"));
+            assert!(!c.contains(&name.to_string()), "{name} in {c:?}");
+        }
+    }
+
+    #[test]
+    fn routing_never_crosses_between_languages() {
+        // A Java suffix must not produce Node candidates: that would install a
+        // different client than the user asked for.
+        let c = language_route_candidates("acme-clients-java", None);
+        for candidate in &c {
+            assert!(
+                !candidate.contains("node") && !candidate.contains("golang"),
+                "java routing produced {candidate}"
+            );
+        }
+        // Java and Kotlin share an ecosystem but are different languages.
+        assert!(!c.contains(&"acme-clients-kotlin".to_string()), "{c:?}");
+    }
+
+    #[test]
+    fn a_bare_name_with_no_detectable_project_language_has_nothing_to_route_to() {
+        assert!(language_route_candidates("acme-clients", None).is_empty());
+        assert!(language_route_candidates("http-kit", Some("cobol")).is_empty());
     }
 }

@@ -1,0 +1,72 @@
+name: Zed package graph
+
+on:
+  pull_request:
+    paths:
+      - ".zpkg.toml"
+      - ".zpkg.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/validate-zed-package-graph.sh"
+      - "docs/package-dependency-graph.md"
+      - ".github/workflows/zed-package-graph.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".zpkg.toml"
+      - ".zpkg.lock"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/validate-zed-package-graph.sh"
+      - "docs/package-dependency-graph.md"
+      - ".github/workflows/zed-package-graph.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out exact CLI revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zed-cli
+          persist-credentials: false
+      - name: Check out canonical interfaces package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          path: zed-interfaces
+          persist-credentials: false
+      - name: Check out canonical clients package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-clients
+          path: zed-clients
+          persist-credentials: false
+      - name: Check out hardened zed-lock package
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-lock
+          ref: a0dc78d385bc3ab553d3027b427f5f1428239c9c
+          path: zed-lock
+          persist-credentials: false
+      - name: Install minimum supported Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.88.0
+      - name: Validate native and Zed package edges
+        working-directory: zed-cli
+        run: |
+          bash scripts/validate-zed-package-graph.sh \
+            ../zed-interfaces/.zpkg.toml \
+            ../zed-clients/.zpkg.toml \
+            ../zed-lock/.zpkg.toml
+          cargo check --locked --all-targets

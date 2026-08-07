@@ -1,0 +1,156 @@
+# Dedicated flags-2-env contract for the modular `zed develop` / `zed dev`
+# command. Runtime help and completions augment the established Clap command
+# with the same typed DevelopArgs definition used here.
+
+[parse]
+command_env = "ZED_PKG_COMMAND"
+unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
+errors_env = "ZED_PKG_PARSE_ERRORS"
+allow_unknown = false
+
+[help]
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/develop.md"
+
+[flags.registry]
+env = "ZED_PKG_REGISTRY"
+aliases = ["registry"]
+type = "string"
+default = "https://registry.zpkg.tech"
+help = "Registry base URL."
+
+[flags.home]
+env = "ZED_PKG_HOME"
+aliases = ["home"]
+type = "string"
+help = "Zed home directory; defaults to ~/.zed-pkg."
+
+[flags.token]
+env = "ZED_PKG_TOKEN"
+aliases = ["token"]
+type = "string"
+help = "Explicit registry bearer token."
+
+[flags.auth_url]
+env = "ZED_PKG_AUTH_URL"
+aliases = ["auth-url"]
+type = "string"
+help = "shared-auth base URL."
+
+[flags.supabase_url]
+env = "ZED_PKG_SUPABASE_URL"
+aliases = ["supabase-url"]
+type = "string"
+help = "Supabase project URL."
+
+[flags.supabase_key]
+env = "ZED_PKG_SUPABASE_KEY"
+aliases = ["supabase-key"]
+type = "string"
+help = "Supabase publishable/anon key."
+
+[flags.interactive]
+env = "ZED_PKG_INTERACTIVE"
+aliases = ["interactive"]
+type = "bool"
+default = "false"
+help = "Confirm each mutating lifecycle step in a real terminal."
+
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Global Git submodule compatibility mode for install and overtake."
+
+[commands.develop]
+aliases = ["dev"]
+help = "Enter a package-aware, cross-language virtual development environment."
+
+[commands.develop.flags.command]
+env = "ZED_DEV_COMMAND"
+aliases = ["command"]
+short = "c"
+type = "string"
+help = "Run one command through the selected shell."
+
+[commands.develop.flags.shell]
+env = "ZED_DEV_SHELL"
+aliases = ["shell"]
+type = "string"
+help = "Shell executable."
+
+[commands.develop.flags.nix]
+env = "ZED_DEV_NIX"
+aliases = ["nix"]
+type = "string"
+default = "auto"
+help = "Nix composition mode: auto, never, or required."
+
+[commands.develop.flags.mise]
+env = "ZED_DEV_MISE"
+aliases = ["mise"]
+type = "string"
+default = "auto"
+help = "mise composition mode: auto, never, or required."
+
+[commands.develop.flags.profile]
+env = "ZED_DEV_PROFILE"
+aliases = ["profile"]
+type = "string"
+default = "default"
+help = "Development profile: default or ai."
+
+[commands.develop.flags.no_install]
+env = "ZED_DEV_NO_INSTALL"
+aliases = ["no-install"]
+type = "bool"
+default = "false"
+help = "Skip package restoration."
+
+[commands.develop.flags.frozen]
+env = "ZED_PKG_FROZEN"
+aliases = ["frozen"]
+type = "bool"
+default = "false"
+help = "Require manifest-backed installs to match the lockfile."
+
+[commands.develop.flags.allow_build]
+env = "ZED_PKG_ALLOW_BUILD"
+aliases = ["allow-build"]
+type = "bool"
+default = "false"
+help = "Allow dependency build hooks."
+
+[commands.develop.flags.isolated_home]
+env = "ZED_DEV_ISOLATED_HOME"
+aliases = ["isolated-home"]
+type = "bool"
+default = "false"
+help = "Redirect HOME and XDG config/data into .zed/dev."
+
+[commands.develop.flags.print_env]
+env = "ZED_DEV_PRINT_ENV"
+aliases = ["print-env"]
+type = "bool"
+default = "false"
+help = "Print the managed environment as JSON."
+
+[commands.develop.flags.python_venv]
+env = "ZED_DEV_PYTHON_VENV"
+aliases = ["python-venv"]
+type = "string"
+default = "auto"
+help = "Python venv mode: auto, never, or required."
+
+[commands.develop.flags.python]
+env = "ZED_DEV_PYTHON"
+aliases = ["python"]
+type = "string"
+help = "Python interpreter used to create a venv."
+
+[commands.develop.flags.venv]
+env = "ZED_DEV_VENV"
+aliases = ["venv"]
+type = "string"
+default = ".zed/dev/python/venv"
+help = "Managed virtual-environment path."

@@ -18,8 +18,9 @@ Why it exists:
 - **Provenance by tags.** Publishing requires a VCS tag matching the version
   (`v{version}` by default) pointing at the exact published commit; the tag
   and commit are pinned in `.zpkg.lock`.
-- **Container-first.** A copy install mode and cache-mount patterns designed
-  for OCI images and multi-stage Docker builds.
+- **Container-first.** The documented [copy install ownership contract](docs/install-modes.md)
+  materializes independent package, adapter, build-output, and hoisted-bin files
+  for Docker build contexts, OCI layers, and read-only runtimes.
 
 ## Install
 
@@ -58,14 +59,32 @@ git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
 zed publish
 
-# consume packages
+# consume packages from a manifest
 zed add acme/http-kit@^1
 zed install
+zed uninstall                          # remove files; keep the exact lock
+zed install --frozen                   # restore the same artifacts
+
+# first dependency install in a project with no .zpkg.toml
+zed install acme/http-kit@^1            # creates a basic durable .zpkg.toml
+
+# explicit one-shot/ephemeral install: keep the project manifestless
+zed install acme/http-kit@^1 --do-not-write-new-manifest
 zed find http
+
+# opt into a confirmation at every mutating lifecycle step
+zed install --interactive
+zed r2g --docker --interactive
+zed publish --interactive
 ```
 
-Every package is `<org>/<name>`, declared in a `.zpkg.toml` manifest at the
-repo root (TOML only). See `zed init` output for the annotated template.
+Every authored package is `<org>/<name>`, declared in a `.zpkg.toml` manifest
+at the repo root (TOML only). A dependency-bearing first install also creates a
+deterministic local consumer manifest when one is missing, so direct dependency
+intent survives the shell invocation. The explicit
+`--do-not-write-new-manifest` flag preserves the older in-memory consumer path
+for throwaway or lock-only workflows. See `zed init` output for the annotated
+authoring template.
 
 ## Versioning
 
@@ -95,21 +114,154 @@ registry hosts both on S3/Cloudflare R2.
 | `zed init` | Write a `.zpkg.toml` template |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
-| `zed install` (`zed i`) | Resolve, download once into the store, symlink into `zed_modules/` |
-| `zed install --frozen` | Install exactly what `.zpkg.lock` pins (CI/containers) |
+| `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
+| `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
+| `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
+| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
+| `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
+| `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |
+| `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
+| `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
+| `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
-| `zed login` | Save a registry token to `~/.zed-pkg/credentials.toml` |
+| `zed login` / `zed signin` | Sign in (`zed auth login` / `zed auth signin` are identical) |
+| `zed signup` / `zed register` | Create an account (`zed auth signup` / `zed auth register` are identical) |
+| `zed logout` / `zed signout` | Revoke and remove the session (`zed auth logout` / `zed auth signout` are identical) |
+| `zed auth status` | Show the current account, authorities, and JWT expiries |
+| `zed auth refresh` | Rotate shared-auth and Supabase refresh tokens now |
+| `zed auth token` | Print the preferred current access JWT for scripting |
+| `zed auth import-token` | Save a legacy opaque registry token to `credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
+| `zed org audit <slug> [--limit N]` | Read the org's audit log — who changed published state, newest first (server registries only; needs an `owner` token) |
 | `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
 | `zed gc [--older-than 90d] [--dry-run]` | LRU collection: drop store/build entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
+| `zed completions bash\|zsh` | Generate shell completion from the same Clap model used by the executable |
+
+### Shell completion
+
+```sh
+# Bash for the current shell
+source <(zed completions bash)
+
+# Zsh (persistent user completion)
+mkdir -p ~/.zfunc
+zed completions zsh > ~/.zfunc/_zed
+fpath=(~/.zfunc $fpath)
+autoload -Uz compinit && compinit
+```
+
+The generated scripts include aliases, subcommands, and install flags directly
+from the typed parser. GitHub Actions syntax-checks and registers them in real
+Bash and Zsh processes.
+
+### Native and forge package releases
+
+A polyglot target can name its canonical ecosystem registry and optional
+copies in package registries operated by GitHub, GitLab, or Bitbucket:
+
+```toml
+[targets.nodejs]
+dir = "clients/typescript"
+
+[targets.nodejs.native]
+registry = "npm"
+package = "@acme/client"
+forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
+```
+
+A single-language repository uses `[publish.native]` with the same `registry`,
+`package`, and `forge` fields; its native package-manager manifest is read from
+the repository root.
+
+Tag-resolved packages can add a native `tag_format`. Go modules below a
+subdirectory must use the module-directory prefix, such as
+`tag_format = "clients/go/v{version}"`, while the coordinated Zed release can
+continue using the repository tag `v{version}`.
+
+`zed release plan --json` emits one coordinated release set containing the
+Zed artifacts, canonical native packages, and forge mirrors. It does not read
+credentials or upload. `zed release preflight` verifies the native package
+identity/version and runs the ecosystem's packaging command without publishing.
+
+The manifest rejects unsupported combinations before CI reaches credentials:
+GitHub Packages accepts npm, Maven, RubyGems, and NuGet routes; GitLab also
+accepts PyPI, Packagist/Composer, and Go module routes; Bitbucket Packages
+accepts npm and Maven routes. Cargo and pub.dev remain canonical-native plus
+Zed destinations because those forges do not expose matching registry
+protocols.
+
+### First install without `.zpkg.toml`
+
+`zed install` accepts package specs in an existing repository or folder:
+
+```sh
+zed install oresoftware/flags-2-env@^0.1
+```
+
+Zed first searches upward for a Zed manifest. Without one, it looks for the
+nearest native project marker (`package.json`, `Cargo.toml`, `go.mod`,
+`pyproject.toml`, and other supported ecosystems). When invoked at a repository
+shell containing exactly one clear nested app such as `apps/web/package.json`,
+that app becomes the install root. Ambiguous monorepos stay at the requested
+root and use the safe universal `zed_modules/` layout rather than guessing.
+
+By default, a dependency-bearing first install writes a deterministic basic
+`.zpkg.toml` at that selected root. It records the requested packages as direct
+dependencies, records supported inferred target/adapter values, writes no
+timestamps or machine-specific paths, and then runs the ordinary resolver,
+integrity checks, lockfile transaction, store, materializer, adapters, and
+build-hook policy. A failed install removes the exact generated manifest rather
+than leaving a half-adopted project.
+
+The generated manifest uses a local `zed-local/<directory-name>` identity,
+version `0.0.0`, a non-authoritative localhost repository URL, and the
+`zed-generated-consumer` marker. It is immediately suitable for dependency
+management but `zed publish` rejects it until a maintainer reviews the real
+package identity/repository metadata and removes the marker. `--skip-vcs-checks`
+does not bypass that guard.
+
+Use the canonical escape hatch when the project must remain manifestless:
+
+```sh
+zed install oresoftware/flags-2-env@^0.1 --do-not-write-new-manifest
+```
+
+This preserves the established in-memory consumer plan. The normal installer
+can still write `.zpkg.lock`, `zed_modules/`, hoisted bins, and supported
+ecosystem adapter outputs; only creation of a missing `.zpkg.toml` is
+suppressed. The canonical environment equivalent is
+`ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=1`.
+
+`--allow-no-manifest`, `--skip-manifest`, and
+`ZED_PKG_ALLOW_NO_MANIFEST=1` remain compatibility spellings for one migration
+window and emit deprecation guidance. When a manifest already exists, the new
+flag is an informational no-op and never changes a managed project into an
+ephemeral one.
+
+A generated consumer manifest may accept additional package operands, which
+lets two concurrent first installs retain both direct dependencies under the
+project-scoped manifest lock. Conflicting requirements fail without replacing
+the file. A human-authored existing manifest keeps the stricter rule: use
+`zed add` to persist a dependency; positional operands on `zed install` are
+rejected rather than silently editing authored package metadata.
+
+A lockfile alone does not identify which packages were direct versus
+transitive. Therefore an explicit lock-only restoration is:
+
+```sh
+zed install --frozen --do-not-write-new-manifest
+```
+
+Without the flag, Zed fails instead of inventing a misleading manifest from the
+whole locked graph.
 
 ### Where dependencies land (`[install].dir`)
 
@@ -124,9 +276,26 @@ adapter = "node"         # optional; omitted = auto-detect (or --adapter)
 ```
 
 Every command that touches the tree honors this: `zed install` writes it,
-`zed run` finds hoisted bins in `<dir>/.bin/`, `zed remove` unlinks from it,
+`zed uninstall` removes all or selected materialized packages, `zed run`
+finds hoisted bins in `<dir>/.bin/`, `zed remove` updates the manifest,
 and `zed pack`/`zed publish` always exclude it — a relocated dependency tree
 is never published (see `a_relocated_install_dir_is_never_published`).
+
+### Interactive transactions and recovery
+
+`--interactive` is a global opt-in flag (`ZED_PKG_INTERACTIVE=1`) declared in
+the same `.cli-flags.toml` contract audited by flags-2-env. Mutating lifecycle
+commands put confirmations immediately before the steps they own: package
+materialization, lock/ref updates, each publish upload, and each r2g phase.
+A declined answer, EOF, or redirected stdin fails closed.
+
+Install and uninstall protect project-tree changes with durable UUID-v4
+transactions under `.zpkg-staging/<uuid>/`. Replaced paths are renamed into
+the staging area before mutation. Normal errors restore them immediately; a
+hard exit leaves the transaction metadata in place, and the next Zed
+lifecycle invocation recovers it before starting new work. Successful
+transactions remove their staging directory, and packing always excludes
+`.zpkg-staging/**`.
 
 ### Monorepo workspaces
 
@@ -182,10 +351,16 @@ actual CLI never drift, so it is always authoritative:
 | `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.tech` |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
+| `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
+| `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
+| `--supabase-key` | `ZED_PKG_SUPABASE_KEY` | optional public publishable/anon key |
+| `--interactive` | `ZED_PKG_INTERACTIVE` | off; confirm each mutating lifecycle step in a real terminal |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
+| `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
+| deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
@@ -206,6 +381,23 @@ actual CLI never drift, so it is always authoritative:
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
 air-gapped mirrors, and `zed r2g` all use it.
+
+## Authentication
+
+`zed login` and `zed auth login` are the same operation. With
+`ZED_PKG_SUPABASE_URL` and the public `ZED_PKG_SUPABASE_KEY` configured, zed
+uses Supabase Auth for the credential exchange and then exchanges that provider
+JWT at shared-auth. It retains both independently refreshable sessions:
+shared-auth is preferred, while the Supabase JWT remains available as the
+dual-auth fallback. Without Supabase configuration, login and registration use
+shared-auth directly.
+
+Passwords are read from a hidden terminal prompt and never stored. For
+non-interactive use, pass `--password-stdin` or inject
+`ZED_PKG_AUTH_PASSWORD`. Access and rotating refresh tokens are stored in
+`~/.zed-pkg/auth/sessions.toml`; the directory is mode `0700` and the file is
+mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
+always removes the local session.
 
 ## Containers & OCI
 
@@ -252,9 +444,10 @@ consumer would:
    pointing at the installed package.
 
 The whole workspace lives under your home directory at
-`~/.zed-pkg/r2g/<org>-<name>/` (registry + consumer + store), wiped fresh each
-run and left behind for inspection (pass `--clean`, or set `--r2g-root` to
-relocate it). `zed test-local` is a backwards-compatible alias.
+`~/.zed-pkg/r2g/<org>-<name>-<uuid-v4>/` (registry + consumer + store). Unique
+run directories prevent stale or concurrent state from masking a failure and
+are left behind for inspection (pass `--clean`, or set `--r2g-root` to
+relocate them). `zed test-local` is a backwards-compatible alias.
 
 ```sh
 zed r2g                       # roundtrip on the host
@@ -284,11 +477,13 @@ If the smoke test passes here, it will pass for your users.
 ## Concurrency
 
 `zed install` is safe to run from many processes at once (two terminals,
-parallel CI runners). It takes an advisory `flock` on `~/.zed-pkg/locks/`
-around store extraction (per-artifact) and the refs/lockfile writes
-(per-install), so concurrent runs share one store without corrupting it, and
-a crashed process never wedges the store (the OS drops the lock). See the
-`concurrent_installs_share_the_store_safely` test.
+parallel CI runners). Store extraction and reference updates retain their
+existing advisory locks. A dependency-bearing first install also takes a
+project-scoped manifest lock under `~/.zed-pkg/locks/projects/`, keyed by the
+canonical project path. Two simultaneous first installs therefore create one
+valid manifest and merge distinct direct dependencies instead of losing one
+caller's intent. Exact conflicting requirements fail rather than choosing a
+winner, and the OS releases every lock if a process dies.
 
 ## Platforms
 
@@ -304,9 +499,11 @@ Linux (arm64 + x64, gnu and musl), and Windows via
   store/v1/<aa>/<sha256>/pkg/          extracted source artifacts (content-addressed, immutable)
   builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
   cache/<sha256>.tar.gz                downloaded archives
+  locks/projects/<hash>.manifest.lock  project-scoped first-install serialization
   locks/                               advisory flocks (per-artifact, per-install, per-build)
+  auth/sessions.toml                   shared-auth + Supabase token pairs (0600)
   refs.json                            project -> artifact references (for prune/gc)
-  credentials.toml                     registry tokens (0600)
+  credentials.toml                     legacy opaque registry tokens (0600)
 ```
 
 ## Hardening
@@ -326,6 +523,12 @@ Artifacts arrive over the network, so the client treats them as untrusted:
   be https (or loopback/http only when the registry itself is http).
 - **No install-time code execution.** Installing a dependency never runs its
   scripts; `[build]` steps run only with explicit `--allow-build`.
+- **Generated identities fail closed.** A first-install consumer manifest
+  cannot be published until its inferred local package identity is reviewed
+  and the generated marker is removed.
+- **Recoverable project mutations.** Install and uninstall stage old paths in
+  UUID-v4 transaction directories and restore interrupted work before the
+  next lifecycle operation.
 - **Tokens at 0600 from creation**, with no write-then-chmod window.
 
 ## Development

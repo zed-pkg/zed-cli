@@ -1,0 +1,17 @@
+[package]
+org = "zed-pkg"
+name = "docker-node-app"
+version = "1.0.0"
+description = "Consumer fixture for container-safe zed installs."
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-cli"
+
+[install]
+dir = ".vendor/.zed"
+adapter = "node"
+
+[dependencies]
+"zed-pkg/docker-node-lib" = "^1.0.0"

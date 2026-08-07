@@ -1,0 +1,79 @@
+# Dedicated flags-2-env contract for the modular `zed fetch` command.
+# Runtime help and completions augment the established Clap command with the
+# same typed FetchArgs definition used here.
+
+[parse]
+command_env = "ZED_PKG_COMMAND"
+unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
+errors_env = "ZED_PKG_PARSE_ERRORS"
+allow_unknown = false
+
+[help]
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/frozen-fetch.md"
+
+[flags.registry]
+env = "ZED_PKG_REGISTRY"
+aliases = ["registry"]
+type = "string"
+default = "https://registry.zpkg.tech"
+help = "Fallback registry URL for legacy lock entries with an empty source."
+
+[flags.home]
+env = "ZED_PKG_HOME"
+aliases = ["home"]
+type = "string"
+help = "Zed home directory; fetch does not write its global store."
+
+[flags.token]
+env = "ZED_PKG_TOKEN"
+aliases = ["token"]
+type = "string"
+help = "Explicit registry bearer token."
+
+[flags.auth_url]
+env = "ZED_PKG_AUTH_URL"
+aliases = ["auth-url"]
+type = "string"
+help = "shared-auth base URL."
+
+[flags.supabase_url]
+env = "ZED_PKG_SUPABASE_URL"
+aliases = ["supabase-url"]
+type = "string"
+help = "Supabase project URL."
+
+[flags.supabase_key]
+env = "ZED_PKG_SUPABASE_KEY"
+aliases = ["supabase-key"]
+type = "string"
+help = "Supabase publishable/anon key."
+
+[flags.interactive]
+env = "ZED_PKG_INTERACTIVE"
+aliases = ["interactive"]
+type = "bool"
+default = "false"
+help = "Global lifecycle confirmation mode; fetch remains non-interactive."
+
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Global Git submodule compatibility mode; frozen fetch remains read-only."
+
+[commands.fetch]
+help = "Verify and export exactly the artifact graph pinned by .zpkg.lock."
+
+[commands.fetch.flags.frozen]
+env = "ZED_PKG_FROZEN"
+aliases = ["frozen"]
+type = "bool"
+default = "false"
+help = "Require the existing lockfile as the sole dependency authority."
+
+[commands.fetch.flags.output]
+env = "ZED_PKG_FETCH_OUTPUT"
+aliases = ["output"]
+type = "string"
+help = "New output directory for the content-addressed fetch bundle."
