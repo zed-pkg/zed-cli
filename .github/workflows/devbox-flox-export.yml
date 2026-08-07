@@ -3,9 +3,16 @@ name: Devbox and Flox environment export
 on:
   pull_request:
     paths:
+      - ".cli-flags.toml"
+      - "README.md"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/environment_export_cli.rs"
       - "src/nix_environment_export.rs"
       - "src/bin/zed-env-export.rs"
       - "tests/nix_environment_export_cli.rs"
+      - "tests/nix_environment_export_main_cli.rs"
       - "docs/devbox-flox-interop.md"
       - ".github/workflows/devbox-flox-export.yml"
       - "Cargo.toml"
@@ -13,9 +20,16 @@ on:
   push:
     branches: [main]
     paths:
+      - ".cli-flags.toml"
+      - "README.md"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - "src/environment_export_cli.rs"
       - "src/nix_environment_export.rs"
       - "src/bin/zed-env-export.rs"
       - "tests/nix_environment_export_cli.rs"
+      - "tests/nix_environment_export_main_cli.rs"
       - "docs/devbox-flox-interop.md"
       - ".github/workflows/devbox-flox-export.yml"
       - "Cargo.toml"
@@ -37,7 +51,7 @@ jobs:
   deterministic-export:
     name: deterministic export / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -65,15 +79,73 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Unit tests
-        run: cargo test --locked --bin zed-env-export
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib environment_export_cli::tests
+          cargo test --locked --lib nix_environment_export::tests
 
-      - name: Black-box CLI tests
-        run: cargo test --locked --test nix_environment_export_cli
+      - name: Staged and canonical CLI tests
+        run: |
+          set -euo pipefail
+          cargo test --locked --test nix_environment_export_cli
+          cargo test --locked --test nix_environment_export_main_cli
+          cargo test --locked cli::tests::environment_export_is_typed_and_rejects_ambiguous_write_modes
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
 
       - name: Clippy (strict)
         run: |
           set -euo pipefail
-          cargo clippy --locked --bin zed-env-export --test nix_environment_export_cli -- -D warnings
+          cargo clippy --locked --bin zed --bin zed-env-export \
+            --test nix_environment_export_cli \
+            --test nix_environment_export_main_cli -- -D warnings
+
+      - name: Repeated deterministic parity canary
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed --bin zed-env-export
+          zed_bin="$GITHUB_WORKSPACE/target/debug/zed"
+          staged_bin="$GITHUB_WORKSPACE/target/debug/zed-env-export"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            zed_bin="${zed_bin}.exe"
+            staged_bin="${staged_bin}.exe"
+          fi
+          root="$RUNNER_TEMP/devbox-flox-parity"
+          for side in canonical staged; do
+            mkdir -p "$root/$side/.zed"
+            cat > "$root/$side/.zed/environment-plan.json" <<'JSON'
+          {
+            "schema": 1,
+            "tools": {
+              "node": {
+                "requirement": "^22",
+                "resolved": "22.11.0",
+                "provider": "nixpkgs",
+                "backend": "nodejs_22",
+                "checksums": [{"algorithm": "sha256", "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}],
+                "platforms": []
+              }
+            },
+            "system-packages": {},
+            "platforms": ["x86_64-linux"],
+            "activation": "frozen-install",
+            "sources": []
+          }
+          JSON
+          done
+          (
+            cd "$root/canonical"
+            "$zed_bin" env export devbox --json > result.json
+          )
+          (
+            cd "$root/staged"
+            "$staged_bin" devbox --json > result.json
+          )
+          cmp "$root/canonical/result.json" "$root/staged/result.json"
+          cmp "$root/canonical/devbox.json" "$root/staged/devbox.json"
+          cmp \
+            "$root/canonical/.zed/environment-exports/devbox.json" \
+            "$root/staged/.zed/environment-exports/devbox.json"
 
       - name: Prove no generated files leaked into checkout
         run: |
