@@ -238,7 +238,7 @@ env = "ZED_PKG_UPDATE_CHECK"
 aliases = ["check"]
 type = "bool"
 default = "false"
-help = "Check for an update without installing it."
+help = "Check for an update without installing."
 
 [flags.skip_checksum]
 env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
@@ -400,6 +400,89 @@ help = "Emit the release plan as JSON."
 
 [commands.release.commands.preflight]
 help = "Run fixed credential-free native package preflight adapters."
+
+[commands.oci]
+help = "Plan, materialize, and distribute immutable Zed packages through OCI registries."
+
+[commands.oci.commands.plan]
+help = "Build the exact credential-free OCI publication plan."
+
+[commands.oci.commands.plan.flags.oci_json]
+env = "ZED_PKG_OCI_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit the OCI publication plan as JSON."
+
+[commands.oci.commands.push]
+help = "Verify a local OCI image layout and copy it to a registry through ORAS."
+
+[commands.oci.commands.push.flags.oci_oras]
+env = "ZED_PKG_OCI_ORAS"
+aliases = ["oras"]
+type = "string"
+default = "oras"
+help = "ORAS executable path."
+
+[commands.oci.commands.push.flags.oci_username]
+env = "ZED_PKG_OCI_USERNAME"
+aliases = ["username"]
+type = "string"
+help = "OCI registry username; pair with --password-stdin."
+
+[commands.oci.commands.push.flags.oci_password_stdin]
+env = "ZED_PKG_OCI_PASSWORD_STDIN"
+aliases = ["password-stdin"]
+type = "bool"
+default = "false"
+help = "Read one OCI registry password or token from stdin."
+
+[commands.oci.commands.push.flags.oci_registry_config]
+env = "ZED_PKG_OCI_REGISTRY_CONFIG"
+aliases = ["registry-config"]
+type = "string"
+help = "Explicit Docker/ORAS registry config path."
+
+[commands.oci.commands.push.flags.oci_anonymous]
+env = "ZED_PKG_OCI_ANONYMOUS"
+aliases = ["anonymous"]
+type = "bool"
+default = "false"
+help = "Push without registry credentials."
+
+[commands.oci.commands.push.flags.oci_plain_http]
+env = "ZED_PKG_OCI_PLAIN_HTTP"
+aliases = ["plain-http"]
+type = "bool"
+default = "false"
+help = "Use plain HTTP for a loopback registry only."
+
+[commands.oci.commands.push.flags.oci_insecure_tls]
+env = "ZED_PKG_OCI_INSECURE_TLS"
+aliases = ["insecure-tls"]
+type = "bool"
+default = "false"
+help = "Disable destination TLS certificate verification."
+
+[commands.oci.commands.push.flags.oci_ca_file]
+env = "ZED_PKG_OCI_CA_FILE"
+aliases = ["ca-file"]
+type = "string"
+help = "Custom destination registry CA certificate."
+
+[commands.oci.commands.push.flags.oci_allow_tag_replacement]
+env = "ZED_PKG_OCI_ALLOW_TAG_REPLACEMENT"
+aliases = ["allow-tag-replacement"]
+type = "bool"
+default = "false"
+help = "Explicitly replace a destination tag whose digest differs."
+
+[commands.oci.commands.push.flags.oci_json]
+env = "ZED_PKG_OCI_PUSH_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit the OCI push result as JSON."
 
 [commands.publish]
 help = "Publish an artifact."

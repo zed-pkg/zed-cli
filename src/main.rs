@@ -356,6 +356,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ReleaseCmd::Plan { json } => release::plan(&cwd, json),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
         },
+        Cmd::Oci { .. } => unreachable!("OCI commands return before Config construction"),
         Cmd::Publish {
             dry_run,
             allow_dirty,
