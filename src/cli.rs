@@ -145,6 +145,17 @@ impl ContainerRuntime {
     }
 }
 
+/// Registry boundary exercised by `zed r2g`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum R2gRegistryMode {
+    /// Publish only to a private file:// registry under the r2g workspace.
+    Isolated,
+    /// Publish to the configured HTTP(S) registry and install it back through
+    /// the ordinary client path. This permanently claims that package version
+    /// unless the server itself is an intentionally disposable instance.
+    Server,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CompletionShell {
     Bash,
@@ -313,12 +324,22 @@ pub enum Cmd {
         undo: bool,
     },
     /// Roundtrip-test this package the way a consumer would install it:
-    /// pack it, publish it to a throwaway file:// registry, install it into a
-    /// mock consumer project under your home dir, and run `publish.smoke_test`
-    /// — optionally inside a fresh OCI container. Named after r2g
+    /// pack it, publish it to a private file:// registry by default (or the
+    /// explicitly configured HTTP(S) registry in server mode), install it into
+    /// a mock consumer project, and run `publish.smoke_test` — optionally
+    /// inside a fresh OCI container. Named after r2g
     /// (github.com/oresoftware/r2g); `zed test-local` is a compatibility alias.
     #[command(name = "r2g", alias = "test-local")]
     R2g {
+        /// Registry boundary to exercise. `isolated` is the safe default.
+        /// `server` publishes permanently to the configured HTTP(S) registry.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_R2G_REGISTRY_MODE",
+            default_value = "isolated"
+        )]
+        registry_mode: R2gRegistryMode,
         /// Run the install + smoke test inside a throwaway OCI container, so
         /// the artifact is exercised in a clean, host-independent environment
         /// (fresh $HOME, distro libraries, no host toolchain leaking in)
@@ -337,8 +358,8 @@ pub enum Cmd {
         #[arg(long = "r2g-root", env = "ZED_PKG_R2G_ROOT")]
         root: Option<PathBuf>,
         /// Delete the throwaway workspace after a successful run instead of
-        /// leaving it in your home dir for inspection (a failed run always
-        /// leaves it behind)
+        /// leaving it in your home dir for inspection. In server mode this
+        /// does not delete or yank the version persisted by the registry.
         #[arg(long, env = "ZED_PKG_R2G_CLEAN")]
         clean: bool,
     },
@@ -779,6 +800,27 @@ mod tests {
             .unwrap();
             assert!(matches!(cli.cmd, Cmd::Env { .. }));
         }
+    }
+
+    #[test]
+    fn r2g_registry_mode_is_typed_and_safe_by_default() {
+        let default = Cli::try_parse_from(["zed", "r2g"]).unwrap();
+        assert!(matches!(
+            default.cmd,
+            Cmd::R2g {
+                registry_mode: R2gRegistryMode::Isolated,
+                ..
+            }
+        ));
+
+        let server = Cli::try_parse_from(["zed", "r2g", "--registry-mode", "server"]).unwrap();
+        assert!(matches!(
+            server.cmd,
+            Cmd::R2g {
+                registry_mode: R2gRegistryMode::Server,
+                ..
+            }
+        ));
     }
 
     /// The flags-2-env convention (github.com/oresoftware/flags-2-env):

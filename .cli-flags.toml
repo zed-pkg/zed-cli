@@ -173,6 +173,13 @@ type = "bool"
 default = "false"
 help = "Undo a yank."
 
+[flags.r2g_registry_mode]
+env = "ZED_PKG_R2G_REGISTRY_MODE"
+aliases = ["registry-mode"]
+type = "string"
+default = "isolated"
+help = "r2g registry boundary: isolated or server."
+
 [flags.docker]
 env = "ZED_PKG_R2G_DOCKER"
 aliases = ["docker"]
