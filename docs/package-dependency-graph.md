@@ -5,6 +5,9 @@ different package managers, but they preserve the same independently owned
 layers without making standalone Cargo builds depend on sibling checkouts.
 different package managers, but they preserve the same architectural layers
 without depending on accidental sibling checkouts.
+different package managers, but they must preserve the same architectural
+layers without making standalone Cargo builds depend on an accidental sibling
+checkout.
 
 ## Required Zed edges
 
@@ -18,6 +21,8 @@ The root `.zpkg.toml` imports the canonical repository packages:
 - `zed-pkg/zed-lock`, the standalone blocking descriptor-lock package used by
   the CLI's process and project coordination paths.
 - `zed-pkg/zed-lock`, the concrete kernel-backed, event-driven locking package.
+- `zed-pkg/zed-lock`, the concrete kernel-backed, event-driven lock library
+  extracted from `crates/zed-lock`.
 
 The CLI must not depend on target-like coordinates such as
 `zed-clients-rust`; Zed package identity remains `zed-clients`, and consumers
@@ -25,6 +30,8 @@ select targets through the package manifest. It must also not invent an umbrella
 `zed-lib` or `zed-libs` coordinate. Reusable layers become dependencies only
 when a real repository, source boundary, package manifest, and test contract
 exist.
+exist. `zed-lock` satisfies that rule; a hypothetical catch-all library does
+not.
 
 The CLI never imports `zed-infra`. Infrastructure remains independently owned
 operational composition.
@@ -40,6 +47,22 @@ independently owned package rather than maintaining two authorities.
 The clients relationship remains represented in the Zed graph, so Zed can
 resolve and verify the reusable polyglot package without coupling ordinary
 Cargo builds to a sibling `zed-clients` path.
+
+The lock implementation is being migrated in two explicit stages:
+
+1. **Package-graph adoption.** The Zed graph imports `zed-pkg/zed-lock`, CI
+   checks out the standalone repository, validates its package metadata, and
+   requires byte-for-byte parity for `Cargo.toml`, `LICENSE`, `SECURITY.md`,
+   `src/`, `tests/`, and `examples/`. During this stage Cargo deliberately
+   retains `zed-lock = { path = "crates/zed-lock" }`, so no source authority is
+   changed before the external repository is hardened and reviewed.
+2. **Cargo authority switch.** A later PR pins Cargo to one immutable commit in
+   `zed-pkg/zed-lock`, regenerates `Cargo.lock`, reruns all cross-process and
+   platform tests, and only then removes the internal copy. Source removal and
+   dependency-source changes are not hidden in the package-manifest PR.
+
+This ordering avoids both a dual-implementation fork and an unreviewed package
+coordinate.
 
 ## Lock authority
 
@@ -161,3 +184,25 @@ gate checks:
 
 The dependency-pin PR regenerated `Cargo.lock` with Cargo and proved that no
 non-`zed-lock` package entry changed before the ordinary full CLI matrix runs.
+The same rule applies to `zed-lock`: because it currently has no Zed package
+dependencies, its standalone repository omits `.zpkg.lock` rather than
+committing `version = 1` as a twelve-byte placeholder.
+
+## CI
+
+`.github/workflows/zed-package-graph.yml` checks out the CLI, interfaces,
+clients, and lock repositories as siblings and runs the graph validator. The
+gate checks:
+
+- canonical package names, versions, repositories, and native registry routes;
+- the native interfaces edge and transitional internal lock edge;
+- the clients package's own interfaces edge and Rust target;
+- complete internal/standalone lock-source parity;
+- `.vendor/.zed` materialization and publication exclusions;
+- infrastructure separation;
+- rejection of invented `zed-lib` coordinates;
+- rejection of stale placeholder locks.
+
+The package graph remains red until the standalone `zed-lock` hardening PR is
+merged to its canonical default branch. That is an intentional merge-order
+gate, not a reason to weaken validation.

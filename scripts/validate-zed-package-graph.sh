@@ -30,7 +30,7 @@ if [[ -d crates/zed-lock ]]; then
 fi
 
 if grep -Fq '"zed-pkg/zed-lib"' .zpkg.toml || grep -Fq '"zed-pkg/zed-libs"' .zpkg.toml; then
-  echo 'do not reference a canonical lib coordinate until that repository and package exist' >&2
+  echo 'do not invent an umbrella zed-lib coordinate; import the concrete zed-lock package' >&2
   exit 1
 fi
 

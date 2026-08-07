@@ -11,7 +11,7 @@ on:
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - ".zpkg.toml"
       - ".zpkg.lock"
