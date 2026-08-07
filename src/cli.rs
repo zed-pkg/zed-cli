@@ -256,6 +256,17 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: EnvCmd,
     },
+    /// List, inspect, graph, or execute native schema-v2 project tasks.
+    Task {
+        /// Project-local schema-v2 environment plan; conventional names are discovered when omitted.
+        #[arg(long, env = "ZED_TASK_PLAN")]
+        plan: Option<PathBuf>,
+        /// Emit stable machine-readable JSON. Live command execution requires human streaming output.
+        #[arg(long, env = "ZED_TASK_JSON")]
+        json: bool,
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {
         #[arg(value_enum)]
@@ -489,6 +500,44 @@ pub enum EnvCmd {
         /// Emit a machine-readable verification result.
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCmd {
+    /// List project tasks in deterministic name order.
+    List {
+        /// Include tasks marked hidden.
+        #[arg(long, env = "ZED_TASK_ALL")]
+        all: bool,
+    },
+    /// Show one task's aliases, dependencies, cache policy, and description.
+    Info { task: String },
+    /// Print the validated task dependency and invocation graph.
+    Graph { task: String },
+    /// Execute one task and its validated dependency graph.
+    Run {
+        task: String,
+        /// Plan commands and cache decisions without subprocesses or mutation.
+        #[arg(long, env = "ZED_TASK_DRY_RUN")]
+        dry_run: bool,
+        /// Approve an explicit task confirmation requirement.
+        #[arg(long, env = "ZED_TASK_YES")]
+        yes: bool,
+        /// Maximum number of concurrently running task commands.
+        #[arg(
+            long,
+            env = "ZED_TASK_JOBS",
+            default_value_t = 1,
+            value_parser = crate::task_cli::parse_positive_jobs
+        )]
+        jobs: usize,
+        /// Disable content-verified incremental cache reads and writes.
+        #[arg(long, env = "ZED_TASK_NO_CACHE")]
+        no_cache: bool,
+        /// Arguments are exposed through ZED_TASK_ARGC, ZED_TASK_ARGS_JSON, and ZED_TASK_ARG_<n>.
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -838,8 +887,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("--{long} lacks an env fallback"))
                 .to_string_lossy();
             assert!(
-                env.starts_with("ZED_PKG_"),
-                "--{long} env `{env}` must use the ZED_PKG_ prefix"
+                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
         }
 
@@ -877,8 +926,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string();
             assert!(
-                env.starts_with("ZED_PKG_"),
-                "--{long} env `{env}` must use the ZED_PKG_ prefix"
+                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
             envs.insert(env);
         }
@@ -923,8 +972,8 @@ mod tests {
                         .and_then(toml::Value::as_str)
                         .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
                     assert!(
-                        env.starts_with("ZED_PKG_"),
-                        "flag --{} env `{env}` must use the ZED_PKG_ prefix",
+                        env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                        "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
                         name.replace('_', "-")
                     );
                     assert!(
