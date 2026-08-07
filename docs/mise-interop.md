@@ -171,11 +171,11 @@ mise.toml        → mise.lock
 .mise.toml       → mise.lock
 ## Lockfile naming
 
-When no `--lock` is supplied, the adapter follows mise's adjacent-file convention by replacing the config file's `.toml` extension with `.lock`:
+When no `--lock` is supplied, the adapter follows mise's current normalized adjacent-file convention. The leading dot in `.mise.toml` does not carry into the lock name:
 
 ```text
 mise.toml        → mise.lock
-.mise.toml       → .mise.lock
+.mise.toml       → mise.lock
 mise.test.toml   → mise.test.lock
 ```
 
