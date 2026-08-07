@@ -3,6 +3,7 @@ name: recursive install windows locking
 on:
   pull_request:
     paths:
+      - crates/zed-lock/**
       - src/install_graph.rs
       - src/install_graph/**
       - src/store.rs
@@ -18,6 +19,7 @@ on:
   push:
     branches: [main]
     paths:
+      - crates/zed-lock/**
       - src/install_graph.rs
       - src/install_graph/**
       - src/store.rs
