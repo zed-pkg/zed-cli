@@ -10,6 +10,10 @@ The separately installed `zed-task` binary remains a compatibility and focused
 certification surface. Both binaries call the same `zed_cli::task_cli` command
 layer, so parsing after the command boundary, output, execution, error, cache,
 and observer semantics do not diverge.
+`zed-task` is the staged execution surface for schema-v2 `EnvironmentPlanV2`
+tasks. It is intentionally manager-neutral: mise, asdf, Devbox, Flox, Nix, or
+native Zed adapters must first produce the shared plan contract. The runtime
+does not parse manager configuration or execute manager plugins.
 
 ## Commands
 
@@ -30,6 +34,18 @@ flags-to-environment normalization.
 
 Every option has one environment identity in the main `.cli-flags.toml` and the
 staging `.task-cli-flags.toml` contract:
+zed-task [--plan zed-env.toml] list [--all]
+zed-task [--plan zed-env.toml] info <task>
+zed-task [--plan zed-env.toml] graph <task>
+zed-task [--plan zed-env.toml] run <task> [--dry-run] [--yes] [--jobs N] [--no-cache] [-- <args>...]
+```
+
+`--jobs` is a positive integer. Zero is rejected during argument parsing before
+plan discovery, so a malformed concurrency request cannot partially inspect or
+execute a project plan. The same validation applies to `ZED_TASK_JOBS` after
+flags-2-env normalization.
+
+Every option has one flags-2-env identity in `.task-cli-flags.toml`:
 
 - `ZED_TASK_PLAN`
 - `ZED_TASK_JSON`
@@ -45,6 +61,12 @@ configuration plane.
 ## Supported execution semantics
 
 The native slice supports:
+The eventual `zed task` integration must reuse those names rather than creating
+a second configuration plane.
+
+## Supported execution semantics
+
+The first native slice supports:
 
 - validated task and alias lookup;
 - `depends`, `wait_for`, and `depends_post` ordering;
@@ -96,6 +118,7 @@ excessive byte counts fail closed.
 ## Deliberate fail-closed boundaries
 
 The runtime does not yet execute:
+The staged runtime does not yet execute:
 
 - task-local tool overlays;
 - manager templates or task `vars`;
@@ -112,3 +135,4 @@ when converting to operating-system process variables.
 The next certified slices add native tool activation, typed usage arguments,
 capability profiles/process isolation, cancellation of complete descendant
 process trees, and watch mode.
+process trees, watch mode, and canonical `zed task` routing.
