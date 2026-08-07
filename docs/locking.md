@@ -268,6 +268,10 @@ this single-authority model.
 - Normal guard drop, panic unwinding, and process termination release the local
   descriptor lock.
 - Unrelated lock files remain independently acquirable.
+- Only one exclusive guard for a lock identity is live at a time.
+- Normal guard drop, panic unwinding, and process termination release the local
+  descriptor lock.
+- Unrelated lock identities remain independently acquirable.
 - Waiters are awakened by the operating system; production acquisition has no
   retry timer or jitter loop.
 - FIFO fairness is not part of the contract. Tests must not rely on waiter
@@ -275,6 +279,8 @@ this single-authority model.
 - Dropping a pending `LockWaiter` cannot portably cancel a thread already
   blocked in the kernel. The thread detaches; if it later acquires the guard,
   failed channel delivery drops the guard immediately.
+- A `wait_timeout` result of `None` does not restart acquisition. The original
+  waiter remains blocked in the kernel and can be awaited again.
 
 ## Distributed coordination
 
@@ -283,12 +289,18 @@ namespaces. It is acquired once around the relevant project mutation and uses
 renewal plus fencing. Ordinary same-host installs and uninstalls make no
 Fiducia call and do not acquire one distributed lease per dependency.
 
+For distributed waiting, an SSE or WebSocket notification is only a wake-up
+hint. It never grants ownership. The client must rerun authoritative lease
+acquisition and obtain a fresh fencing token after every notification,
+reconnect, or cursor reset.
+
 ## Conformance tests
 
 The focused lock suite covers:
 
 - a separate process sleeping until orderly release;
 - descriptor/handle release after forced owner termination;
+- descriptor release after forced owner termination;
 - multiple contending waiters receiving exclusive handoffs without assuming
   FIFO order;
 - unrelated lock classes and independent Zed homes proceeding concurrently;
@@ -323,3 +335,14 @@ native operating-system request.
 
 Tests use barriers and channels for orchestration. Timeouts bound failures but
 are not the production lock-acquisition strategy.
+- waiter acquisition-error propagation, waiter-thread panic reporting, and
+  dropped-receiver guard cleanup;
+- a real Linux descriptor lock being transferred through the completion
+  channel without premature release;
+- Linux panic unwinding waking a blocked waiter and symlink aliases contending
+  on the same lock inode; and
+- Linux, macOS, and Windows execution of the broader process-lock contracts.
+
+Tests use child-process markers and bounded waits only for orchestration and
+failure detection. Production lock acquisition remains one blocking operating-
+system request rather than a userspace retry loop.

@@ -99,6 +99,15 @@ jobs:
       - name: Run evented kernel-lock handoff tests
         run: cargo test --locked --test evented_process_lock -- --nocapture
 
+      - name: Run evented waiter-thread and channel contracts
+        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
+
+      - name: Run the evented waiter against real Linux descriptor locks
+        run: cargo test --locked --test lock_waiter_process_lock -- --nocapture
+
+      - name: Run event-driven lock queue, isolation, and crash contracts
+        run: cargo test --locked --test store_lock_evented -- --nocapture
+
       - name: Run all store process-lock tests
         run: cargo test --locked -p zed-cli --lib store::tests
 
