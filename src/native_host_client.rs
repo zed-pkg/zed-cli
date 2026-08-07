@@ -477,13 +477,20 @@ pub fn version_index_request(
         P::RubyGemsApi => {
             RegistryRequest::new(Method::Get, format!("{index}/versions/{name}.json"))
         }
-        P::NuGetV3 | P::PowerShellGallery => RegistryRequest::new(
+        P::NuGetV3 => RegistryRequest::new(
             Method::Get,
             format!(
                 "{}/{}/index.json",
                 route.endpoints.download_base().trim_end_matches('/'),
                 package.to_ascii_lowercase()
             ),
+        ),
+        // The PowerShell Gallery is NuGet **V2**: OData, not a V3 service
+        // index, so there is no flat container to read. Reusing the V3 shape
+        // 404s on every package.
+        P::PowerShellGallery => RegistryRequest::new(
+            Method::Get,
+            format!("{index}/FindPackagesById()?id='{name}'&$select=Version"),
         ),
         P::Maven2 | P::MavenCentralPortal => {
             let (group, artifact) = split_maven(package, host)?;
@@ -512,31 +519,51 @@ pub fn version_index_request(
             // version history the R community actually queries.
             RegistryRequest::new(Method::Get, format!("https://crandb.r-pkg.org/{name}/all"))
         }
+        // `/release/{dist}` returns only the latest release, which a
+        // "list versions" command must not present as the complete set. The
+        // search endpoint returns every release; `_source` trims the response
+        // to the one field needed (`fields` is rejected outright by the API).
         P::CpanPause => RegistryRequest::new(
             Method::Get,
-            format!("https://fastapi.metacpan.org/v1/release/{name}"),
+            format!(
+                "https://fastapi.metacpan.org/v1/release/_search?q=distribution:{name}&_source=version&size=250"
+            ),
         ),
         P::CocoapodsTrunk => RegistryRequest::new(
             Method::Get,
             format!("https://trunk.cocoapods.org/api/v1/pods/{name}"),
         ),
-        P::SwiftRegistry => {
-            let (scope, package_name) = package
-                .split_once('.')
-                .ok_or(NativeHostClientError::MalformedIndex("scope.name", host))?;
-            RegistryRequest::new(
-                Method::Get,
-                format!(
-                    "{index}/{}/{}",
-                    encode_segment(scope),
-                    encode_segment(package_name)
-                ),
-            )
-            .header(
-                "Accept",
-                HeaderValue::Literal("application/vnd.swift.registry.v1+json".to_string()),
-            )
-        }
+        P::SwiftRegistry => match host {
+            // The Swift Package Index is an index of Git repositories, not an
+            // SE-0292 package registry: every path under its `/api` requires
+            // an API token and returns 401 anonymously. Versions come from the
+            // repository's tags. A self-hosted SE-0292 registry reached
+            // through a `UniversalHost` mirror does speak this protocol.
+            NativeHost::SwiftPackageIndex => {
+                return Err(NativeHostClientError::IndexUnsupported {
+                    host,
+                    reason: "the Swift Package Index indexes Git repositories and its API \
+                             needs a token; resolve versions from the repository's tags",
+                });
+            }
+            _ => {
+                let (scope, package_name) = package
+                    .split_once('.')
+                    .ok_or(NativeHostClientError::MalformedIndex("scope.name", host))?;
+                RegistryRequest::new(
+                    Method::Get,
+                    format!(
+                        "{index}/{}/{}",
+                        encode_segment(scope),
+                        encode_segment(package_name)
+                    ),
+                )
+                .header(
+                    "Accept",
+                    HeaderValue::Literal("application/vnd.swift.registry.v1+json".to_string()),
+                )
+            }
+        },
         // One publish shape, several index shapes — dispatch the rest by host.
         P::VcsIndexed => match host {
             NativeHost::Packagist => {
@@ -598,11 +625,20 @@ fn cargo_index_path(package: &str) -> String {
     }
 }
 
+/// Split Maven coordinates into group and artifact.
+///
+/// Accepts both separators on purpose. Maven Central writes
+/// `com.google.guava:guava`, but Clojars and Leiningen write
+/// `ring/ring-core`, and the manifest carries whichever spelling the author
+/// used — `NativeRegistry::canonical_package` normalizes only for collision
+/// detection, so the route still holds the original. Rejecting `/` here made
+/// every real Clojars route fail at request-construction time.
 fn split_maven(package: &str, host: NativeHost) -> Result<(&str, &str), NativeHostClientError> {
     package
         .split_once(':')
+        .or_else(|| package.split_once('/'))
         .ok_or(NativeHostClientError::MalformedIndex(
-            "group:artifact",
+            "group:artifact or group/artifact",
             host,
         ))
 }
@@ -625,10 +661,12 @@ pub fn download_request(
         }
         P::CargoSparse => format!("{base}/{name}/{name}-{version}.crate"),
         P::RubyGemsApi => format!("{base}/{name}-{version}.gem"),
-        P::NuGetV3 | P::PowerShellGallery => {
+        P::NuGetV3 => {
             let lower = package.to_ascii_lowercase();
             format!("{base}/{lower}/{version}/{lower}.{version}.nupkg")
         }
+        // V2 serves the package straight off `/package/{id}/{version}`.
+        P::PowerShellGallery => format!("{base}/package/{name}/{version}"),
         P::Maven2 | P::MavenCentralPortal => {
             let (group, artifact) = split_maven(package, host)?;
             format!(
@@ -920,7 +958,15 @@ pub fn parse_versions(
                 .filter_map(|v| v.get("number")?.as_str().map(str::to_string))
                 .collect()
         }
-        P::NuGetV3 | P::PowerShellGallery => {
+        // `<d:Version>1.2.3</d:Version>` repeated once per entry. A full XML
+        // parser is not warranted for one machine-generated element.
+        P::PowerShellGallery => body
+            .split("<d:Version>")
+            .skip(1)
+            .filter_map(|chunk| chunk.split_once("</d:Version>"))
+            .map(|(version, _)| version.trim().to_string())
+            .collect(),
+        P::NuGetV3 => {
             let json: serde_json::Value =
                 serde_json::from_str(body).map_err(|_| malformed("flat container index"))?;
             json.get("versions")
@@ -987,11 +1033,19 @@ pub fn parse_versions(
         }
         P::CpanPause => {
             let json: serde_json::Value =
-                serde_json::from_str(body).map_err(|_| malformed("release"))?;
-            json.get("version")
-                .and_then(|v| v.as_str())
-                .map(|v| vec![v.to_string()])
-                .ok_or_else(|| malformed("version"))?
+                serde_json::from_str(body).map_err(|_| malformed("release search"))?;
+            json.get("hits")
+                .and_then(|hits| hits.get("hits"))
+                .and_then(|hits| hits.as_array())
+                .ok_or_else(|| malformed("hits.hits"))?
+                .iter()
+                .filter_map(|hit| {
+                    hit.get("_source")?
+                        .get("version")?
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .collect()
         }
         P::CocoapodsTrunk => {
             let json: serde_json::Value =
@@ -1530,6 +1584,118 @@ mod tests {
                 }
                 other => panic!("{host}: expected IndexUnsupported, got {other}"),
             }
+        }
+    }
+
+    // The cases below were all found by probing the live public registries
+    // rather than by reasoning about their docs. Each one shipped broken.
+
+    #[test]
+    fn clojars_coordinates_use_a_slash_and_maven_central_uses_a_colon() {
+        // Leiningen writes `ring/ring-core`; Maven writes `com.google.guava:guava`.
+        // The manifest carries whichever the author used, so rejecting `/`
+        // made every real Clojars route fail at request construction.
+        let request = version_index_request(
+            &route(NativeHost::Clojars, ReleaseChannel::Stable),
+            "ring/ring-core",
+        )
+        .unwrap();
+        assert_eq!(
+            request.url,
+            "https://repo.clojars.org/ring/ring-core/maven-metadata.xml"
+        );
+        let central = version_index_request(
+            &route(NativeHost::MavenCentral, ReleaseChannel::Stable),
+            "com.google.guava:guava",
+        )
+        .unwrap();
+        assert_eq!(
+            central.url,
+            "https://repo.maven.apache.org/maven2/com/google/guava/guava/maven-metadata.xml"
+        );
+        // Neither separator present is still an error.
+        assert!(
+            version_index_request(&route(NativeHost::Clojars, ReleaseChannel::Stable), "bare")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cpan_lists_every_release_not_just_the_latest() {
+        // `/release/{dist}` returns one record. Reporting that as the complete
+        // version list is a wrong answer, not a partial one.
+        let request =
+            version_index_request(&route(NativeHost::Cpan, ReleaseChannel::Stable), "Try-Tiny")
+                .unwrap();
+        assert!(request.url.contains("/release/_search"), "{}", request.url);
+        assert!(request.url.contains("q=distribution:Try-Tiny"));
+        // `fields` is rejected outright by the MetaCPAN API; `_source` is not.
+        assert!(request.url.contains("_source=version"));
+        assert!(!request.url.contains("fields="));
+
+        let body = r#"{"hits":{"hits":[
+            {"_source":{"version":"0.30"}},
+            {"_source":{"version":"0.31"}},
+            {"_source":{"version":"0.32"}}]}}"#;
+        assert_eq!(
+            parse_versions(&route(NativeHost::Cpan, ReleaseChannel::Stable), body).unwrap(),
+            vec!["0.30", "0.31", "0.32"]
+        );
+    }
+
+    #[test]
+    fn the_powershell_gallery_is_nuget_v2_not_v3() {
+        // It has no V3 flat container; the V3 URL shape 404s on every package.
+        let psg = version_index_request(
+            &route(NativeHost::PowerShellGallery, ReleaseChannel::Stable),
+            "Pester",
+        )
+        .unwrap();
+        assert!(
+            psg.url.contains("FindPackagesById()?id='Pester'"),
+            "{}",
+            psg.url
+        );
+        assert!(!psg.url.contains("index.json"));
+
+        // NuGet proper keeps the V3 flat container, lowercased.
+        let nuget = version_index_request(
+            &route(NativeHost::NuGet, ReleaseChannel::Stable),
+            "Newtonsoft.Json",
+        )
+        .unwrap();
+        assert_eq!(
+            nuget.url,
+            "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/index.json"
+        );
+
+        // OData returns an Atom feed, not JSON.
+        let body = "<feed><entry><m:properties><d:Version>3.0.2</d:Version>                    </m:properties></entry><entry><m:properties>                    <d:Version>5.7.1</d:Version></m:properties></entry></feed>";
+        assert_eq!(
+            parse_versions(
+                &route(NativeHost::PowerShellGallery, ReleaseChannel::Stable),
+                body
+            )
+            .unwrap(),
+            vec!["3.0.2", "5.7.1"]
+        );
+    }
+
+    #[test]
+    fn the_swift_package_index_is_an_index_not_a_registry() {
+        // Every path under its `/api` returns 401 anonymously: it catalogues
+        // Git repositories rather than serving SE-0292 releases. Emitting a
+        // request that always 401s is worse than saying so.
+        let error = version_index_request(
+            &route(NativeHost::SwiftPackageIndex, ReleaseChannel::Stable),
+            "apple.swift-argument-parser",
+        )
+        .unwrap_err();
+        match error {
+            NativeHostClientError::IndexUnsupported { reason, .. } => {
+                assert!(reason.contains("tags"), "{reason}");
+            }
+            other => panic!("expected IndexUnsupported, got {other}"),
         }
     }
 

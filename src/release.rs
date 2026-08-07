@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use zed_interfaces::manifest::{Manifest, NativeRegistry};
 use zed_interfaces::native_host::{ChannelRoute, ReleaseChannel};
 
-use crate::native_host_client::{self, RegistryRequest};
+use crate::native_host_client::{self, NativeHostClientError, RegistryRequest};
 
 use crate::config::read_manifest;
 
@@ -166,14 +166,16 @@ pub fn build_plan(
         .native_release_routes()
         .into_iter()
         .map(|route| {
-            // A route may pin its own track (a client generated from an
-            // unstable API surface); an explicit `--channel` overrides it.
-            let declared = manifest
+            // A single-language package declares its route at
+            // `[publish.native]`; a polyglot one declares it per target.
+            let section = manifest
                 .targets
                 .get(&route.target)
                 .and_then(|target| target.native.as_ref())
-                .map(|native| native.channel)
-                .unwrap_or_default();
+                .or(manifest.publish.native.as_ref());
+            // A route may pin its own track (a client generated from an
+            // unstable API surface); an explicit `--channel` overrides it.
+            let declared = section.map(|native| native.channel).unwrap_or_default();
             let effective = if channel.is_default() {
                 declared
             } else {
@@ -184,12 +186,21 @@ pub fn build_plan(
                 .host()
                 .channel_route(&version, effective, iteration)
                 .map_err(|error| anyhow!("target `{}`: {error}", route.target))?;
+            // Re-render the tag against the channel version rather than
+            // reusing the stable one. For a host that publishes by VCS tag —
+            // Go's proxy, Packagist, Zig, a plain remote — the tag *is* the
+            // publication, so a candidate tagged `v0.1.0` would either
+            // collide with the eventual release or simply never exist.
+            let vcs_tag = section
+                .and_then(|native| native.tag_format.clone())
+                .unwrap_or_else(|| manifest.publish.tag_format.clone())
+                .replace("{version}", &resolved.version);
             Ok(NativeReleaseArtifact {
                 target: route.target,
                 registry: route.registry.as_str().to_string(),
                 package: route.package,
                 version: version.clone(),
-                vcs_tag: route.vcs_tag,
+                vcs_tag,
                 dir: route.dir,
                 channel: resolved,
             })
@@ -750,15 +761,32 @@ pub fn render_human(plan: &ReleasePlan) -> String {
         output.push_str("  - none declared\n");
     } else {
         for artifact in &plan.native {
+            // Print the version the host will actually store, not the release
+            // set's stable version: `--channel rc` previously rendered a line
+            // indistinguishable from a stable plan, which is the one place a
+            // reader would notice they were about to ship a candidate.
             output.push_str(&format!(
-                "  - {} {}@{} <- {} [target: {}, tag: {}]\n",
+                "  - {} {}@{} <- {} [target: {}, tag: {}",
                 artifact.registry,
                 artifact.package,
-                artifact.version,
+                artifact.channel.version,
                 artifact.dir,
                 artifact.target,
                 artifact.vcs_tag
             ));
+            if !artifact.channel.channel.is_default() {
+                output.push_str(&format!(", channel: {}", artifact.channel.channel));
+            }
+            if let Some(tag) = &artifact.channel.dist_tag {
+                output.push_str(&format!(", dist-tag: {tag}"));
+            }
+            if artifact.channel.mutable {
+                output.push_str(", mutable");
+            }
+            if artifact.channel.moderated {
+                output.push_str(", reviewed before it lands");
+            }
+            output.push_str("]\n");
         }
     }
     output.push_str("forge package mirrors:\n");
@@ -816,12 +844,14 @@ pub fn publish(
     let plan = build_plan(&manifest, channel, iteration)?;
 
     let mut published = 0usize;
+    let mut selected = 0usize;
     let mut skipped: Vec<String> = Vec::new();
 
     for artifact in &plan.native {
         if only_target.is_some_and(|target| target != artifact.target) {
             continue;
         }
+        selected += 1;
         let host = artifact.channel.host;
         if artifact.channel.moderated {
             println!(
@@ -838,6 +868,19 @@ pub fn publish(
             credential.as_deref(),
         ) {
             Ok(request) => request,
+            // `publish_request` knows the channel but not the tag template,
+            // so it names the version. For a VCS-published host the tag is
+            // the instruction, and `go/v0.1.0-rc.2` is not `0.1.0-rc.2` —
+            // telling someone to push the wrong ref is worse than saying
+            // nothing.
+            Err(NativeHostClientError::VcsPublished { host, .. }) => {
+                skipped.push(format!(
+                    "{} [{host}]: publishes by pushing a VCS tag, not by uploading \
+                     to a registry; tag `{}` and let the index pick it up",
+                    artifact.target, artifact.vcs_tag
+                ));
+                continue;
+            }
             Err(error) => {
                 skipped.push(format!("{} [{}]: {error}", artifact.target, host));
                 continue;
@@ -865,10 +908,10 @@ pub fn publish(
         println!("skip  {note}");
     }
     if dry_run {
-        println!(
-            "\ndry run: {} route(s) planned, nothing sent",
-            plan.native.len()
-        );
+        // Count what was selected, not what the manifest declares: with
+        // `--target` those differ, and reporting the larger number reads as
+        // "everything is covered".
+        println!("\ndry run: {selected} route(s) planned, nothing sent");
     } else {
         println!(
             "\npublished {published} route(s), skipped {}",
