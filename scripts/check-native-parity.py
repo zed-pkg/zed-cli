@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-check a polyglot `.zpkg.toml` against each target's NATIVE manifest.
 
-A `[targets.<lang>]` slice is published twice from one commit: to zpkg.tech
+A `[targets.<lang>]` slice is published twice from one commit: to zpkg.net
 under its zed name, and to that ecosystem's own registry (npm, PyPI, crates.io,
 Maven Central, RubyGems, pub.dev, Hex, Packagist, NuGet, …) under its native
 name. Two manifests describe one release, and nothing in zed links them — so
@@ -352,7 +352,7 @@ def main() -> int:
             problems.append(f"[targets.{target}] dir `{section['dir']}` does not exist")
             continue
 
-        # The whole-repository target is zpkg.tech-only by rule, not by accident:
+        # The whole-repository target is zpkg.net-only by rule, not by accident:
         # `Manifest::validate` rejects a native route on `dir = "."` outright.
         # Without this, a repo that keeps its own tooling manifest at the root
         # (a workspace package.json, say) gets that manifest mistaken for the
@@ -370,7 +370,7 @@ def main() -> int:
         found = find_native(target_dir)
         if found is None:
             # Not drift: plenty of languages (shell, matlab) have no registry.
-            # It just means this slice is zpkg.tech-only.
+            # It just means this slice is zpkg.net-only.
             rows.append((target, zed_coords, "—", "—", "zed only"))
             continue
 
@@ -464,7 +464,7 @@ def main() -> int:
     native_count = sum(1 for r in rows if r[2] != "—")
     print(
         f"{len(rows)} target(s): {native_count} publishable to a native registry, "
-        f"{len(rows) - native_count} to zpkg.tech only"
+        f"{len(rows) - native_count} to zpkg.net only"
     )
 
     if gaps:

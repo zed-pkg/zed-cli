@@ -2,7 +2,7 @@
 #
 # One repo, one version, five ecosystems. Each `[targets.*]` slice must be
 # BOTH a zed package and a valid *native* package for its ecosystem, so that
-# the same commit can be published to zpkg.tech and to npm / PyPI / crates.io /
+# the same commit can be published to zpkg.net and to npm / PyPI / crates.io /
 # rubygems / the Go module proxy without a second source of truth.
 #
 # The native package names deliberately diverge from the zed target names —

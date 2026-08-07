@@ -591,7 +591,7 @@ version = "2.0.0"
 sha256 = "{SHA_A}"
 size = 10
 vcs_tag = "v2.0.0"
-source = "https://registry.zpkg.tech"
+source = "https://registry.zpkg.net"
 "#
             ),
         )

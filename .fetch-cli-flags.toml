@@ -15,7 +15,7 @@ url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/frozen-fetch.md"
 env = "ZED_PKG_REGISTRY"
 aliases = ["registry"]
 type = "string"
-default = "https://registry.zpkg.tech"
+default = "https://registry.zpkg.net"
 help = "Fallback registry URL for legacy lock entries with an empty source."
 
 [flags.home]

@@ -497,14 +497,14 @@ mod tests {
     fn canonical_artifact_url_respects_registry_override() {
         let registry = HttpRegistry::new("http://127.0.0.1:18080".into()).unwrap();
         let url = registry
-            .artifact_download_url("https://registry.zpkg.tech/v1/artifacts/abc123", "abc123")
+            .artifact_download_url("https://registry.zpkg.net/v1/artifacts/abc123", "abc123")
             .unwrap();
         assert_eq!(url.as_str(), "http://127.0.0.1:18080/v1/artifacts/abc123");
     }
 
     #[test]
     fn presigned_external_artifact_url_is_preserved() {
-        let registry = HttpRegistry::new("https://registry.zpkg.tech".into()).unwrap();
+        let registry = HttpRegistry::new("https://registry.zpkg.net".into()).unwrap();
         let url = registry
             .artifact_download_url(
                 "https://objects.example.test/bucket/abc123?X-Amz-Signature=signed",

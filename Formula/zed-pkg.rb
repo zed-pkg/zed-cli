@@ -5,7 +5,7 @@
 #   brew install zed-pkg
 class ZedPkg < Formula
   desc "Universal package manager backed by the VCS hosts you already use"
-  homepage "https://zpkg.tech"
+  homepage "https://zpkg.net"
   url "https://github.com/zed-pkg/zed-cli/archive/refs/tags/v0.1.0.tar.gz"
   # TODO: fill in after cutting the v0.1.0 release tag:
   #   curl -L <url> | shasum -a 256

@@ -1,11 +1,11 @@
 # Polyglot publish matrix.
 #
 # zed-pkg's interop promise (zed-docs doc 17) is that one repo at one version
-# can be published to zpkg.tech *and* to every ecosystem's own registry, from
+# can be published to zpkg.net *and* to every ecosystem's own registry, from
 # the same `[targets.*]` declaration. That promise only holds if each language
 # slice `zed pack` emits is simultaneously:
 #
-#   1. a valid zed package        -> publishes to zpkg.tech       (goal 3)
+#   1. a valid zed package        -> publishes to zpkg.net       (goal 3)
 #   2. a valid NATIVE package     -> publishes to npm/PyPI/...    (goal 4)
 #   3. isolated                   -> no other language's bytes    (goal 3)
 #   4. free of dev/test files     -> the disk-space promise

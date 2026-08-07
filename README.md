@@ -1,8 +1,8 @@
 # zed-cli
 
-`zed` is the CLI for [zed-pkg](https://zpkg.tech), the universal package
+`zed` is the CLI for [zed-pkg](https://zpkg.net), the universal package
 manager backed by the VCS hosts you already use. Artifacts live on the
-zpkg.tech registry (S3/Cloudflare R2 behind Rust servers); your declared
+zpkg.net registry (S3/Cloudflare R2 behind Rust servers); your declared
 backing repo on GitHub, GitLab, Bitbucket, Codeberg, SourceHut, Forgejo,
 Gitea, or a self-hosted server doubles as mirror and provenance anchor.
 
@@ -25,7 +25,7 @@ Why it exists:
 ## Install
 
 ```sh
-curl -fsSL https://zpkg.tech/install.sh | bash
+curl -fsSL https://zpkg.net/install.sh | bash
 ```
 
 The installer detects your OS/arch, drops the `zed` binary in `~/.zed/bin`,
@@ -401,7 +401,7 @@ actual CLI never drift, so it is always authoritative:
 
 | Flag | Env var | Default |
 | --- | --- | --- |
-| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.tech` |
+| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
