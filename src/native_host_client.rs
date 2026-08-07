@@ -243,38 +243,70 @@ fn is_secret_query_key(key: &str) -> bool {
     key.contains("token") || key.contains("key") || key.contains("password")
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+/// Why a registry route could not be turned into a request.
+///
+/// A plain enum with a hand-written `Display` rather than a `thiserror` derive:
+/// this is the crate's only error type that is not `anyhow`, and one dependency
+/// for one enum is one more thing to audit in a tool that handles publish
+/// tokens.
+#[derive(Debug, PartialEq, Eq)]
 pub enum NativeHostClientError {
-    #[error(
-        "`{host}` publishes by pushing a VCS tag, not by uploading to a registry; \
-         tag `{tag}` and let the index pick it up"
-    )]
+    /// The host has no upload API; releases are picked up from a VCS tag.
     VcsPublished { host: NativeHost, tag: String },
-    #[error("`{host}` accepts no uploads; it mirrors another registry's contents")]
+    /// The host mirrors another registry and accepts nothing of its own.
     ReadOnly { host: NativeHost },
-    #[error(
-        "publishing to `{host}` takes more than one request ({step}); \
-         run `zed release plan` for the full sequence"
-    )]
+    /// Publishing needs a request sequence, and a later request depends on an
+    /// earlier response body.
     MultiStepPublish {
         host: NativeHost,
         step: &'static str,
     },
-    #[error("zed cannot yet list versions from `{host}`: {reason}")]
     IndexUnsupported {
         host: NativeHost,
         reason: &'static str,
     },
-    #[error("`{host}` needs a credential; set {}", .env.join(" or "))]
     MissingCredential {
         host: NativeHost,
         env: Vec<&'static str>,
     },
-    #[error("`{host}` has no publish endpoint configured")]
     NoPublishEndpoint { host: NativeHost },
-    #[error("could not read `{0}` from the `{1}` response")]
     MalformedIndex(&'static str, NativeHost),
 }
+
+impl fmt::Display for NativeHostClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::VcsPublished { host, tag } => write!(
+                f,
+                "`{host}` publishes by pushing a VCS tag, not by uploading to a registry; \
+                 tag `{tag}` and let the index pick it up"
+            ),
+            Self::ReadOnly { host } => write!(
+                f,
+                "`{host}` accepts no uploads; it mirrors another registry's contents"
+            ),
+            Self::MultiStepPublish { host, step } => write!(
+                f,
+                "publishing to `{host}` takes more than one request ({step}); \
+                 run `zed release plan` for the full sequence"
+            ),
+            Self::IndexUnsupported { host, reason } => {
+                write!(f, "zed cannot yet list versions from `{host}`: {reason}")
+            }
+            Self::MissingCredential { host, env } => {
+                write!(f, "`{host}` needs a credential; set {}", env.join(" or "))
+            }
+            Self::NoPublishEndpoint { host } => {
+                write!(f, "`{host}` has no publish endpoint configured")
+            }
+            Self::MalformedIndex(field, host) => {
+                write!(f, "could not read `{field}` from the `{host}` response")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NativeHostClientError {}
 
 /// Environment variables a host's credential is read from, in priority order.
 ///

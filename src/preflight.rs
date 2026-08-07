@@ -117,7 +117,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
     manifest
         .native_release_routes()
         .into_iter()
-        .map(|route| {
+        .filter_map(|route| {
             let target_root = project.join(&route.dir);
             let gemspec = gemspec_filename(&target_root, &route.package);
             let (program, args) = match route.registry {
