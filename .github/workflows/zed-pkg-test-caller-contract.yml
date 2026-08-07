@@ -1,0 +1,57 @@
+name: zed-pkg-test caller contract
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/zed-pkg-test-candidate.yml"
+      - ".github/workflows/zed-pkg-test-caller-contract.yml"
+      - "scripts/zed_pkg_test_caller_contract.py"
+      - "tests/test_zed_pkg_test_caller_contract.py"
+      - "docs/zed-pkg-test.md"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/zed-pkg-test-candidate.yml"
+      - ".github/workflows/zed-pkg-test-caller-contract.yml"
+      - "scripts/zed_pkg_test_caller_contract.py"
+      - "tests/test_zed_pkg_test_caller_contract.py"
+      - "docs/zed-pkg-test.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-pkg-test-caller-contract-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  caller-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out caller source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Compile caller contract
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/zed_pkg_test_caller_contract.py \
+            tests/test_zed_pkg_test_caller_contract.py
+
+      - name: Run caller policy tests
+        run: |
+          set -euo pipefail
+          python3 -m unittest \
+            tests/test_zed_pkg_test_caller_contract.py \
+            --verbose
+
+      - name: Audit the checked-out caller and procedure documentation
+        run: |
+          set -euo pipefail
+          python3 scripts/zed_pkg_test_caller_contract.py --root .
