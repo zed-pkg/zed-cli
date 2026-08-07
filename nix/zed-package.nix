@@ -332,6 +332,8 @@ rec {
           fi
         done < <(find "$out/tree" -type l -print0)
 
+        test ! -e "$out/tree/.zed/operation.lock"
+
         runHook postInstall
       '';
     };
