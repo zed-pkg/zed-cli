@@ -1,0 +1,11 @@
+[package]
+org = "zed-pkg-test"
+name = "nix-bridge-data"
+version = "1.0.0"
+description = "Deterministic data-only fixture for Zed-to-Nix export"
+license = "MIT"
+keywords = ["nix", "interop", "fixture"]
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-cli"
