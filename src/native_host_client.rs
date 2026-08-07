@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use zed_interfaces::native_host::{
-    ApiKeyHeader, ChannelRoute, NativeHost, RegistryAuth, RegistryProtocol,
+    ChannelRoute, NativeHost, RegistryAuth, RegistryProtocol,
 };
 
 /// The HTTP verb a registry call uses. Narrow on purpose: a registry client
@@ -681,10 +681,14 @@ pub fn publish_request(
             tag: route.version.clone(),
         });
     }
-    let Some(publish_base) = route.endpoints.publish.as_deref() else {
+    let Some(publish_endpoint) = route.endpoints.publish.as_deref() else {
         return Err(NativeHostClientError::ReadOnly { host });
     };
-    let publish_base = publish_base.trim_end_matches('/');
+    // Two readings of the same endpoint. `publish_base` is a prefix a path is
+    // appended to, so its trailing slash must go or the join doubles it.
+    // `publish_endpoint` is posted to verbatim, and there the trailing slash is
+    // load-bearing: `https://upload.pypi.org/legacy` (no slash) 404s.
+    let publish_base = publish_endpoint.trim_end_matches('/');
 
     let needs_credential = !matches!(
         host.publish_auth(),
