@@ -292,13 +292,45 @@ aliases = ["un"]
 help = "Remove materialized dependencies while retaining the lockfile."
 
 [commands.env]
-help = "Import and verify project-local developer environments."
+help = "Import, verify, and export project-local developer environments."
 
 [commands.env.commands.import]
 help = "Import manager-native state as a normalized EnvironmentPlan."
 
 [commands.env.commands.verify]
 help = "Verify config/lock coverage and normalized environment identity."
+
+
+[commands.env.commands.export]
+help = "Project a schema-v2 EnvironmentPlan into deterministic manager configuration."
+
+
+[commands.env.commands.export.flags.env_plan]
+env = "ZED_PKG_ENV_PLAN"
+aliases = ["plan"]
+type = "string"
+help = "Project-local schema-v2 environment plan path."
+
+[commands.env.commands.export.flags.env_output]
+env = "ZED_PKG_ENV_OUTPUT"
+aliases = ["output"]
+type = "string"
+default = ".mise.toml"
+help = "Project-local manager export path."
+
+[commands.env.commands.export.flags.env_check]
+env = "ZED_PKG_ENV_CHECK"
+aliases = ["check"]
+type = "bool"
+default = "false"
+help = "Verify the deterministic manager projection without writing."
+
+[commands.env.commands.export.flags.env_write]
+env = "ZED_PKG_ENV_WRITE"
+aliases = ["write"]
+type = "bool"
+default = "false"
+help = "Transactionally write a Zed-owned manager projection."
 
 [commands.completions]
 help = "Generate Bash or Zsh completion from the typed CLI model."

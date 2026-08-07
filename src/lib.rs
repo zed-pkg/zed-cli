@@ -19,6 +19,7 @@ pub mod interactive;
 pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
+pub mod mise_export;
 pub mod mise_lock;
 pub mod nix_bundle_write;
 pub mod nix_export_bundle;
