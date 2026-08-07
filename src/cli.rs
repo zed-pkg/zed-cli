@@ -761,6 +761,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn environment_import_and_verify_are_typed() {
+        for action in ["import", "verify"] {
+            let cli = Cli::try_parse_from([
+                "zed",
+                "env",
+                action,
+                "mise",
+                "--config",
+                "mise.toml",
+                "--lock",
+                "mise.lock",
+                "--frozen",
+                "--json",
+            ])
+            .unwrap();
+            assert!(matches!(cli.cmd, Cmd::Env { .. }));
+        }
+    }
+
     /// The flags-2-env convention (github.com/oresoftware/flags-2-env):
     /// every user-facing option must be settable via a ZED_PKG_* env var.
     #[test]

@@ -169,6 +169,13 @@ When no `--lock` is supplied, the adapter follows mise's current normalized adja
 ```text
 mise.toml        → mise.lock
 .mise.toml       → mise.lock
+## Lockfile naming
+
+When no `--lock` is supplied, the adapter follows mise's adjacent-file convention by replacing the config file's `.toml` extension with `.lock`:
+
+```text
+mise.toml        → mise.lock
+.mise.toml       → .mise.lock
 mise.test.toml   → mise.test.lock
 ```
 
@@ -187,3 +194,4 @@ mise.test.toml   → mise.test.lock
 ## Planned follow-up
 
 The remaining mise-parity work includes deterministic export and three-way merge planning, typed environment values and trust, task-DAG execution, native tool backends, broader offline replay, and additional tamper certification.
+The remaining mise-parity work includes deterministic export and three-way merge planning, typed environment values and trust, task-DAG execution, native tool backends, activation in `zed dev`, offline replay, tamper tests, and cross-platform certification in `zed-pkg-test` and `zed-e2e`.
