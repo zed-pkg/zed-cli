@@ -310,13 +310,55 @@ instead of the registry, so edits are live in consumers with no publish step:
 members = ["packages/*", "apps/*"]
 ```
 
-When a dependency resolves to a workspace member, `zed install` symlinks the
-member's source directory straight into `zed_modules/` and keeps resolving its
-transitive deps. Members are not pinned in `.zpkg.lock` (there is no artifact).
+When a dependency resolves to a workspace member, `zed install` normally
+symlinks the member's source directory straight into `zed_modules/` and keeps
+resolving its transitive deps. A member with install hooks or a build step is
+prepared in a writable staging copy and copied into the consumer instead, so
+its finalized files never point at an ephemeral staging directory. Members are
+not pinned in `.zpkg.lock` (there is no published artifact).
 
-### Build hooks (compiled dependencies)
+### Native dependencies, install hooks, and builds
 
-A package with native code or a codegen step declares a `[build]`:
+A package declares host prerequisites by package-manager name. Package specs
+are data, not commands: Zed maps each supported manager to a fixed argv
+invocation and never interpolates a package spec into a shell.
+
+```toml
+[native-dependencies]
+apt = ["pkg-config", "libssl-dev"]
+apk = ["pkgconf", "openssl-dev"]
+brew = ["pkg-config", "openssl@3"]
+nix = ["pkg-config", "openssl"]
+
+[hooks]
+pre-install = ["./scripts/pre-install.sh"]
+post-install = ["./scripts/post-install.sh"]
+```
+
+Polyglot packages may append target-specific entries under
+`[targets.<target>.native-dependencies]` and `[targets.<target>.hooks]`.
+Package-level hooks run before target hooks in each phase. Zed selects one
+manager supported by every package in the resolved graph, de-duplicates its
+package list, and installs it once before opening the consumer-project
+transaction. Override detection with `--native-manager <name>`.
+
+Native package installation and lifecycle hooks are separate trust decisions:
+
+```sh
+zed install --allow-native-deps --allow-install-hooks
+```
+
+The equivalent environment variables are `ZED_PKG_ALLOW_NATIVE_DEPS=1` and
+`ZED_PKG_ALLOW_INSTALL_HOOKS=1`. Outside a Nix build, the `nix` route uses a
+content-addressed Zed-managed profile below `$ZED_PKG_HOME/native/nix/` and
+adds its build paths only to package lifecycle commands; it never changes the
+user's default Nix profile. Inside a Nix build, Zed never invokes a package
+manager: put declared prerequisites in `nativeBuildInputs` / `buildInputs`,
+expose a `nix` route in the manifest, and set
+`ZED_PKG_NATIVE_DEPS_PROVIDED=1` after the derivation has supplied them.
+
+A package with native code or a codegen step may additionally declare a
+`[build]`:
 
 ```toml
 [build]
@@ -327,12 +369,14 @@ outputs = ["target/release/libfoo.so"]   # empty = keep the whole tree
 "acme/cmake" = "^3.20"
 ```
 
-Builds run in an isolated staging copy — never inside the immutable source
-store — and results cache per `(sha256, platform, command)` under
-`~/.zed-pkg/builds/`, so a consumer override never collides with the
-package's own build.
-Because a build runs arbitrary author code, it is opt-in: pass `--allow-build`
-(or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or replace a
+The lifecycle order is native prerequisites → `pre-install` hooks → build →
+`post-install` hooks → cache promotion → project materialization. Hooks and
+builds run in an isolated staging copy—never inside the immutable source store
+or consumer project—and results cache by source hash, platform, lifecycle
+commands, selected target, and native route under `~/.zed-pkg/builds/`.
+Because a build runs arbitrary author code, it remains independently opt-in:
+pass `--allow-build` (or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or
+replace a
 dependency's build without waiting on upstream:
 
 ```toml
@@ -363,6 +407,10 @@ actual CLI never drift, so it is always authoritative:
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
 | `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
 | deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
+| `--allow-native-deps` | `ZED_PKG_ALLOW_NATIVE_DEPS` | off |
+| `--allow-install-hooks` | `ZED_PKG_ALLOW_INSTALL_HOOKS` | off |
+| `--native-manager <name>` | `ZED_PKG_NATIVE_MANAGER` | auto-detect one graph-compatible manager |
+| `--allow-no-manifest` / `--skip-manifest` (install) | `ZED_PKG_ALLOW_NO_MANIFEST` | off; otherwise a real-terminal confirmation is required |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
@@ -547,6 +595,11 @@ Artifacts arrive over the network, so the client treats them as untrusted:
 - **Generated identities fail closed.** A first-install consumer manifest
   cannot be published until its inferred local package identity is reviewed
   and the generated marker is removed.
+- **No implicit install-time code execution or privilege use.** Native package
+  installation, package lifecycle hooks, and builds require independent
+  explicit consent. Native specs use fixed argv templates; hooks/builds run in
+  disposable writable staging copies, never in the source store or consumer
+  project.
 - **Recoverable project mutations.** Install and uninstall stage old paths in
   UUID-v4 transaction directories and restore interrupted work before the
   next lifecycle operation.
