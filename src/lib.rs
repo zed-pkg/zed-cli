@@ -5,6 +5,7 @@ pub mod asdf_environment;
 pub mod auth;
 pub mod cli;
 pub mod cli_model;
+pub mod cli_oci;
 pub mod completion;
 pub mod config;
 mod dart_wiring;
@@ -26,6 +27,10 @@ pub mod nix_bundle_write;
 pub mod nix_environment_export;
 pub mod nix_export_bundle;
 pub mod nix_export_plan;
+pub mod oci;
+pub mod oci_command;
+pub mod oci_layout;
+pub mod oci_push;
 #[path = "ops_entry.rs"]
 pub mod ops;
 pub mod pack;

@@ -17,6 +17,7 @@ use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
+use zed_cli::oci_command;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
