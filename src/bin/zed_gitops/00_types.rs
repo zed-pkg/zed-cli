@@ -13,6 +13,7 @@ const API_VERSION: &str = "oresoftware.dev/v1alpha1";
 const KIND: &str = "GitOpsApplication";
 const SCHEMA_REFERENCE: &str = "../application.schema.json";
 const CLUSTER_REPOSITORY: &str = "github.com/oresoftware/k8s-cluster";
+#[cfg(test)]
 const DEFAULT_CATALOG: &str = "catalog/gitops/apps";
 
 #[derive(Debug, Parser)]
@@ -171,4 +172,3 @@ struct Report {
     offline: bool,
     diagnostics: Vec<Diagnostic>,
 }
-
