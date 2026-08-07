@@ -124,8 +124,10 @@ registry hosts both on S3/Cloudflare R2.
 | `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
-| `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
+| `zed release plan [--json] [--channel <track>]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed release publish [--channel <track>] [--dry-run]` | Upload each native route to its ecosystem registry over that registry's own HTTP API |
+| `zed release versions [--target <name>]` | List the versions each native route's registry already serves |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
@@ -186,6 +188,15 @@ Tag-resolved packages can add a native `tag_format`. Go modules below a
 subdirectory must use the module-directory prefix, such as
 `tag_format = "clients/go/v{version}"`, while the coordinated Zed release can
 continue using the repository tag `v{version}`.
+
+`zed release publish` and `zed release versions` talk to each ecosystem
+registry over its own HTTP API rather than through that language's package
+manager, so a polyglot repository can publish to Hex, Hackage, or CPAN from a
+runner that has no Elixir, GHC, or Perl installed. `--channel rc` resolves the
+release-candidate track each host actually uses — an npm dist-tag, a PEP 440
+suffix on PyPI, a separate candidate endpoint on Hackage — rather than assuming
+one spelling works everywhere. `--dry-run` prints the exact requests, with
+credentials redacted, and sends nothing.
 
 `zed release plan --json` emits one coordinated release set containing the
 Zed artifacts, canonical native packages, and forge mirrors. It does not read

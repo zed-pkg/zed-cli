@@ -329,8 +329,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
         Cmd::Release { cmd } => match cmd {
-            ReleaseCmd::Plan { json } => release::plan(&cwd, json),
+            ReleaseCmd::Plan {
+                json,
+                channel,
+                iteration,
+            } => release::plan(&cwd, json, channel.into(), iteration),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
+            ReleaseCmd::Publish {
+                channel,
+                iteration,
+                dry_run,
+                target,
+            } => release::publish(&cwd, channel.into(), iteration, dry_run, target.as_deref()),
+            ReleaseCmd::Versions { target } => release::versions(&cwd, target.as_deref()),
         },
         Cmd::Publish {
             dry_run,
