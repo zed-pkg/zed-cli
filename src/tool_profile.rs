@@ -9,7 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
@@ -685,7 +687,22 @@ fn materialize_executable(source: &Path, destination: &Path) -> Result<()> {
                 portable_display(destination)
             )
         })?;
-        File::open(destination)?.sync_all()?;
+        OpenOptions::new()
+            .write(true)
+            .open(destination)
+            .with_context(|| {
+                format!(
+                    "opening copied tool executable `{}` for synchronization",
+                    portable_display(destination)
+                )
+            })?
+            .sync_all()
+            .with_context(|| {
+                format!(
+                    "synchronizing copied tool executable `{}`",
+                    portable_display(destination)
+                )
+            })?;
     }
     Ok(())
 }
@@ -905,8 +922,10 @@ mod tests {
 
     #[test]
     fn exact_target_selection_rejects_missing_and_multiple_variants() {
-        let mut lock = EnvironmentLock::default();
-        lock.plan_digest_sha256 = "a".repeat(64);
+        let lock = EnvironmentLock {
+            plan_digest_sha256: "a".repeat(64),
+            ..EnvironmentLock::default()
+        };
         assert_eq!(select_exact_target(&lock, "x86_64-linux").unwrap().len(), 0);
     }
 
@@ -922,5 +941,18 @@ mod tests {
         for forbidden in ["locator", "url", "token", "credential", "environment"] {
             assert!(!json.contains(forbidden));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn copied_windows_executable_is_opened_with_sync_capable_access() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("hello.cmd");
+        let destination = root.path().join("hello-copy.cmd");
+        fs::write(&source, b"@echo off\r\necho hello\r\n").unwrap();
+
+        materialize_executable(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(destination).unwrap(), fs::read(source).unwrap());
     }
 }
