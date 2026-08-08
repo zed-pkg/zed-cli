@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use zed_interfaces::manifest::{Manifest, NativeRegistry};
-use zed_interfaces::native_host::{ChannelRoute, ReleaseChannel};
+use zed_interfaces::native_host::{ChannelRoute, RegistryProtocol, ReleaseChannel};
 
-use crate::native_host_client::{self, NativeHostClientError, RegistryRequest};
+use crate::native_host_client::{self, NativeHostClientError, RegistryLimits, RegistryRequest};
 
 use crate::config::read_manifest;
 
@@ -985,6 +985,61 @@ pub fn publish(
         }
         let credential = native_host_client::credential_for(host);
         let payload = native_artifact_path(project, artifact);
+
+        // A multi-request publish has no single request to preview: step 2's
+        // URL is only known once step 1 has answered. Building one here would
+        // hit `publish_request`'s `MultiStepPublish` guard and report the
+        // route as skipped, which is exactly wrong now that the sequence is
+        // implemented.
+        if matches!(
+            artifact.channel.protocol,
+            RegistryProtocol::PubDev | RegistryProtocol::MavenCentralPortal
+        ) {
+            println!(
+                "route {} -> {host} {}@{} [{}, multi-request]",
+                artifact.target,
+                artifact.package,
+                artifact.channel.version,
+                artifact.channel.channel
+            );
+            if dry_run {
+                println!(
+                    "      first request is authenticated to {host}; the rest are \
+                     derived from its response"
+                );
+                continue;
+            }
+            if !payload.exists() {
+                skipped.push(format!(
+                    "{} [{host}]: no built artifact at {}",
+                    artifact.target,
+                    payload.display()
+                ));
+                continue;
+            }
+            let mut send = |request: &RegistryRequest| {
+                native_host_client::execute_detailed(request, RegistryLimits::default())
+            };
+            match native_host_client::publish_sequence(
+                &artifact.channel,
+                &artifact.package,
+                &payload,
+                credential.as_deref(),
+                &mut send,
+            ) {
+                Ok(steps) => {
+                    for step in &steps {
+                        println!("      [{}] {}", step.status, step.description);
+                    }
+                    published += 1;
+                }
+                Err(error) => {
+                    skipped.push(format!("{} [{host}]: {error:#}", artifact.target));
+                }
+            }
+            continue;
+        }
+
         let request = match native_host_client::publish_request(
             &artifact.channel,
             &artifact.package,
@@ -1023,8 +1078,20 @@ pub fn publish(
             ));
             continue;
         }
-        native_host_client::execute(&request)
-            .with_context(|| format!("publish {} to {host}", artifact.package))?;
+        let mut send = |request: &RegistryRequest| {
+            native_host_client::execute_detailed(request, RegistryLimits::default())
+        };
+        let steps = native_host_client::publish_sequence(
+            &artifact.channel,
+            &artifact.package,
+            &payload,
+            credential.as_deref(),
+            &mut send,
+        )
+        .with_context(|| format!("publish {} to {host}", artifact.package))?;
+        for step in &steps {
+            println!("      [{}] {}", step.status, step.description);
+        }
         published += 1;
     }
 

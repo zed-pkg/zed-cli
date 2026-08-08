@@ -1180,6 +1180,26 @@ pub fn execute(request: &RegistryRequest) -> Result<String> {
 
 /// [`execute`] with explicit bounds.
 pub fn execute_with_limits(request: &RegistryRequest, limits: RegistryLimits) -> Result<String> {
+    execute_detailed(request, limits).map(|response| response.body)
+}
+
+/// What a registry answered, beyond the body.
+///
+/// `location` is carried because two publish flows need it: pub.dev answers a
+/// successful upload with `204` plus a `Location` pointing at the finalize
+/// step, so a body-only client cannot complete a Dart publish at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryResponse {
+    pub status: u16,
+    pub location: Option<String>,
+    pub body: String,
+}
+
+/// [`execute_with_limits`], keeping the status line and `Location`.
+pub fn execute_detailed(
+    request: &RegistryRequest,
+    limits: RegistryLimits,
+) -> Result<RegistryResponse> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
         .timeout(limits.timeout)
@@ -1232,6 +1252,11 @@ pub fn execute_with_limits(request: &RegistryRequest, limits: RegistryLimits) ->
         .send()
         .with_context(|| format!("{} {}", request.method.as_str(), request.display_url()))?;
     let status = response.status();
+    let location = response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     // The URL is printed through `display_url`, never `url`: a failed LuaRocks
     // or Packagist request must not put its key in a log.
     let display = request.display_url();
@@ -1254,7 +1279,293 @@ pub fn execute_with_limits(request: &RegistryRequest, limits: RegistryLimits) ->
     // On success an unreadable body is a hard error. Returning an empty string
     // would read downstream as "this package has no versions", which is a
     // wrong answer rather than a failure.
-    body
+    Ok(RegistryResponse {
+        status: status.as_u16(),
+        location,
+        body: body?,
+    })
+}
+
+/// One completed step of a publish, for reporting and for tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishStep {
+    pub description: String,
+    pub status: u16,
+}
+
+/// Drive a publish to completion, however many requests that takes.
+///
+/// Most hosts are one `PUT` or `POST`, and for those this is a thin wrapper
+/// over [`publish_request`]. Two are not, and cannot be expressed as a single
+/// request because a later step's URL is only known once an earlier one has
+/// answered:
+///
+/// * **pub.dev** — ask for a signed upload form, post the archive to wherever
+///   that form points (object storage, not pub.dev), then fetch the finalize
+///   URL the upload returns in `Location`.
+/// * **Maven Central Portal** — upload a bundle, receive a deployment id, then
+///   poll until it leaves `PENDING`/`VALIDATING`.
+///
+/// `send` is a parameter so the sequence can be tested against a mock without
+/// credentials or a network. That matters more here than elsewhere: the thing
+/// worth verifying about a three-step publish is the *ordering and plumbing*,
+/// which is exactly what a live-credential test would obscure.
+pub fn publish_sequence(
+    route: &ChannelRoute,
+    package: &str,
+    artifact: &Path,
+    credential: Option<&str>,
+    send: &mut dyn FnMut(&RegistryRequest) -> Result<RegistryResponse>,
+) -> Result<Vec<PublishStep>> {
+    publish_sequence_paced(
+        route,
+        package,
+        artifact,
+        credential,
+        PublishPacing::default(),
+        send,
+    )
+}
+
+/// How long to wait between polls of a deployment that validates asynchronously.
+///
+/// A parameter so a test can drive the Maven Central Portal sequence without
+/// sleeping through real validation intervals — the thing under test is the
+/// state machine, not the clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishPacing {
+    pub poll_attempts: usize,
+    pub poll_interval: std::time::Duration,
+}
+
+impl Default for PublishPacing {
+    fn default() -> Self {
+        Self {
+            poll_attempts: 40,
+            // Central validation is minutes, not seconds.
+            poll_interval: std::time::Duration::from_secs(15),
+        }
+    }
+}
+
+/// [`publish_sequence`] with explicit pacing.
+pub fn publish_sequence_paced(
+    route: &ChannelRoute,
+    package: &str,
+    artifact: &Path,
+    credential: Option<&str>,
+    pacing: PublishPacing,
+    send: &mut dyn FnMut(&RegistryRequest) -> Result<RegistryResponse>,
+) -> Result<Vec<PublishStep>> {
+    match route.protocol {
+        RegistryProtocol::PubDev => publish_pub_dev(route, artifact, credential, send),
+        RegistryProtocol::MavenCentralPortal => {
+            publish_maven_portal(route, artifact, credential, pacing, send)
+        }
+        _ => {
+            let request = publish_request(route, package, artifact, credential)?;
+            let response = send(&request)?;
+            Ok(vec![PublishStep {
+                description: format!("{} {}", request.method.as_str(), request.display_url()),
+                status: response.status,
+            }])
+        }
+    }
+}
+
+fn bearer(request: RegistryRequest, credential: Option<&str>) -> RegistryRequest {
+    match credential {
+        Some(token) => request.header(
+            "Authorization",
+            HeaderValue::Secret(format!("Bearer {token}")),
+        ),
+        None => request,
+    }
+}
+
+/// pub.dev's three-step upload.
+///
+/// The archive never goes to pub.dev itself — step 1 hands back a signed form
+/// for object storage, and the credential must **not** be replayed to it. That
+/// is the whole reason this is three requests instead of one.
+fn publish_pub_dev(
+    route: &ChannelRoute,
+    artifact: &Path,
+    credential: Option<&str>,
+    send: &mut dyn FnMut(&RegistryRequest) -> Result<RegistryResponse>,
+) -> Result<Vec<PublishStep>> {
+    let host = route.host;
+    let credential = credential.ok_or(NativeHostClientError::MissingCredential {
+        host,
+        env: credential_env_vars(host).to_vec(),
+    })?;
+    let base = route
+        .endpoints
+        .publish
+        .as_deref()
+        .ok_or(NativeHostClientError::ReadOnly { host })?
+        .trim_end_matches('/');
+
+    let mut steps = Vec::new();
+
+    // 1. Ask pub.dev where to put the archive.
+    let ask = bearer(
+        RegistryRequest::new(Method::Get, format!("{base}/packages/versions/new")),
+        Some(credential),
+    );
+    let granted = send(&ask)?;
+    steps.push(PublishStep {
+        description: "request a signed upload form".to_string(),
+        status: granted.status,
+    });
+
+    let form: serde_json::Value =
+        serde_json::from_str(&granted.body).context("pub.dev upload grant is not JSON")?;
+    let upload_url = form
+        .get("url")
+        .and_then(|value| value.as_str())
+        .context("pub.dev upload grant has no `url`")?;
+    let fields = form
+        .get("fields")
+        .and_then(|value| value.as_object())
+        .context("pub.dev upload grant has no `fields`")?;
+
+    // 2. Post the archive to storage. Deliberately unauthenticated: the signed
+    //    form *is* the authorization, and replaying the pub.dev token to a
+    //    third-party storage origin would hand it to whoever that grant names.
+    let mut upload = RegistryRequest::new(Method::Post, upload_url.to_string());
+    upload.body = RequestBody::Multipart {
+        path: artifact.to_path_buf(),
+        file_field: "file",
+        fields: fields
+            .iter()
+            .filter_map(|(name, value)| {
+                Some((leak_static(name.clone()), value.as_str()?.to_string()))
+            })
+            .collect(),
+    };
+    let uploaded = send(&upload)?;
+    steps.push(PublishStep {
+        description: "upload the archive to the granted storage URL".to_string(),
+        status: uploaded.status,
+    });
+
+    // 3. Finalize, at the URL the upload pointed us to.
+    let finalize_url = uploaded
+        .location
+        .clone()
+        .context("pub.dev upload returned no `Location` to finalize at")?;
+    let finalize = bearer(
+        RegistryRequest::new(Method::Get, finalize_url),
+        Some(credential),
+    );
+    let finalized = send(&finalize)?;
+    steps.push(PublishStep {
+        description: "finalize the version".to_string(),
+        status: finalized.status,
+    });
+
+    Ok(steps)
+}
+
+/// Maven Central Portal: upload a bundle, then poll the deployment.
+///
+/// The upload answering 201 means "accepted for validation", not "published".
+/// Reporting success there would tell a release job a version exists that
+/// Central may still reject minutes later.
+fn publish_maven_portal(
+    route: &ChannelRoute,
+    artifact: &Path,
+    credential: Option<&str>,
+    pacing: PublishPacing,
+    send: &mut dyn FnMut(&RegistryRequest) -> Result<RegistryResponse>,
+) -> Result<Vec<PublishStep>> {
+    const TERMINAL_FAILURES: &[&str] = &["FAILED", "REJECTED"];
+    let host = route.host;
+    let credential = credential.ok_or(NativeHostClientError::MissingCredential {
+        host,
+        env: credential_env_vars(host).to_vec(),
+    })?;
+    let base = route
+        .endpoints
+        .publish
+        .as_deref()
+        .ok_or(NativeHostClientError::ReadOnly { host })?
+        .trim_end_matches('/');
+
+    let mut steps = Vec::new();
+
+    let upload = RegistryRequest::new(Method::Post, format!("{base}/upload"))
+        .header(
+            "Authorization",
+            // The Portal takes a base64 user token, not Bearer.
+            HeaderValue::Secret(format!("UserToken {credential}")),
+        )
+        .body(RequestBody::Multipart {
+            path: artifact.to_path_buf(),
+            file_field: "bundle",
+            fields: Vec::new(),
+        });
+    let accepted = send(&upload)?;
+    steps.push(PublishStep {
+        description: "upload the deployment bundle".to_string(),
+        status: accepted.status,
+    });
+
+    // The body is the bare deployment id, sometimes quoted.
+    let deployment = accepted.body.trim().trim_matches('"').to_string();
+    if deployment.is_empty() {
+        anyhow::bail!("Maven Central Portal accepted the bundle but returned no deployment id");
+    }
+
+    for attempt in 1..=pacing.poll_attempts {
+        let status_request = RegistryRequest::new(
+            Method::Post,
+            format!("{base}/status?id={}", encode_segment(&deployment)),
+        )
+        .header(
+            "Authorization",
+            HeaderValue::Secret(format!("UserToken {credential}")),
+        );
+        let polled = send(&status_request)?;
+        let state = serde_json::from_str::<serde_json::Value>(&polled.body)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("deploymentState")
+                    .and_then(|state| state.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        steps.push(PublishStep {
+            description: format!("poll deployment {deployment} (state: {state})"),
+            status: polled.status,
+        });
+
+        if TERMINAL_FAILURES.contains(&state.as_str()) {
+            anyhow::bail!("Maven Central Portal deployment {deployment} ended in {state}");
+        }
+        if state == "PUBLISHED" || state == "VALIDATED" {
+            return Ok(steps);
+        }
+        if attempt < pacing.poll_attempts {
+            std::thread::sleep(pacing.poll_interval);
+        }
+    }
+
+    anyhow::bail!(
+        "Maven Central Portal deployment {deployment} did not settle after {} polls; \
+         it may still complete — check the Portal UI",
+        pacing.poll_attempts
+    )
+}
+
+/// Multipart field names are `&'static str` throughout this module because
+/// every other caller has a fixed set. pub.dev's come from the server, so they
+/// are leaked once per publish — bounded by the field count of a single upload
+/// grant, and freed when the process exits.
+fn leak_static(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
 }
 
 /// The npm publish envelope, minus the tarball attachment the caller adds.

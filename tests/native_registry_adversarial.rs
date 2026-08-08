@@ -282,3 +282,266 @@ fn a_truncated_connection_is_an_error_not_a_short_read() {
         "a body shorter than Content-Length must not be accepted as complete"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-step publish sequences.
+//
+// Driven through a recording closure rather than a live registry. What is worth
+// verifying about a three-step publish is the ordering and the plumbing —
+// which URL each step goes to, and which of them may see the credential — and a
+// live-credential test would obscure exactly that.
+// ---------------------------------------------------------------------------
+
+use std::cell::RefCell;
+use zed_cli::native_host_client::{
+    PublishPacing, RegistryResponse, publish_sequence, publish_sequence_paced,
+};
+use zed_interfaces::native_host::{NativeHost, ReleaseChannel};
+
+fn route(host: NativeHost) -> zed_interfaces::native_host::ChannelRoute {
+    host.channel_route("2.0.0", ReleaseChannel::Stable, 1)
+        .expect("stable route")
+}
+
+/// One recorded request: where it went, and whether it carried a credential.
+#[derive(Debug, Clone)]
+struct Sent {
+    url: String,
+    authorization: Option<String>,
+}
+
+/// Requests recorded by [`recorder`], shared with the caller.
+type SentLog = std::rc::Rc<RefCell<Vec<Sent>>>;
+/// The scripted `send` closure. Boxed so it has a nameable type; the sequence
+/// driver takes `&mut dyn FnMut`, so the indirection costs nothing.
+type Sender = Box<dyn FnMut(&RegistryRequest) -> anyhow::Result<RegistryResponse>>;
+
+fn recorder(replies: Vec<RegistryResponse>) -> (Sender, SentLog) {
+    let log = std::rc::Rc::new(RefCell::new(Vec::new()));
+    let sink = log.clone();
+    let mut queue = replies.into_iter();
+    let send = move |request: &RegistryRequest| {
+        sink.borrow_mut().push(Sent {
+            url: request.url.clone(),
+            authorization: request
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                .map(|(_, value)| value.expose().to_string()),
+        });
+        queue
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("no scripted reply left"))
+    };
+    (Box::new(send), log)
+}
+
+fn reply(status: u16, body: &str, location: Option<&str>) -> RegistryResponse {
+    RegistryResponse {
+        status,
+        location: location.map(str::to_string),
+        body: body.to_string(),
+    }
+}
+
+#[test]
+fn pub_dev_takes_three_steps_and_never_shows_storage_the_token() {
+    // Step 1 hands back a signed form for object storage. That form *is* the
+    // authorization for step 2, so replaying the pub.dev token there would
+    // hand it to whatever origin the grant names — a third party.
+    let (mut send, log) = recorder(vec![
+        reply(
+            200,
+            r#"{"url":"https://storage.example/upload","fields":{"key":"pkg/2.0.0.tar.gz","policy":"abc"}}"#,
+            None,
+        ),
+        reply(
+            204,
+            "",
+            Some("https://pub.dev/api/packages/versions/newUploadFinish"),
+        ),
+        reply(200, r#"{"success":{"message":"published"}}"#, None),
+    ]);
+
+    let steps = publish_sequence(
+        &route(NativeHost::PubDev),
+        "acme_client",
+        std::path::Path::new("acme.tar.gz"),
+        Some("pub-secret"),
+        &mut send,
+    )
+    .expect("a scripted happy path publishes");
+
+    assert_eq!(steps.len(), 3, "{steps:?}");
+    assert_eq!(steps[0].description, "request a signed upload form");
+    assert_eq!(steps[2].description, "finalize the version");
+
+    let sent = log.borrow();
+    assert_eq!(sent.len(), 3);
+    assert!(sent[0].url.ends_with("/packages/versions/new"));
+    assert_eq!(sent[1].url, "https://storage.example/upload");
+    assert_eq!(
+        sent[2].url,
+        "https://pub.dev/api/packages/versions/newUploadFinish"
+    );
+
+    assert!(
+        sent[0].authorization.is_some(),
+        "pub.dev itself is authenticated"
+    );
+    assert!(
+        sent[1].authorization.is_none(),
+        "the token must not be replayed to storage: {:?}",
+        sent[1].authorization
+    );
+    assert!(sent[2].authorization.is_some(), "finalize is authenticated");
+}
+
+#[test]
+fn pub_dev_stops_with_a_named_reason_when_the_grant_is_malformed() {
+    // A registry that answers 200 with the wrong shape must not be treated as
+    // a successful publish.
+    let (mut send, log) = recorder(vec![reply(200, r#"{"unexpected":true}"#, None)]);
+    let error = publish_sequence(
+        &route(NativeHost::PubDev),
+        "acme_client",
+        std::path::Path::new("acme.tar.gz"),
+        Some("pub-secret"),
+        &mut send,
+    )
+    .expect_err("a grant with no url cannot be uploaded to");
+    assert!(format!("{error:#}").contains("`url`"), "{error:#}");
+    assert_eq!(log.borrow().len(), 1, "it must not proceed to upload");
+}
+
+#[test]
+fn pub_dev_without_a_finalize_location_does_not_claim_success() {
+    // A 204 with no `Location` means the upload landed but the version was
+    // never finalized. Returning Ok there would report a publish that did not
+    // happen.
+    let (mut send, _log) = recorder(vec![
+        reply(
+            200,
+            r#"{"url":"https://storage.example/u","fields":{}}"#,
+            None,
+        ),
+        reply(204, "", None),
+    ]);
+    let error = publish_sequence(
+        &route(NativeHost::PubDev),
+        "acme_client",
+        std::path::Path::new("acme.tar.gz"),
+        Some("pub-secret"),
+        &mut send,
+    )
+    .expect_err("no Location means nothing was finalized");
+    assert!(format!("{error:#}").contains("Location"), "{error:#}");
+}
+
+#[test]
+fn maven_portal_polls_until_the_deployment_settles() {
+    // A 201 from the upload means "accepted for validation", not "published".
+    // Reporting success there would tell a release job a version exists that
+    // Central may reject minutes later.
+    let (mut send, log) = recorder(vec![
+        reply(201, "\"deploy-123\"", None),
+        reply(200, r#"{"deploymentState":"VALIDATING"}"#, None),
+        reply(200, r#"{"deploymentState":"PUBLISHED"}"#, None),
+    ]);
+
+    let steps = publish_sequence_paced(
+        &route(NativeHost::MavenCentral),
+        "com.acme:client",
+        std::path::Path::new("bundle.zip"),
+        Some("portal-secret"),
+        // Drive the state machine, not the clock.
+        PublishPacing {
+            poll_interval: std::time::Duration::ZERO,
+            ..PublishPacing::default()
+        },
+        &mut send,
+    )
+    .expect("a settled deployment publishes");
+
+    assert_eq!(steps.len(), 3);
+    assert!(steps[1].description.contains("VALIDATING"), "{steps:?}");
+    assert!(steps[2].description.contains("PUBLISHED"), "{steps:?}");
+
+    let sent = log.borrow();
+    assert!(sent[0].url.ends_with("/upload"));
+    assert!(
+        sent[1].url.contains("status?id=deploy-123"),
+        "{}",
+        sent[1].url
+    );
+    // The Portal wants `UserToken`, not `Bearer` — it rejects the latter.
+    assert!(
+        sent[0]
+            .authorization
+            .as_deref()
+            .unwrap()
+            .starts_with("UserToken "),
+        "{:?}",
+        sent[0].authorization
+    );
+}
+
+#[test]
+fn maven_portal_reports_a_rejected_deployment_as_a_failure() {
+    let (mut send, _log) = recorder(vec![
+        reply(201, "deploy-456", None),
+        reply(200, r#"{"deploymentState":"FAILED"}"#, None),
+    ]);
+    let error = publish_sequence(
+        &route(NativeHost::MavenCentral),
+        "com.acme:client",
+        std::path::Path::new("bundle.zip"),
+        Some("portal-secret"),
+        &mut send,
+    )
+    .expect_err("a FAILED deployment is not a publish");
+    assert!(format!("{error:#}").contains("FAILED"), "{error:#}");
+}
+
+#[test]
+fn a_missing_credential_stops_a_multi_step_publish_before_the_first_request() {
+    // Discovering this after step 1 would leave a half-run release.
+    for host in [NativeHost::PubDev, NativeHost::MavenCentral] {
+        let (mut send, log) = recorder(Vec::new());
+        let error = publish_sequence(
+            &route(host),
+            "acme",
+            std::path::Path::new("a.tar.gz"),
+            None,
+            &mut send,
+        )
+        .expect_err("no credential must fail");
+        assert!(
+            format!("{error:#}").contains("needs a credential"),
+            "{error:#}"
+        );
+        assert!(log.borrow().is_empty(), "{host} sent a request anyway");
+    }
+}
+
+#[test]
+fn a_single_step_host_still_reports_one_step() {
+    // The common path stays one request; the sequence driver must not add
+    // ceremony for the 27 hosts that do not need it.
+    let (mut send, log) = recorder(vec![reply(200, "{}", None)]);
+    let steps = publish_sequence(
+        &route(NativeHost::Npm),
+        "@acme/client",
+        std::path::Path::new("acme.tgz"),
+        Some("npm-secret"),
+        &mut send,
+    )
+    .expect("npm publishes in one request");
+    assert_eq!(steps.len(), 1);
+    assert!(
+        steps[0]
+            .description
+            .starts_with("PUT https://registry.npmjs.org/")
+    );
+    assert_eq!(log.borrow().len(), 1);
+}
