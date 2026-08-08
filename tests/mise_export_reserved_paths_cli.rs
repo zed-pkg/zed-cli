@@ -83,17 +83,9 @@ fn real_cli_refuses_source_state_and_transaction_staging_destinations() {
     }
 
     fs::create_dir_all(project.join(".zed")).unwrap();
-    fs::write(
-        project.join(".zed/mise-export-state.json"),
-        &original_plan,
-    )
-    .unwrap();
-    let reserved_source = run_zed_with_plan(
-        &project,
-        &home,
-        ".zed/mise-export-state.json",
-        "mise.toml",
-    );
+    fs::write(project.join(".zed/mise-export-state.json"), &original_plan).unwrap();
+    let reserved_source =
+        run_zed_with_plan(&project, &home, ".zed/mise-export-state.json", "mise.toml");
     assert!(!reserved_source.status.success());
     let stderr = String::from_utf8_lossy(&reserved_source.stderr);
     assert!(
