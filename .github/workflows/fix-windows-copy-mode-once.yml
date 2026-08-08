@@ -21,7 +21,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'agent/den-3020-cli-portability'
     runs-on: windows-2025
-    timeout-minutes: 55
+    timeout-minutes: 60
     steps:
       - name: Check out the exact feature branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,26 +35,32 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $PSNativeCommandUseErrorActionPreference = $true
+          }
           @'
           from pathlib import Path
 
+          def replace_once(source: str, old: str, new: str, label: str) -> str:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one exact boundary, found {count}')
+              return source.replace(old, new, 1)
+
           ops = Path('src/ops.rs')
           text = ops.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              'use std::io::BufRead;\n',
+              'use std::io::{BufRead, Read};\n',
+              'ops I/O import',
+          )
 
-          old_import = 'use std::io::BufRead;\n'
-          new_import = 'use std::io::{BufRead, Read};\n'
-          if text.count(old_import) != 1:
-              raise SystemExit('ops I/O import drifted')
-          text = text.replace(old_import, new_import, 1)
-
-          marker = '''/// `zed run <command>` — run a hoisted dependency binary (from
+          documentation = '''/// `zed run <command>` — run a hoisted dependency binary (from
           /// `<install.dir>/.bin`, default `zed_modules/.bin`) or any command, with that
           /// directory prepended to PATH — npx-style, without polluting the OS PATH
           /// (zed-docs issue #7). Returns the child's exit code.
           '''
-          if text.count(marker) != 1:
-              raise SystemExit('zed run documentation boundary drifted')
-
           helpers = r'''fn hoisted_bin_candidate(bin_dir: &Path, command: &str) -> Option<PathBuf> {
               let exact = bin_dir.join(command);
               if exact.is_file() {
@@ -115,31 +121,19 @@ jobs:
           }
 
           '''
-          text = text.replace(marker, helpers + marker, 1)
+          text = replace_once(
+              text,
+              documentation,
+              helpers + documentation,
+              'zed run documentation boundary',
+          )
 
-          old_run = r'''pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
-              let modules_dir = project_modules_dir(project);
-              let bin_dir = project.join(&modules_dir).join(BIN_DIR);
-              let candidate = bin_dir.join(command);
-              let mut paths: Vec<PathBuf> = vec![bin_dir.clone()];
-              if let Some(existing) = std::env::var_os("PATH") {
-                  paths.extend(std::env::split_paths(&existing));
-              }
-              let new_path = std::env::join_paths(&paths).context("assembling PATH for zed run")?;
-              // Prefer an exact hoisted bin by absolute path; otherwise fall through to
-              // a normal PATH lookup (with .bin still prepended for the child's tools).
-              let program: &Path = if candidate.exists() {
-                  &candidate
-              } else {
-                  Path::new(command)
-              };
-              let status = Command::new(program)
-                  .args(args)
-                  .env("PATH", &new_path)
-                  .current_dir(project)
-                  .status();
-              match status {
-          '''
+          run_start = text.find(
+              'pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {'
+          )
+          run_end = text.find('\n/// `zed yank', run_start)
+          if run_start < 0 or run_end < 0:
+              raise SystemExit('zed run semantic boundary drifted')
           new_run = r'''pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
               let modules_dir = project_modules_dir(project);
               let bin_dir = project.join(&modules_dir).join(BIN_DIR);
@@ -166,36 +160,51 @@ jobs:
                   .current_dir(project)
                   .status();
               match status {
+                  Ok(status) => Ok(status.code().unwrap_or(1)),
+                  Err(_) => {
+                      let available: Vec<String> = fs::read_dir(&bin_dir)
+                          .map(|entries| {
+                              entries
+                                  .flatten()
+                                  .map(|e| e.file_name().to_string_lossy().to_string())
+                                  .collect()
+                          })
+                          .unwrap_or_default();
+                      bail!(
+                          "failed to run `{command}` — not a hoisted bin in {modules_dir}/{BIN_DIR}/ \
+                           (available: {}) nor on PATH; packages expose binaries via their [bin] table",
+                          if available.is_empty() {
+                              "none".to_string()
+                          } else {
+                              available.join(", ")
+                          }
+                      )
+                  }
+              }
+          }
           '''
-          if text.count(old_run) != 1:
-              raise SystemExit('zed run implementation drifted')
-          text = text.replace(old_run, new_run, 1)
+          text = text[:run_start] + new_run + text[run_end:]
           ops.write_text(text, encoding='utf-8')
 
           e2e = Path('tests/e2e.rs')
           tests = e2e.read_text(encoding='utf-8')
 
-          old_roundtrip = r'''    assert!(
-              fs::symlink_metadata(&demo_link)
-                  .unwrap()
-                  .file_type()
-                  .is_symlink()
-          );
-              assert!(base_link.join("src/base.txt").exists());
-              let link_target = fs::canonicalize(&demo_link).unwrap();
-              let store_root = fs::canonicalize(cfg.home.join("store")).unwrap();
-              assert!(
-                  link_target.starts_with(&store_root),
-                  "symlink must point into the global store"
-              );
-          '''
-          new_roundtrip = r'''    let demo_metadata = fs::symlink_metadata(&demo_link).unwrap();
+          roundtrip_start = tests.find(
+              '    assert!(\n        fs::symlink_metadata(&demo_link)'
+          )
+          roundtrip_end = tests.find(
+              '    assert!(demo_link.join("src/lib.txt").exists());',
+              roundtrip_start,
+          )
+          if roundtrip_start < 0 or roundtrip_end < 0:
+              raise SystemExit('roundtrip materialization boundary drifted')
+          roundtrip = r'''    let demo_metadata = fs::symlink_metadata(&demo_link).unwrap();
               #[cfg(unix)]
               assert!(demo_metadata.file_type().is_symlink());
               #[cfg(not(unix))]
               assert!(
                   !demo_metadata.file_type().is_symlink() && demo_link.is_dir(),
-                  "Windows must materialize the normalized copy-mode directory"
+                  "non-Unix installs must normalize symlink mode to a project-owned directory"
               );
               assert!(base_link.join("src/base.txt").exists());
               let link_target = fs::canonicalize(&demo_link).unwrap();
@@ -211,15 +220,19 @@ jobs:
                   "copy-mode materialization must remain project-owned"
               );
           '''
-          if tests.count(old_roundtrip) != 1:
-              raise SystemExit('roundtrip symlink assertion drifted')
-          tests = tests.replace(old_roundtrip, new_roundtrip, 1)
+          tests = tests[:roundtrip_start] + roundtrip + tests[roundtrip_end:]
 
-          old_live = r'''    // Live editing: a change in the member source is visible immediately.
-              fs::write(liba.join("src/lib.txt"), "v2 of liba\n").unwrap();
-              assert_eq!(fs::read_to_string(&linked_lib).unwrap(), "v2 of liba\n");
-          '''
-          new_live = r'''    fs::write(liba.join("src/lib.txt"), "v2 of liba\n").unwrap();
+          live_start = tests.find(
+              '    // Live editing: a change in the member source is visible immediately.\n'
+          )
+          live_end_marker = (
+              '    assert_eq!(fs::read_to_string(&linked_lib).unwrap(), "v2 of liba\\n");\n'
+          )
+          live_end = tests.find(live_end_marker, live_start)
+          if live_start < 0 or live_end < 0:
+              raise SystemExit('workspace live-edit boundary drifted')
+          live_end += len(live_end_marker)
+          live = r'''    fs::write(liba.join("src/lib.txt"), "v2 of liba\n").unwrap();
               #[cfg(unix)]
               assert_eq!(
                   fs::read_to_string(&linked_lib).unwrap(),
@@ -231,7 +244,7 @@ jobs:
                   assert_eq!(
                       fs::read_to_string(&linked_lib).unwrap(),
                       "v1 of liba\n",
-                      "Windows copy-mode materialization must remain a stable snapshot"
+                      "copy-mode workspace materialization must remain a stable snapshot"
                   );
                   ops::install(
                       &app,
@@ -247,39 +260,29 @@ jobs:
                   assert_eq!(
                       fs::read_to_string(&linked_lib).unwrap(),
                       "v2 of liba\n",
-                      "reinstall must refresh the Windows workspace snapshot"
+                      "reinstall must refresh the non-Unix workspace snapshot"
                   );
               }
           '''
-          if tests.count(old_live) != 1:
-              raise SystemExit('workspace live-edit assertion drifted')
-          tests = tests.replace(old_live, new_live, 1)
+          tests = tests[:live_start] + live + tests[live_end:]
+          tests = tests.replace(
+              '/// [workspace] members resolve straight to their source directories, so\n'
+              '/// edits are live and the registry is never consulted for them.\n',
+              '/// Workspace members use live source links on Unix and project-owned snapshots\n'
+              '/// where directory symlinks are unavailable; the registry is never consulted.\n',
+              1,
+          )
 
-          old_workspace = r'''    // The local member is path-linked to its source (live editing)...
-              let util_link = web.join(MODULES_DIR).join("acme").join("util");
-              assert!(
-                  fs::symlink_metadata(&util_link)
-                      .unwrap()
-                      .file_type()
-                      .is_symlink()
-              );
-              assert!(util_link.join("util.txt").exists());
-              assert_eq!(
-                  fs::canonicalize(&util_link).unwrap(),
-                  fs::canonicalize(&util).unwrap(),
-                  "local member must link to its source dir, not the store"
-              );
-
-              // ...while the external dep resolves from the shared store.
-              let ext_link = web.join(MODULES_DIR).join("acme").join("ext");
-              assert!(ext_link.join("e.txt").exists());
-              assert!(
-                  fs::canonicalize(&ext_link)
-                      .unwrap()
-                      .starts_with(fs::canonicalize(cfg.home.join("store")).unwrap())
-              );
-          '''
-          new_workspace = r'''    let util_link = web.join(MODULES_DIR).join("acme").join("util");
+          workspace_start = tests.find(
+              '    // The local member is path-linked to its source (live editing)...\n'
+          )
+          workspace_end = tests.find(
+              '    // The lockfile pins the external dep but not the path-linked member.\n',
+              workspace_start,
+          )
+          if workspace_start < 0 or workspace_end < 0:
+              raise SystemExit('workspace materialization boundary drifted')
+          workspace = r'''    let util_link = web.join(MODULES_DIR).join("acme").join("util");
               let util_metadata = fs::symlink_metadata(&util_link).unwrap();
               #[cfg(unix)]
               assert!(util_metadata.file_type().is_symlink());
@@ -296,7 +299,7 @@ jobs:
               assert_ne!(
                   fs::canonicalize(&util_link).unwrap(),
                   fs::canonicalize(&util).unwrap(),
-                  "Windows workspace dependencies must use project-owned copy mode"
+                  "non-Unix workspace dependencies must use project-owned copy mode"
               );
 
               let ext_link = web.join(MODULES_DIR).join("acme").join("ext");
@@ -307,14 +310,15 @@ jobs:
               assert!(ext_materialized.starts_with(&store_root));
               #[cfg(not(unix))]
               assert!(!ext_materialized.starts_with(&store_root));
-          '''
-          if tests.count(old_workspace) != 1:
-              raise SystemExit('workspace materialization assertions drifted')
-          tests = tests.replace(old_workspace, new_workspace, 1)
 
+          '''
+          tests = tests[:workspace_start] + workspace + tests[workspace_end:]
           e2e.write_text(tests, encoding='utf-8')
           Path('.github/workflows/fix-windows-copy-mode-once.yml').unlink()
           '@ | python -
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows portability transform failed with exit code $LASTEXITCODE"
+          }
           git diff --check
 
       - name: Install the pinned Rust toolchain
@@ -327,6 +331,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $PSNativeCommandUseErrorActionPreference = $true
+          }
           cargo fmt --all
           cargo fmt --all -- --check
           cargo test --locked --test e2e bins_are_hoisted_and_runnable -- --nocapture
@@ -340,6 +347,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $PSNativeCommandUseErrorActionPreference = $true
+          }
           git diff --check
           if (Test-Path '.github/workflows/fix-windows-copy-mode-once.yml') {
             throw 'temporary writer was not removed'
