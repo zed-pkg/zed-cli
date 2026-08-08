@@ -1,18 +1,4 @@
-#!/usr/bin/env python3
-from pathlib import Path
-
-
-def replace_once(path: str, old: str, new: str) -> None:
-    target = Path(path)
-    text = target.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"{path}: expected one replacement target, found {count}")
-    target.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-
-Path("src/external_subcommands.rs").write_text(
-    r'''//! Safe dispatch for separately installed `zed-*` command extensions.
+//! Safe dispatch for separately installed `zed-*` command extensions.
 //!
 //! Built-in commands always win. External commands are resolved beside the
 //! running `zed` executable first and then from absolute `PATH` entries. The
@@ -78,7 +64,7 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
 /// Add the supported external GitOps contract to root help and generated
 /// completions. Runtime execution still resolves the separately installed
 /// `zed-gitops` executable.
-pub fn augment_root_command(mut command: ClapCommand) -> ClapCommand {
+pub fn augment_root_command(command: ClapCommand) -> ClapCommand {
     if command.find_subcommand(KNOWN_EXTERNAL_COMMAND).is_some() {
         return command;
     }
@@ -198,7 +184,7 @@ fn external_route(args: &[OsString]) -> Option<ExternalRoute> {
     None
 }
 
-fn root_value_option<'a>(token: &'a str) -> Option<(&'static str, Option<&'a str>)> {
+fn root_value_option(token: &str) -> Option<(&'static str, Option<&str>)> {
     ROOT_VALUE_OPTIONS.iter().find_map(|(option, key)| {
         if token == *option {
             Some((*key, None))
@@ -243,9 +229,8 @@ fn valid_external_name(name: &str) -> bool {
     };
     name.len() <= 64
         && first.is_ascii_alphanumeric()
-        && characters.all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
-        })
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 fn is_builtin_name(name: &str) -> bool {
@@ -269,10 +254,11 @@ fn resolve_in_locations(
 ) -> Option<PathBuf> {
     let stem = format!("{EXTERNAL_PREFIX}{name}");
 
-    if let Some(directory) = sibling.filter(|directory| directory.is_absolute()) {
-        if let Some(executable) = executable_in(directory, &stem) {
-            return Some(executable);
-        }
+    if let Some(executable) = sibling
+        .filter(|directory| directory.is_absolute())
+        .and_then(|directory| executable_in(directory, &stem))
+    {
+        return Some(executable);
     }
 
     let path = path?;
@@ -348,7 +334,7 @@ fn status_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
-        return status.signal().map(|signal| 128 + signal).unwrap_or(1);
+        status.signal().map(|signal| 128 + signal).unwrap_or(1)
     }
     #[cfg(not(unix))]
     {
@@ -378,12 +364,7 @@ mod tests {
         assert_eq!(route.name, "gitops");
         assert_eq!(
             route.arguments,
-            os_args(&[
-                "validate",
-                "--root",
-                "workspace with spaces",
-                "--offline"
-            ])
+            os_args(&["validate", "--root", "workspace with spaces", "--offline"])
         );
     }
 
@@ -401,7 +382,10 @@ mod tests {
         assert_eq!(
             route.environment,
             vec![
-                (OsString::from("ZED_PKG_HOME"), OsString::from("/tmp/zed-home")),
+                (
+                    OsString::from("ZED_PKG_HOME"),
+                    OsString::from("/tmp/zed-home")
+                ),
                 (
                     OsString::from("ZED_PKG_GIT_SUBMODULES"),
                     OsString::from("false")
@@ -437,9 +421,7 @@ mod tests {
 
     #[test]
     fn relative_path_entries_are_not_searched() {
-        assert!(
-            resolve_in_locations("demo", None, Some(OsStr::new("relative/bin"))).is_none()
-        );
+        assert!(resolve_in_locations("demo", None, Some(OsStr::new("relative/bin"))).is_none());
     }
 
     #[cfg(unix)]
@@ -463,12 +445,9 @@ mod tests {
         write_executable(&path_executable, 41);
         let joined_path = env::join_paths([path_directory.path()]).expect("join PATH");
 
-        let resolved = resolve_in_locations(
-            "demo",
-            Some(sibling.path()),
-            Some(joined_path.as_os_str()),
-        )
-        .expect("resolved executable");
+        let resolved =
+            resolve_in_locations("demo", Some(sibling.path()), Some(joined_path.as_os_str()))
+                .expect("resolved executable");
         assert_eq!(resolved, sibling_executable);
 
         let route = ExternalRoute {
@@ -479,238 +458,3 @@ mod tests {
         assert_eq!(run_external(&resolved, &route).expect("run external"), 23);
     }
 }
-''',
-    encoding="utf-8",
-)
-
-Path("tests/external_gitops_dispatch.rs").write_text(
-    r'''use std::process::{Command, Output};
-
-fn text(output: &Output) -> String {
-    format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-}
-
-#[test]
-fn root_help_advertises_gitops_validate() {
-    let output = Command::new(env!("CARGO_BIN_EXE_zed"))
-        .arg("--help")
-        .output()
-        .expect("run zed help");
-    assert!(output.status.success(), "{}", text(&output));
-    let text = text(&output);
-    assert!(text.contains("gitops"), "{text}");
-    assert!(text.contains("Validate GitOps composition"), "{text}");
-}
-
-#[test]
-fn root_dispatches_to_the_sibling_gitops_binary() {
-    let output = Command::new(env!("CARGO_BIN_EXE_zed"))
-        .args(["gitops", "validate", "--help"])
-        .output()
-        .expect("run zed gitops help");
-    assert!(output.status.success(), "{}", text(&output));
-    let text = text(&output);
-    assert!(text.contains("Usage: zed-gitops validate"), "{text}");
-    assert!(text.contains("--offline"), "{text}");
-}
-
-#[test]
-fn root_help_alias_reaches_the_external_binary() {
-    let output = Command::new(env!("CARGO_BIN_EXE_zed"))
-        .args(["help", "gitops"])
-        .output()
-        .expect("run zed help gitops");
-    assert!(output.status.success(), "{}", text(&output));
-    assert!(text(&output).contains("Usage: zed-gitops"));
-}
-''',
-    encoding="utf-8",
-)
-
-replace_once(
-    "src/lib.rs",
-    "pub mod environment;\npub mod fetch;",
-    "pub mod environment;\npub mod external_subcommands;\npub mod fetch;",
-)
-
-replace_once(
-    "src/main.rs",
-    "    if let Some(result) = dev::dispatch(args) {\n",
-    "    if let Some(result) = dev::dispatch(args.clone()) {\n",
-)
-
-replace_once(
-    "src/main.rs",
-    '''    if let Some(result) = dev::dispatch(args.clone()) {
-        match result {
-            Ok(0) => return,
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                eprintln!("error: {error:#}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if let Err(error) = zed_cli::flags::apply_cli_flags() {
-''',
-    '''    if let Some(result) = dev::dispatch(args.clone()) {
-        match result {
-            Ok(0) => return,
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                eprintln!("error: {error:#}");
-                std::process::exit(1);
-            }
-        }
-    }
-    if let Some(result) = zed_cli::external_subcommands::dispatch(args) {
-        match result {
-            Ok(0) => return,
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                eprintln!("error: {error:#}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if let Err(error) = zed_cli::flags::apply_cli_flags() {
-''',
-)
-
-replace_once(
-    "src/completion.rs",
-    "use crate::{dev, fetch, git_submodules, global, nix_bundle_write, nix_export_plan};",
-    "use crate::{\n    dev, external_subcommands, fetch, git_submodules, global, nix_bundle_write,\n    nix_export_plan,\n};",
-)
-
-replace_once(
-    "src/completion.rs",
-    '''/// Build the complete public command tree shared by root help and completion
-/// generation. Every modular command must compose here rather than maintaining
-/// a second, partial root-help model.
-pub fn root_command() -> clap::Command {
-    global::augment_root_command(git_submodules::augment_root_command(
-        nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
-            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
-        )),
-    ))
-}
-''',
-    '''/// Build the complete built-in command tree without external extensions.
-/// The external dispatcher uses this model to guarantee that a `zed-*`
-/// executable can never shadow a built-in name or alias.
-pub(crate) fn built_in_root_command() -> clap::Command {
-    global::augment_root_command(git_submodules::augment_root_command(
-        nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
-            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
-        )),
-    ))
-}
-
-/// Build the complete public command tree shared by root help and completion
-/// generation. Every modular or external command must compose here rather than
-/// maintaining a second, partial root-help model.
-pub fn root_command() -> clap::Command {
-    external_subcommands::augment_root_command(built_in_root_command())
-}
-''',
-)
-
-for occurrence in range(2):
-    replace_once(
-        "src/completion.rs",
-        '''            "r2g",
-        ] {''',
-        '''            "r2g",
-            "gitops",
-            "validate",
-        ] {''',
-    )
-
-for occurrence in range(2):
-    replace_once(
-        "src/completion.rs",
-        '''            "--isolated-home",
-        ] {''',
-        '''            "--isolated-home",
-            "--catalog",
-            "--offline",
-        ] {''',
-    )
-
-Path("docs/gitops-validator.md").write_text(
-    '''# `zed gitops` external validator
-
-`zed gitops` is the read-only GitOps validation lane tracked by DEN-2725. The
-root `zed` binary now securely dispatches this command to the separately built
-`zed-gitops` executable, while root help and shell completions expose the same
-public command contract.
-
-Install or build both binaries into the same bin directory:
-
-```console
-cargo install --path . --bins
-zed gitops validate --root . --offline --strict
-zed gitops validate --root . --offline --strict --format json
-zed gitops validate --root . --offline --strict --format sarif
-```
-
-The standalone spelling remains supported for automation that deliberately
-pins the validator executable:
-
-```console
-zed-gitops validate --root . --offline --strict
-```
-
-The dispatcher resolves `zed-gitops` beside the running `zed` executable first,
-then searches only absolute `PATH` entries. It never invokes a shell, never
-searches the current working directory implicitly, never permits an extension
-to shadow a built-in command or alias, and preserves the child process exit
-code. Root options placed before `gitops` are passed as their canonical
-`ZED_PKG_*` environment variables rather than being exposed on the child
-command line.
-
-## Evidence checked
-
-- catalog JSON is regular UTF-8 data beneath the selected repository root;
-- unknown fields fail under `--strict`;
-- `.gitmodules` provides exactly the declared inventory path and repository;
-- the Git index contains that path as a mode-160000 gitlink;
-- catalog inventory revision equals the indexed gitlink SHA;
-- Argo source repository canonicalizes to the same upstream repository;
-- Argo `targetRevision` is an exact lowercase 40-hex commit equal to the
-  gitlink;
-- the source is the direct app repository, not a path inside
-  `ORESoftware/k8s-cluster`;
-- application names and inventory paths are unique;
-- `*-infra` repositories cannot be app records;
-- AppProject and destination namespace cannot be `default`;
-- `pilot-inert` records cannot enable automated sync, prune, or self-heal;
-- the retained static Application is a regular parent-owned file.
-
-The command does not read Kubernetes credentials, clone private repositories,
-resolve remote branch tips, or apply manifests. Online validation is not
-implemented yet, so invocations must pass `--offline`; omitting it fails
-explicitly instead of misreporting a local-only run as online evidence. Policy
-failures exit with code 2; tool/configuration failures exit with code 1.
-
-## Ownership boundary
-
-The root CLI owns extension discovery, built-in collision prevention, help,
-completion, TTY inheritance, and exit-code propagation. `zed-gitops` owns the
-current validation implementation. Follow-up work should expose the existing
-`git_submodules` repository-identity and index primitives as a stable
-`zed-pkg` library surface so the validator does not maintain parallel generic
-Git parsing.
-
-The deployment-specific schema and policy remain versioned in `k8s-cluster`;
-Zed remains the validator UX rather than the deployment controller.
-''',
-    encoding="utf-8",
-)

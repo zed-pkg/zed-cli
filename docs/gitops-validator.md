@@ -1,23 +1,33 @@
-# `zed-gitops` external validator
+# `zed gitops` external validator
 
-`zed-gitops` is the first read-only implementation slice for DEN-2725. It
-validates the `GitOpsApplication` records owned by
-`ORESoftware/k8s-cluster` without initializing or executing child repositories.
+`zed gitops` is the read-only GitOps validation lane tracked by DEN-2725. The
+root `zed` binary now securely dispatches this command to the separately built
+`zed-gitops` executable, while root help and shell completions expose the same
+public command contract.
 
-The executable is intentionally separate from the core package-manager command
-graph. Once generic external-command discovery lands, the public spelling is:
+Install or build both binaries into the same bin directory:
 
 ```console
+cargo install --path . --bins
 zed gitops validate --root . --offline --strict
+zed gitops validate --root . --offline --strict --format json
+zed gitops validate --root . --offline --strict --format sarif
 ```
 
-The executable available in this PR is directly invokable as:
+The standalone spelling remains supported for automation that deliberately
+pins the validator executable:
 
 ```console
 zed-gitops validate --root . --offline --strict
-zed-gitops validate --root . --offline --strict --format json
-zed-gitops validate --root . --offline --strict --format sarif
 ```
+
+The dispatcher resolves `zed-gitops` beside the running `zed` executable first,
+then searches only absolute `PATH` entries. It never invokes a shell, never
+searches the current working directory implicitly, never permits an extension
+to shadow a built-in command or alias, and preserves the child process exit
+code. Root options placed before `gitops` are passed as their canonical
+`ZED_PKG_*` environment variables rather than being exposed on the child
+command line.
 
 ## Evidence checked
 
@@ -38,20 +48,19 @@ zed-gitops validate --root . --offline --strict --format sarif
 - the retained static Application is a regular parent-owned file.
 
 The command does not read Kubernetes credentials, clone private repositories,
-resolve remote branch tips, or apply manifests. Online validation is not implemented
-yet, so invocations must pass `--offline`; omitting it fails explicitly instead of
-misreporting a local-only run as online evidence. Policy failures exit with code 2;
-tool/configuration failures exit with code 1.
+resolve remote branch tips, or apply manifests. Online validation is not
+implemented yet, so invocations must pass `--offline`; omitting it fails
+explicitly instead of misreporting a local-only run as online evidence. Policy
+failures exit with code 2; tool/configuration failures exit with code 1.
 
 ## Ownership boundary
 
-This first slice keeps parsing local to the external executable so it can land
-without changing ordinary install/update behavior or contending with unrelated
-root-command branches. Follow-up work should expose the existing
-`git_submodules` repository-identity and index primitives as a stable library
-surface, then make core `zed` discover `zed-*` executables and route
-`zed gitops ...` with the same help, completion, TTY, and exit-code behavior.
+The root CLI owns extension discovery, built-in collision prevention, help,
+completion, TTY inheritance, and exit-code propagation. `zed-gitops` owns the
+current validation implementation. Follow-up work should expose the existing
+`git_submodules` repository-identity and index primitives as a stable
+`zed-pkg` library surface so the validator does not maintain parallel generic
+Git parsing.
 
-The deployment-specific schema and policy remain versioned in
-`k8s-cluster`; Zed remains the validator UX rather than the deployment
-controller.
+The deployment-specific schema and policy remain versioned in `k8s-cluster`;
+Zed remains the validator UX rather than the deployment controller.
