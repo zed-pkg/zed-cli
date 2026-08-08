@@ -28,7 +28,11 @@ jobs:
         run: rustup component add rustfmt clippy
 
       - name: Apply trailing-global hardening
-        run: python .github/agent/den2725_trailing_globals_fix.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/agent/den2725_trailing_globals_fix.py
+          python .github/agent/den2725_type_alias_fix.py
 
       - name: Verify dispatch, packaging, and release smoke behavior
         shell: bash
@@ -51,6 +55,7 @@ jobs:
           set -euo pipefail
           rm .github/workflows/agent-den-2725-trailing-globals.yml
           rm .github/agent/den2725_trailing_globals_fix.py
+          rm .github/agent/den2725_type_alias_fix.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
