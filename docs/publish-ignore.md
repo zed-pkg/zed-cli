@@ -34,7 +34,7 @@ exclude = [
 *.local.log
 ```
 
-The example excludes all six rule families from the package artifact.
+The example excludes all five rule families from the package artifact.
 
 ## Negation and contradictions
 
