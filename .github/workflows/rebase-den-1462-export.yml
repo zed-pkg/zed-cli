@@ -1,0 +1,100 @@
+name: reconstruct DEN-1462 on current main
+
+on:
+  push:
+    branches:
+      - agent/den-1462-mise-export-current-main
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1462-reconstruct-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reconstruct:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out export branch with complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1462-mise-export-current-main
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Reapply the reviewed nine-file delta to current main
+        shell: bash
+        env:
+          FEATURE_HEAD: c345f58d625eb8b5dbdf312f173d39eb281add25
+          FEATURE_BRANCH: agent/den-1462-mise-export-current-main
+        run: |
+          set -euo pipefail
+          current_head=$(git rev-parse HEAD)
+          git fetch origin main
+          main_head=$(git rev-parse origin/main)
+          feature_base=$(git merge-base "$FEATURE_HEAD" "$main_head")
+
+          feature_files=(
+            .cli-flags.toml
+            README.md
+            docs/mise-export.md
+            src/cli.rs
+            src/lib.rs
+            src/main.rs
+            src/mise_export.rs
+            tests/mise_export_cli.rs
+            tests/mise_export_reserved_paths_cli.rs
+          )
+
+          git diff --binary "$feature_base" "$FEATURE_HEAD" -- "${feature_files[@]}" \
+            > "$RUNNER_TEMP/den-1462.patch"
+          test -s "$RUNNER_TEMP/den-1462.patch"
+
+          cp .github/workflows/rebase-den-1462-export.yml \
+            "$RUNNER_TEMP/rebase-den-1462-export.yml"
+
+          git reset --hard "$main_head"
+          git apply --3way "$RUNNER_TEMP/den-1462.patch"
+
+          unresolved=$(git diff --name-only --diff-filter=U)
+          if [[ -n "$unresolved" ]]; then
+            echo 'semantic patch left unresolved files:' >&2
+            printf '%s\n' "$unresolved" >&2
+            git diff --cc >&2
+            exit 1
+          fi
+
+          mkdir -p .github/workflows
+          cp "$RUNNER_TEMP/rebase-den-1462-export.yml" \
+            .github/workflows/rebase-den-1462-export.yml
+
+          cargo fmt --all
+          git diff --check
+          cargo test --locked mise_export
+          cargo test --locked --test mise_export_cli
+          cargo test --locked --test mise_export_reserved_paths_cli
+          cargo test --locked cli::tests::environment_export_is_typed_and_rejects_ambiguous_write_modes
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "${feature_files[@]}" .github/workflows/rebase-den-1462-export.yml
+          tree=$(git write-tree)
+          commit=$(printf '%s\n' 'Merge current main into deterministic mise export' | \
+            git commit-tree "$tree" -p "$current_head" -p "$main_head")
+          git reset --hard "$commit"
+          git push origin "HEAD:$FEATURE_BRANCH"
