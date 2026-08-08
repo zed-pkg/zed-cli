@@ -117,7 +117,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
     manifest
         .native_release_routes()
         .into_iter()
-        .map(|route| {
+        .filter_map(|route| {
             let target_root = project.join(&route.dir);
             let gemspec = gemspec_filename(&target_root, &route.package);
             let (program, args) = match route.registry {
@@ -160,15 +160,25 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                     ("composer", vec!["validate", "--strict", "--no-interaction"])
                 }
                 NativeRegistry::GoModules => ("go", vec!["list", "./..."]),
+                // Every other route is reached over the registry's HTTP API
+                // (`native_host_client`), not through a package-manager
+                // binary. Preflight here means "run this ecosystem's own
+                // packaging command", so a host with no adapter simply has no
+                // spec — skipping is correct, and inventing a command would be
+                // worse than doing nothing.
+                //
+                // These routes are still planned, validated, and published;
+                // `zed release plan --json` lists them.
+                _ => return None,
             };
-            NativePreflightSpec {
+            Some(NativePreflightSpec {
                 target: route.target,
                 registry: route.registry,
                 package: route.package,
                 cwd: target_root,
                 program: program.to_string(),
                 args: args.into_iter().map(str::to_string).collect(),
-            }
+            })
         })
         .collect()
 }

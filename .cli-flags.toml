@@ -126,13 +126,6 @@ type = "bool"
 default = "false"
 help = "Install packages whose ecosystem this project does not have."
 
-[flags.allow_ecosystem_mismatch]
-env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
-aliases = ["allow-ecosystem-mismatch"]
-type = "bool"
-default = "false"
-help = "Install packages whose ecosystem this project does not have."
-
 [flags.force]
 env = "ZED_PKG_FORCE"
 aliases = ["force"]
@@ -337,6 +330,20 @@ help = "Pack an artifact."
 [commands.release]
 help = "Coordinate Zed and native-registry releases."
 
+[commands.release.flags.release_channel]
+env = "ZED_PKG_RELEASE_CHANNEL"
+aliases = ["channel"]
+type = "string"
+default = "stable"
+help = "Release track: stable, rc, beta, alpha, nightly, or snapshot."
+
+[commands.release.flags.release_iteration]
+env = "ZED_PKG_RELEASE_ITERATION"
+aliases = ["iteration"]
+type = "int"
+default = "1"
+help = "Candidate number within a pre-release channel."
+
 [commands.release.commands.plan]
 help = "Print a credential-free deterministic release plan."
 
@@ -349,6 +356,12 @@ help = "Emit the release plan as JSON."
 
 [commands.release.commands.preflight]
 help = "Run fixed credential-free native package preflight adapters."
+
+[commands.release.commands.publish]
+help = "Upload every native route to its ecosystem registry over that registry's own HTTP API."
+
+[commands.release.commands.versions]
+help = "List the versions each native route's registry already serves."
 
 [commands.publish]
 help = "Publish an artifact."

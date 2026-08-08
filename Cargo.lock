@@ -2056,7 +2056,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660#a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599#4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599"
 dependencies = [
  "hex",
  "schemars",
