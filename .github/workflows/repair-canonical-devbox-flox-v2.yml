@@ -1,0 +1,330 @@
+name: repair canonical Devbox and Flox routing v2
+
+on:
+  push:
+    branches:
+      - feat/den-2487-canonical-devbox-flox-export
+    paths:
+      - .github/workflows/repair-canonical-devbox-flox-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: repair-canonical-devbox-flox-v2
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out exact product branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: feat/den-2487-canonical-devbox-flox-export
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Materialize durable typed routing
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cli = Path('src/cli.rs')
+          text = cli.read_text()
+          old = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum EnvironmentManagerArg {
+              /// Import, verify, or export project-local mise configuration.
+              Mise,
+              /// Import or verify project-local asdf configuration and Zed-owned provenance.
+              Asdf,
+          }
+          '''
+          new = '''#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum EnvironmentManagerArg {
+              /// Import or verify project-local mise configuration.
+              Mise,
+              /// Import or verify project-local asdf configuration and Zed-owned provenance.
+              Asdf,
+          }
+
+          #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+          pub enum EnvironmentExportManagerArg {
+              /// Export deterministic mise TOML from a schema-v2 plan.
+              Mise,
+              /// Export deterministic Devbox JSON and a Zed-owned receipt.
+              Devbox,
+              /// Export deterministic Flox manifest TOML and a Zed-owned receipt.
+              Flox,
+          }
+          '''
+          if old not in text:
+              raise SystemExit('environment manager enum anchor not found')
+          text = text.replace(old, new, 1)
+
+          start = text.index('    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.\n    Export {')
+          end = text.index('    /// Verify manager config/lock coverage', start)
+          export_block = '''    /// Export a schema-v2 EnvironmentPlan to deterministic manager configuration.
+              Export {
+                  #[arg(value_enum)]
+                  manager: EnvironmentExportManagerArg,
+                  /// Project-local schema-v2 EnvironmentPlan. Devbox/Flox default to `.zed/environment-plan.json`; mise requires this flag.
+                  #[arg(long, env = "ZED_PKG_ENV_PLAN")]
+                  plan: Option<PathBuf>,
+                  /// Project-local manager output path. Defaults are manager-specific.
+                  #[arg(long, env = "ZED_PKG_ENV_OUTPUT")]
+                  output: Option<PathBuf>,
+                  /// Zed-owned deterministic receipt path for Devbox/Flox export.
+                  #[arg(long, env = "ZED_PKG_ENV_RECEIPT")]
+                  receipt: Option<PathBuf>,
+                  /// Verify that the mise output already equals the deterministic projection.
+                  #[arg(long, env = "ZED_PKG_ENV_CHECK")]
+                  check: bool,
+                  /// Transactionally create/update a Zed-owned mise view.
+                  #[arg(long, env = "ZED_PKG_ENV_WRITE")]
+                  write: bool,
+                  /// Emit a machine-readable export result.
+                  #[arg(long, env = "ZED_PKG_ENV_JSON")]
+                  json: bool,
+              },
+          '''
+          text = text[:start] + export_block + text[end:]
+
+          old_test = '''    fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
+                  let cli = Cli::try_parse_from([
+                      "zed",
+                      "env",
+                      "export",
+                      "mise",
+                      "--plan",
+                      "zed-env.toml",
+                      "--output",
+                      ".mise.toml",
+                      "--check",
+                      "--json",
+                  ])
+                  .unwrap();
+                  assert!(matches!(cli.cmd, Cmd::Env { .. }));
+
+                  assert!(matches!(
+                      Cli::try_parse_from([
+                          "zed",
+                          "env",
+                          "export",
+                          "mise",
+                          "--plan",
+                          "zed-env.toml",
+                          "--check",
+                          "--write",
+                      ])
+                      .unwrap()
+                      .cmd,
+                      Cmd::Env {
+                          cmd: EnvCmd::Export {
+                              check: true,
+                              write: true,
+                              ..
+                          }
+                      }
+                  ));
+              }
+          '''
+          new_test = '''    fn environment_export_is_typed_and_preserves_manager_boundaries() {
+                  for manager in ["mise", "devbox", "flox"] {
+                      let mut args = vec!["zed", "env", "export", manager, "--json"];
+                      if manager == "mise" {
+                          args.extend(["--plan", "zed-env.toml", "--output", ".mise.toml", "--check"]);
+                      } else {
+                          args.extend(["--receipt", ".zed/receipt.json"]);
+                      }
+                      let cli = Cli::try_parse_from(args).unwrap();
+                      assert!(matches!(cli.cmd, Cmd::Env { .. }));
+                  }
+
+                  assert!(matches!(
+                      Cli::try_parse_from([
+                          "zed",
+                          "env",
+                          "export",
+                          "mise",
+                          "--plan",
+                          "zed-env.toml",
+                          "--check",
+                          "--write",
+                      ])
+                      .unwrap()
+                      .cmd,
+                      Cmd::Env {
+                          cmd: EnvCmd::Export {
+                              check: true,
+                              write: true,
+                              ..
+                          }
+                      }
+                  ));
+              }
+          '''
+          if old_test not in text:
+              raise SystemExit('typed export test anchor not found')
+          cli.write_text(text.replace(old_test, new_test, 1))
+
+          main = Path('src/main.rs')
+          text = main.read_text()
+          old = '''use zed_cli::cli::{
+              AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
+          };
+          '''
+          new = '''use zed_cli::cli::{
+              AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
+              ReleaseCmd, StoreCmd, TaskCmd,
+          };
+          '''
+          if old not in text:
+              raise SystemExit('main CLI import anchor not found')
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              'use zed_cli::environment;\n',
+              'use zed_cli::environment;\nuse zed_cli::environment_export_cli::{self, ExportOptions};\n',
+              1,
+          )
+          text = text.replace(
+              'use zed_cli::nix_bundle_write;\n',
+              'use zed_cli::nix_bundle_write;\nuse zed_cli::nix_environment_export::ExportManager;\n',
+              1,
+          )
+          start = text.index('            EnvCmd::Export {')
+          end = text.index('            EnvCmd::Verify {', start)
+          dispatch = '''            EnvCmd::Export {
+                              manager,
+                              plan,
+                              output,
+                              receipt,
+                              check,
+                              write,
+                              json,
+                          } => match manager {
+                              EnvironmentExportManagerArg::Mise => {
+                                  if check && write {
+                                      anyhow::bail!("the arguments '--check' and '--write' cannot be used together");
+                                  }
+                                  if receipt.is_some() {
+                                      anyhow::bail!("--receipt is supported only for Devbox and Flox export");
+                                  }
+                                  let Some(plan) = plan else {
+                                      anyhow::bail!("mise export requires --plan PATH");
+                                  };
+                                  let output = output.unwrap_or_else(|| std::path::PathBuf::from(".mise.toml"));
+                                  let mode = if check {
+                                      MiseExportMode::Check
+                                  } else if write {
+                                      MiseExportMode::Write
+                                  } else {
+                                      MiseExportMode::Print
+                                  };
+                                  let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
+                                  mise_export::print_export(&exported, json)
+                              }
+                              EnvironmentExportManagerArg::Devbox | EnvironmentExportManagerArg::Flox => {
+                                  if check || write {
+                                      anyhow::bail!("--check and --write are supported only for mise export");
+                                  }
+                                  let manager = match manager {
+                                      EnvironmentExportManagerArg::Devbox => ExportManager::Devbox,
+                                      EnvironmentExportManagerArg::Flox => ExportManager::Flox,
+                                      EnvironmentExportManagerArg::Mise => unreachable!(),
+                                  };
+                                  environment_export_cli::execute(
+                                      &cwd,
+                                      manager,
+                                      ExportOptions {
+                                          plan,
+                                          output,
+                                          receipt,
+                                          json,
+                                      },
+                                  )
+                              }
+                          },
+          '''
+          main.write_text(text[:start] + dispatch + text[end:])
+
+          flags = Path('.cli-flags.toml')
+          text = flags.read_text()
+          text = text.replace(
+              'default = ".mise.toml"\nhelp = "Project-local manager export path."',
+              'help = "Project-local manager export path; defaults are manager-specific."',
+              1,
+          )
+          marker = '[commands.env.commands.export.flags.env_check]\nenv = "ZED_PKG_ENV_CHECK"\n'
+          receipt = '''[commands.env.commands.export.flags.env_receipt]
+          env = "ZED_PKG_ENV_RECEIPT"
+          aliases = ["receipt"]
+          type = "string"
+          help = "Zed-owned deterministic receipt path for Devbox or Flox export."
+
+          [commands.env.commands.export.flags.env_check]
+          env = "ZED_PKG_ENV_CHECK"
+          '''
+          if marker not in text:
+              raise SystemExit('flags receipt anchor not found')
+          flags.write_text(text.replace(marker, receipt, 1))
+
+          readme = Path('README.md')
+          text = readme.read_text()
+          mise = '| `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |\n'
+          rows = '| `zed env export devbox [--plan PATH] [--output devbox.json] [--receipt PATH] [--json]` | Deterministically generate Devbox JSON and a Zed-owned receipt without invoking Devbox |\n| `zed env export flox [--plan PATH] [--output .flox/env/manifest.toml] [--receipt PATH] [--json]` | Deterministically generate Flox manifest TOML and a Zed-owned receipt without invoking Flox |\n'
+          if rows not in text:
+              if mise not in text:
+                  raise SystemExit('README mise export anchor not found')
+              text = text.replace(mise, mise + rows, 1)
+          readme.write_text(text)
+
+          renderer = Path('src/nix_environment_export.rs')
+          text = renderer.read_text()
+          text = text.replace('pub fn generate_devbox(', 'fn generate_devbox(', 1)
+          text = text.replace('pub fn generate_flox(', 'fn generate_flox(', 1)
+          renderer.write_text(text)
+          PY
+
+      - name: Format, test, and lint all manager export surfaces
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib nix_environment_export::tests
+          cargo test --locked --test nix_environment_export_cli
+          cargo test --locked --test nix_environment_export_main_cli
+          cargo test --locked cli::tests::environment_export_is_typed_and_preserves_manager_boundaries
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
+          cargo clippy --locked --bin zed --bin zed-env-export \
+            --test nix_environment_export_cli --test nix_environment_export_main_cli -- -D warnings
+
+      - name: Commit ordinary product source and remove carriers
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/materialize-canonical-devbox-flox.yml \
+            .github/workflows/repair-canonical-devbox-flox-v2.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/cli.rs src/main.rs src/nix_environment_export.rs \
+            .cli-flags.toml README.md \
+            .github/workflows/materialize-canonical-devbox-flox.yml \
+            .github/workflows/repair-canonical-devbox-flox-v2.yml
+          git diff --cached --check
+          git commit -m 'feat(DEN-2487): route Devbox and Flox through zed env export'
+          git push origin HEAD:feat/den-2487-canonical-devbox-flox-export
