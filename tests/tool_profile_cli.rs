@@ -285,12 +285,7 @@ fn wrong_plan_digest_and_target_fail_without_mutation() {
     let digest = run(
         &project,
         &home,
-        &[
-            "verify",
-            "--portable",
-            "--plan-digest",
-            &"b".repeat(64),
-        ],
+        &["verify", "--portable", "--plan-digest", &"b".repeat(64)],
     );
     assert!(!digest.status.success());
     assert!(String::from_utf8_lossy(&digest.stderr).contains("plan digest"));
