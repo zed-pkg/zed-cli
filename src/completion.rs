@@ -6,17 +6,26 @@ use anyhow::{Context, Result};
 use clap_complete::{Shell, generate};
 
 use crate::cli_model;
-use crate::{dev, fetch, git_submodules, global, nix_bundle_write, nix_export_plan};
+use crate::{
+    dev, external_subcommands, fetch, git_submodules, global, nix_bundle_write, nix_export_plan,
+};
 
-/// Build the complete public command tree shared by root help and completion
-/// generation. Every modular command must compose here rather than maintaining
-/// a second, partial root-help model.
-pub fn root_command() -> clap::Command {
+/// Build the complete built-in command tree without external extensions.
+/// The external dispatcher uses this model to guarantee that a `zed-*`
+/// executable can never shadow a built-in name or alias.
+pub(crate) fn built_in_root_command() -> clap::Command {
     global::augment_root_command(git_submodules::augment_root_command(
         nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
             fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
         )),
     ))
+}
+
+/// Build the complete public command tree shared by root help and completion
+/// generation. Every modular or external command must compose here rather than
+/// maintaining a second, partial root-help model.
+pub fn root_command() -> clap::Command {
+    external_subcommands::augment_root_command(built_in_root_command())
 }
 
 /// Print the complete top-level help tree.
@@ -76,6 +85,8 @@ mod tests {
             "completions",
             "self-update",
             "r2g",
+            "gitops",
+            "validate",
         ] {
             assert!(script.contains(command), "missing command {command:?}");
         }
@@ -94,6 +105,8 @@ mod tests {
             "--output",
             "--python-venv",
             "--isolated-home",
+            "--catalog",
+            "--offline",
         ] {
             assert!(script.contains(option), "missing option {option:?}");
         }
@@ -125,6 +138,8 @@ mod tests {
             "completions",
             "self-update",
             "r2g",
+            "gitops",
+            "validate",
         ] {
             assert!(script.contains(command), "missing command {command:?}");
         }
@@ -143,6 +158,8 @@ mod tests {
             "--output",
             "--python-venv",
             "--isolated-home",
+            "--catalog",
+            "--offline",
         ] {
             assert!(script.contains(option), "missing option {option:?}");
         }

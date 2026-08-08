@@ -13,7 +13,7 @@ url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/nix-bundle-write.md"
 env = "ZED_PKG_REGISTRY"
 aliases = ["registry"]
 type = "string"
-default = "https://registry.zpkg.tech"
+default = "https://registry.zpkg.net"
 help = "Global registry setting; frozen Nix interop never reads or emits it."
 
 [flags.home]
