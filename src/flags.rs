@@ -479,6 +479,24 @@ mod tests {
     }
 
     #[test]
+    fn long_inline_values_are_not_truncated() {
+        let token = format!("header.{}.signature", "a".repeat(240));
+        let argv = vec![
+            "zed".to_string(),
+            format!("--token={token}"),
+            "find".to_string(),
+            "http".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).expect("long inline values must parse");
+        assert!(parsed.unknown_options.is_empty());
+        assert!(parsed.errors.is_empty());
+        assert_eq!(
+            parsed.flags.get("ZED_PKG_TOKEN").map(String::as_str),
+            Some(token.as_str())
+        );
+    }
+
+    #[test]
     fn diagnostics_redact_inline_values() {
         assert_eq!(
             redact_option_value("--unknown=secret-value"),
