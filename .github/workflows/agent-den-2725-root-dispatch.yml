@@ -29,6 +29,7 @@ jobs:
           set -euo pipefail
           python3 .github/agent/den2725_fix_patch.py
           python3 .github/agent/den2725_root_dispatch_patch.py
+          python3 .github/agent/den2725_clippy_fix.py
 
       - name: Format and verify the focused contract
         shell: bash
@@ -47,6 +48,7 @@ jobs:
           rm .github/workflows/agent-den-2725-root-dispatch.yml
           rm .github/agent/den2725_root_dispatch_patch.py
           rm .github/agent/den2725_fix_patch.py
+          rm .github/agent/den2725_clippy_fix.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
