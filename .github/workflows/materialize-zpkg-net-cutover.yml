@@ -40,7 +40,10 @@ jobs:
       - name: Replace only known public-registry defaults
         run: |
           set -euo pipefail
-          mapfile -t files < <(git grep -l -F 'registry.zpkg.tech' -- . ':!Cargo.lock' | sort)
+          carrier='.github/workflows/materialize-zpkg-net-cutover.yml'
+          mapfile -t files < <(
+            git grep -l -F 'registry.zpkg.tech' -- . ':!Cargo.lock' ":!$carrier" | sort
+          )
           test "${#files[@]}" -gt 0
           printf 'registry cutover inputs:\n'
           printf '  %s\n' "${files[@]}"
@@ -60,8 +63,12 @@ jobs:
           from pathlib import Path
           import subprocess
 
+          carrier = '.github/workflows/materialize-zpkg-net-cutover.yml'
           files = subprocess.check_output(
-              ['git', 'grep', '-l', '-F', 'registry.zpkg.tech', '--', '.', ':!Cargo.lock'],
+              [
+                  'git', 'grep', '-l', '-F', 'registry.zpkg.tech', '--', '.',
+                  ':!Cargo.lock', f':!{carrier}'
+              ],
               text=True,
           ).splitlines()
           for name in files:
@@ -73,7 +80,7 @@ jobs:
               path.write_text(updated)
           PY
 
-          if git grep -n -F 'registry.zpkg.tech' -- . ':!Cargo.lock'; then
+          if git grep -n -F 'registry.zpkg.tech' -- . ':!Cargo.lock' ":!$carrier"; then
             echo 'legacy registry hostname remains' >&2
             exit 1
           fi
