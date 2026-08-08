@@ -6,7 +6,7 @@
 //! metadata and emits one JSON document on stdout.
 
 use std::collections::BTreeSet;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -60,11 +60,13 @@ pub fn dispatch(args: &[OsString]) -> Option<Result<i32>> {
             if let Err(print_error) = error.print() {
                 return Some(Err(print_error.into()));
             }
-            return Some(Ok(if matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
-                0
-            } else {
-                2
-            }));
+            return Some(Ok(
+                if matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion) {
+                    0
+                } else {
+                    2
+                },
+            ));
         }
     };
     Some(run(parsed).map(|()| 0))
@@ -109,14 +111,15 @@ fn global_option_takes_value(token: &str) -> bool {
 }
 
 fn run(args: InspectArgs) -> Result<()> {
-    match args.format {
-        InspectFormat::Json => {}
-    }
+    debug_assert_eq!(args.format, InspectFormat::Json);
     if !args.root.is_absolute() {
         bail!("--root must be an absolute path");
     }
     if !args.root.is_dir() {
-        bail!("--root must name an existing directory: {}", args.root.display());
+        bail!(
+            "--root must name an existing directory: {}",
+            args.root.display()
+        );
     }
     let root = fs::canonicalize(&args.root)
         .with_context(|| format!("canonicalizing project root {}", args.root.display()))?;
@@ -133,7 +136,6 @@ fn run(args: InspectArgs) -> Result<()> {
 enum Severity {
     Error,
     Warning,
-    Info,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -265,7 +267,12 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
                 .to_string(),
             detail: None,
             location: location(&recovery_path),
-            actions: vec![install_action(root, true, "recover-frozen", "Recover with the locked graph")],
+            actions: vec![install_action(
+                root,
+                true,
+                "recover-frozen",
+                "Recover with the locked graph",
+            )],
         });
     }
 
@@ -290,7 +297,12 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
                 message: format!("Direct dependency `{dependency}` is not pinned in the lockfile."),
                 detail: None,
                 location: location(&lock_path),
-                actions: vec![install_action(root, false, "refresh-lock", "Refresh the lockfile")],
+                actions: vec![install_action(
+                    root,
+                    false,
+                    "refresh-lock",
+                    "Refresh the lockfile",
+                )],
             });
         }
     }
@@ -304,7 +316,12 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
                     .to_string(),
                 detail: None,
                 location: location(&materialization_path),
-                actions: vec![install_action(root, true, "restore-frozen", "Restore locked packages")],
+                actions: vec![install_action(
+                    root,
+                    true,
+                    "restore-frozen",
+                    "Restore locked packages",
+                )],
             });
         }
     }
@@ -346,9 +363,9 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
                         name: package.name.clone(),
                         version: package.version.clone(),
                         sha256: package.sha256.clone(),
-                        store_present: store_root.as_ref().map(|home| {
-                            home.join(store_entry_rel(&package.sha256)).is_dir()
-                        }),
+                        store_present: store_root
+                            .as_ref()
+                            .map(|home| home.join(store_entry_rel(&package.sha256)).is_dir()),
                         materialized,
                     }
                 })
@@ -371,20 +388,15 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
     } else {
         Health::Healthy
     };
-    let frozen_ready = manifest.is_some()
-        && lockfile.is_some()
-        && direct_missing.is_empty()
-        && !recovery_pending;
+    let frozen_ready =
+        manifest.is_some() && lockfile.is_some() && direct_missing.is_empty() && !recovery_pending;
 
     let identity = manifest.as_ref().map(|manifest| PackageIdentity {
         org: manifest.package.org.clone(),
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),
     });
-    let workspace_members = manifest
-        .as_ref()
-        .map(workspace_members)
-        .unwrap_or_default();
+    let workspace_members = manifest.as_ref().map(workspace_members).unwrap_or_default();
 
     Ok(InspectReport {
         schema_version: SCHEMA_VERSION,
@@ -495,7 +507,12 @@ fn read_lockfile(path: &Path, root: &Path, diagnostics: &mut Vec<Diagnostic>) ->
                 message: format!("No {LOCKFILE_FILE} exists at the selected project root."),
                 detail: None,
                 location: location(path),
-                actions: vec![install_action(root, false, "create-lock", "Resolve and create the lockfile")],
+                actions: vec![install_action(
+                    root,
+                    false,
+                    "create-lock",
+                    "Resolve and create the lockfile",
+                )],
             });
             None
         }
@@ -553,8 +570,9 @@ fn adapter_outputs(root: &Path) -> Vec<AdapterOutput> {
 fn local_store_root() -> Option<PathBuf> {
     std::env::var_os("ZED_PKG_HOME")
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(zed_interfaces::paths::ZED_HOME_DIR_NAME)))
-        .map(|home| if home.is_absolute() { home } else { PathBuf::from(home) })
+        .or_else(|| {
+            dirs::home_dir().map(|home| home.join(zed_interfaces::paths::ZED_HOME_DIR_NAME))
+        })
 }
 
 fn install_action(
@@ -635,7 +653,12 @@ url = "https://example.invalid/acme/demo"
         let report = inspect_project(project.path()).unwrap();
         let json = serde_json::to_string(&report).unwrap();
         assert_eq!(report.summary.health, Health::Error);
-        assert!(report.diagnostics.iter().any(|d| d.code == "MANIFEST_INVALID"));
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "MANIFEST_INVALID")
+        );
         assert!(!json.contains(secret));
     }
 
@@ -651,7 +674,10 @@ url = "https://example.invalid/acme/demo"
         let report = inspect_project(project.path()).unwrap();
         assert!(report.summary.recovery_pending);
         assert!(!report.summary.frozen_ready);
-        assert_eq!(fs::read_to_string(staging.join("sentinel")).unwrap(), "keep");
+        assert_eq!(
+            fs::read_to_string(staging.join("sentinel")).unwrap(),
+            "keep"
+        );
     }
 
     #[test]
@@ -680,6 +706,6 @@ url = "https://example.invalid/acme/demo"
             OsString::from("/tmp/example"),
         ];
         assert_eq!(inspect_command_index(&args), Some(3));
-        assert_eq!(OsStr::new("inspect"), args[3].as_os_str());
+        assert_eq!(std::ffi::OsStr::new("inspect"), args[3].as_os_str());
     }
 }
