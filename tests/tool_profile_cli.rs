@@ -169,6 +169,13 @@ fn assert_success(output: &Output) {
     );
 }
 
+fn assert_no_profile_state(project: &Path) {
+    assert!(
+        !project.join(".zed/tools").exists(),
+        "failed command left the tool-profile namespace behind"
+    );
+}
+
 #[test]
 fn verify_list_install_and_idempotent_replay_are_deterministic() {
     let (_temp, project, home, sha256) = fixture(&[("hello", "hello")]);
@@ -245,7 +252,7 @@ fn missing_and_tampered_cache_fail_before_profile_mutation() {
     );
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("prefetch"));
-    assert!(!project.join(".zed/tools/v1").join(target()).exists());
+    assert_no_profile_state(&project);
 
     fs::write(&cache, &original).unwrap();
     let mut tampered = original;
@@ -259,7 +266,7 @@ fn missing_and_tampered_cache_fail_before_profile_mutation() {
     );
     assert!(!mismatch.status.success());
     assert!(String::from_utf8_lossy(&mismatch.stderr).contains("hash mismatch"));
-    assert!(!project.join(".zed/tools/v1").join(target()).exists());
+    assert_no_profile_state(&project);
 }
 
 #[test]
@@ -272,11 +279,12 @@ fn executable_collisions_and_online_mode_fail_closed() {
     );
     assert!(!collision.status.success());
     assert!(String::from_utf8_lossy(&collision.stderr).contains("claimed by both"));
-    assert!(!project.join(".zed/tools/v1").join(target()).exists());
+    assert_no_profile_state(&project);
 
     let online = run(&project, &home, &["install", "--target", target()]);
     assert!(!online.status.success());
     assert!(String::from_utf8_lossy(&online.stderr).contains("requires `--offline`"));
+    assert_no_profile_state(&project);
 }
 
 #[test]
@@ -289,6 +297,7 @@ fn wrong_plan_digest_and_target_fail_without_mutation() {
     );
     assert!(!digest.status.success());
     assert!(String::from_utf8_lossy(&digest.stderr).contains("plan digest"));
+    assert_no_profile_state(&project);
 
     let target = run(
         &project,
@@ -297,5 +306,5 @@ fn wrong_plan_digest_and_target_fail_without_mutation() {
     );
     assert!(!target.status.success());
     assert!(String::from_utf8_lossy(&target.stderr).contains("unsupported characters"));
-    assert!(!project.join(".zed/tools/v1").exists());
+    assert_no_profile_state(&project);
 }
