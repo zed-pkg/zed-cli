@@ -17,13 +17,13 @@ use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 pub const OPERATION_LOCK_RELATIVE_PATH: &str = ".zed/operation.lock";
 
-/// One thread's reentrant ownership cache.
-///
-/// The map stores weak references so it never extends descriptor ownership.
-/// Stale entries are removed lazily on the next acquisition of that canonical
-/// checkout. Every live [`OperationGuard`] holds a strong reference to the same
-/// [`OwnedLock`], so nested handles may be dropped in any order without
-/// releasing the kernel lock before the final handle.
+// One thread's reentrant ownership cache.
+//
+// The map stores weak references so it never extends descriptor ownership.
+// Stale entries are removed lazily on the next acquisition of that canonical
+// checkout. Every live `OperationGuard` holds a strong reference to the same
+// `OwnedLock`, so nested handles may be dropped in any order without releasing
+// the kernel lock before the final handle.
 thread_local! {
     static HELD_LOCKS: RefCell<HashMap<PathBuf, Weak<OwnedLock>>> = RefCell::new(HashMap::new());
 }
