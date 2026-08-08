@@ -377,6 +377,52 @@ pub fn credential_env_vars(host: NativeHost) -> &'static [&'static str] {
     }
 }
 
+/// The filename a host expects a built artifact to arrive under.
+///
+/// Not cosmetic. PyPI, NuGet, Hackage, and CRAN validate the *filename* of the
+/// uploaded part and reject anything that does not match the name/version they
+/// were told to expect, so a generic `<pkg>-<ver>.artifact` fails on those four
+/// before its bytes are even read. reqwest derives the multipart filename from
+/// the path, so getting this right fixes both the on-disk lookup and the wire.
+///
+/// Returns `None` for hosts that receive no artifact.
+pub fn conventional_artifact_name(
+    host: NativeHost,
+    package: &str,
+    version: &str,
+) -> Option<String> {
+    use NativeHost::*;
+    // Scoped npm names and Maven coordinates are not filenames.
+    let bare = package
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(package)
+        .trim_start_matches('@');
+    Some(match host {
+        Npm => format!("{bare}-{version}.tgz"),
+        CratesIo => format!("{bare}-{version}.crate"),
+        // sdist. A wheel carries python/abi/platform tags that cannot be
+        // guessed here, so a wheel must be named by whoever built it.
+        PyPi | TestPyPi => format!("{}-{version}.tar.gz", bare.replace('-', "_")),
+        RubyGems => format!("{bare}-{version}.gem"),
+        NuGet | PowerShellGallery => format!("{bare}.{version}.nupkg"),
+        // The Central Portal takes one zipped bundle, not a bare jar.
+        MavenCentral => format!("{bare}-{version}-bundle.zip"),
+        Clojars => format!("{bare}-{version}.jar"),
+        Hex => format!("{bare}-{version}.tar"),
+        Hackage | Cpan | PubDev => format!("{bare}-{version}.tar.gz"),
+        // CRAN separates name and version with an underscore.
+        Cran => format!("{bare}_{version}.tar.gz"),
+        CocoaPods => format!("{bare}.podspec.json"),
+        LuaRocks => format!("{bare}-{version}.rockspec"),
+        SwiftPackageIndex => format!("{bare}-{version}.zip"),
+        ConanCenter => format!("{bare}-{version}.tgz"),
+        // Nothing is uploaded to these.
+        GoProxy | Packagist | Stackage | JuliaGeneral | Opam | Dub | Nimble | Shards | Racket
+        | Zig | Vcs => return None,
+    })
+}
+
 /// Environment variables a host's Basic-auth **username** is read from.
 ///
 /// PyPI mandates the literal `__token__` and needs no variable. The rest are
@@ -854,7 +900,34 @@ pub fn publish_request(
         P::CargoSparse => RegistryRequest::new(Method::Put, format!("{publish_base}/crates/new"))
             .body(RequestBody::CargoFramed {
                 path: artifact.to_path_buf(),
-                metadata: format!(r#"{{"name":"{package}","vers":"{version}"}}"#),
+                // Built through serde_json rather than interpolated: a package
+                // name or version reaching this from a manifest must not be
+                // able to break out of the JSON. The endpoint also requires
+                // these keys to be present even when empty — a two-key
+                // document is rejected.
+                //
+                // Dependency and feature metadata still comes from the crate's
+                // own Cargo.toml and is not read here, so a crate with
+                // dependencies will be rejected until that is wired up.
+                metadata: serde_json::json!({
+                    "name": package,
+                    "vers": version,
+                    "deps": [],
+                    "features": {},
+                    "authors": [],
+                    "description": serde_json::Value::Null,
+                    "documentation": serde_json::Value::Null,
+                    "homepage": serde_json::Value::Null,
+                    "readme": serde_json::Value::Null,
+                    "readme_file": serde_json::Value::Null,
+                    "keywords": [],
+                    "categories": [],
+                    "license": serde_json::Value::Null,
+                    "license_file": serde_json::Value::Null,
+                    "repository": serde_json::Value::Null,
+                    "links": serde_json::Value::Null,
+                })
+                .to_string(),
             }),
         P::PypiLegacyUpload => RegistryRequest::new(Method::Post, publish_endpoint.to_string())
             .body(RequestBody::Multipart {
@@ -1793,6 +1866,86 @@ mod tests {
         );
         assert_eq!(attachment["length"].as_u64().unwrap(), 13);
         assert_eq!(json["dist-tags"]["next"].as_str().unwrap(), "1.4.0");
+    }
+
+    #[test]
+    fn each_host_gets_the_filename_it_validates_against() {
+        // PyPI, NuGet, Hackage, and CRAN check the uploaded part's *filename*
+        // and reject a mismatch before reading the bytes, so a generic
+        // `<pkg>-<ver>.artifact` failed on all four.
+        let cases = [
+            (NativeHost::Npm, "@acme/client", "client-1.4.0.tgz"),
+            (
+                NativeHost::CratesIo,
+                "acme-client",
+                "acme-client-1.4.0.crate",
+            ),
+            // PEP 625: an sdist underscores the distribution name.
+            (NativeHost::PyPi, "acme-client", "acme_client-1.4.0.tar.gz"),
+            (NativeHost::RubyGems, "acme-client", "acme-client-1.4.0.gem"),
+            // NuGet separates name and version with a dot, not a hyphen.
+            (NativeHost::NuGet, "Acme.Client", "Acme.Client.1.4.0.nupkg"),
+            // CRAN uses an underscore.
+            (NativeHost::Cran, "acme.client", "acme.client_1.4.0.tar.gz"),
+            (
+                NativeHost::Hackage,
+                "acme-client",
+                "acme-client-1.4.0.tar.gz",
+            ),
+            // A Maven coordinate is not a filename; only the artifact id is.
+            (
+                NativeHost::MavenCentral,
+                "com.acme:client",
+                "client-1.4.0-bundle.zip",
+            ),
+            (NativeHost::Clojars, "com.acme:client", "client-1.4.0.jar"),
+            (NativeHost::Hex, "acme_client", "acme_client-1.4.0.tar"),
+        ];
+        for (host, package, expected) in cases {
+            assert_eq!(
+                conventional_artifact_name(host, package, "1.4.0").as_deref(),
+                Some(expected),
+                "{host}"
+            );
+        }
+
+        // Hosts that receive no artifact have no filename to get wrong.
+        for host in [
+            NativeHost::GoProxy,
+            NativeHost::Packagist,
+            NativeHost::Zig,
+            NativeHost::Vcs,
+        ] {
+            assert_eq!(
+                conventional_artifact_name(host, "acme/client", "1.4.0"),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn crates_io_metadata_is_json_encoded_and_carries_the_required_keys() {
+        // Interpolating a manifest-supplied name into JSON let a crafted name
+        // break out of the document; and a two-key body is rejected outright.
+        let request = publish_request(
+            &route(NativeHost::CratesIo, ReleaseChannel::Stable),
+            "acme-client",
+            Path::new("acme.crate"),
+            Some("tok"),
+            None,
+        )
+        .unwrap();
+        let RequestBody::CargoFramed { metadata, .. } = &request.body else {
+            panic!("expected a framed cargo body");
+        };
+        let parsed: serde_json::Value = serde_json::from_str(metadata).unwrap();
+        assert_eq!(parsed["name"], "acme-client");
+        assert_eq!(parsed["vers"], "1.4.0");
+        for required in ["deps", "features", "authors", "keywords", "categories"] {
+            assert!(!parsed[required].is_null(), "`{required}` must be present");
+        }
+        assert!(parsed["deps"].is_array());
+        assert!(parsed["features"].is_object());
     }
 
     #[test]
