@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use zed_lock::{LockClass, LockManager, LockRequest};
+use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 pub const OPERATION_LOCK_RELATIVE_PATH: &str = ".zed/operation.lock";
 
@@ -56,6 +56,19 @@ impl Drop for HeldMarker {
     }
 }
 
+/// Owned checkout-local mutation authority.
+///
+/// A nested same-thread acquisition carries only a depth marker because the
+/// outer guard already owns the descriptor lock. Independent threads and
+/// processes always contend through `zed-lock`.
+#[must_use = "dropping the operation guard releases project mutation ownership"]
+pub struct OperationGuard {
+    // Drop the thread-local marker before the descriptor lock. That keeps the
+    // reentrancy view conservative for the entire lifetime of kernel ownership.
+    _marker: HeldMarker,
+    _guard: Option<LockGuard>,
+}
+
 /// Canonical descriptor-lock identity for one checkout.
 ///
 /// Canonicalizing the project before appending the stable relative path makes
@@ -71,24 +84,21 @@ fn is_held_on_this_thread(path: &Path) -> bool {
     HELD_LOCKS.with(|held| held.borrow().contains_key(path))
 }
 
-/// Run a complete project mutation while owning the checkout-local lock.
+/// Acquire checkout-local mutation ownership and return an RAII guard.
 ///
-/// Nested calls on the same thread and canonical checkout reuse the outer
-/// ownership. Independent threads and processes still go through `zed-lock`,
-/// whose descriptor lock is the sole local ownership authority and is released
-/// automatically if the process exits.
-pub fn with_lock<T>(
-    project: &Path,
-    operation: &str,
-    action: impl FnOnce() -> Result<T>,
-) -> Result<T> {
+/// This form is useful when callers must span multiple library calls under one
+/// project mutation boundary. Nested calls on the same thread reuse the outer
+/// descriptor ownership rather than issuing a second kernel lock request.
+pub fn acquire(project: &Path, operation: &str) -> Result<OperationGuard> {
     let path = operation_lock_path(project)?;
     if is_held_on_this_thread(&path) {
-        let _marker = HeldMarker::enter(path);
-        return action();
+        return Ok(OperationGuard {
+            _marker: HeldMarker::enter(path),
+            _guard: None,
+        });
     }
 
-    let _guard = LockManager::global()
+    let guard = LockManager::global()
         .acquire_blocking(
             LockRequest::exclusive(&path)
                 .operation(operation)
@@ -100,7 +110,24 @@ pub fn with_lock<T>(
                 path.display()
             )
         })?;
-    let _marker = HeldMarker::enter(path);
+    Ok(OperationGuard {
+        _marker: HeldMarker::enter(path),
+        _guard: Some(guard),
+    })
+}
+
+/// Run a complete project mutation while owning the checkout-local lock.
+///
+/// Nested calls on the same thread and canonical checkout reuse the outer
+/// ownership. Independent threads and processes still go through `zed-lock`,
+/// whose descriptor lock is the sole local ownership authority and is released
+/// automatically if the process exits.
+pub fn with_lock<T>(
+    project: &Path,
+    operation: &str,
+    action: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let _guard = acquire(project, operation)?;
     action()
 }
 
@@ -108,7 +135,7 @@ pub fn with_lock<T>(
 mod tests {
     use anyhow::Result;
 
-    use super::{OPERATION_LOCK_RELATIVE_PATH, operation_lock_path, with_lock};
+    use super::{OPERATION_LOCK_RELATIVE_PATH, acquire, operation_lock_path, with_lock};
 
     #[test]
     fn canonical_aliases_share_one_lock_identity() -> Result<()> {
@@ -132,6 +159,15 @@ mod tests {
         with_lock(project.path(), "outer mutation", || {
             with_lock(project.path(), "nested mutation", || Ok(()))
         })?;
+        assert!(operation_lock_path(project.path())?.is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_guard_allows_nested_facade_reuse() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        let _guard = acquire(project.path(), "multi-step mutation")?;
+        with_lock(project.path(), "nested facade", || Ok(()))?;
         assert!(operation_lock_path(project.path())?.is_file());
         Ok(())
     }
