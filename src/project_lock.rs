@@ -5,6 +5,8 @@
 //! generated adapter wiring, Git-submodule projections, and transaction
 //! recovery. The lock lives inside the canonical project directory so two Zed
 //! processes using different `ZED_PKG_HOME` values still coordinate.
+//! Git-submodule synchronization, installer finalization, and transaction
+//! recovery all use this same authority root.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
