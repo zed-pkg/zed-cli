@@ -82,7 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo metadata --locked --format-version 1 --no-deps > "$RUNNER_TEMP/cargo-metadata.json"
+          cargo metadata --locked --format-version 1 > "$RUNNER_TEMP/cargo-metadata.json"
           python3 - "$RUNNER_TEMP/cargo-metadata.json" "$NEW_ZED_INTERFACES_SHA" <<'PY'
           import json
           import sys
