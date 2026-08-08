@@ -1,0 +1,181 @@
+name: apply DEN-1462 checkout lock hardening
+
+on:
+  push:
+    branches:
+      - agent/den-1462-mise-export-current-main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1462-checkout-lock-hardening
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Check out exporter branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1462-mise-export-current-main
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Serialize exporter writes and startup recovery
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              return text.replace(old, new, 1)
+
+          main_path = Path('src/main.rs')
+          main = main_path.read_text(encoding='utf-8')
+          if 'use zed_cli::project_lock;\n' not in main:
+              main = replace_once(
+                  main,
+                  'use zed_cli::preflight;\n',
+                  'use zed_cli::preflight;\nuse zed_cli::project_lock;\n',
+                  'project_lock import',
+              )
+          old_recovery = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+              let store = Store::from_env()?;
+              let _recovery_lock = store.install_lock()?;
+              let recovered = zed_cli::transaction::recover_pending(&cwd)?;
+              if recovered > 0 {
+                  eprintln!("recovered {recovered} interrupted project transaction(s)");
+              }
+          }
+          '''
+          new_recovery = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+              project_lock::with_lock(&cwd, "recover pending project transactions", || {
+                  let store = Store::from_env()?;
+                  let _recovery_lock = store.install_lock()?;
+                  let recovered = zed_cli::transaction::recover_pending(&cwd)?;
+                  if recovered > 0 {
+                      eprintln!("recovered {recovered} interrupted project transaction(s)");
+                  }
+                  Ok(())
+              })?;
+          }
+          '''
+          if old_recovery in main:
+              main = main.replace(old_recovery, new_recovery, 1)
+          elif new_recovery not in main:
+              raise SystemExit('could not locate startup recovery block')
+          main_path.write_text(main, encoding='utf-8')
+
+          lib_path = Path('src/lib.rs')
+          lib = lib_path.read_text(encoding='utf-8')
+          old_export = '''        reject_reserved_state_plan(cwd, plan_arg)?;
+                  super::mise_export_impl::export_mise(cwd, plan_arg, output_arg, mode)
+          '''
+          new_export = '''        reject_reserved_state_plan(cwd, plan_arg)?;
+                  if mode == MiseExportMode::Write {
+                      return super::project_lock::with_lock(cwd, "export mise environment", || {
+                          super::mise_export_impl::export_mise(cwd, plan_arg, output_arg, mode)
+                      });
+                  }
+                  super::mise_export_impl::export_mise(cwd, plan_arg, output_arg, mode)
+          '''
+          if old_export in lib:
+              lib = lib.replace(old_export, new_export, 1)
+          elif new_export not in lib:
+              raise SystemExit('could not locate public exporter delegation')
+          lib_path.write_text(lib, encoding='utf-8')
+
+          test_path = Path('tests/mise_export_api_boundaries.rs')
+          test = test_path.read_text(encoding='utf-8')
+          if 'public_write_waits_for_checkout_operation_lock' not in test:
+              test = replace_once(
+                  test,
+                  'use std::path::Path;\n',
+                  'use std::path::Path;\nuse std::sync::mpsc;\nuse std::thread;\nuse std::time::Duration;\n',
+                  'concurrency imports',
+              )
+              test = replace_once(
+                  test,
+                  'use zed_cli::mise_export::{MiseExportMode, export_mise};\n',
+                  'use zed_cli::mise_export::{MiseExportMode, export_mise};\nuse zed_cli::project_lock;\n',
+                  'project lock test import',
+              )
+              concurrency_test = '''
+          #[test]
+          fn public_write_waits_for_checkout_operation_lock() {
+              let temp = tempfile::tempdir().unwrap();
+              fs::write(temp.path().join("plan.json"), valid_plan_json()).unwrap();
+
+              let root = temp.path().to_path_buf();
+              let worker_root = root.clone();
+              let (started_tx, started_rx) = mpsc::channel();
+              let (done_tx, done_rx) = mpsc::channel();
+
+              let worker = project_lock::with_lock(&root, "hold exporter test lock", || {
+                  let worker = thread::spawn(move || {
+                      started_tx.send(()).unwrap();
+                      let result = export_mise(
+                          &worker_root,
+                          Path::new("plan.json"),
+                          Path::new("mise.toml"),
+                          MiseExportMode::Write,
+                      );
+                      done_tx.send(result.map(|report| report.output_sha256)).unwrap();
+                  });
+
+                  started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                  assert!(
+                      done_rx.recv_timeout(Duration::from_millis(250)).is_err(),
+                      "export completed while another thread owned the checkout operation lock"
+                  );
+                  Ok(worker)
+              })
+              .unwrap();
+
+              let output_sha = done_rx
+                  .recv_timeout(Duration::from_secs(10))
+                  .expect("export did not resume after checkout lock release")
+                  .expect("export failed after checkout lock release");
+              worker.join().unwrap();
+
+              assert_eq!(output_sha.len(), 64);
+              assert!(root.join("mise.toml").is_file());
+              assert!(root.join(".zed/mise-export-state.json").is_file());
+          }
+          '''
+              test = test.rstrip() + '\n' + concurrency_test
+          test_path.write_text(test, encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test --locked --test mise_export_api_boundaries
+          cargo test --locked mise_export
+          cargo test --locked project_lock
+          cargo test --locked --test mise_export_cli
+          cargo test --locked --test mise_export_reserved_paths_cli
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/main.rs src/lib.rs tests/mise_export_api_boundaries.rs
+          git commit -m 'fix(DEN-1462): serialize exporter writes and recovery'
+          git push origin HEAD:agent/den-1462-mise-export-current-main
