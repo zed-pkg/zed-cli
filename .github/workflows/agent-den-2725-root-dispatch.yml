@@ -8,37 +8,47 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: den-2725-root-dispatch-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   patch-and-verify:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Check out the exact implementation branch
+      - name: Check out the exact implementation commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: agent/den-2725-root-gitops-dispatch
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Install Rust formatting and lint components
         run: rustup component add rustfmt clippy
 
-      - name: Apply the reviewed dispatch implementation
+      - name: Apply the reviewed dispatch and package implementation
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/agent/den2725_fix_patch.py
           python3 .github/agent/den2725_root_dispatch_patch.py
           python3 .github/agent/den2725_clippy_fix.py
+          python3 .github/agent/den2725_package_fix.py
 
       - name: Format and verify the focused contract
         shell: bash
         run: |
           set -euo pipefail
           cargo fmt --all
+          bash scripts/validate-zed-package-graph.sh
           cargo test --locked --lib external_subcommands
           cargo test --locked --test external_gitops_dispatch
           cargo clippy --locked --all-targets -- -D warnings
+          cargo build --release --locked --bins
+          test -x target/release/zed
+          test -x target/release/zed-gitops
+          target/release/zed gitops validate --help >/dev/null
           git diff --check
 
       - name: Commit implementation and remove one-shot mechanics
@@ -49,6 +59,7 @@ jobs:
           rm .github/agent/den2725_root_dispatch_patch.py
           rm .github/agent/den2725_fix_patch.py
           rm .github/agent/den2725_clippy_fix.py
+          rm .github/agent/den2725_package_fix.py
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
