@@ -1,0 +1,79 @@
+# Dedicated flags-to-environment contract for the staged frozen tool-profile
+# CLI. Canonical `zed tool` routing must reuse these exact variable names.
+
+[parse]
+command_env = "ZED_TOOL_COMMAND"
+unknown_options_env = "ZED_TOOL_UNKNOWN_OPTIONS"
+errors_env = "ZED_TOOL_PARSE_ERRORS"
+allow_unknown = false
+
+[help]
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/tool-profile.md"
+
+[flags.lock]
+env = "ZED_TOOL_LOCK"
+aliases = ["lock"]
+type = "string"
+default = ".zed/environment.lock.toml"
+help = "Project-local EnvironmentLock TOML or JSON."
+
+[flags.json]
+env = "ZED_TOOL_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit one stable JSON document."
+
+[commands.verify]
+help = "Validate exact lock structure, portability, and optional plan identity."
+
+[commands.verify.flags.portable]
+env = "ZED_TOOL_PORTABLE"
+aliases = ["portable"]
+type = "bool"
+default = "false"
+help = "Require a machine-independent portable lock."
+
+[commands.verify.flags.plan_digest]
+env = "ZED_TOOL_PLAN_DIGEST"
+aliases = ["plan-digest"]
+type = "string"
+help = "Require one normalized EnvironmentPlan SHA-256."
+
+[commands.list]
+help = "List exact tool variants selected for one target."
+
+[commands.list.flags.target]
+env = "ZED_TOOL_TARGET"
+aliases = ["target"]
+type = "string"
+help = "Exact locked target identity."
+
+[commands.install]
+help = "Replay exact cached artifacts into a project-local executable profile."
+
+[commands.install.flags.target]
+env = "ZED_TOOL_TARGET"
+aliases = ["target"]
+type = "string"
+help = "Exact locked target identity."
+
+[commands.install.flags.offline]
+env = "ZED_TOOL_OFFLINE"
+aliases = ["offline"]
+type = "bool"
+default = "false"
+help = "Require cache-only installation; mandatory for this staged slice."
+
+[commands.install.flags.profile]
+env = "ZED_TOOL_PROFILE"
+aliases = ["profile"]
+type = "string"
+default = ".zed/tools"
+help = "Project-local tool profile root."
+
+[commands.install.flags.home]
+env = "ZED_PKG_HOME"
+aliases = ["home"]
+type = "string"
+help = "Zed content-addressed store and cache root."
