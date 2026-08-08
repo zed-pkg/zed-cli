@@ -36,6 +36,7 @@ pub mod release;
 pub mod store;
 pub mod task_runtime;
 pub mod terminal_context;
+pub mod tool_profile;
 pub mod transaction;
 pub mod update;
 pub mod vcs;
