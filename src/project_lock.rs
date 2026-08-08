@@ -9,7 +9,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use anyhow::{Context, Result};
 use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
@@ -61,12 +63,25 @@ impl Drop for HeldMarker {
 /// A nested same-thread acquisition carries only a depth marker because the
 /// outer guard already owns the descriptor lock. Independent threads and
 /// processes always contend through `zed-lock`.
+///
+/// Reentrancy bookkeeping is thread-local, so this guard is intentionally
+/// neither [`Send`] nor [`Sync`]. It must be dropped on the thread that acquired
+/// it; moving it would otherwise detach marker cleanup from the originating
+/// thread.
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<zed_cli::project_lock::OperationGuard>();
+/// ```
 #[must_use = "dropping the operation guard releases project mutation ownership"]
 pub struct OperationGuard {
     // Drop the thread-local marker before the descriptor lock. That keeps the
     // reentrancy view conservative for the entire lifetime of kernel ownership.
     _marker: HeldMarker,
     _guard: Option<LockGuard>,
+    // `Rc` is deliberately !Send + !Sync. The marker itself lives in a
+    // thread-local map and therefore cannot be cleaned up safely elsewhere.
+    _thread_affinity: PhantomData<Rc<()>>,
 }
 
 /// Canonical descriptor-lock identity for one checkout.
@@ -95,6 +110,7 @@ pub fn acquire(project: &Path, operation: &str) -> Result<OperationGuard> {
         return Ok(OperationGuard {
             _marker: HeldMarker::enter(path),
             _guard: None,
+            _thread_affinity: PhantomData,
         });
     }
 
@@ -113,6 +129,7 @@ pub fn acquire(project: &Path, operation: &str) -> Result<OperationGuard> {
     Ok(OperationGuard {
         _marker: HeldMarker::enter(path),
         _guard: Some(guard),
+        _thread_affinity: PhantomData,
     })
 }
 
