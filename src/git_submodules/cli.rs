@@ -111,7 +111,11 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
                     "no takeover source selected; pass `--git-submodules` or set ZED_PKG_GIT_SUBMODULES=1"
                 );
             }
-            let report = super::overtake(&cwd, &cfg)?;
+            let report = crate::project_lock::with_lock(
+                &cwd,
+                "adopt Git submodules into Zed package graph",
+                || super::overtake(&cwd, &cfg),
+            )?;
             println!(
                 "overtook {} Git submodule package(s) in {}",
                 report.adopted,
