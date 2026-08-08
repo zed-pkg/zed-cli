@@ -1,4 +1,4 @@
-# Re-run after synchronizing the current deterministic mise-export base.
+# Apply once against deterministic mise-export head e08910e86880fdc7f729daebec28b8f79c477508.
 name: materialize canonical Devbox and Flox routing
 
 on:
