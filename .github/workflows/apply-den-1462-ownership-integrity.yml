@@ -34,7 +34,7 @@ jobs:
           rustup toolchain install stable --profile minimal --component rustfmt,clippy
           rustup default stable
 
-      - name: Reject silent ownership transfer and state repair
+      - name: Reject silent ownership transfer, state repair, and reserved state input
         shell: bash
         run: |
           set -euo pipefail
@@ -100,6 +100,37 @@ jobs:
               raise SystemExit(f'expected one ownership block, found {text.count(old)}')
           text = text.replace(old, new, 1)
 
+          old_paths = '''    let plan_folded = plan_relative.to_ascii_lowercase();
+              let output_folded = output_relative.to_ascii_lowercase();
+              ensure!(
+                  output_folded != plan_folded,
+                  "mise output `{output_relative}` cannot overwrite its source environment plan"
+              );
+              ensure!(
+                  output_folded != EXPORT_STATE_PATH.to_ascii_lowercase(),
+                  "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
+              );
+          '''
+          new_paths = '''    let plan_folded = plan_relative.to_ascii_lowercase();
+              let output_folded = output_relative.to_ascii_lowercase();
+              let state_folded = EXPORT_STATE_PATH.to_ascii_lowercase();
+              ensure!(
+                  output_folded != plan_folded,
+                  "mise output `{output_relative}` cannot overwrite its source environment plan"
+              );
+              ensure!(
+                  plan_folded != state_folded,
+                  "environment plan cannot target reserved export state `{EXPORT_STATE_PATH}`"
+              );
+              ensure!(
+                  output_folded != state_folded,
+                  "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
+              );
+          '''
+          if text.count(old_paths) != 1:
+              raise SystemExit(f'expected one path relationship block, found {text.count(old_paths)}')
+          text = text.replace(old_paths, new_paths, 1)
+
           anchor = '''    #[test]
               fn hand_edits_and_unowned_outputs_are_never_overwritten() {
           '''
@@ -147,12 +178,116 @@ jobs:
           '''
           if text.count(anchor) != 1:
               raise SystemExit('could not locate ownership regression insertion point')
-          path.write_text(text.replace(anchor, regression + anchor, 1), encoding='utf-8')
+          text = text.replace(anchor, regression + anchor, 1)
+
+          path_anchor = '''    #[test]
+              fn export_paths_reject_parent_drive_unc_and_symlink_escape() {
+          '''
+          path_regression = '''    #[test]
+              fn reserved_export_state_cannot_be_used_as_plan_input() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let reserved = temp.path().join(EXPORT_STATE_PATH);
+                  fs::create_dir_all(reserved.parent().unwrap()).unwrap();
+                  fs::write(&reserved, serde_json::to_vec_pretty(&simple_plan()).unwrap()).unwrap();
+
+                  let error = export_mise(
+                      temp.path(),
+                      Path::new(EXPORT_STATE_PATH),
+                      Path::new("mise.toml"),
+                      MiseExportMode::Print,
+                  )
+                  .unwrap_err();
+                  assert!(
+                      error
+                          .to_string()
+                          .contains("environment plan cannot target reserved export state")
+                  );
+                  assert!(!temp.path().join("mise.toml").exists());
+              }
+
+          '''
+          if text.count(path_anchor) != 1:
+              raise SystemExit('could not locate reserved path regression insertion point')
+          text = text.replace(path_anchor, path_regression + path_anchor, 1)
+          path.write_text(text, encoding='utf-8')
+
+          cli_path = Path('tests/mise_export_reserved_paths_cli.rs')
+          cli = cli_path.read_text(encoding='utf-8')
+          test_anchor = '''#[test]
+          fn real_cli_refuses_source_state_and_transaction_staging_destinations() {
+          '''
+          helper = '''fn run_zed_with_plan(project: &Path, home: &Path, plan: &str, output: &str) -> Output {
+              let empty_path = home.join("empty-path");
+              fs::create_dir_all(&empty_path).unwrap();
+              let mut command = Command::new(zed_bin());
+              for (key, _) in std::env::vars_os() {
+                  if key.to_string_lossy().starts_with("ZED_PKG_") {
+                      command.env_remove(key);
+                  }
+              }
+              command
+                  .args([
+                      "env",
+                      "export",
+                      "mise",
+                      "--plan",
+                      plan,
+                      "--output",
+                      output,
+                      "--write",
+                  ])
+                  .current_dir(project)
+                  .env("HOME", home)
+                  .env("USERPROFILE", home)
+                  .env("XDG_CONFIG_HOME", home.join(".config"))
+                  .env("ZED_PKG_HOME", home.join(".zed-pkg"))
+                  .env("PATH", empty_path)
+                  .output()
+                  .unwrap()
+          }
+
+          '''
+          if cli.count(test_anchor) != 1:
+              raise SystemExit('could not locate real CLI reserved path test')
+          cli = cli.replace(test_anchor, helper + test_anchor, 1)
+
+          final_anchor = '''    assert_eq!(
+                  fs::read(project.join("zed-env.json")).unwrap(),
+                  original_plan
+              );
+          '''
+          source_case = '''    fs::create_dir_all(project.join(".zed")).unwrap();
+              fs::write(
+                  project.join(".zed/mise-export-state.json"),
+                  &original_plan,
+              )
+              .unwrap();
+              let reserved_source = run_zed_with_plan(
+                  &project,
+                  &home,
+                  ".zed/mise-export-state.json",
+                  "mise.toml",
+              );
+              assert!(!reserved_source.status.success());
+              let stderr = String::from_utf8_lossy(&reserved_source.stderr);
+              assert!(
+                  stderr.contains("environment plan cannot target reserved export state"),
+                  "unexpected reserved-source error: {stderr}"
+              );
+              assert!(!project.join("mise.toml").exists());
+              fs::remove_file(project.join(".zed/mise-export-state.json")).unwrap();
+              fs::remove_dir(project.join(".zed")).unwrap();
+
+          '''
+          if cli.count(final_anchor) != 1:
+              raise SystemExit('could not locate final reserved path assertions')
+          cli_path.write_text(cli.replace(final_anchor, source_case + final_anchor, 1), encoding='utf-8')
           PY
 
           cargo fmt --all
           git diff --check
           cargo test --locked mise_export::tests::ownership_cannot_transfer_or_repair_state_silently
+          cargo test --locked mise_export::tests::reserved_export_state_cannot_be_used_as_plan_input
           cargo test --locked mise_export
           cargo test --locked --test mise_export_cli
           cargo test --locked --test mise_export_reserved_paths_cli
@@ -160,6 +295,6 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/mise_export.rs
-          git commit -m 'fix(DEN-1462): preserve exporter ownership-state integrity'
+          git add src/mise_export.rs tests/mise_export_reserved_paths_cli.rs
+          git commit -m 'fix(DEN-1462): preserve exporter ownership and state boundaries'
           git push origin HEAD:agent/den-1462-mise-export-current-main
