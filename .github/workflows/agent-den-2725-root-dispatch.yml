@@ -1,0 +1,49 @@
+name: DEN-2725 root external dispatch
+
+on:
+  push:
+    branches:
+      - agent/den-2725-root-gitops-dispatch
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out the exact implementation branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-2725-root-gitops-dispatch
+          fetch-depth: 0
+
+      - name: Install Rust formatting and lint components
+        run: rustup component add rustfmt clippy
+
+      - name: Apply the reviewed dispatch implementation
+        run: python3 .github/agent/den2725_root_dispatch_patch.py
+
+      - name: Format and verify the focused contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo test --locked --lib external_subcommands
+          cargo test --locked --test external_gitops_dispatch
+          cargo clippy --locked --all-targets -- -D warnings
+          git diff --check
+
+      - name: Commit implementation and remove one-shot mechanics
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/agent-den-2725-root-dispatch.yml
+          rm .github/agent/den2725_root_dispatch_patch.py
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(DEN-2725): dispatch zed gitops through external commands'
+          git push origin HEAD:agent/den-2725-root-gitops-dispatch
