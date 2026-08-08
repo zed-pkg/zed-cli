@@ -177,6 +177,14 @@ fn replace_exe(exe: &Path, new_bytes: &[u8]) -> Result<()> {
         std::fs::rename(exe, &old)?;
     }
     std::fs::rename(&tmp, exe).with_context(|| format!("replacing {}", exe.display()))?;
+    #[cfg(windows)]
+    {
+        // A live Windows executable can keep the renamed image locked until
+        // process exit. Remove the backup whenever Windows permits it, while
+        // preserving the successful replacement if the live-image deletion is
+        // deferred by the operating system.
+        let _ = std::fs::remove_file(dir.join(".zed-update.old"));
+    }
     Ok(())
 }
 
