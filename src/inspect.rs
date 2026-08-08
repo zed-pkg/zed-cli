@@ -307,23 +307,24 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
         }
     }
 
-    if let Some(lockfile) = &lockfile {
-        if !lockfile.packages.is_empty() && !materialization_path.is_dir() {
-            diagnostics.push(Diagnostic {
-                code: "MATERIALIZATION_MISSING",
-                severity: Severity::Warning,
-                message: "The lockfile has packages but the materialization directory is absent."
-                    .to_string(),
-                detail: None,
-                location: location(&materialization_path),
-                actions: vec![install_action(
-                    root,
-                    true,
-                    "restore-frozen",
-                    "Restore locked packages",
-                )],
-            });
-        }
+    if let Some(lockfile) = &lockfile
+        && !lockfile.packages.is_empty()
+        && !materialization_path.is_dir()
+    {
+        diagnostics.push(Diagnostic {
+            code: "MATERIALIZATION_MISSING",
+            severity: Severity::Warning,
+            message: "The lockfile has packages but the materialization directory is absent."
+                .to_string(),
+            detail: None,
+            location: location(&materialization_path),
+            actions: vec![install_action(
+                root,
+                true,
+                "restore-frozen",
+                "Restore locked packages",
+            )],
+        });
     }
 
     let store_root = local_store_root();
