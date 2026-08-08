@@ -234,7 +234,15 @@ pub fn build_plan(
     })
 }
 
-pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<()> {
+/// Cross-check every native route against the native manifest in its target
+/// root, returning the routes that could not be checked and why.
+///
+/// A skip is returned rather than swallowed. "Nothing was verified" and
+/// "everything matched" must not look the same to a release operator, and the
+/// ecosystems below genuinely cannot be checked: their build definitions are
+/// executable code (Groovy, Kotlin, Elixir, Erlang), not data.
+pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<Vec<String>> {
+    let mut unchecked = Vec::new();
     for route in manifest.native_release_routes() {
         let target_root = project.join(&route.dir);
         match route.registry {
@@ -270,13 +278,33 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
                     &manifest.package.version,
                 )?;
             }
-            NativeRegistry::MavenCentral => {
-                validate_maven_manifest(
-                    &target_root.join("pom.xml"),
-                    &route.target,
-                    &route.package,
-                    &manifest.package.version,
-                )?;
+            NativeRegistry::MavenCentral | NativeRegistry::Clojars => {
+                let pom = target_root.join("pom.xml");
+                if pom.exists() {
+                    validate_maven_manifest(
+                        &pom,
+                        &route.target,
+                        &route.package,
+                        &manifest.package.version,
+                    )?;
+                } else if let Some(build) = jvm_build_file(&target_root) {
+                    // Gradle, sbt, Leiningen, and deps.edn hold coordinates in
+                    // executable build scripts, so there is nothing to parse
+                    // without running them. Demanding `pom.xml` instead would
+                    // reject the majority of modern JVM projects outright.
+                    unchecked.push(format!(
+                        "{} [{}]: {build} declares its coordinates in build code; \
+                         package identity and version are not cross-checked",
+                        route.target,
+                        route.registry.as_str()
+                    ));
+                } else {
+                    bail!(
+                        "native JVM target `{}` has no pom.xml or recognized build file in {}",
+                        route.target,
+                        target_root.display()
+                    );
+                }
             }
             NativeRegistry::RubyGems => {
                 validate_rubygems_manifest(
@@ -305,6 +333,29 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
             NativeRegistry::GoModules => {
                 validate_go_manifest(&target_root.join("go.mod"), &route.target, &route.package)?;
             }
+            NativeRegistry::Hex => {
+                let gleam = target_root.join("gleam.toml");
+                if gleam.exists() {
+                    validate_gleam_manifest(
+                        &gleam,
+                        &route.target,
+                        &route.package,
+                        &manifest.package.version,
+                    )?;
+                } else if let Some(build) = hex_build_file(&target_root) {
+                    unchecked.push(format!(
+                        "{} [hex]: {build} is executable code; package identity \
+                         and version are not cross-checked",
+                        route.target
+                    ));
+                } else {
+                    bail!(
+                        "native Hex target `{}` has no gleam.toml, mix.exs, or rebar.config in {}",
+                        route.target,
+                        target_root.display()
+                    );
+                }
+            }
             // Routes to the remaining hosts are planned and published, but
             // their native manifest is not yet cross-checked against the
             // route: each format needs its own parser (`.cabal`, `mix.exs`,
@@ -315,8 +366,73 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
             // catches an invalid package identity before this runs, and
             // `zed release publish` still refuses to overwrite a published
             // version with different content.
-            _ => {}
+            other => unchecked.push(format!(
+                "{} [{}]: no native-manifest parser yet; the route is planned \
+                 and published but its own manifest is not compared against it",
+                route.target,
+                other.as_str()
+            )),
         }
+    }
+    Ok(unchecked)
+}
+
+/// The JVM build file present in `root`, if any. Ordered so the most common
+/// build system is named first in diagnostics.
+fn jvm_build_file(root: &Path) -> Option<&'static str> {
+    [
+        "build.gradle.kts",
+        "build.gradle",
+        "build.sbt",
+        "project.clj",
+        "deps.edn",
+    ]
+    .into_iter()
+    .find(|name| root.join(name).exists())
+}
+
+/// The BEAM build file present in `root`, if any.
+fn hex_build_file(root: &Path) -> Option<&'static str> {
+    ["mix.exs", "rebar.config"]
+        .into_iter()
+        .find(|name| root.join(name).exists())
+}
+
+#[derive(Debug, Deserialize)]
+struct GleamPackageManifest {
+    name: String,
+    version: String,
+}
+
+/// Cross-check a `gleam.toml` against its route.
+///
+/// Gleam is the one Hex ecosystem whose manifest is data rather than code, so
+/// it is the one that can be checked. Names are snake_case on Hex, which is a
+/// different spelling from the zed package name — the route carries the Hex
+/// name and this compares against that, not against `[package] name`.
+fn validate_gleam_manifest(
+    path: &Path,
+    target: &str,
+    expected_name: &str,
+    expected_version: &str,
+) -> Result<()> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("native Hex target `{target}` has no {}", path.display()))?;
+    let parsed: GleamPackageManifest = toml::from_str(&text)
+        .with_context(|| format!("invalid gleam manifest {}", path.display()))?;
+    if parsed.name != expected_name {
+        bail!(
+            "native Hex target `{target}` declares package `{expected_name}`, but {} names `{}`",
+            path.display(),
+            parsed.name
+        );
+    }
+    if parsed.version != expected_version {
+        bail!(
+            "native Hex target `{target}` must use release-set version `{expected_version}`, but {} uses `{}`",
+            path.display(),
+            parsed.version
+        );
     }
     Ok(())
 }
@@ -811,12 +927,17 @@ pub fn render_human(plan: &ReleasePlan) -> String {
 
 pub fn plan(project: &Path, json: bool, channel: ReleaseChannel, iteration: u32) -> Result<()> {
     let manifest = read_manifest(project)?;
-    validate_native_manifests(project, &manifest)?;
+    let unchecked = validate_native_manifests(project, &manifest)?;
     let plan = build_plan(&manifest, channel, iteration)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&plan)?);
     } else {
         print!("{}", render_human(&plan));
+        // "Nothing was verified" and "everything matched" must not look the
+        // same to whoever is about to cut a release.
+        for note in &unchecked {
+            println!("unchecked {note}");
+        }
     }
     Ok(())
 }
@@ -840,7 +961,10 @@ pub fn publish(
     only_target: Option<&str>,
 ) -> Result<()> {
     let manifest = read_manifest(project)?;
-    validate_native_manifests(project, &manifest)?;
+    let unchecked = validate_native_manifests(project, &manifest)?;
+    for note in &unchecked {
+        println!("unchecked {note}");
+    }
     let plan = build_plan(&manifest, channel, iteration)?;
 
     let mut published = 0usize;
@@ -1134,6 +1258,143 @@ package = "acme.client"
         assert!(message.contains("cran"), "{message}");
         // The same manifest releases fine on the stable track.
         assert!(build_plan(&manifest, ReleaseChannel::Stable, 1).is_ok());
+    }
+
+    fn hex_manifest(package: &str) -> Manifest {
+        Manifest::parse(&format!(
+            r#"
+[package]
+org = "zed-pkg-test"
+name = "gleam-lib"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/zed-pkg-test/gleam-lib"
+
+[publish.native]
+registry = "hex"
+package = "{package}"
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_gleam_manifest_is_cross_checked_because_it_is_data() {
+        // Gleam is the one Hex ecosystem whose manifest is TOML rather than
+        // executable code, so it is the one that can actually be verified.
+        // Shape copied from the real `zed-pkg-test/gleam-lib` fixture.
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("gleam.toml"),
+            "name = \"zed_pkg_test_gleam_lib\"\nversion = \"1.0.0\"\nlicences = [\"MIT\"]\n",
+        )
+        .unwrap();
+
+        let unchecked =
+            validate_native_manifests(root.path(), &hex_manifest("zed_pkg_test_gleam_lib"))
+                .unwrap();
+        assert!(unchecked.is_empty(), "a gleam.toml route is fully checked");
+
+        // A route naming a different package must not publish under it.
+        let error = validate_native_manifests(root.path(), &hex_manifest("some_other_package"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("names `zed_pkg_test_gleam_lib`"), "{error}");
+    }
+
+    #[test]
+    fn a_gleam_version_that_drifts_from_the_release_set_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("gleam.toml"),
+            "name = \"zed_pkg_test_gleam_lib\"\nversion = \"0.9.0\"\n",
+        )
+        .unwrap();
+        let error = validate_native_manifests(root.path(), &hex_manifest("zed_pkg_test_gleam_lib"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("release-set version `1.0.0`"), "{error}");
+        assert!(error.contains("uses `0.9.0`"), "{error}");
+    }
+
+    #[test]
+    fn a_beam_build_script_is_reported_unchecked_rather_than_rejected() {
+        // `mix.exs` and `rebar.config` are executable code. Refusing the route
+        // would reject every Elixir and Erlang package; passing it silently
+        // would claim a check that never ran.
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("mix.exs"), "defmodule X do\nend\n").unwrap();
+        let unchecked =
+            validate_native_manifests(root.path(), &hex_manifest("anything_at_all")).unwrap();
+        assert_eq!(unchecked.len(), 1);
+        assert!(unchecked[0].contains("mix.exs"), "{}", unchecked[0]);
+        assert!(
+            unchecked[0].contains("not cross-checked"),
+            "{}",
+            unchecked[0]
+        );
+
+        // No build file at all is still an error: that is a broken route, not
+        // an unparseable one.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(validate_native_manifests(empty.path(), &hex_manifest("x")).is_err());
+    }
+
+    #[test]
+    fn a_gradle_jvm_target_publishes_instead_of_being_rejected_for_having_no_pom() {
+        // Requiring `pom.xml` rejected the majority of modern JVM projects
+        // outright — Gradle, sbt, Leiningen, and deps.edn all hold their
+        // coordinates in build code.
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "zedtest"
+name = "clients"
+version = "3.1.0"
+
+[package.repository]
+url = "https://github.com/zed-pkg-test/clients"
+
+[targets.java]
+dir = "clients/java"
+
+[targets.java.native]
+registry = "maven-central"
+package = "com.acme:client"
+"#,
+        )
+        .unwrap();
+
+        let root = tempfile::tempdir().unwrap();
+        let java = root.path().join("clients/java");
+        fs::create_dir_all(&java).unwrap();
+
+        // No build file at all: still a hard failure.
+        assert!(validate_native_manifests(root.path(), &manifest).is_err());
+
+        // Gradle: routable, and the gap is reported rather than hidden.
+        fs::write(java.join("build.gradle.kts"), "plugins { }\n").unwrap();
+        let unchecked = validate_native_manifests(root.path(), &manifest).unwrap();
+        assert_eq!(unchecked.len(), 1);
+        assert!(
+            unchecked[0].contains("build.gradle.kts"),
+            "{}",
+            unchecked[0]
+        );
+
+        // A pom.xml alongside it wins, and is checked properly.
+        fs::write(
+            java.join("pom.xml"),
+            "<project><groupId>com.acme</groupId><artifactId>client</artifactId>\
+             <version>3.1.0</version></project>",
+        )
+        .unwrap();
+        assert!(
+            validate_native_manifests(root.path(), &manifest)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
