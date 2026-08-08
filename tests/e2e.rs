@@ -291,18 +291,26 @@ fn publish_install_roundtrip_with_transitive_deps() {
 
     let demo_link = consumer.join(MODULES_DIR).join("acme").join("demo");
     let base_link = consumer.join(MODULES_DIR).join("acme").join("base");
+    let demo_metadata = fs::symlink_metadata(&demo_link).unwrap();
+    #[cfg(unix)]
+    assert!(demo_metadata.file_type().is_symlink());
+    #[cfg(not(unix))]
     assert!(
-        fs::symlink_metadata(&demo_link)
-            .unwrap()
-            .file_type()
-            .is_symlink()
+        !demo_metadata.file_type().is_symlink() && demo_link.is_dir(),
+        "non-Unix installs must normalize symlink mode to a project-owned directory"
     );
     assert!(base_link.join("src/base.txt").exists());
     let link_target = fs::canonicalize(&demo_link).unwrap();
     let store_root = fs::canonicalize(cfg.home.join("store")).unwrap();
+    #[cfg(unix)]
     assert!(
         link_target.starts_with(&store_root),
         "symlink must point into the global store"
+    );
+    #[cfg(not(unix))]
+    assert!(
+        !link_target.starts_with(&store_root),
+        "copy-mode materialization must remain project-owned"
     );
     assert!(demo_link.join("src/lib.txt").exists());
     assert!(!demo_link.join("README.md").exists());
@@ -1237,8 +1245,8 @@ fn bins_are_hoisted_and_runnable() {
     assert!(missing.to_string().contains("available: hello"));
 }
 
-/// [workspace] members resolve straight to their source directories, so
-/// edits are live and the registry is never consulted for them.
+/// Workspace members use live source links on Unix and project-owned snapshots
+/// where directory symlinks are unavailable; the registry is never consulted.
 #[test]
 fn workspace_members_link_from_source() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1291,9 +1299,37 @@ fn workspace_members_link_from_source() {
     let linked_lib = link.join("src/lib.txt");
     assert_eq!(fs::read_to_string(&linked_lib).unwrap(), "v1 of liba\n");
 
-    // Live editing: a change in the member source is visible immediately.
     fs::write(liba.join("src/lib.txt"), "v2 of liba\n").unwrap();
-    assert_eq!(fs::read_to_string(&linked_lib).unwrap(), "v2 of liba\n");
+    #[cfg(unix)]
+    assert_eq!(
+        fs::read_to_string(&linked_lib).unwrap(),
+        "v2 of liba\n",
+        "Unix workspace links must expose live source edits"
+    );
+    #[cfg(not(unix))]
+    {
+        assert_eq!(
+            fs::read_to_string(&linked_lib).unwrap(),
+            "v1 of liba\n",
+            "copy-mode workspace materialization must remain a stable snapshot"
+        );
+        ops::install(
+            &app,
+            &cfg,
+            false,
+            InstallMode::Symlink,
+            Adapter::None,
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&linked_lib).unwrap(),
+            "v2 of liba\n",
+            "reinstall must refresh the non-Unix workspace snapshot"
+        );
+    }
 
     // Workspace links are not pinned in the lockfile (no artifact exists).
     let lock = Lockfile::parse(&fs::read_to_string(app.join(LOCKFILE_FILE)).unwrap()).unwrap();
@@ -1992,29 +2028,34 @@ members = ["packages/*", "apps/*"]
     )
     .unwrap();
 
-    // The local member is path-linked to its source (live editing)...
     let util_link = web.join(MODULES_DIR).join("acme").join("util");
-    assert!(
-        fs::symlink_metadata(&util_link)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
+    let util_metadata = fs::symlink_metadata(&util_link).unwrap();
+    #[cfg(unix)]
+    assert!(util_metadata.file_type().is_symlink());
+    #[cfg(not(unix))]
+    assert!(!util_metadata.file_type().is_symlink() && util_link.is_dir());
     assert!(util_link.join("util.txt").exists());
+    #[cfg(unix)]
     assert_eq!(
         fs::canonicalize(&util_link).unwrap(),
         fs::canonicalize(&util).unwrap(),
         "local member must link to its source dir, not the store"
     );
+    #[cfg(not(unix))]
+    assert_ne!(
+        fs::canonicalize(&util_link).unwrap(),
+        fs::canonicalize(&util).unwrap(),
+        "non-Unix workspace dependencies must use project-owned copy mode"
+    );
 
-    // ...while the external dep resolves from the shared store.
     let ext_link = web.join(MODULES_DIR).join("acme").join("ext");
     assert!(ext_link.join("e.txt").exists());
-    assert!(
-        fs::canonicalize(&ext_link)
-            .unwrap()
-            .starts_with(fs::canonicalize(cfg.home.join("store")).unwrap())
-    );
+    let ext_materialized = fs::canonicalize(&ext_link).unwrap();
+    let store_root = fs::canonicalize(cfg.home.join("store")).unwrap();
+    #[cfg(unix)]
+    assert!(ext_materialized.starts_with(&store_root));
+    #[cfg(not(unix))]
+    assert!(!ext_materialized.starts_with(&store_root));
 
     // The lockfile pins the external dep but not the path-linked member.
     let lock = Lockfile::parse(&fs::read_to_string(web.join(LOCKFILE_FILE)).unwrap()).unwrap();

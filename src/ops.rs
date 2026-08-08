@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -2195,6 +2195,65 @@ fn project_modules_dir(project: &Path) -> String {
         .unwrap_or_else(|_| MODULES_DIR.to_string())
 }
 
+fn hoisted_bin_candidate(bin_dir: &Path, command: &str) -> Option<PathBuf> {
+    let exact = bin_dir.join(command);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    #[cfg(windows)]
+    for extension in ["exe", "cmd", "bat", "ps1"] {
+        let candidate = bin_dir.join(command).with_extension(extension);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn windows_shebang_command(path: &Path) -> Option<Command> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut prefix = [0_u8; 512];
+    let read = file.read(&mut prefix).ok()?;
+    let first_line = std::str::from_utf8(&prefix[..read]).ok()?.lines().next()?;
+    let shebang = first_line.strip_prefix("#!")?.trim();
+    let mut parts = shebang.split_whitespace();
+    let raw_interpreter = parts.next()?;
+    let raw_name = Path::new(raw_interpreter).file_name()?.to_string_lossy();
+    let interpreter = if raw_name.eq_ignore_ascii_case("env") {
+        parts.next()?.to_string()
+    } else {
+        raw_name.into_owned()
+    };
+    let mut command = Command::new(interpreter);
+    command.args(parts).arg(path);
+    Some(command)
+}
+
+#[cfg(windows)]
+fn command_for_hoisted_bin(path: &Path) -> Command {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("cmd" | "bat") => {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/S", "/C"]).arg(path);
+            command
+        }
+        Some("ps1") => {
+            let mut command = Command::new("powershell.exe");
+            command
+                .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
+                .arg(path);
+            command
+        }
+        _ => windows_shebang_command(path).unwrap_or_else(|| Command::new(path)),
+    }
+}
+
 /// `zed run <command>` — run a hoisted dependency binary (from
 /// `<install.dir>/.bin`, default `zed_modules/.bin`) or any command, with that
 /// directory prepended to PATH — npx-style, without polluting the OS PATH
@@ -2202,20 +2261,24 @@ fn project_modules_dir(project: &Path) -> String {
 pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
     let modules_dir = project_modules_dir(project);
     let bin_dir = project.join(&modules_dir).join(BIN_DIR);
-    let candidate = bin_dir.join(command);
+    let hoisted = hoisted_bin_candidate(&bin_dir, command);
     let mut paths: Vec<PathBuf> = vec![bin_dir.clone()];
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
     let new_path = std::env::join_paths(&paths).context("assembling PATH for zed run")?;
-    // Prefer an exact hoisted bin by absolute path; otherwise fall through to
-    // a normal PATH lookup (with .bin still prepended for the child's tools).
-    let program: &Path = if candidate.exists() {
-        &candidate
+    // Prefer a hoisted bin by absolute path; otherwise fall through to a
+    // normal PATH lookup (with .bin still prepended for the child's tools).
+    let program = hoisted.as_deref().unwrap_or_else(|| Path::new(command));
+    #[cfg(windows)]
+    let mut child = if hoisted.is_some() {
+        command_for_hoisted_bin(program)
     } else {
-        Path::new(command)
+        Command::new(program)
     };
-    let status = Command::new(program)
+    #[cfg(not(windows))]
+    let mut child = Command::new(program);
+    let status = child
         .args(args)
         .env("PATH", &new_path)
         .current_dir(project)
