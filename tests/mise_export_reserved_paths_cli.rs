@@ -51,6 +51,28 @@ fn run_zed(project: &Path, home: &Path, output: &str) -> Output {
     run_zed_with_plan(project, home, "zed-env.json", output)
 }
 
+fn remove_operation_rendezvous(project: &Path) {
+    let zed_dir = project.join(".zed");
+    let operation_lock = zed_dir.join("operation.lock");
+    let metadata = fs::symlink_metadata(&operation_lock)
+        .expect("CLI mutation attempts should retain the operation rendezvous");
+    assert!(metadata.is_file());
+    assert!(!metadata.file_type().is_symlink());
+
+    let unexpected = fs::read_dir(&zed_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .filter(|name| name != "operation.lock")
+        .collect::<Vec<_>>();
+    assert!(
+        unexpected.is_empty(),
+        "reserved-path rejection left native adapter state: {unexpected:?}"
+    );
+
+    fs::remove_file(operation_lock).unwrap();
+    fs::remove_dir(zed_dir).unwrap();
+}
+
 #[test]
 fn real_cli_refuses_source_state_and_transaction_staging_destinations() {
     let temp = tempfile::tempdir().unwrap();
@@ -94,7 +116,7 @@ fn real_cli_refuses_source_state_and_transaction_staging_destinations() {
     );
     assert!(!project.join("mise.toml").exists());
     fs::remove_file(project.join(".zed/mise-export-state.json")).unwrap();
-    fs::remove_dir(project.join(".zed")).unwrap();
+    remove_operation_rendezvous(&project);
 
     assert_eq!(
         fs::read(project.join("zed-env.json")).unwrap(),
