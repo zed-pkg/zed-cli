@@ -236,7 +236,10 @@ fn rollback_empty_profile_directories(directories: &[PathBuf]) -> Result<()> {
                     .is_some();
                 if !has_entries {
                     return Err(error).with_context(|| {
-                        format!("removing empty rollback directory `{}`", directory.display())
+                        format!(
+                            "removing empty rollback directory `{}`",
+                            directory.display()
+                        )
                     });
                 }
             }
