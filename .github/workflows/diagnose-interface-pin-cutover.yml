@@ -1,3 +1,4 @@
+# Trigger after the inventory workflow exists on the branch.
 name: inventory stale interface pins for zpkg.net cutover
 
 on:
