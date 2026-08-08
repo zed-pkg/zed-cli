@@ -1,0 +1,93 @@
+name: apply DEN-1462 startup recovery lock
+
+on:
+  push:
+    branches:
+      - agent/den-1462-mise-export-current-main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1462-startup-recovery-lock
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Check out exporter branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1462-mise-export-current-main
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Serialize startup recovery under the checkout operation lock
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/main.rs')
+          text = path.read_text(encoding='utf-8')
+          if 'use zed_cli::project_lock;\n' not in text:
+              anchor = 'use zed_cli::preflight;\n'
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'expected one project-lock import anchor, found {text.count(anchor)}')
+              text = text.replace(anchor, anchor + 'use zed_cli::project_lock;\n', 1)
+
+          old = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+              // Recovery writes into the project and must be serialized against
+              // every installer sharing the checkout.
+              let store = Store::new(&cfg.home);
+              let _recovery_lock = store.install_lock()?;
+              zed_cli::transaction::recover_pending(&cwd)?;
+          }
+          '''
+          new = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
+              // Recovery writes into the project and must be serialized against
+              // every operation sharing the checkout. Preserve project-lock ->
+              // store-lock ordering to avoid lock inversion with installers.
+              project_lock::with_lock(&cwd, "recover pending project transactions", || {
+                  let store = Store::new(&cfg.home);
+                  let _recovery_lock = store.install_lock()?;
+                  zed_cli::transaction::recover_pending(&cwd)?;
+                  Ok(())
+              })?;
+          }
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('could not locate startup recovery block')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test --locked --test mise_export_api_boundaries
+          cargo test --locked mise_export
+          cargo test --locked project_lock
+          cargo test --locked --test mise_export_cli
+          cargo test --locked --test mise_export_reserved_paths_cli
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/main.rs src/lib.rs tests/mise_export_api_boundaries.rs
+          git commit -m 'fix(DEN-1462): serialize exporter writes and recovery'
+          git push origin HEAD:agent/den-1462-mise-export-current-main
