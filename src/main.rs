@@ -4,7 +4,7 @@ use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
-    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
+    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
 };
 use zed_cli::completion;
 use zed_cli::config::Config;
@@ -22,6 +22,7 @@ use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
 use zed_cli::store::Store;
+use zed_cli::task_cli::{self, TaskAction};
 use zed_cli::update;
 
 fn main() {
@@ -92,7 +93,17 @@ fn main() {
             }
         }
     }
-    if let Some(result) = dev::dispatch(args) {
+    if let Some(result) = dev::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = zed_cli::external_subcommands::dispatch(args) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -273,6 +284,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
         },
+        Cmd::Task { plan, json, cmd } => {
+            let action = match cmd {
+                TaskCmd::List { all } => TaskAction::List { all },
+                TaskCmd::Info { task } => TaskAction::Info { task },
+                TaskCmd::Graph { task } => TaskAction::Graph { task },
+                TaskCmd::Run {
+                    task,
+                    dry_run,
+                    yes,
+                    jobs,
+                    no_cache,
+                    args,
+                } => TaskAction::Run {
+                    task,
+                    dry_run,
+                    yes,
+                    jobs,
+                    no_cache,
+                    args,
+                },
+            };
+            task_cli::execute(&cwd, plan.as_deref(), json, action)
+        }
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

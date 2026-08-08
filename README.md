@@ -122,6 +122,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |
 | `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |
 | `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |
+| `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
@@ -349,7 +350,7 @@ actual CLI never drift, so it is always authoritative:
 
 | Flag | Env var | Default |
 | --- | --- | --- |
-| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.tech` |
+| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |

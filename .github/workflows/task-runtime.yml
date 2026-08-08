@@ -3,21 +3,33 @@ name: native task runtime
 on:
   pull_request:
     paths:
+      - .cli-flags.toml
       - .task-cli-flags.toml
+      - README.md
       - docs/task-runtime.md
+      - src/cli.rs
+      - src/main.rs
+      - src/task_cli.rs
       - src/task_runtime.rs
       - src/bin/zed-task.rs
       - src/lib.rs
+      - tests/task_main_cli.rs
       - tests/task_runtime_cli.rs
       - .github/workflows/task-runtime.yml
   push:
     branches: [main]
     paths:
+      - .cli-flags.toml
       - .task-cli-flags.toml
+      - README.md
       - docs/task-runtime.md
+      - src/cli.rs
+      - src/main.rs
+      - src/task_cli.rs
       - src/task_runtime.rs
       - src/bin/zed-task.rs
       - src/lib.rs
+      - tests/task_main_cli.rs
       - tests/task_runtime_cli.rs
       - .github/workflows/task-runtime.yml
   workflow_dispatch:
@@ -58,14 +70,13 @@ jobs:
           rustc --version --verbose
           cargo --version --verbose
 
-      - name: Validate flags-2-env contract
+      - name: Validate shared flags-to-environment contract
         run: |
           set -euo pipefail
           python - <<'PY'
           import tomllib
           from pathlib import Path
 
-          contract = tomllib.loads(Path('.task-cli-flags.toml').read_text())
           expected = {
               'ZED_TASK_PLAN',
               'ZED_TASK_JSON',
@@ -75,13 +86,28 @@ jobs:
               'ZED_TASK_JOBS',
               'ZED_TASK_NO_CACHE',
           }
-          observed = set()
-          for flag in contract.get('flags', {}).values():
-              observed.add(flag['env'])
-          for command in contract.get('commands', {}).values():
+
+          staged = tomllib.loads(Path('.task-cli-flags.toml').read_text())
+          staged_env = set()
+          for flag in staged.get('flags', {}).values():
+              staged_env.add(flag['env'])
+          for command in staged.get('commands', {}).values():
               for flag in command.get('flags', {}).values():
-                  observed.add(flag['env'])
-          assert observed == expected, (observed, expected)
+                  staged_env.add(flag['env'])
+          assert staged_env == expected, (staged_env, expected)
+
+          main = tomllib.loads(Path('.cli-flags.toml').read_text())
+          task = main['commands']['task']
+          main_env = {
+              task['flags']['plan']['env'],
+              task['flags']['json']['env'],
+              task['commands']['list']['flags']['all']['env'],
+              task['commands']['run']['flags']['dry_run']['env'],
+              task['commands']['run']['flags']['yes']['env'],
+              task['commands']['run']['flags']['jobs']['env'],
+              task['commands']['run']['flags']['no_cache']['env'],
+          }
+          assert main_env == expected, (main_env, expected)
           PY
 
       - name: Formatting and focused tests
@@ -89,7 +115,11 @@ jobs:
           set -euo pipefail
           cargo fmt --all --check
           cargo test --locked --lib task_runtime::tests
+          cargo test --locked --lib task_cli::tests
           cargo test --locked --test task_runtime_cli
+          cargo test --locked --test task_main_cli
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked cli::tests::readme_documents_every_command
 
       - name: Current-main compatibility tests
         run: |
@@ -102,14 +132,17 @@ jobs:
       - name: Strict Clippy
         run: |
           set -euo pipefail
-          cargo clippy --locked --bin zed-task --test task_runtime_cli -- -D warnings
+          cargo clippy --locked --bin zed --bin zed-task \
+            --test task_runtime_cli --test task_main_cli -- -D warnings
 
-      - name: Repeated deterministic dry-run canary
+      - name: Repeated deterministic parity canary
         run: |
           set -euo pipefail
-          cargo build --locked --bin zed-task
+          cargo build --locked --bin zed --bin zed-task
+          zed_bin="$GITHUB_WORKSPACE/target/debug/zed"
           task_bin="$GITHUB_WORKSPACE/target/debug/zed-task"
           if [[ "$RUNNER_OS" == "Windows" ]]; then
+            zed_bin="${zed_bin}.exe"
             task_bin="${task_bin}.exe"
           fi
           work="$RUNNER_TEMP/zed-task-determinism"
@@ -126,9 +159,13 @@ jobs:
           TOML
           (
             cd "$work"
-            "$task_bin" --json run build --dry-run > first.json
-            "$task_bin" --json run build --dry-run > second.json
-            cmp first.json second.json
+            "$zed_bin" task --json run build --dry-run > main-first.json 2> main-first.err
+            "$zed_bin" task --json run build --dry-run > main-second.json 2> main-second.err
+            "$task_bin" --json run build --dry-run > staged.json 2> staged.err
+            cmp main-first.json main-second.json
+            cmp main-first.err main-second.err
+            cmp main-first.json staged.json
+            cmp main-first.err staged.err
           )
 
       - name: Require a clean checkout

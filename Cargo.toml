@@ -22,7 +22,7 @@ name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "d1bf8ef7c88a75292cbe8d697bfd269f30d62e2b" }
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "a0dc78d385bc3ab553d3027b427f5f1428239c9c" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -43,5 +43,5 @@ toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 fs2 = "0.4.3"
-flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7" }
+flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "8c8465561075a8d7ebb58074b3a8087138e97d8f" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
