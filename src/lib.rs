@@ -36,7 +36,9 @@ pub mod mise_export {
     /// Render, verify, or write one project-local mise projection.
     ///
     /// The ownership sidecar is never accepted as an input plan, including
-    /// through portable case aliases or an in-project symlink.
+    /// through portable case aliases or an in-project symlink. Mutating writes
+    /// are serialized with every other checkout operation so transaction
+    /// recovery cannot observe another writer's active staging directory.
     pub fn export_mise(
         cwd: &Path,
         plan_arg: &Path,
@@ -44,6 +46,11 @@ pub mod mise_export {
         mode: MiseExportMode,
     ) -> Result<MiseExportReport> {
         reject_reserved_state_plan(cwd, plan_arg)?;
+        if mode == MiseExportMode::Write {
+            return super::project_lock::with_lock(cwd, "export mise environment", || {
+                super::mise_export_impl::export_mise(cwd, plan_arg, output_arg, mode)
+            });
+        }
         super::mise_export_impl::export_mise(cwd, plan_arg, output_arg, mode)
     }
 
