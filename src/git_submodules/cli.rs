@@ -1,5 +1,6 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -90,6 +91,19 @@ fn print_root_help() -> Result<()> {
     Ok(())
 }
 
+/// Resolve the authority root before acquiring checkout-local mutation
+/// ownership. `overtake` supports invocation below the superproject, so locking
+/// the raw current directory would create a second `.zed/operation.lock` and
+/// allow a root-level lifecycle command to mutate the same checkout concurrently.
+fn takeover_project_root(requested: &Path) -> Result<PathBuf> {
+    super::find_root(requested).with_context(|| {
+        format!(
+            "`zed overtake --git-submodules` requires .gitmodules at or above {}",
+            requested.display()
+        )
+    })
+}
+
 fn run_cli(args: Vec<OsString>) -> Result<i32> {
     crate::flags::normalize_global_boolean_environment(&args)?;
     let cli = match OvertakeCli::try_parse_from(args) {
@@ -111,7 +125,19 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
                     "no takeover source selected; pass `--git-submodules` or set ZED_PKG_GIT_SUBMODULES=1"
                 );
             }
-            let report = super::overtake(&cwd, &cfg)?;
+            let project = takeover_project_root(&cwd)?;
+            let report = crate::project_lock::with_lock(
+                &project,
+                "adopt Git submodules into Zed package graph",
+                || {
+                    // Modular takeover dispatch bypasses the ordinary `run`
+                    // entrypoint. Recover under the already-owned project lock
+                    // before reading `.gitmodules` or executing Git transport,
+                    // not only later when the first transaction begins.
+                    crate::transaction::recover_pending(&project)?;
+                    super::overtake(&project, &cfg)
+                },
+            )?;
             println!(
                 "overtook {} Git submodule package(s) in {}",
                 report.adopted,
@@ -198,9 +224,12 @@ fn global_option_takes_value(token: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use anyhow::Result;
     use clap::Parser;
 
-    use super::OvertakeCli;
+    use super::{OvertakeCli, takeover_project_root};
 
     #[test]
     fn takeover_accepts_the_global_switch_before_and_after_the_command() {
@@ -215,5 +244,20 @@ mod tests {
         let cli =
             OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
         assert!(!cli.globals.git_submodules);
+    }
+
+    #[test]
+    fn nested_takeover_uses_the_superproject_operation_lock() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join(".gitmodules"), b"")?;
+        let nested = root.path().join("packages/client/src");
+        fs::create_dir_all(&nested)?;
+
+        let selected = takeover_project_root(&nested)?;
+        assert_eq!(
+            crate::project_lock::operation_lock_path(&selected)?,
+            crate::project_lock::operation_lock_path(root.path())?
+        );
+        Ok(())
     }
 }
