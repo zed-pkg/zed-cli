@@ -969,7 +969,12 @@ pub fn publish(
 
     let mut published = 0usize;
     let mut selected = 0usize;
+    // Two different things were being conflated. `skipped` is by design — a
+    // host that publishes by VCS tag was never going to upload. `failed` is a
+    // route that should have published and did not. Reporting both as "skip"
+    // and returning Ok made a broken release exit 0.
     let mut skipped: Vec<String> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
 
     for artifact in &plan.native {
         if only_target.is_some_and(|target| target != artifact.target) {
@@ -984,6 +989,8 @@ pub fn publish(
             );
         }
         let credential = native_host_client::credential_for(host);
+        // Four Basic-auth hosts take an account name alongside the token.
+        let username = native_host_client::username_for(host);
         let payload = native_artifact_path(project, artifact);
 
         // A multi-request publish has no single request to preview: step 2's
@@ -1010,7 +1017,7 @@ pub fn publish(
                 continue;
             }
             if !payload.exists() {
-                skipped.push(format!(
+                failed.push(format!(
                     "{} [{host}]: no built artifact at {}",
                     artifact.target,
                     payload.display()
@@ -1025,6 +1032,7 @@ pub fn publish(
                 &artifact.package,
                 &payload,
                 credential.as_deref(),
+                username.as_deref(),
                 &mut send,
             ) {
                 Ok(steps) => {
@@ -1034,7 +1042,7 @@ pub fn publish(
                     published += 1;
                 }
                 Err(error) => {
-                    skipped.push(format!("{} [{host}]: {error:#}", artifact.target));
+                    failed.push(format!("{} [{host}]: {error:#}", artifact.target));
                 }
             }
             continue;
@@ -1045,6 +1053,7 @@ pub fn publish(
             &artifact.package,
             &payload,
             credential.as_deref(),
+            username.as_deref(),
         ) {
             Ok(request) => request,
             // `publish_request` knows the channel but not the tag template,
@@ -1060,8 +1069,15 @@ pub fn publish(
                 ));
                 continue;
             }
+            Err(NativeHostClientError::ReadOnly { host }) => {
+                skipped.push(format!(
+                    "{} [{host}]: accepts no uploads; it mirrors another registry",
+                    artifact.target
+                ));
+                continue;
+            }
             Err(error) => {
-                skipped.push(format!("{} [{}]: {error}", artifact.target, host));
+                failed.push(format!("{} [{}]: {error}", artifact.target, host));
                 continue;
             }
         };
@@ -1070,7 +1086,7 @@ pub fn publish(
             continue;
         }
         if !payload.exists() {
-            skipped.push(format!(
+            failed.push(format!(
                 "{} [{}]: no built artifact at {}",
                 artifact.target,
                 host,
@@ -1086,6 +1102,7 @@ pub fn publish(
             &artifact.package,
             &payload,
             credential.as_deref(),
+            username.as_deref(),
             &mut send,
         )
         .with_context(|| format!("publish {} to {host}", artifact.package))?;
@@ -1098,6 +1115,9 @@ pub fn publish(
     for note in &skipped {
         println!("skip  {note}");
     }
+    for note in &failed {
+        eprintln!("FAIL  {note}");
+    }
     if dry_run {
         // Count what was selected, not what the manifest declares: with
         // `--target` those differ, and reporting the larger number reads as
@@ -1105,8 +1125,17 @@ pub fn publish(
         println!("\ndry run: {selected} route(s) planned, nothing sent");
     } else {
         println!(
-            "\npublished {published} route(s), skipped {}",
-            skipped.len()
+            "\npublished {published} route(s), skipped {}, failed {}",
+            skipped.len(),
+            failed.len()
+        );
+    }
+    // A release that reached eight of nine registries is not a success, and a
+    // CI job has no way to tell unless the exit code says so.
+    if !failed.is_empty() {
+        bail!(
+            "{} native route(s) failed to publish; see the FAIL lines above",
+            failed.len()
         );
     }
     Ok(())

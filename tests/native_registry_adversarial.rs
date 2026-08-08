@@ -368,6 +368,7 @@ fn pub_dev_takes_three_steps_and_never_shows_storage_the_token() {
         "acme_client",
         std::path::Path::new("acme.tar.gz"),
         Some("pub-secret"),
+        None,
         &mut send,
     )
     .expect("a scripted happy path publishes");
@@ -407,6 +408,7 @@ fn pub_dev_stops_with_a_named_reason_when_the_grant_is_malformed() {
         "acme_client",
         std::path::Path::new("acme.tar.gz"),
         Some("pub-secret"),
+        None,
         &mut send,
     )
     .expect_err("a grant with no url cannot be uploaded to");
@@ -432,6 +434,7 @@ fn pub_dev_without_a_finalize_location_does_not_claim_success() {
         "acme_client",
         std::path::Path::new("acme.tar.gz"),
         Some("pub-secret"),
+        None,
         &mut send,
     )
     .expect_err("no Location means nothing was finalized");
@@ -454,6 +457,7 @@ fn maven_portal_polls_until_the_deployment_settles() {
         "com.acme:client",
         std::path::Path::new("bundle.zip"),
         Some("portal-secret"),
+        Some("portal-account"),
         // Drive the state machine, not the clock.
         PublishPacing {
             poll_interval: std::time::Duration::ZERO,
@@ -497,6 +501,7 @@ fn maven_portal_reports_a_rejected_deployment_as_a_failure() {
         "com.acme:client",
         std::path::Path::new("bundle.zip"),
         Some("portal-secret"),
+        Some("portal-account"),
         &mut send,
     )
     .expect_err("a FAILED deployment is not a publish");
@@ -512,6 +517,7 @@ fn a_missing_credential_stops_a_multi_step_publish_before_the_first_request() {
             &route(host),
             "acme",
             std::path::Path::new("a.tar.gz"),
+            None,
             None,
             &mut send,
         )
@@ -534,6 +540,7 @@ fn a_single_step_host_still_reports_one_step() {
         "@acme/client",
         std::path::Path::new("acme.tgz"),
         Some("npm-secret"),
+        None,
         &mut send,
     )
     .expect("npm publishes in one request");
@@ -544,4 +551,31 @@ fn a_single_step_host_still_reports_one_step() {
             .starts_with("PUT https://registry.npmjs.org/")
     );
     assert_eq!(log.borrow().len(), 1);
+}
+
+#[test]
+fn maven_portal_does_not_call_validated_a_publish() {
+    // Under USER_MANAGED publishing, VALIDATED means "waiting for a human to
+    // press publish". Treating it as success is the exact false success the
+    // poll loop exists to prevent — and it did, until this test.
+    let (mut send, _log) = recorder(vec![
+        reply(201, "deploy-789", None),
+        reply(200, r#"{"deploymentState":"VALIDATED"}"#, None),
+    ]);
+    let error = publish_sequence_paced(
+        &route(NativeHost::MavenCentral),
+        "com.acme:client",
+        std::path::Path::new("bundle.zip"),
+        Some("portal-secret"),
+        Some("portal-account"),
+        PublishPacing {
+            poll_interval: std::time::Duration::ZERO,
+            ..PublishPacing::default()
+        },
+        &mut send,
+    )
+    .expect_err("VALIDATED is not published");
+    let message = format!("{error:#}");
+    assert!(message.contains("VALIDATED"), "{message}");
+    assert!(message.contains("USER_MANAGED"), "{message}");
 }

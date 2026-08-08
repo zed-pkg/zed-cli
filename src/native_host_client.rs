@@ -124,6 +124,15 @@ pub enum RequestBody {
         path: PathBuf,
         metadata: String,
     },
+    /// npm's publish document, whose `_attachments` map carries the tarball
+    /// **base64-encoded inside the JSON**. The bytes are read at send time so
+    /// request construction stays pure and testable.
+    NpmEnvelope {
+        path: PathBuf,
+        package: String,
+        version: String,
+        dist_tag: String,
+    },
 }
 
 /// One fully-described HTTP call that has not been made yet.
@@ -207,6 +216,17 @@ impl RegistryRequest {
                     metadata.len()
                 ));
             }
+            RequestBody::NpmEnvelope {
+                path,
+                version,
+                dist_tag,
+                ..
+            } => {
+                out.push_str(&format!(
+                    "\n  body: npm envelope, {} base64-attached as {version} (tag {dist_tag})",
+                    path.display()
+                ));
+            }
         }
         out
     }
@@ -275,6 +295,11 @@ pub enum NativeHostClientError {
         host: NativeHost,
         env: Vec<&'static str>,
     },
+    /// A Basic-auth host whose username is an account name, not a fixed token.
+    MissingUsername {
+        host: NativeHost,
+        env: Vec<&'static str>,
+    },
     NoPublishEndpoint {
         host: NativeHost,
     },
@@ -304,6 +329,11 @@ impl fmt::Display for NativeHostClientError {
             Self::MissingCredential { host, env } => {
                 write!(f, "`{host}` needs a credential; set {}", env.join(" or "))
             }
+            Self::MissingUsername { host, env } => write!(
+                f,
+                "`{host}` authenticates with an account name as well as a token; set {}",
+                env.join(" or ")
+            ),
             Self::NoPublishEndpoint { host } => {
                 write!(f, "`{host}` has no publish endpoint configured")
             }
@@ -347,6 +377,33 @@ pub fn credential_env_vars(host: NativeHost) -> &'static [&'static str] {
     }
 }
 
+/// Environment variables a host's Basic-auth **username** is read from.
+///
+/// PyPI mandates the literal `__token__` and needs no variable. The rest are
+/// real account names, and sending an empty one produces `Basic base64(":pw")`
+/// — which every one of these answers with 401.
+pub fn credential_username_env_vars(host: NativeHost) -> &'static [&'static str] {
+    match host {
+        NativeHost::Clojars => &["ZED_CLOJARS_USERNAME", "CLOJARS_USERNAME"],
+        NativeHost::MavenCentral => &["ZED_MAVEN_USERNAME", "MAVEN_USERNAME"],
+        NativeHost::Hackage => &["ZED_HACKAGE_USERNAME", "HACKAGE_USERNAME"],
+        NativeHost::Cpan => &["ZED_PAUSE_USER", "PAUSE_USER"],
+        _ => &[],
+    }
+}
+
+/// Read a host's Basic-auth username: the fixed one where a host mandates it,
+/// else the environment.
+pub fn username_for(host: NativeHost) -> Option<String> {
+    if let Some(fixed) = host.basic_auth_username() {
+        return Some(fixed.to_string());
+    }
+    credential_username_env_vars(host)
+        .iter()
+        .find_map(|name| std::env::var(name).ok())
+        .filter(|value| !value.trim().is_empty())
+}
+
 /// Read a host's credential from the environment.
 pub fn credential_for(host: NativeHost) -> Option<String> {
     credential_env_vars(host)
@@ -356,7 +413,12 @@ pub fn credential_for(host: NativeHost) -> Option<String> {
 }
 
 /// Attach a host's auth scheme to a request.
-fn authenticate(request: RegistryRequest, host: NativeHost, credential: &str) -> RegistryRequest {
+fn authenticate(
+    request: RegistryRequest,
+    host: NativeHost,
+    credential: &str,
+    username: Option<&str>,
+) -> RegistryRequest {
     match host.publish_auth() {
         RegistryAuth::Bearer => request.header(
             "Authorization",
@@ -368,7 +430,9 @@ fn authenticate(request: RegistryRequest, host: NativeHost, credential: &str) ->
             request.header("Authorization", HeaderValue::Secret(credential.to_string()))
         }
         RegistryAuth::Basic => {
-            let username = host.basic_auth_username().unwrap_or("");
+            // Resolved by the caller, which errors when a host needs a
+            // username and none is configured.
+            let username = username.unwrap_or_default();
             request.header(
                 "Authorization",
                 HeaderValue::Secret(format!(
@@ -714,6 +778,7 @@ pub fn publish_request(
     package: &str,
     artifact: &Path,
     credential: Option<&str>,
+    username: Option<&str>,
 ) -> Result<RegistryRequest, NativeHostClientError> {
     use RegistryProtocol as P;
     let host = route.host;
@@ -733,6 +798,23 @@ pub fn publish_request(
     // load-bearing: `https://upload.pypi.org/legacy` (no slash) 404s.
     let publish_base = publish_endpoint.trim_end_matches('/');
 
+    // A Basic-auth host that takes a real account name must have one. Sending
+    // `Basic base64(":<password>")` is a guaranteed 401, and discovering that
+    // after the artifact is built wastes a release run.
+    // Precedence matters: a host that *mandates* a username wins over anything
+    // the caller supplies. PyPI's `__token__` is not a default to override —
+    // it is the protocol, and an account name there 403s.
+    let username = host
+        .basic_auth_username()
+        .map(str::to_string)
+        .or_else(|| username.map(str::to_string))
+        .or_else(|| username_for(host));
+    if host.publish_auth() == RegistryAuth::Basic && username.is_none() {
+        return Err(NativeHostClientError::MissingUsername {
+            host,
+            env: credential_username_env_vars(host).to_vec(),
+        });
+    }
     let needs_credential = !matches!(
         host.publish_auth(),
         RegistryAuth::None | RegistryAuth::VcsCredential
@@ -759,11 +841,15 @@ pub fn publish_request(
                     "Content-Type",
                     HeaderValue::Literal("application/json".to_string()),
                 )
-                .body(RequestBody::Json(npm_publish_envelope(
-                    package,
-                    version,
-                    route.dist_tag.as_deref().unwrap_or("latest"),
-                )))
+                .body(RequestBody::NpmEnvelope {
+                    path: artifact.to_path_buf(),
+                    package: package.to_string(),
+                    version: version.clone(),
+                    dist_tag: route
+                        .dist_tag
+                        .clone()
+                        .unwrap_or_else(|| "latest".to_string()),
+                })
         }
         P::CargoSparse => RegistryRequest::new(Method::Put, format!("{publish_base}/crates/new"))
             .body(RequestBody::CargoFramed {
@@ -904,7 +990,7 @@ pub fn publish_request(
         }
     };
 
-    Ok(authenticate(request, host, credential))
+    Ok(authenticate(request, host, credential, username.as_deref()))
 }
 
 /// Parse the version list out of an index response.
@@ -1236,6 +1322,16 @@ pub fn execute_detailed(
                 .with_context(|| format!("attach artifact {}", path.display()))?;
             builder.multipart(form)
         }
+        RequestBody::NpmEnvelope {
+            path,
+            package,
+            version,
+            dist_tag,
+        } => {
+            let tarball =
+                std::fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
+            builder.body(npm_publish_envelope(package, version, dist_tag, &tarball))
+        }
         RequestBody::CargoFramed { path, metadata } => {
             let crate_bytes =
                 std::fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
@@ -1315,6 +1411,7 @@ pub fn publish_sequence(
     package: &str,
     artifact: &Path,
     credential: Option<&str>,
+    username: Option<&str>,
     send: &mut dyn FnMut(&RegistryRequest) -> Result<RegistryResponse>,
 ) -> Result<Vec<PublishStep>> {
     publish_sequence_paced(
@@ -1322,6 +1419,7 @@ pub fn publish_sequence(
         package,
         artifact,
         credential,
+        username,
         PublishPacing::default(),
         send,
     )
@@ -1354,6 +1452,7 @@ pub fn publish_sequence_paced(
     package: &str,
     artifact: &Path,
     credential: Option<&str>,
+    username: Option<&str>,
     pacing: PublishPacing,
     send: &mut dyn FnMut(&RegistryRequest) -> Result<RegistryResponse>,
 ) -> Result<Vec<PublishStep>> {
@@ -1363,7 +1462,7 @@ pub fn publish_sequence_paced(
             publish_maven_portal(route, artifact, credential, pacing, send)
         }
         _ => {
-            let request = publish_request(route, package, artifact, credential)?;
+            let request = publish_request(route, package, artifact, credential, username)?;
             let response = send(&request)?;
             Ok(vec![PublishStep {
                 description: format!("{} {}", request.method.as_str(), request.display_url()),
@@ -1545,8 +1644,18 @@ fn publish_maven_portal(
         if TERMINAL_FAILURES.contains(&state.as_str()) {
             anyhow::bail!("Maven Central Portal deployment {deployment} ended in {state}");
         }
-        if state == "PUBLISHED" || state == "VALIDATED" {
+        // Only PUBLISHED is a publish. Under `USER_MANAGED` publishing,
+        // VALIDATED means "waiting for a human to press publish" — reporting
+        // it as success is exactly the false success this function exists to
+        // prevent.
+        if state == "PUBLISHED" {
             return Ok(steps);
+        }
+        if state == "VALIDATED" {
+            anyhow::bail!(
+                "Maven Central Portal deployment {deployment} is VALIDATED but not published; \
+                 this portal account uses USER_MANAGED publishing, so a human must release it"
+            );
         }
         if attempt < pacing.poll_attempts {
             std::thread::sleep(pacing.poll_interval);
@@ -1568,13 +1677,39 @@ fn leak_static(value: String) -> &'static str {
     Box::leak(value.into_boxed_str())
 }
 
-/// The npm publish envelope, minus the tarball attachment the caller adds.
-fn npm_publish_envelope(package: &str, version: &str, dist_tag: &str) -> String {
+/// npm's publish document, with the tarball base64-encoded into
+/// `_attachments` — that map *is* how npm receives package bytes; a body
+/// without it registers metadata for a version whose tarball does not exist.
+fn npm_publish_envelope(package: &str, version: &str, dist_tag: &str, tarball: &[u8]) -> String {
+    // npm derives the attachment key from the unscoped name.
+    let bare = package.rsplit('/').next().unwrap_or(package);
+    let filename = format!("{bare}-{version}.tgz");
+    let digest = {
+        use sha2::{Digest, Sha256};
+        format!("sha512-{}", base64_encode(&Sha256::digest(tarball)))
+    };
     serde_json::json!({
         "_id": package,
         "name": package,
         "dist-tags": { dist_tag: version },
-        "versions": { version: { "name": package, "version": version } },
+        "versions": {
+            version: {
+                "_id": format!("{package}@{version}"),
+                "name": package,
+                "version": version,
+                "dist": {
+                    "integrity": digest,
+                    "tarball": format!("http://localhost/{package}/-/{filename}"),
+                },
+            }
+        },
+        "_attachments": {
+            filename: {
+                "content_type": "application/octet-stream",
+                "data": base64_encode(tarball),
+                "length": tarball.len(),
+            }
+        },
     })
     .to_string()
 }
@@ -1592,20 +1727,108 @@ mod tests {
     fn a_candidate_publish_targets_the_channel_version_not_the_base() {
         // The whole chain: manifest version -> host channel rules -> URL.
         let npm = route(NativeHost::Npm, ReleaseChannel::Rc);
-        let request =
-            publish_request(&npm, "@acme/client", Path::new("client.tgz"), Some("tok")).unwrap();
+        let request = publish_request(
+            &npm,
+            "@acme/client",
+            Path::new("client.tgz"),
+            Some("tok"),
+            None,
+        )
+        .unwrap();
         assert_eq!(request.method, Method::Put);
         assert_eq!(request.url, "https://registry.npmjs.org/%40acme%2Fclient");
         match &request.body {
-            RequestBody::Json(json) => {
-                assert!(json.contains("1.4.0-rc.1"), "{json}");
-                // And the dist-tag must be `rc`, not `latest`, or every
-                // unpinned consumer moves to the candidate.
-                assert!(json.contains(r#""rc":"1.4.0-rc.1""#), "{json}");
-                assert!(!json.contains("latest"), "{json}");
+            RequestBody::NpmEnvelope {
+                version, dist_tag, ..
+            } => {
+                assert_eq!(version, "1.4.0-rc.1");
+                // The dist-tag must be `rc`, not `latest`, or every unpinned
+                // consumer moves to the candidate.
+                assert_eq!(dist_tag, "rc");
             }
-            other => panic!("expected a json body, got {other:?}"),
+            other => panic!("expected an npm envelope, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn npm_actually_attaches_the_tarball_not_just_metadata() {
+        // The bug this catches: the body was a packument with no
+        // `_attachments`, so npm would register metadata for a version whose
+        // tarball does not exist — and the CLI counted it as published.
+        // Asserting the version string appears is not enough; the *bytes*
+        // have to be in the body.
+        let request = publish_request(
+            &route(NativeHost::Npm, ReleaseChannel::Stable),
+            "@acme/client",
+            Path::new("client.tgz"),
+            Some("tok"),
+            Some("account"),
+        )
+        .unwrap();
+        match &request.body {
+            RequestBody::NpmEnvelope {
+                path,
+                package,
+                version,
+                dist_tag,
+            } => {
+                assert_eq!(path, Path::new("client.tgz"));
+                assert_eq!(package, "@acme/client");
+                assert_eq!(version, "1.4.0");
+                assert_eq!(dist_tag, "latest");
+            }
+            other => panic!("npm must carry the tarball, got {other:?}"),
+        }
+
+        // And the rendered envelope must contain the encoded bytes under the
+        // unscoped filename npm derives.
+        let envelope = npm_publish_envelope("@acme/client", "1.4.0", "next", b"tarball-bytes");
+        let json: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        let attachment = json["_attachments"]["client-1.4.0.tgz"]
+            .as_object()
+            .expect("attachment keyed by the unscoped filename");
+        assert_eq!(
+            attachment["data"].as_str().unwrap(),
+            base64_encode(b"tarball-bytes")
+        );
+        assert_eq!(attachment["length"].as_u64().unwrap(), 13);
+        assert_eq!(json["dist-tags"]["next"].as_str().unwrap(), "1.4.0");
+    }
+
+    #[test]
+    fn a_basic_auth_host_that_needs_an_account_name_says_so() {
+        // Sending `Basic base64(":<password>")` is a guaranteed 401 on all
+        // four of these, and finding out after the artifact is built wastes a
+        // whole release run.
+        for host in [
+            NativeHost::Clojars,
+            NativeHost::Hackage,
+            NativeHost::Cpan,
+            NativeHost::MavenCentral,
+        ] {
+            assert_eq!(host.publish_auth(), RegistryAuth::Basic, "{host}");
+            assert!(
+                !credential_username_env_vars(host).is_empty(),
+                "{host} needs a username variable"
+            );
+            let error = publish_request(
+                &route(host, ReleaseChannel::Stable),
+                "com.acme:client",
+                Path::new("a.jar"),
+                Some("password"),
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, NativeHostClientError::MissingUsername { .. }),
+                "{host}: {error}"
+            );
+        }
+
+        // PyPI mandates a fixed username, so it never needs a variable.
+        assert_eq!(NativeHost::PyPi.basic_auth_username(), Some("__token__"));
+        assert_eq!(username_for(NativeHost::PyPi).as_deref(), Some("__token__"));
+        assert!(credential_username_env_vars(NativeHost::PyPi).is_empty());
     }
 
     #[test]
@@ -1615,6 +1838,7 @@ mod tests {
             "acme-client",
             Path::new("dist/acme_client-1.4.0rc1.whl"),
             Some("pypi-secret"),
+            Some("account"),
         )
         .unwrap();
         assert_eq!(request.url, "https://upload.pypi.org/legacy/");
@@ -1634,6 +1858,25 @@ mod tests {
             .unwrap();
         let decoded = auth.1.expose().strip_prefix("Basic ").unwrap();
         assert_eq!(decoded, base64_encode(b"__token__:pypi-secret"));
+
+        // And a caller-supplied account name must not displace it.
+        let overridden = publish_request(
+            &route(NativeHost::PyPi, ReleaseChannel::Rc),
+            "acme-client",
+            Path::new("dist/acme_client-1.4.0rc1.whl"),
+            Some("pypi-secret"),
+            Some("someone@example.com"),
+        )
+        .unwrap();
+        let auth = overridden
+            .headers
+            .iter()
+            .find(|(name, _)| name == "Authorization")
+            .unwrap();
+        assert_eq!(
+            auth.1.expose().strip_prefix("Basic ").unwrap(),
+            base64_encode(b"__token__:pypi-secret")
+        );
     }
 
     #[test]
@@ -1645,6 +1888,7 @@ mod tests {
             "acme-client",
             Path::new("acme.crate"),
             Some("cio-secret"),
+            Some("account"),
         )
         .unwrap();
         assert!(header_auth.is_authenticated());
@@ -1656,6 +1900,7 @@ mod tests {
             "acme-client",
             Path::new("acme.rockspec"),
             Some("lr-secret"),
+            Some("account"),
         )
         .unwrap();
         assert!(url_auth.url_contains_secret);
@@ -1677,6 +1922,7 @@ mod tests {
             "acme_client",
             Path::new("acme.tar"),
             None,
+            Some("account"),
         )
         .unwrap_err();
         match error {
@@ -1693,6 +1939,7 @@ mod tests {
                 "github.com/acme/client",
                 Path::new("ignored"),
                 None,
+                Some("account"),
             )
             .is_err(),
             "a proxy-only host must not accept an upload either"
@@ -1713,6 +1960,7 @@ mod tests {
                 "github.com/acme/client",
                 Path::new("ignored"),
                 Some("tok"),
+                Some("account"),
             )
             .unwrap_err();
             assert!(
@@ -1734,6 +1982,7 @@ mod tests {
                 "com.acme:client",
                 Path::new("acme.jar"),
                 Some("tok"),
+                Some("account"),
             )
             .unwrap_err();
             assert!(
@@ -1752,6 +2001,7 @@ mod tests {
                 "acme-client",
                 Path::new("acme.tgz"),
                 Some("tok"),
+                Some("account"),
             ),
             Err(NativeHostClientError::ReadOnly { .. })
         ));
@@ -1764,6 +2014,7 @@ mod tests {
             "acme-client",
             Path::new("acme.tar.gz"),
             Some("tok"),
+            Some("account"),
         )
         .unwrap_err();
         assert!(matches!(error, NativeHostClientError::ReadOnly { .. }));
@@ -1776,6 +2027,7 @@ mod tests {
             "acme-client",
             Path::new("acme.tar.gz"),
             Some("tok"),
+            Some("account"),
         )
         .unwrap();
         assert_eq!(stable.url, "https://hackage.haskell.org/packages/");
@@ -1785,6 +2037,7 @@ mod tests {
             "acme-client",
             Path::new("acme.tar.gz"),
             Some("tok"),
+            Some("account"),
         )
         .unwrap();
         assert_eq!(
@@ -1802,8 +2055,14 @@ mod tests {
         assert_eq!(snapshot.protocol, RegistryProtocol::MavenCentralPortal);
 
         let clojars = route(NativeHost::Clojars, ReleaseChannel::Snapshot);
-        let request =
-            publish_request(&clojars, "com.acme:client", Path::new("c.jar"), Some("t")).unwrap();
+        let request = publish_request(
+            &clojars,
+            "com.acme:client",
+            Path::new("c.jar"),
+            Some("t"),
+            Some("account"),
+        )
+        .unwrap();
         assert_eq!(
             request.url,
             "https://repo.clojars.org/com/acme/client/1.4.0-SNAPSHOT/client-1.4.0-SNAPSHOT.jar"
