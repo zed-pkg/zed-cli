@@ -182,8 +182,10 @@ fn manager_specific_options_fail_closed() {
 
     let devbox_check = run_main(root.path(), "devbox", &["--check"]);
     assert!(!devbox_check.status.success());
-    assert!(String::from_utf8_lossy(&devbox_check.stderr)
-        .contains("--check and --write are supported only for mise export"));
+    assert!(
+        String::from_utf8_lossy(&devbox_check.stderr)
+            .contains("--check and --write are supported only for mise export")
+    );
 
     let mise_receipt = run_main(
         root.path(),
@@ -196,8 +198,10 @@ fn manager_specific_options_fail_closed() {
         ],
     );
     assert!(!mise_receipt.status.success());
-    assert!(String::from_utf8_lossy(&mise_receipt.stderr)
-        .contains("--receipt is supported only for Devbox and Flox export"));
+    assert!(
+        String::from_utf8_lossy(&mise_receipt.stderr)
+            .contains("--receipt is supported only for Devbox and Flox export")
+    );
 
     let asdf = run_main(root.path(), "asdf", &[]);
     assert!(!asdf.status.success());
