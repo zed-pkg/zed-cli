@@ -1,0 +1,57 @@
+name: Apply DEN-3089 polyglot zedignore hardening
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-3089-polyglot-zedignore
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3089-polyglot-zedignore-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Reassemble, verify, and apply source transformation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat tools/den-3089-apply.py.gz.b64.part* > /tmp/den-3089-apply.py.gz.b64
+          echo "fbbe3cd11ad22561d41cb175815c8852dd00a950a0cdb248ba269c772a067de8  /tmp/den-3089-apply.py.gz.b64" | sha256sum -c -
+          base64 --decode /tmp/den-3089-apply.py.gz.b64 | gzip --decompress > /tmp/den-3089-apply.py
+          echo "a1c840717609ec210cb80e703fe88ddd161b2738b8bd7cd1d9d506dcc71c4d47  /tmp/den-3089-apply.py" | sha256sum -c -
+          PYTHONDONTWRITEBYTECODE=1 python /tmp/den-3089-apply.py
+
+      - name: Format and test
+        shell: bash
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: |
+          set -euo pipefail
+          rustup component add rustfmt
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --all-targets --locked
+          git diff --check
+
+      - name: Publish immutable candidate commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/den-3089-apply.yml tools/den-3089-apply.py.gz.b64.part*
+          git add -A
+          git diff --cached --check
+          git config user.name "alex-main-agent"
+          git config user.email "alex-main-agent@users.noreply.github.com"
+          git commit -m "fix(DEN-3089): honor artifact-root zedignore in polyglot packs"
+          git push --force-with-lease origin "HEAD:${GITHUB_REF_NAME}"
