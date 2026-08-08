@@ -152,9 +152,8 @@ mod tests {
 
     #[test]
     fn root_command_exposes_read_only_inspect_help() {
-        let inspect = command()
-            .find_subcommand("inspect")
-            .expect("inspect command");
+        let root = command();
+        let inspect = root.find_subcommand("inspect").expect("inspect command");
         assert!(inspect.get_about().is_some());
     }
 
