@@ -18,6 +18,9 @@ use crate::pack::sha256_file;
 const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Ceiling on archive entry count (inode-exhaustion guard).
 const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+/// Checkout mutation ownership is rank 10. The global install lock is
+/// acquired after it and before refs/artifact/build locks.
+const STORE_INSTALL_LOCK_CLASS: LockClass = LockClass::Custom(15);
 /// Ceiling on `zed gc --max-age-days`, defending the age computation against
 /// hostile input. ~10,000 years is far past any real cache lifetime while
 /// leaving the seconds conversion well clear of `u64` overflow.
@@ -178,7 +181,7 @@ impl Store {
         acquire_process_lock(
             &self.locks_dir().join("install.lock"),
             "the install lock",
-            LockClass::ProjectMutation,
+            STORE_INSTALL_LOCK_CLASS,
         )
     }
 

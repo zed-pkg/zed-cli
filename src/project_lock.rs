@@ -139,6 +139,8 @@ mod tests {
     use anyhow::Result;
     use zed_lock::{LockClass, LockManager, LockRequest};
 
+    use crate::store::Store;
+
     use super::{OPERATION_LOCK_RELATIVE_PATH, acquire, operation_lock_path, with_lock};
 
     #[test]
@@ -154,6 +156,16 @@ mod tests {
             std::os::unix::fs::symlink(project.path(), &alias)?;
             assert_eq!(operation_lock_path(&alias)?, direct);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn checkout_ownership_precedes_the_global_install_lock() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        let home = tempfile::tempdir()?;
+        let _project_guard = acquire(project.path(), "project then store ordering")?;
+        let store = Store::new(home.path());
+        let _install_guard = store.install_lock()?;
         Ok(())
     }
 
