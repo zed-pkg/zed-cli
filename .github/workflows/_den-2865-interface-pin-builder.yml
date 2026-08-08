@@ -1,0 +1,118 @@
+name: DEN-2865 one-shot graph-contract pin builder
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-2865-graph-contract-pin-v1
+    paths:
+      - Cargo.toml
+      - .github/workflows/_den-2865-interface-pin-builder.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-2865-interface-pin-builder
+  cancel-in-progress: false
+
+jobs:
+  regenerate-and-certify:
+    if: >-
+      github.repository == 'zed-pkg/zed-cli' &&
+      github.ref == 'refs/heads/alexanderdmills/den-2865-graph-contract-pin-v1' &&
+      !contains(github.event.head_commit.message, 'regenerate graph-contract lockfile')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      OLD_ZED_INTERFACES_SHA: d1bf8ef7c88a75292cbe8d697bfd269f30d62e2b
+      NEW_ZED_INTERFACES_SHA: f793e7c592373242dff9ab855845c42f526db9b4
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+
+    steps:
+      - name: Check out the exact candidate with branch credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Guard the one-shot scope and immutable target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "zed-pkg/zed-cli"
+          test "$GITHUB_REF_NAME" = "alexanderdmills/den-2865-graph-contract-pin-v1"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --exit-code
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          grep -F "rev = \"$NEW_ZED_INTERFACES_SHA\"" Cargo.toml
+          if grep -F "$OLD_ZED_INTERFACES_SHA" Cargo.toml; then
+            echo "Cargo.toml still contains the superseded interface revision" >&2
+            exit 1
+          fi
+          grep -F "#$OLD_ZED_INTERFACES_SHA" Cargo.lock
+
+      - name: Record the repository-pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup show active-toolchain
+          rustc --version --verbose
+          cargo --version --verbose
+          rustup component add rustfmt clippy
+
+      - name: Regenerate only the graph-contract lock entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p zed-interfaces --precise "$NEW_ZED_INTERFACES_SHA"
+          grep -F "?rev=$NEW_ZED_INTERFACES_SHA#$NEW_ZED_INTERFACES_SHA" Cargo.lock
+          if grep -F "$OLD_ZED_INTERFACES_SHA" Cargo.lock; then
+            echo "Cargo.lock still contains the superseded interface revision" >&2
+            exit 1
+          fi
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = "Cargo.lock"
+          git diff --check
+
+      - name: Certify the exact regenerated dependency graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 --no-deps > "$RUNNER_TEMP/cargo-metadata.json"
+          python3 - "$RUNNER_TEMP/cargo-metadata.json" "$NEW_ZED_INTERFACES_SHA" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          document = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          wanted = sys.argv[2]
+          packages = [item for item in document["packages"] if item["name"] == "zed-interfaces"]
+          if len(packages) != 1:
+              raise SystemExit(f"expected one zed-interfaces package, found {len(packages)}")
+          source = packages[0].get("source") or ""
+          if wanted not in source:
+              raise SystemExit(f"metadata source does not contain exact graph-contract SHA: {source}")
+          print(source)
+          PY
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit only the generated lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add -- Cargo.lock
+          mapfile -t staged < <(git diff --cached --name-only)
+          test "${#staged[@]}" -eq 1
+          test "${staged[0]}" = "Cargo.lock"
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(DEN-2865): regenerate graph-contract lockfile"
+          git push origin "HEAD:$GITHUB_REF_NAME"
