@@ -349,7 +349,7 @@ actual CLI never drift, so it is always authoritative:
 
 | Flag | Env var | Default |
 | --- | --- | --- |
-| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.tech` |
+| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
