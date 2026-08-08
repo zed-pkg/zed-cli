@@ -1,0 +1,105 @@
+name: Windows file registry round trip
+
+on:
+  pull_request:
+    paths:
+      - src/registry.rs
+      - .github/workflows/file-registry-windows.yml
+  push:
+    branches: [main]
+    paths:
+      - src/registry.rs
+      - .github/workflows/file-registry-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: file-registry-windows-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  round-trip:
+    name: Canonical file URI on Windows
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: zed-cli
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out pinned zed-interfaces sibling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          path: zed-interfaces
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Format, focused tests, and build
+        working-directory: zed-cli
+        run: |
+          cargo fmt --all --check
+          cargo test --locked --lib registry::tests -- --nocapture
+          cargo clippy --locked --lib -- -D warnings
+          cargo build --locked --bin zed
+
+      - name: Publish and install through a canonical Windows file URI
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'zed-file-registry-windows'
+          $registry = Join-Path $root 'registry with spaces'
+          $home = Join-Path $root 'home'
+          $lib = Join-Path $root 'node-lib'
+          $app = Join-Path $root 'node-app'
+          Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $registry, $home | Out-Null
+          Copy-Item -Recurse zed-cli/tests/fixtures/docker-install/node-lib $lib
+          Copy-Item -Recurse zed-cli/tests/fixtures/docker-install/node-app $app
+
+          $registryUri = python -c "from pathlib import Path; print(Path(r'$registry').resolve().as_uri())"
+          if (-not $registryUri.StartsWith('file:///')) { throw "unexpected registry URI: $registryUri" }
+
+          $zed = (Resolve-Path zed-cli/target/debug/zed.exe).Path
+          Push-Location $lib
+          try {
+            & $zed publish --registry $registryUri --skip-vcs-checks
+            if ($LASTEXITCODE -ne 0) { throw "publish failed with exit $LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $version = Join-Path $registry 'packages/zed-pkg/docker-node-lib/versions/1.0.0.json'
+          if (-not (Test-Path $version)) { throw "published version metadata missing: $version" }
+          $metadata = Get-Content -Raw $version | ConvertFrom-Json
+          if (-not ([string]$metadata.download_url).StartsWith('file:///')) {
+            throw "download_url is not a canonical file URI: $($metadata.download_url)"
+          }
+          if ([string]$metadata.download_url -notmatch '%20') {
+            throw "download_url did not percent-encode the space: $($metadata.download_url)"
+          }
+
+          Push-Location $app
+          try {
+            & $zed install --registry $registryUri --home $home --install-mode copy
+            if ($LASTEXITCODE -ne 0) { throw "install failed with exit $LASTEXITCODE" }
+          } finally { Pop-Location }
+
+          $materialized = Join-Path $app '.vendor/.zed/zed-pkg/docker-node-lib'
+          if (-not (Test-Path $materialized -PathType Container)) {
+            throw "materialized package missing: $materialized"
+          }
