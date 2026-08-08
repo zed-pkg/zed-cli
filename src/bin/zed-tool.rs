@@ -3,8 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use zed_cli::tool_profile::{
-    LockMode, default_lock_path, default_profile_path, default_zed_home, install_offline,
-    list_target, load_environment_lock, verify_receipt,
+    LockMode, default_zed_home, install_offline, list_target, load_environment_lock, verify_receipt,
 };
 
 #[derive(Debug, Parser)]
@@ -15,7 +14,11 @@ use zed_cli::tool_profile::{
 )]
 struct Cli {
     /// Project-local EnvironmentLock TOML or JSON.
-    #[arg(long, env = "ZED_TOOL_LOCK", default_value_os_t = default_lock_path())]
+    #[arg(
+        long,
+        env = "ZED_TOOL_LOCK",
+        default_value = ".zed/environment.lock.toml"
+    )]
     lock: PathBuf,
 
     /// Emit one stable JSON document.
@@ -57,7 +60,7 @@ enum ToolCommand {
         offline: bool,
 
         /// Project-local profile root.
-        #[arg(long, env = "ZED_TOOL_PROFILE", default_value_os_t = default_profile_path())]
+        #[arg(long, env = "ZED_TOOL_PROFILE", default_value = ".zed/tools")]
         profile: PathBuf,
 
         /// Zed content-addressed store and cache root.
@@ -85,12 +88,8 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 LockMode::Local
             };
-            let loaded = load_environment_lock(
-                &root,
-                Some(&cli.lock),
-                mode,
-                plan_digest.as_deref(),
-            )?;
+            let loaded =
+                load_environment_lock(&root, Some(&cli.lock), mode, plan_digest.as_deref())?;
             let receipt = verify_receipt(&loaded, mode);
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&receipt)?);
@@ -104,12 +103,7 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         ToolCommand::List { target } => {
-            let loaded = load_environment_lock(
-                &root,
-                Some(&cli.lock),
-                LockMode::Portable,
-                None,
-            )?;
+            let loaded = load_environment_lock(&root, Some(&cli.lock), LockMode::Portable, None)?;
             let tools = list_target(&loaded, &target)?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&tools)?);
@@ -136,24 +130,13 @@ fn run(cli: Cli) -> Result<()> {
                 offline,
                 "native tool installation currently requires `--offline`; version discovery and downloads are not yet certified"
             );
-            let loaded = load_environment_lock(
-                &root,
-                Some(&cli.lock),
-                LockMode::Portable,
-                None,
-            )?;
+            let loaded = load_environment_lock(&root, Some(&cli.lock), LockMode::Portable, None)?;
             let home = match home {
                 Some(home) if home.is_absolute() => home,
                 Some(home) => root.join(home),
                 None => default_zed_home()?,
             };
-            let receipt = install_offline(
-                &root,
-                &loaded,
-                &target,
-                Some(&profile),
-                &home,
-            )?;
+            let receipt = install_offline(&root, &loaded, &target, Some(&profile), &home)?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&receipt)?);
             } else {

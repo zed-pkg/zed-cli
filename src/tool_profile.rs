@@ -57,7 +57,7 @@ pub struct ToolLockSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolVerifyReceipt {
-    pub schema: &'static str,
+    pub schema: String,
     pub lock: String,
     pub lock_sha256: String,
     pub validation: String,
@@ -68,7 +68,7 @@ pub struct ToolVerifyReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInstallReceipt {
-    pub schema: &'static str,
+    pub schema: String,
     pub action: String,
     pub lock: String,
     pub lock_sha256: String,
@@ -111,7 +111,6 @@ struct SelectedTool<'a> {
 
 #[derive(Debug, Clone)]
 struct PreparedExecutable {
-    logical_name: String,
     profile_name: String,
     source: PathBuf,
     source_relative: String,
@@ -152,7 +151,11 @@ pub fn load_environment_lock(
     let root = root
         .canonicalize()
         .with_context(|| format!("canonicalizing project root `{}`", root.display()))?;
-    ensure!(root.is_dir(), "project root `{}` is not a directory", root.display());
+    ensure!(
+        root.is_dir(),
+        "project root `{}` is not a directory",
+        root.display()
+    );
     let relative_path = portable_relative_path(
         lock_path.unwrap_or_else(|| Path::new(DEFAULT_LOCK_PATH)),
         "environment lock",
@@ -161,8 +164,12 @@ pub fn load_environment_lock(
     let path = existing_regular_project_file(&root, &relative_path, "environment lock")?;
     let bytes = fs::read(&path)
         .with_context(|| format!("reading environment lock `{}`", relative_path.display()))?;
-    let input = std::str::from_utf8(&bytes)
-        .with_context(|| format!("environment lock `{}` is not UTF-8", relative_path.display()))?;
+    let input = std::str::from_utf8(&bytes).with_context(|| {
+        format!(
+            "environment lock `{}` is not UTF-8",
+            relative_path.display()
+        )
+    })?;
     let lock = if relative_path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
@@ -187,12 +194,9 @@ pub fn load_environment_lock(
     })
 }
 
-pub fn verify_receipt(
-    loaded: &LoadedEnvironmentLock,
-    mode: LockMode,
-) -> ToolVerifyReceipt {
+pub fn verify_receipt(loaded: &LoadedEnvironmentLock, mode: LockMode) -> ToolVerifyReceipt {
     ToolVerifyReceipt {
-        schema: TOOL_PROFILE_SCHEMA_V1,
+        schema: TOOL_PROFILE_SCHEMA_V1.to_string(),
         lock: portable_display(&loaded.relative_path),
         lock_sha256: loaded.digest_sha256.clone(),
         validation: match mode {
@@ -206,10 +210,7 @@ pub fn verify_receipt(
     }
 }
 
-pub fn list_target(
-    loaded: &LoadedEnvironmentLock,
-    target: &str,
-) -> Result<Vec<ToolLockSummary>> {
+pub fn list_target(loaded: &LoadedEnvironmentLock, target: &str) -> Result<Vec<ToolLockSummary>> {
     let selected = select_exact_target(&loaded.lock, target)?;
     Ok(selected
         .into_iter()
@@ -238,17 +239,14 @@ pub fn install_offline(
     )?;
     validate_component(target, "target")?;
     let selected = select_exact_target(&loaded.lock, target)?;
+    ensure!(
+        !selected.is_empty(),
+        "environment lock contains no tools for frozen profile installation"
+    );
     let store = Store::new(home);
 
     project_lock::with_lock(&root, "install frozen environment tool profile", || {
-        install_locked(
-            &root,
-            loaded,
-            target,
-            &profile_relative,
-            &store,
-            &selected,
-        )
+        install_locked(&root, loaded, target, &profile_relative, &store, &selected)
     })
 }
 
@@ -298,7 +296,10 @@ fn install_locked(
     fs::create_dir(&staging_bin)?;
     for tool in &prepared {
         for executable in &tool.executables {
-            materialize_executable(&executable.source, &staging_bin.join(&executable.profile_name))?;
+            materialize_executable(
+                &executable.source,
+                &staging_bin.join(&executable.profile_name),
+            )?;
         }
     }
     let state_path = staging_path.join(PROFILE_STATE_FILE);
@@ -471,7 +472,6 @@ fn prepare_locked_executable(
             );
         }
         output.push(PreparedExecutable {
-            logical_name: logical_name.clone(),
             profile_name,
             source: source.clone(),
             source_relative: portable_display(&source_relative),
@@ -550,12 +550,43 @@ fn active_profile_matches(
     }
     let expected = prepared
         .iter()
-        .flat_map(|tool| tool.executables.iter().map(|executable| executable.profile_name.clone()))
+        .flat_map(|tool| {
+            tool.executables
+                .iter()
+                .map(|executable| executable.profile_name.clone())
+        })
         .collect::<BTreeSet<_>>();
     let actual = fs::read_dir(&bin)?
         .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
         .collect::<Result<BTreeSet<_>>>()?;
-    Ok(expected == actual)
+    if expected != actual {
+        return Ok(false);
+    }
+    for executable in prepared.iter().flat_map(|tool| tool.executables.iter()) {
+        let destination = bin.join(&executable.profile_name);
+        #[cfg(unix)]
+        {
+            let metadata = fs::symlink_metadata(&destination)?;
+            if !metadata.file_type().is_symlink()
+                || fs::read_link(&destination)? != executable.source
+            {
+                return Ok(false);
+            }
+        }
+        #[cfg(windows)]
+        {
+            let metadata = fs::symlink_metadata(&destination)?;
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Ok(false);
+            }
+            let (source_sha256, source_size) = sha256_file(&executable.source)?;
+            let (destination_sha256, destination_size) = sha256_file(&destination)?;
+            if source_sha256 != destination_sha256 || source_size != destination_size {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn install_receipt(
@@ -567,7 +598,7 @@ fn install_receipt(
 ) -> ToolInstallReceipt {
     let active_relative = profile_relative.join("v1").join(target);
     ToolInstallReceipt {
-        schema: TOOL_PROFILE_SCHEMA_V1,
+        schema: TOOL_PROFILE_SCHEMA_V1.to_string(),
         action: action.to_string(),
         lock: portable_display(&loaded.relative_path),
         lock_sha256: loaded.digest_sha256.clone(),
@@ -660,11 +691,16 @@ fn materialize_executable(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn profile_executable_name(logical_name: &str, source: &Path) -> Result<String> {
+    #[cfg(not(windows))]
+    let _ = source;
     #[cfg(windows)]
     {
         if Path::new(logical_name).extension().is_none()
             && let Some(extension) = source.extension().and_then(|value| value.to_str())
-            && matches!(extension.to_ascii_lowercase().as_str(), "exe" | "com" | "cmd" | "bat")
+            && matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "exe" | "com" | "cmd" | "bat"
+            )
         {
             return Ok(format!("{logical_name}.{extension}"));
         }
@@ -749,7 +785,10 @@ fn ensure_directory_chain(root: &Path, relative: &Path, field: &str) -> Result<P
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 fs::create_dir(&current).with_context(|| {
-                    format!("creating {field} directory `{}`", portable_display(&current))
+                    format!(
+                        "creating {field} directory `{}`",
+                        portable_display(&current)
+                    )
                 })?;
             }
             Err(error) => return Err(error).with_context(|| format!("inspecting {field}")),
@@ -809,12 +848,16 @@ fn portable_relative_path(path: &Path, field: &str, allow_dot: bool) -> Result<P
 
 fn validate_component(value: &str, field: &str) -> Result<()> {
     ensure!(!value.trim().is_empty(), "{field} cannot be empty");
-    ensure!(value == value.trim(), "{field} cannot contain surrounding whitespace");
+    ensure!(
+        value == value.trim(),
+        "{field} cannot contain surrounding whitespace"
+    );
     ensure!(value != "." && value != "..", "{field} is invalid");
     ensure!(
         value
             .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-')),
+            .all(|character| character.is_ascii_alphanumeric()
+                || matches!(character, '.' | '_' | '-')),
         "{field} `{value}` contains unsupported characters"
     );
     ensure!(value.len() <= 128, "{field} exceeds 128 bytes");
