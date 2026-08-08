@@ -200,24 +200,25 @@ fn write_export(request: MiseWriteRequest<'_>) -> Result<MiseExportReport> {
         .as_deref()
         .is_some_and(|bytes| bytes == candidate.as_bytes());
 
-    if let Some(current) = current.as_deref()
-        && !unchanged
-    {
-        let current_sha256 = digest_bytes(current);
-        let record = state.outputs.get(output_relative).with_context(|| {
-            format!(
-                "refusing to overwrite hand-authored `{output_relative}`: no Zed export state exists; move it aside, choose another --output, or make its contents match the deterministic projection before adopting it"
-            )
-        })?;
+    if let Some(record) = state.outputs.get(output_relative) {
         ensure!(
             record.plan == plan_relative,
-            "refusing to overwrite `{output_relative}` from `{plan_relative}` because it is owned by plan `{}`",
+            "refusing to change ownership of `{output_relative}` from plan `{}` to `{plan_relative}`",
             record.plan
         );
-        ensure!(
-            record.output_sha256 == current_sha256,
-            "refusing to overwrite edited `{output_relative}`: export state records sha256 {}, current file is {current_sha256}",
-            record.output_sha256
+        if let Some(current) = current.as_deref() {
+            let current_sha256 = digest_bytes(current);
+            ensure!(
+                record.output_sha256 == current_sha256,
+                "refusing to overwrite edited `{output_relative}`: export state records sha256 {}, current file is {current_sha256}",
+                record.output_sha256
+            );
+        }
+    }
+
+    if current.is_some() && !unchanged && !state.outputs.contains_key(output_relative) {
+        bail!(
+            "refusing to overwrite hand-authored `{output_relative}`: no Zed export state exists; move it aside, choose another --output, or make its contents match the deterministic projection before adopting it"
         );
     }
 
@@ -1122,6 +1123,43 @@ mod tests {
                 .to_string()
                 .contains("portable mise export path collision")
         );
+    }
+
+    #[test]
+    fn ownership_cannot_transfer_or_repair_state_silently() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan = simple_plan();
+        let plan_path = write_plan(temp.path(), &plan);
+        let output = Path::new(".mise.toml");
+        export_mise(temp.path(), &plan_path, output, MiseExportMode::Write).unwrap();
+
+        let alternate_plan = temp.path().join("alternate-env.toml");
+        fs::write(&alternate_plan, plan.to_toml_string().unwrap()).unwrap();
+        let output_before = fs::read(temp.path().join(output)).unwrap();
+        let state_path = temp.path().join(EXPORT_STATE_PATH);
+        let state_before = fs::read(&state_path).unwrap();
+        let transfer = export_mise(
+            temp.path(),
+            Path::new("alternate-env.toml"),
+            output,
+            MiseExportMode::Write,
+        )
+        .unwrap_err();
+        assert!(transfer.to_string().contains("change ownership"));
+        assert_eq!(fs::read(temp.path().join(output)).unwrap(), output_before);
+        assert_eq!(fs::read(&state_path).unwrap(), state_before);
+
+        let mut state: MiseExportState = serde_json::from_slice(&state_before).unwrap();
+        state.outputs.get_mut(".mise.toml").unwrap().output_sha256 = "0".repeat(64);
+        let mut corrupted = serde_json::to_vec_pretty(&state).unwrap();
+        corrupted.push(10);
+        fs::write(&state_path, &corrupted).unwrap();
+
+        let repair =
+            export_mise(temp.path(), &plan_path, output, MiseExportMode::Write).unwrap_err();
+        assert!(repair.to_string().contains("export state records sha256"));
+        assert_eq!(fs::read(temp.path().join(output)).unwrap(), output_before);
+        assert_eq!(fs::read(&state_path).unwrap(), corrupted);
     }
 
     #[test]
