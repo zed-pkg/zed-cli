@@ -43,39 +43,52 @@ jobs:
           from pathlib import Path
 
           path = Path('src/main.rs')
-          text = path.read_text(encoding='utf-8')
-          if 'use zed_cli::project_lock;\n' not in text:
-              anchor = 'use zed_cli::preflight;\n'
-              if text.count(anchor) != 1:
-                  raise SystemExit(f'expected one project-lock import anchor, found {text.count(anchor)}')
-              text = text.replace(anchor, anchor + 'use zed_cli::project_lock;\n', 1)
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
 
-          old = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
-              // Every live project transaction already owns this kernel-backed
-              // install lock. Recover under the same lock so a concurrent process
-              // cannot mistake an in-flight rollback journal for an abandoned one.
-              let store = Store::new(&cfg.home);
-              let _recovery_lock = store.install_lock()?;
-              zed_cli::transaction::recover_pending(&cwd)?;
-          }
-          '''
-          new = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
-              // Recovery writes into the project and must be serialized against
-              // every operation sharing the checkout. Preserve project-lock ->
-              // store-lock ordering to avoid lock inversion with installers.
-              project_lock::with_lock(&cwd, "recover pending project transactions", || {
-                  let store = Store::new(&cfg.home);
-                  let _recovery_lock = store.install_lock()?;
-                  zed_cli::transaction::recover_pending(&cwd)?;
-                  Ok(())
-              })?;
-          }
-          '''
-          if old in text:
-              text = text.replace(old, new, 1)
-          elif new not in text:
-              raise SystemExit('could not locate startup recovery block')
-          path.write_text(text, encoding='utf-8')
+          if not any(line == 'use zed_cli::project_lock;\n' for line in lines):
+              import_index = next(
+                  index for index, line in enumerate(lines)
+                  if line == 'use zed_cli::preflight;\n'
+              )
+              lines.insert(import_index + 1, 'use zed_cli::project_lock;\n')
+
+          hardened_marker = 'project_lock::with_lock(&cwd, "recover pending project transactions", || {'
+          if not any(hardened_marker in line for line in lines):
+              start = next(
+                  index for index, line in enumerate(lines)
+                  if line.strip() == 'if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {'
+              )
+
+              depth = 0
+              end = None
+              for index in range(start, len(lines)):
+                  depth += lines[index].count('{')
+                  depth -= lines[index].count('}')
+                  if depth == 0:
+                      end = index + 1
+                      break
+              if end is None:
+                  raise SystemExit('could not locate end of startup recovery block')
+
+              indent = lines[start][: len(lines[start]) - len(lines[start].lstrip())]
+              nested = indent + '    '
+              closure = nested + '    '
+              replacement = [
+                  f'{indent}if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {{\n',
+                  f'{nested}// Recovery writes into the project and must be serialized against\n',
+                  f'{nested}// every operation sharing the checkout. Preserve project-lock ->\n',
+                  f'{nested}// store-lock ordering to avoid lock inversion with installers.\n',
+                  f'{nested}project_lock::with_lock(&cwd, "recover pending project transactions", || {{\n',
+                  f'{closure}let store = Store::new(&cfg.home);\n',
+                  f'{closure}let _recovery_lock = store.install_lock()?;\n',
+                  f'{closure}zed_cli::transaction::recover_pending(&cwd)?;\n',
+                  f'{closure}Ok(())\n',
+                  f'{nested}}})?;\n',
+                  f'{indent}}}\n',
+              ]
+              lines[start:end] = replacement
+
+          path.write_text(''.join(lines), encoding='utf-8')
           PY
 
           cargo fmt --all
@@ -90,5 +103,9 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add src/main.rs
+          if git diff --cached --quiet; then
+            echo 'startup recovery locking already present'
+            exit 0
+          fi
           git commit -m 'fix(DEN-1462): serialize exporter recovery'
           git push origin HEAD:agent/den-1462-mise-export-current-main
