@@ -23,7 +23,7 @@ path = "src/lib.rs"
 
 [dependencies]
 zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "d1bf8ef7c88a75292cbe8d697bfd269f30d62e2b" }
-zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "a0dc78d385bc3ab553d3027b427f5f1428239c9c" }
+zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
