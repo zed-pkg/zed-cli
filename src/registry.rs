@@ -41,7 +41,12 @@ fn file_registry_path(raw: &str) -> Result<PathBuf> {
 fn file_url_for_path(path: &Path) -> Result<String> {
     reqwest::Url::from_file_path(path)
         .map(|url| url.to_string())
-        .map_err(|_| anyhow!("cannot encode local file registry path `{}` as a file URL", path.display()))
+        .map_err(|_| {
+            anyhow!(
+                "cannot encode local file registry path `{}` as a file URL",
+                path.display()
+            )
+        })
 }
 
 /// Client-side registry abstraction. `file://` URLs get a directory-backed
@@ -275,7 +280,7 @@ impl Registry for FileRegistry {
                 if !org.path().is_dir() {
                     continue;
                 }
-                for pkg in fs::read_dir(org.path()).flatten() {
+                for pkg in fs::read_dir(org.path())?.flatten() {
                     let Ok(meta) = self.get_package(
                         &org.file_name().to_string_lossy(),
                         &pkg.file_name().to_string_lossy(),
