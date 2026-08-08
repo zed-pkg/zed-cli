@@ -176,3 +176,14 @@ command line. A literal `--` ends global-option extraction and passes every
 remaining argument to the external command unchanged.
 ''',
 )
+
+replace_once(
+    "tests/external_gitops_dispatch.rs",
+    '''    assert!(text.contains("Usage: zed-gitops validate"), "{text}");
+    assert!(text.contains("--offline"), "{text}");
+''',
+    '''    assert!(text.contains("Usage: zed-gitops"), "{text}");
+    assert!(text.contains("validate [OPTIONS]"), "{text}");
+    assert!(text.contains("--offline"), "{text}");
+''',
+)
