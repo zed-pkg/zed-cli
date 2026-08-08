@@ -4,7 +4,7 @@ use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
-    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
+    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
 };
 use zed_cli::completion;
 use zed_cli::config::Config;
@@ -21,6 +21,7 @@ use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
 use zed_cli::store::Store;
+use zed_cli::task_cli::{self, TaskAction};
 use zed_cli::update;
 
 fn main() {
@@ -247,6 +248,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
         },
+        Cmd::Task { plan, json, cmd } => {
+            let action = match cmd {
+                TaskCmd::List { all } => TaskAction::List { all },
+                TaskCmd::Info { task } => TaskAction::Info { task },
+                TaskCmd::Graph { task } => TaskAction::Graph { task },
+                TaskCmd::Run {
+                    task,
+                    dry_run,
+                    yes,
+                    jobs,
+                    no_cache,
+                    args,
+                } => TaskAction::Run {
+                    task,
+                    dry_run,
+                    yes,
+                    jobs,
+                    no_cache,
+                    args,
+                },
+            };
+            task_cli::execute(&cwd, plan.as_deref(), json, action)
+        }
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())
@@ -263,19 +287,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
         Cmd::Release { cmd } => match cmd {
-            ReleaseCmd::Plan {
-                json,
-                channel,
-                iteration,
-            } => release::plan(&cwd, json, channel.into(), iteration),
+            ReleaseCmd::Plan { json } => release::plan(&cwd, json),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
-            ReleaseCmd::Publish {
-                channel,
-                iteration,
-                dry_run,
-                target,
-            } => release::publish(&cwd, channel.into(), iteration, dry_run, target.as_deref()),
-            ReleaseCmd::Versions { target } => release::versions(&cwd, target.as_deref()),
         },
         Cmd::Publish {
             dry_run,

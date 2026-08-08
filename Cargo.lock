@@ -336,7 +336,7 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 [[package]]
 name = "flags2env"
 version = "0.1.0"
-source = "git+https://github.com/ORESoftware/flags-2-env.git?rev=2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7#2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7"
+source = "git+https://github.com/ORESoftware/flags-2-env.git?rev=8c8465561075a8d7ebb58074b3a8087138e97d8f#8c8465561075a8d7ebb58074b3a8087138e97d8f"
 dependencies = [
  "cc",
  "libloading",
@@ -2056,7 +2056,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599#4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660#a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660"
 dependencies = [
  "hex",
  "schemars",
