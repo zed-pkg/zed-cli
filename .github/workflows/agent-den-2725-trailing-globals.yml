@@ -15,7 +15,7 @@ concurrency:
 jobs:
   patch-and-verify:
     if: github.actor != 'github-actions[bot]'
-    runs-on: windows-2025
+    runs-on: macos-latest
     timeout-minutes: 35
     steps:
       - name: Check out the exact hardening commit
@@ -31,8 +31,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python .github/agent/den2725_trailing_globals_fix.py
-          python .github/agent/den2725_type_alias_fix.py
+          python3 .github/agent/den2725_trailing_globals_fix.py
+          python3 .github/agent/den2725_type_alias_fix.py
 
       - name: Verify dispatch, packaging, and release smoke behavior
         shell: bash
@@ -44,9 +44,9 @@ jobs:
           cargo test --locked --test external_gitops_dispatch
           cargo clippy --locked --all-targets -- -D warnings
           cargo build --release --locked --bin zed --bin zed-gitops
-          test -x target/release/zed.exe
-          test -x target/release/zed-gitops.exe
-          target/release/zed.exe gitops validate --help >/dev/null
+          test -x target/release/zed
+          test -x target/release/zed-gitops
+          target/release/zed gitops validate --help >/dev/null
           git diff --check
 
       - name: Commit the hardened product tree
