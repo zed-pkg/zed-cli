@@ -174,12 +174,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let git_submodules = cli.globals.git_submodules;
     let cwd = std::env::current_dir()?;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
-        // Every live project transaction already owns this kernel-backed
-        // install lock. Recover under the same lock so a concurrent process
-        // cannot mistake an in-flight rollback journal for an abandoned one.
-        let store = Store::new(&cfg.home);
-        let _recovery_lock = store.install_lock()?;
-        zed_cli::transaction::recover_pending(&cwd)?;
+        // Recovery mutates checkout-owned paths. Acquire the canonical
+        // checkout operation lock before the store lock so another process
+        // cannot mistake a live transaction journal for an abandoned one.
+        zed_cli::project_lock::with_lock(&cwd, "recover interrupted project transaction", || {
+            let store = Store::new(&cfg.home);
+            let _recovery_lock = store.install_lock()?;
+            zed_cli::transaction::recover_pending(&cwd)?;
+            Ok(())
+        })?;
     }
     match cli.cmd {
         Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
