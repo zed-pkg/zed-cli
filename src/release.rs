@@ -129,7 +129,7 @@ fn normalize_pypi_name(value: &str) -> String {
 /// change between them, only the destination does.
 pub fn build_plan(
     manifest: &Manifest,
-    channel: ReleaseChannel,
+    channel: Option<ReleaseChannel>,
     iteration: u32,
 ) -> Result<ReleasePlan> {
     let source_package = manifest.full_name();
@@ -175,12 +175,12 @@ pub fn build_plan(
                 .or(manifest.publish.native.as_ref());
             // A route may pin its own track (a client generated from an
             // unstable API surface); an explicit `--channel` overrides it.
+            // `Option` rather than a `stable` sentinel: `--channel stable` and
+            // "no --channel" are different instructions, and conflating them
+            // meant a manifest-declared `channel = "beta"` could never be
+            // overridden back to a real release.
             let declared = section.map(|native| native.channel).unwrap_or_default();
-            let effective = if channel.is_default() {
-                declared
-            } else {
-                channel
-            };
+            let effective = channel.unwrap_or(declared);
             let resolved = route
                 .registry
                 .host()
@@ -925,7 +925,12 @@ pub fn render_human(plan: &ReleasePlan) -> String {
     output
 }
 
-pub fn plan(project: &Path, json: bool, channel: ReleaseChannel, iteration: u32) -> Result<()> {
+pub fn plan(
+    project: &Path,
+    json: bool,
+    channel: Option<ReleaseChannel>,
+    iteration: u32,
+) -> Result<()> {
     let manifest = read_manifest(project)?;
     let unchecked = validate_native_manifests(project, &manifest)?;
     let plan = build_plan(&manifest, channel, iteration)?;
@@ -955,7 +960,7 @@ pub fn plan(project: &Path, json: bool, channel: ReleaseChannel, iteration: u32)
 /// and name the ninth.
 pub fn publish(
     project: &Path,
-    channel: ReleaseChannel,
+    channel: Option<ReleaseChannel>,
     iteration: u32,
     dry_run: bool,
     only_target: Option<&str>,
@@ -991,6 +996,21 @@ pub fn publish(
         let credential = native_host_client::credential_for(host);
         // Four Basic-auth hosts take an account name alongside the token.
         let username = native_host_client::username_for(host);
+        // A preview must not require a credential. Building the authenticated
+        // request first meant that with no tokens set every route reported
+        // "skipped" and nothing was previewed — the opposite of what
+        // `--dry-run` is for. The placeholders never leave this process: the
+        // request is described, not sent.
+        let (credential, username, unconfigured) = if dry_run {
+            let missing = credential.is_none();
+            (
+                credential.or_else(|| Some("<not-configured>".to_string())),
+                username.or_else(|| Some("<not-configured>".to_string())),
+                missing,
+            )
+        } else {
+            (credential, username, false)
+        };
         let payload = native_artifact_path(project, artifact);
 
         // A multi-request publish has no single request to preview: step 2's
@@ -1014,6 +1034,9 @@ pub fn publish(
                     "      first request is authenticated to {host}; the rest are \
                      derived from its response"
                 );
+                if unconfigured {
+                    println!("      note: no credential configured for {host}");
+                }
                 continue;
             }
             if !payload.exists() {
@@ -1083,6 +1106,9 @@ pub fn publish(
         };
         report_request(&artifact.target, artifact, &request);
         if dry_run {
+            if unconfigured {
+                println!("      note: no credential configured for {host}; shape previewed only");
+            }
             continue;
         }
         if !payload.exists() {
@@ -1148,7 +1174,7 @@ pub fn publish(
 /// from a runner that has none of these toolchains installed.
 pub fn versions(project: &Path, only_target: Option<&str>) -> Result<()> {
     let manifest = read_manifest(project)?;
-    let plan = build_plan(&manifest, ReleaseChannel::Stable, 1)?;
+    let plan = build_plan(&manifest, Some(ReleaseChannel::Stable), 1)?;
 
     for artifact in &plan.native {
         if only_target.is_some_and(|target| target != artifact.target) {
@@ -1193,15 +1219,28 @@ pub fn versions(project: &Path, only_target: Option<&str>) -> Result<()> {
 /// whichever archive happened to be lying in the directory would be a release
 /// nobody can reproduce.
 fn native_artifact_path(project: &Path, artifact: &NativeReleaseArtifact) -> PathBuf {
-    project
+    let dir = project
         .join(&artifact.dir)
         .join(".zed/native-release")
-        .join(artifact.channel.host.as_str())
-        .join(format!(
-            "{}-{}.artifact",
+        .join(artifact.channel.host.as_str());
+    // The filename is the host's, not ours. PyPI, NuGet, Hackage, and CRAN
+    // validate the uploaded part's filename and reject anything that does not
+    // match the name and version they were told to expect, so a generic
+    // `<pkg>-<ver>.artifact` failed on those four before its bytes were read.
+    match native_host_client::conventional_artifact_name(
+        artifact.channel.host,
+        &artifact.package,
+        &artifact.channel.version,
+    ) {
+        Some(name) => dir.join(name),
+        // A host that receives no artifact never reaches an upload; the path
+        // is only used for the "no built artifact" diagnostic.
+        None => dir.join(format!(
+            "{}-{}",
             artifact.package.replace(['/', ':', '@'], "-"),
             artifact.channel.version
-        ))
+        )),
+    }
 }
 
 fn report_request(target: &str, artifact: &NativeReleaseArtifact, request: &RegistryRequest) {
@@ -1274,7 +1313,7 @@ package = "acme-client"
         // is one input, and each ecosystem stores a candidate differently. A
         // plan that emitted `1.4.0-rc.1` everywhere would be rejected by PyPI
         // and mis-sorted by RubyGems.
-        let plan = build_plan(&multi_host_manifest(), ReleaseChannel::Rc, 2).unwrap();
+        let plan = build_plan(&multi_host_manifest(), Some(ReleaseChannel::Rc), 2).unwrap();
         let mut resolved: Vec<(&str, &str)> = plan
             .native
             .iter()
@@ -1302,7 +1341,7 @@ package = "acme-client"
 
     #[test]
     fn only_npm_gets_a_dist_tag_and_stable_leaves_versions_alone() {
-        let rc = build_plan(&multi_host_manifest(), ReleaseChannel::Rc, 1).unwrap();
+        let rc = build_plan(&multi_host_manifest(), Some(ReleaseChannel::Rc), 1).unwrap();
         let tags: Vec<(&str, Option<&str>)> = rc
             .native
             .iter()
@@ -1318,7 +1357,7 @@ package = "acme-client"
         assert_eq!(tags.iter().filter(|(_, tag)| tag.is_some()).count(), 1);
         assert!(tags.contains(&("nodejs", Some("rc"))));
 
-        let stable = build_plan(&multi_host_manifest(), ReleaseChannel::Stable, 1).unwrap();
+        let stable = build_plan(&multi_host_manifest(), Some(ReleaseChannel::Stable), 1).unwrap();
         for artifact in &stable.native {
             assert_eq!(artifact.channel.version, "1.4.0", "{}", artifact.target);
             assert!(!artifact.channel.requires_opt_in);
@@ -1348,12 +1387,12 @@ package = "acme.client"
 "#,
         )
         .unwrap();
-        let error = build_plan(&manifest, ReleaseChannel::Rc, 1).unwrap_err();
+        let error = build_plan(&manifest, Some(ReleaseChannel::Rc), 1).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("target `r`"), "{message}");
         assert!(message.contains("cran"), "{message}");
         // The same manifest releases fine on the stable track.
-        assert!(build_plan(&manifest, ReleaseChannel::Stable, 1).is_ok());
+        assert!(build_plan(&manifest, Some(ReleaseChannel::Stable), 1).is_ok());
     }
 
     fn hex_manifest(package: &str) -> Manifest {
@@ -1517,7 +1556,8 @@ channel = "beta"
         )
         .unwrap();
 
-        let declared = build_plan(&manifest, ReleaseChannel::Stable, 1).unwrap();
+        // No `--channel`, so the manifest's declared track applies.
+        let declared = build_plan(&manifest, None, 1).unwrap();
         assert_eq!(declared.native.len(), 1);
         let route = &declared.native[0];
         assert_eq!(route.channel.channel, ReleaseChannel::Beta);
@@ -1531,9 +1571,18 @@ channel = "beta"
             "the release set version is unchanged"
         );
 
-        let overridden = build_plan(&manifest, ReleaseChannel::Rc, 3).unwrap();
+        let overridden = build_plan(&manifest, Some(ReleaseChannel::Rc), 3).unwrap();
         assert_eq!(overridden.native[0].channel.version, "1.0.0-rc.3");
         assert_eq!(overridden.native[0].vcs_tag, "v1.0.0-rc.3");
+
+        // And `--channel stable` must be able to cut a real release from a
+        // manifest that defaults to a pre-release track. Treating "flag
+        // absent" and "flag set to stable" as the same value made that
+        // impossible: the package could never leave beta.
+        let promoted = build_plan(&manifest, Some(ReleaseChannel::Stable), 1).unwrap();
+        assert_eq!(promoted.native[0].channel.channel, ReleaseChannel::Stable);
+        assert_eq!(promoted.native[0].channel.version, "1.0.0");
+        assert_eq!(promoted.native[0].vcs_tag, "v1.0.0");
     }
 
     #[test]
@@ -1560,11 +1609,11 @@ channel = "beta"
 "#,
         )
         .unwrap();
-        let default = build_plan(&manifest, ReleaseChannel::Stable, 3).unwrap();
+        let default = build_plan(&manifest, None, 3).unwrap();
         assert_eq!(default.native[0].channel.version, "1.4.0-beta.3");
 
         // An explicit channel wins, so a repo can still cut a real release.
-        let overridden = build_plan(&manifest, ReleaseChannel::Rc, 1).unwrap();
+        let overridden = build_plan(&manifest, Some(ReleaseChannel::Rc), 1).unwrap();
         assert_eq!(overridden.native[0].channel.version, "1.4.0-rc.1");
     }
 
@@ -1633,7 +1682,7 @@ forge = ["gitlab-packages"]
     fn polyglot_plan_is_deterministic_and_includes_native_routes() {
         let manifest = polyglot_manifest();
 
-        let plan = build_plan(&manifest, ReleaseChannel::Stable, 1).unwrap();
+        let plan = build_plan(&manifest, Some(ReleaseChannel::Stable), 1).unwrap();
         assert_eq!(plan.release_set, "acme/clients@1.2.3#v1.2.3");
         assert_eq!(
             plan.zed
@@ -1879,7 +1928,7 @@ forge = ["github-packages", "gitlab-packages", "bitbucket-packages"]
         )
         .unwrap();
 
-        let plan = build_plan(&manifest, ReleaseChannel::Stable, 1).unwrap();
+        let plan = build_plan(&manifest, Some(ReleaseChannel::Stable), 1).unwrap();
         assert_eq!(plan.zed.len(), 1);
         assert_eq!(plan.zed[0].target, None);
         assert_eq!(plan.zed[0].package, "acme/http-kit");
@@ -1997,7 +2046,7 @@ forge = ["gitlab-packages"]
         .unwrap();
 
         validate_native_manifests(root.path(), &manifest).unwrap();
-        let plan = build_plan(&manifest, ReleaseChannel::Stable, 1).unwrap();
+        let plan = build_plan(&manifest, Some(ReleaseChannel::Stable), 1).unwrap();
         assert_eq!(plan.native.len(), 5);
         assert_eq!(plan.forge.len(), 9);
         assert_eq!(

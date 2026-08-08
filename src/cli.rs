@@ -487,13 +487,8 @@ pub enum ReleaseCmd {
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
         /// Release track to resolve every native route against
-        #[arg(
-            long,
-            value_enum,
-            default_value = "stable",
-            env = "ZED_PKG_RELEASE_CHANNEL"
-        )]
-        channel: ChannelArg,
+        #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
+        channel: Option<ChannelArg>,
         /// Candidate number within a pre-release channel (rc.1, rc.2, ...)
         #[arg(long, default_value_t = 1, env = "ZED_PKG_RELEASE_ITERATION")]
         iteration: u32,
@@ -503,13 +498,8 @@ pub enum ReleaseCmd {
     /// Upload every native route to its ecosystem registry over that
     /// registry's own HTTP API
     Publish {
-        #[arg(
-            long,
-            value_enum,
-            default_value = "stable",
-            env = "ZED_PKG_RELEASE_CHANNEL"
-        )]
-        channel: ChannelArg,
+        #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
+        channel: Option<ChannelArg>,
         #[arg(long, default_value_t = 1, env = "ZED_PKG_RELEASE_ITERATION")]
         iteration: u32,
         /// Print the exact requests, with credentials redacted, and send none

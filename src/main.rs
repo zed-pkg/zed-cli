@@ -267,14 +267,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 json,
                 channel,
                 iteration,
-            } => release::plan(&cwd, json, channel.into(), iteration),
+            } => release::plan(&cwd, json, channel.map(Into::into), iteration),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
             ReleaseCmd::Publish {
                 channel,
                 iteration,
                 dry_run,
                 target,
-            } => release::publish(&cwd, channel.into(), iteration, dry_run, target.as_deref()),
+            } => release::publish(
+                &cwd,
+                channel.map(Into::into),
+                iteration,
+                dry_run,
+                target.as_deref(),
+            ),
             ReleaseCmd::Versions { target } => release::versions(&cwd, target.as_deref()),
         },
         Cmd::Publish {
