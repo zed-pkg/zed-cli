@@ -594,7 +594,7 @@ fn install_action(
         cwd: display(root),
         mutates_project: true,
         requires_network: true,
-        executes_package_code: false,
+        executes_package_code: true,
     }
 }
 
@@ -674,6 +674,17 @@ url = "https://example.invalid/acme/demo"
         let report = inspect_project(project.path()).unwrap();
         assert!(report.summary.recovery_pending);
         assert!(!report.summary.frozen_ready);
+        let recovery = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "RECOVERY_PENDING")
+            .expect("recovery diagnostic")
+            .actions
+            .first()
+            .expect("recovery action");
+        assert!(recovery.mutates_project);
+        assert!(recovery.requires_network);
+        assert!(recovery.executes_package_code);
         assert_eq!(
             fs::read_to_string(staging.join("sentinel")).unwrap(),
             "keep"
