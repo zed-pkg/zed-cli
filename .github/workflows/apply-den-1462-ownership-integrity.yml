@@ -4,21 +4,23 @@ on:
   push:
     branches:
       - agent/den-1462-mise-export-current-main
-  pull_request:
-    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
 
 concurrency:
-  group: den-1462-reserved-source-${{ github.event.pull_request.number || github.ref }}
+  group: den-1462-reserved-source-windows
   cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   apply:
     if: github.actor != 'github-actions[bot]'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    runs-on: windows-2025
+    timeout-minutes: 40
     steps:
       - name: Check out exporter branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -35,10 +37,9 @@ jobs:
           rustup default stable
 
       - name: Reject reserved export state as an input plan
-        shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python - <<'PY'
           from pathlib import Path
 
           source = Path('src/mise_export.rs')
