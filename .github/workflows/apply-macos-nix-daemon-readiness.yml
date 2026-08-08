@@ -19,7 +19,7 @@ defaults:
 jobs:
   apply:
     if: github.actor != 'github-actions[bot]'
-    runs-on: windows-2025
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - name: Check out repair branch
@@ -33,7 +33,7 @@ jobs:
       - name: Add bounded Nix daemon readiness probe
         run: |
           set -euo pipefail
-          python - <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
 
           path = Path('.github/workflows/nix-interop.yml')
@@ -74,7 +74,7 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
 
-          python - <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
           text = Path('.github/workflows/nix-interop.yml').read_text(encoding='utf-8')
           assert text.count('name: Wait for the Nix store to become ready') == 1
