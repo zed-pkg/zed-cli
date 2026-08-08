@@ -1,0 +1,92 @@
+name: DEN-2725 import certified final replay tree on macOS
+
+on:
+  push:
+    branches:
+      - agent/den-2725-import-final-replay
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-2725-import-final-replay-macos
+  cancel-in-progress: false
+
+env:
+  MAIN_COMMIT: 0246a3af901b65ca6724d936c7f3232c9f72fcd7
+  OLD_PRODUCT_HEAD: 1c94813c6b59c7621c1256d7c55246e7f06f44b7
+  EXPORT_COMMIT: 4b7a0b386f109f460335e97611992b48e32c2dab
+  EXPECTED_TREE: 99ab08e3142c2a52d2c97482134e99fae3811b43
+  TARGET_BRANCH: feat/den-2725-root-gitops-clean
+
+jobs:
+  import:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact current main with scoped repository token
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.MAIN_COMMIT }}
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Check out immutable verified export without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: zed-pkg-test/zed-pkg-e2e
+          ref: ${{ env.EXPORT_COMMIT }}
+          path: export
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify export identity, evidence, and every product blob
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MAIN_COMMIT"
+          test "$(git -C export rev-parse HEAD)" = "$EXPORT_COMMIT"
+          test "$(python3 -c 'import json; print(json.load(open("export/evidence/replay-metadata.json"))["mainCommit"])')" = "$MAIN_COMMIT"
+          test "$(python3 -c 'import json; print(json.load(open("export/evidence/replay-metadata.json"))["rootDispatchCommit"])')" = "$OLD_PRODUCT_HEAD"
+          test "$(python3 -c 'import json; print(json.load(open("export/evidence/replay-metadata.json"))["treeSha"])')" = "$EXPECTED_TREE"
+          test "$(git -C export rev-parse HEAD:.zpkg.toml)" = '66ae9761fac153b3ce79e1b2de37ef84115063d7'
+          test "$(git -C export rev-parse HEAD:docs/gitops-validator.md)" = 'e3147e0745ab89d65e6c3e9af4085bb201a61cb6'
+          test "$(git -C export rev-parse HEAD:scripts/validate-zed-package-graph.sh)" = 'c3378a422d43d7497efb7c8bcd568734ddfc6fa2'
+          test "$(git -C export rev-parse HEAD:src/completion.rs)" = '2c68bb24ccb20f5ab697e34eb99afe94356f0fae'
+          test "$(git -C export rev-parse HEAD:src/external_subcommands.rs)" = '55a291492f02ade1bbab048927d198f127699be9'
+          test "$(git -C export rev-parse HEAD:src/lib.rs)" = '5f39c53a50c10baf4b580a102209c61f2ad0ac63'
+          test "$(git -C export rev-parse HEAD:src/main.rs)" = '67f251416dca3af7540a74933d51a58ffb640af4'
+          test "$(git -C export rev-parse HEAD:tests/external_gitops_dispatch.rs)" = '5a3c57bfd3426400bb7757d2d37c2c70e0234b70'
+
+      - name: Materialize exactly the certified eight-file delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git -C export show HEAD:.zpkg.toml > .zpkg.toml
+          git -C export show HEAD:docs/gitops-validator.md > docs/gitops-validator.md
+          git -C export show HEAD:scripts/validate-zed-package-graph.sh > scripts/validate-zed-package-graph.sh
+          git -C export show HEAD:src/completion.rs > src/completion.rs
+          git -C export show HEAD:src/external_subcommands.rs > src/external_subcommands.rs
+          git -C export show HEAD:src/lib.rs > src/lib.rs
+          git -C export show HEAD:src/main.rs > src/main.rs
+          git -C export show HEAD:tests/external_gitops_dispatch.rs > tests/external_gitops_dispatch.rs
+          rm -rf export
+          git add .zpkg.toml docs/gitops-validator.md scripts/validate-zed-package-graph.sh src/completion.rs src/external_subcommands.rs src/lib.rs src/main.rs tests/external_gitops_dispatch.rs
+          git update-index --chmod=+x scripts/validate-zed-package-graph.sh
+          changed="$(git diff --cached --name-only)"
+          expected=$'.zpkg.toml\ndocs/gitops-validator.md\nscripts/validate-zed-package-graph.sh\nsrc/completion.rs\nsrc/external_subcommands.rs\nsrc/lib.rs\nsrc/main.rs\ntests/external_gitops_dispatch.rs'
+          test "$changed" = "$expected"
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git diff --cached --check
+
+      - name: Commit and update only the reviewed product branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat(DEN-2725): route root gitops commands safely'
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          git push --force-with-lease="refs/heads/$TARGET_BRANCH:$OLD_PRODUCT_HEAD" origin "HEAD:refs/heads/$TARGET_BRANCH"
