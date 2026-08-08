@@ -43,9 +43,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use zed_interfaces::native_host::{
-    ChannelRoute, NativeHost, RegistryAuth, RegistryProtocol,
-};
+use zed_interfaces::native_host::{ChannelRoute, NativeHost, RegistryAuth, RegistryProtocol};
 
 /// The HTTP verb a registry call uses. Narrow on purpose: a registry client
 /// that can `DELETE` is a registry client that can unpublish by accident.
@@ -122,7 +120,10 @@ pub enum RequestBody {
     /// crates.io's framed body: 4-byte little-endian metadata length, the
     /// metadata JSON, 4-byte little-endian crate length, then the `.crate`
     /// bytes. Not multipart and not raw, so it needs its own variant.
-    CargoFramed { path: PathBuf, metadata: String },
+    CargoFramed {
+        path: PathBuf,
+        metadata: String,
+    },
 }
 
 /// One fully-described HTTP call that has not been made yet.
@@ -252,9 +253,14 @@ fn is_secret_query_key(key: &str) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub enum NativeHostClientError {
     /// The host has no upload API; releases are picked up from a VCS tag.
-    VcsPublished { host: NativeHost, tag: String },
+    VcsPublished {
+        host: NativeHost,
+        tag: String,
+    },
     /// The host mirrors another registry and accepts nothing of its own.
-    ReadOnly { host: NativeHost },
+    ReadOnly {
+        host: NativeHost,
+    },
     /// Publishing needs a request sequence, and a later request depends on an
     /// earlier response body.
     MultiStepPublish {
@@ -269,7 +275,9 @@ pub enum NativeHostClientError {
         host: NativeHost,
         env: Vec<&'static str>,
     },
-    NoPublishEndpoint { host: NativeHost },
+    NoPublishEndpoint {
+        host: NativeHost,
+    },
     MalformedIndex(&'static str, NativeHost),
 }
 
@@ -348,11 +356,7 @@ pub fn credential_for(host: NativeHost) -> Option<String> {
 }
 
 /// Attach a host's auth scheme to a request.
-fn authenticate(
-    request: RegistryRequest,
-    host: NativeHost,
-    credential: &str,
-) -> RegistryRequest {
+fn authenticate(request: RegistryRequest, host: NativeHost, credential: &str) -> RegistryRequest {
     match host.publish_auth() {
         RegistryAuth::Bearer => request.header(
             "Authorization",
@@ -389,8 +393,7 @@ fn authenticate(
 /// Hand-rolled rather than pulling a crate in: this is the only base64 the CLI
 /// needs, and a dependency added for 20 lines is a dependency to audit.
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b = [
@@ -466,22 +469,28 @@ pub fn version_index_request(
             Method::Get,
             format!("{index}/{}", cargo_index_path(package)),
         ),
-        P::PypiLegacyUpload => {
-            RegistryRequest::new(Method::Get, format!("{index}/{name}/")).header(
+        P::PypiLegacyUpload => RegistryRequest::new(Method::Get, format!("{index}/{name}/"))
+            .header(
                 "Accept",
                 HeaderValue::Literal("application/vnd.pypi.simple.v1+json".to_string()),
-            )
-        }
+            ),
         P::RubyGemsApi => {
             RegistryRequest::new(Method::Get, format!("{index}/versions/{name}.json"))
         }
-        P::NuGetV3 | P::PowerShellGallery => RegistryRequest::new(
+        P::NuGetV3 => RegistryRequest::new(
             Method::Get,
             format!(
                 "{}/{}/index.json",
                 route.endpoints.download_base().trim_end_matches('/'),
                 package.to_ascii_lowercase()
             ),
+        ),
+        // The PowerShell Gallery is NuGet **V2**: OData, not a V3 service
+        // index, so there is no flat container to read. Reusing the V3 shape
+        // 404s on every package.
+        P::PowerShellGallery => RegistryRequest::new(
+            Method::Get,
+            format!("{index}/FindPackagesById()?id='{name}'&$select=Version"),
         ),
         P::Maven2 | P::MavenCentralPortal => {
             let (group, artifact) = split_maven(package, host)?;
@@ -493,7 +502,9 @@ pub fn version_index_request(
                 ),
             )
         }
-        P::HexApi => RegistryRequest::new(Method::Get, format!("https://hex.pm/api/packages/{name}")),
+        P::HexApi => {
+            RegistryRequest::new(Method::Get, format!("https://hex.pm/api/packages/{name}"))
+        }
         P::PubDev => RegistryRequest::new(Method::Get, format!("{index}/packages/{name}")),
         P::HackageApi => RegistryRequest::new(
             Method::Get,
@@ -508,27 +519,51 @@ pub fn version_index_request(
             // version history the R community actually queries.
             RegistryRequest::new(Method::Get, format!("https://crandb.r-pkg.org/{name}/all"))
         }
+        // `/release/{dist}` returns only the latest release, which a
+        // "list versions" command must not present as the complete set. The
+        // search endpoint returns every release; `_source` trims the response
+        // to the one field needed (`fields` is rejected outright by the API).
         P::CpanPause => RegistryRequest::new(
             Method::Get,
-            format!("https://fastapi.metacpan.org/v1/release/{name}"),
+            format!(
+                "https://fastapi.metacpan.org/v1/release/_search?q=distribution:{name}&_source=version&size=250"
+            ),
         ),
         P::CocoapodsTrunk => RegistryRequest::new(
             Method::Get,
             format!("https://trunk.cocoapods.org/api/v1/pods/{name}"),
         ),
-        P::SwiftRegistry => {
-            let (scope, package_name) = package.split_once('.').ok_or(
-                NativeHostClientError::MalformedIndex("scope.name", host),
-            )?;
-            RegistryRequest::new(
-                Method::Get,
-                format!("{index}/{}/{}", encode_segment(scope), encode_segment(package_name)),
-            )
-            .header(
-                "Accept",
-                HeaderValue::Literal("application/vnd.swift.registry.v1+json".to_string()),
-            )
-        }
+        P::SwiftRegistry => match host {
+            // The Swift Package Index is an index of Git repositories, not an
+            // SE-0292 package registry: every path under its `/api` requires
+            // an API token and returns 401 anonymously. Versions come from the
+            // repository's tags. A self-hosted SE-0292 registry reached
+            // through a `UniversalHost` mirror does speak this protocol.
+            NativeHost::SwiftPackageIndex => {
+                return Err(NativeHostClientError::IndexUnsupported {
+                    host,
+                    reason: "the Swift Package Index indexes Git repositories and its API \
+                             needs a token; resolve versions from the repository's tags",
+                });
+            }
+            _ => {
+                let (scope, package_name) = package
+                    .split_once('.')
+                    .ok_or(NativeHostClientError::MalformedIndex("scope.name", host))?;
+                RegistryRequest::new(
+                    Method::Get,
+                    format!(
+                        "{index}/{}/{}",
+                        encode_segment(scope),
+                        encode_segment(package_name)
+                    ),
+                )
+                .header(
+                    "Accept",
+                    HeaderValue::Literal("application/vnd.swift.registry.v1+json".to_string()),
+                )
+            }
+        },
         // One publish shape, several index shapes — dispatch the rest by host.
         P::VcsIndexed => match host {
             NativeHost::Packagist => {
@@ -590,13 +625,22 @@ fn cargo_index_path(package: &str) -> String {
     }
 }
 
-fn split_maven(
-    package: &str,
-    host: NativeHost,
-) -> Result<(&str, &str), NativeHostClientError> {
+/// Split Maven coordinates into group and artifact.
+///
+/// Accepts both separators on purpose. Maven Central writes
+/// `com.google.guava:guava`, but Clojars and Leiningen write
+/// `ring/ring-core`, and the manifest carries whichever spelling the author
+/// used — `NativeRegistry::canonical_package` normalizes only for collision
+/// detection, so the route still holds the original. Rejecting `/` here made
+/// every real Clojars route fail at request-construction time.
+fn split_maven(package: &str, host: NativeHost) -> Result<(&str, &str), NativeHostClientError> {
     package
         .split_once(':')
-        .ok_or(NativeHostClientError::MalformedIndex("group:artifact", host))
+        .or_else(|| package.split_once('/'))
+        .ok_or(NativeHostClientError::MalformedIndex(
+            "group:artifact or group/artifact",
+            host,
+        ))
 }
 
 /// Build the request that downloads one published version.
@@ -617,10 +661,12 @@ pub fn download_request(
         }
         P::CargoSparse => format!("{base}/{name}/{name}-{version}.crate"),
         P::RubyGemsApi => format!("{base}/{name}-{version}.gem"),
-        P::NuGetV3 | P::PowerShellGallery => {
+        P::NuGetV3 => {
             let lower = package.to_ascii_lowercase();
             format!("{base}/{lower}/{version}/{lower}.{version}.nupkg")
         }
+        // V2 serves the package straight off `/package/{id}/{version}`.
+        P::PowerShellGallery => format!("{base}/package/{name}/{version}"),
         P::Maven2 | P::MavenCentralPortal => {
             let (group, artifact) = split_maven(package, host)?;
             format!(
@@ -630,10 +676,7 @@ pub fn download_request(
         }
         P::HexApi => format!("{base}/{name}-{version}.tar"),
         P::HackageApi => format!("{base}/{name}-{version}/{name}-{version}.tar.gz"),
-        P::GoProxy => format!(
-            "{base}/{}/@v/{version}.zip",
-            go_escape(package)
-        ),
+        P::GoProxy => format!("{base}/{}/@v/{version}.zip", go_escape(package)),
         P::CranSubmit => format!("{base}/{name}_{version}.tar.gz"),
         // These serve a per-version URL that only the index response knows,
         // so a download needs the index first rather than a template.
@@ -727,8 +770,8 @@ pub fn publish_request(
                 path: artifact.to_path_buf(),
                 metadata: format!(r#"{{"name":"{package}","vers":"{version}"}}"#),
             }),
-        P::PypiLegacyUpload => RegistryRequest::new(Method::Post, publish_base.to_string()).body(
-            RequestBody::Multipart {
+        P::PypiLegacyUpload => RegistryRequest::new(Method::Post, publish_endpoint.to_string())
+            .body(RequestBody::Multipart {
                 path: artifact.to_path_buf(),
                 file_field: "content",
                 fields: vec![
@@ -737,8 +780,7 @@ pub fn publish_request(
                     ("name", package.to_string()),
                     ("version", version.clone()),
                 ],
-            },
-        ),
+            }),
         P::RubyGemsApi => RegistryRequest::new(Method::Post, format!("{publish_base}/gems")).body(
             RequestBody::File {
                 path: artifact.to_path_buf(),
@@ -746,7 +788,7 @@ pub fn publish_request(
             },
         ),
         P::NuGetV3 | P::PowerShellGallery => {
-            RegistryRequest::new(Method::Put, publish_base.to_string()).body(
+            RegistryRequest::new(Method::Put, publish_endpoint.to_string()).body(
                 RequestBody::Multipart {
                     path: artifact.to_path_buf(),
                     file_field: "package",
@@ -791,15 +833,13 @@ pub fn publish_request(
             fields: vec![("HIDDENNAME", package.to_string())],
         }),
         P::LuaRocksApi => {
-            let mut request = RegistryRequest::new(
-                Method::Post,
-                format!("{publish_base}/{credential}/upload"),
-            )
-            .body(RequestBody::Multipart {
-                path: artifact.to_path_buf(),
-                file_field: "rockspec_file",
-                fields: Vec::new(),
-            });
+            let mut request =
+                RegistryRequest::new(Method::Post, format!("{publish_base}/{credential}/upload"))
+                    .body(RequestBody::Multipart {
+                        path: artifact.to_path_buf(),
+                        file_field: "rockspec_file",
+                        fields: Vec::new(),
+                    });
             request.url_contains_secret = true;
             request
         }
@@ -813,9 +853,9 @@ pub fn publish_request(
                 content_type: "application/json",
             }),
         P::SwiftRegistry => {
-            let (scope, package_name) = package.split_once('.').ok_or(
-                NativeHostClientError::MalformedIndex("scope.name", host),
-            )?;
+            let (scope, package_name) = package
+                .split_once('.')
+                .ok_or(NativeHostClientError::MalformedIndex("scope.name", host))?;
             RegistryRequest::new(
                 Method::Put,
                 format!(
@@ -830,7 +870,7 @@ pub fn publish_request(
                 fields: Vec::new(),
             })
         }
-        P::CranSubmit => RegistryRequest::new(Method::Post, publish_base.to_string()).body(
+        P::CranSubmit => RegistryRequest::new(Method::Post, publish_endpoint.to_string()).body(
             RequestBody::Multipart {
                 path: artifact.to_path_buf(),
                 file_field: "uploaded_file",
@@ -918,7 +958,15 @@ pub fn parse_versions(
                 .filter_map(|v| v.get("number")?.as_str().map(str::to_string))
                 .collect()
         }
-        P::NuGetV3 | P::PowerShellGallery => {
+        // `<d:Version>1.2.3</d:Version>` repeated once per entry. A full XML
+        // parser is not warranted for one machine-generated element.
+        P::PowerShellGallery => body
+            .split("<d:Version>")
+            .skip(1)
+            .filter_map(|chunk| chunk.split_once("</d:Version>"))
+            .map(|(version, _)| version.trim().to_string())
+            .collect(),
+        P::NuGetV3 => {
             let json: serde_json::Value =
                 serde_json::from_str(body).map_err(|_| malformed("flat container index"))?;
             json.get("versions")
@@ -985,11 +1033,19 @@ pub fn parse_versions(
         }
         P::CpanPause => {
             let json: serde_json::Value =
-                serde_json::from_str(body).map_err(|_| malformed("release"))?;
-            json.get("version")
-                .and_then(|v| v.as_str())
-                .map(|v| vec![v.to_string()])
-                .ok_or_else(|| malformed("version"))?
+                serde_json::from_str(body).map_err(|_| malformed("release search"))?;
+            json.get("hits")
+                .and_then(|hits| hits.get("hits"))
+                .and_then(|hits| hits.as_array())
+                .ok_or_else(|| malformed("hits.hits"))?
+                .iter()
+                .filter_map(|hit| {
+                    hit.get("_source")?
+                        .get("version")?
+                        .as_str()
+                        .map(str::to_string)
+                })
+                .collect()
         }
         P::CocoapodsTrunk => {
             let json: serde_json::Value =
@@ -1076,8 +1132,8 @@ pub fn execute(request: &RegistryRequest) -> Result<String> {
         RequestBody::Empty => builder,
         RequestBody::Json(json) => builder.body(json.clone()),
         RequestBody::File { path, content_type } => {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("read artifact {}", path.display()))?;
+            let bytes =
+                std::fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
             builder.header("Content-Type", *content_type).body(bytes)
         }
         RequestBody::Multipart {
@@ -1095,8 +1151,8 @@ pub fn execute(request: &RegistryRequest) -> Result<String> {
             builder.multipart(form)
         }
         RequestBody::CargoFramed { path, metadata } => {
-            let crate_bytes = std::fs::read(path)
-                .with_context(|| format!("read artifact {}", path.display()))?;
+            let crate_bytes =
+                std::fs::read(path).with_context(|| format!("read artifact {}", path.display()))?;
             let mut body = Vec::with_capacity(metadata.len() + crate_bytes.len() + 8);
             body.extend_from_slice(&(metadata.len() as u32).to_le_bytes());
             body.extend_from_slice(metadata.as_bytes());
@@ -1148,13 +1204,8 @@ mod tests {
     fn a_candidate_publish_targets_the_channel_version_not_the_base() {
         // The whole chain: manifest version -> host channel rules -> URL.
         let npm = route(NativeHost::Npm, ReleaseChannel::Rc);
-        let request = publish_request(
-            &npm,
-            "@acme/client",
-            Path::new("client.tgz"),
-            Some("tok"),
-        )
-        .unwrap();
+        let request =
+            publish_request(&npm, "@acme/client", Path::new("client.tgz"), Some("tok")).unwrap();
         assert_eq!(request.method, Method::Put);
         assert_eq!(request.url, "https://registry.npmjs.org/%40acme%2Fclient");
         match &request.body {
@@ -1220,7 +1271,10 @@ mod tests {
         )
         .unwrap();
         assert!(url_auth.url_contains_secret);
-        assert!(url_auth.url.contains("lr-secret"), "the real URL still has it");
+        assert!(
+            url_auth.url.contains("lr-secret"),
+            "the real URL still has it"
+        );
         assert!(!url_auth.describe().contains("lr-secret"));
         assert_eq!(
             url_auth.display_url(),
@@ -1286,7 +1340,6 @@ mod tests {
         for (host, needle) in [
             (NativeHost::PubDev, "signed upload form"),
             (NativeHost::MavenCentral, "deployment id"),
-            (NativeHost::ConanCenter, "recipe revision"),
         ] {
             let error = publish_request(
                 &route(host, ReleaseChannel::Stable),
@@ -1300,6 +1353,20 @@ mod tests {
                 "{host} error should name the step: {error}"
             );
         }
+
+        // ConanCenter is the case where "read-only" wins over "multi-step":
+        // its recipes arrive by pull request, so there is no upload to
+        // sequence. The multi-step message belongs to the Conan protocol as an
+        // Artifactory mirror serves it, not to ConanCenter itself.
+        assert!(matches!(
+            publish_request(
+                &route(NativeHost::ConanCenter, ReleaseChannel::Stable),
+                "acme-client",
+                Path::new("acme.tgz"),
+                Some("tok"),
+            ),
+            Err(NativeHostClientError::ReadOnly { .. })
+        ));
     }
 
     #[test]
@@ -1492,8 +1559,8 @@ mod tests {
         // An empty list would read as "no such version published", which is
         // exactly the wrong conclusion to draw from a broken response.
         for host in [NativeHost::Npm, NativeHost::Hex, NativeHost::RubyGems] {
-            let error = parse_versions(&route(host, ReleaseChannel::Stable), "{\"oops\":1}")
-                .unwrap_err();
+            let error =
+                parse_versions(&route(host, ReleaseChannel::Stable), "{\"oops\":1}").unwrap_err();
             assert!(
                 matches!(error, NativeHostClientError::MalformedIndex(..)),
                 "{host}: {error}"
@@ -1520,6 +1587,118 @@ mod tests {
         }
     }
 
+    // The cases below were all found by probing the live public registries
+    // rather than by reasoning about their docs. Each one shipped broken.
+
+    #[test]
+    fn clojars_coordinates_use_a_slash_and_maven_central_uses_a_colon() {
+        // Leiningen writes `ring/ring-core`; Maven writes `com.google.guava:guava`.
+        // The manifest carries whichever the author used, so rejecting `/`
+        // made every real Clojars route fail at request construction.
+        let request = version_index_request(
+            &route(NativeHost::Clojars, ReleaseChannel::Stable),
+            "ring/ring-core",
+        )
+        .unwrap();
+        assert_eq!(
+            request.url,
+            "https://repo.clojars.org/ring/ring-core/maven-metadata.xml"
+        );
+        let central = version_index_request(
+            &route(NativeHost::MavenCentral, ReleaseChannel::Stable),
+            "com.google.guava:guava",
+        )
+        .unwrap();
+        assert_eq!(
+            central.url,
+            "https://repo.maven.apache.org/maven2/com/google/guava/guava/maven-metadata.xml"
+        );
+        // Neither separator present is still an error.
+        assert!(
+            version_index_request(&route(NativeHost::Clojars, ReleaseChannel::Stable), "bare")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cpan_lists_every_release_not_just_the_latest() {
+        // `/release/{dist}` returns one record. Reporting that as the complete
+        // version list is a wrong answer, not a partial one.
+        let request =
+            version_index_request(&route(NativeHost::Cpan, ReleaseChannel::Stable), "Try-Tiny")
+                .unwrap();
+        assert!(request.url.contains("/release/_search"), "{}", request.url);
+        assert!(request.url.contains("q=distribution:Try-Tiny"));
+        // `fields` is rejected outright by the MetaCPAN API; `_source` is not.
+        assert!(request.url.contains("_source=version"));
+        assert!(!request.url.contains("fields="));
+
+        let body = r#"{"hits":{"hits":[
+            {"_source":{"version":"0.30"}},
+            {"_source":{"version":"0.31"}},
+            {"_source":{"version":"0.32"}}]}}"#;
+        assert_eq!(
+            parse_versions(&route(NativeHost::Cpan, ReleaseChannel::Stable), body).unwrap(),
+            vec!["0.30", "0.31", "0.32"]
+        );
+    }
+
+    #[test]
+    fn the_powershell_gallery_is_nuget_v2_not_v3() {
+        // It has no V3 flat container; the V3 URL shape 404s on every package.
+        let psg = version_index_request(
+            &route(NativeHost::PowerShellGallery, ReleaseChannel::Stable),
+            "Pester",
+        )
+        .unwrap();
+        assert!(
+            psg.url.contains("FindPackagesById()?id='Pester'"),
+            "{}",
+            psg.url
+        );
+        assert!(!psg.url.contains("index.json"));
+
+        // NuGet proper keeps the V3 flat container, lowercased.
+        let nuget = version_index_request(
+            &route(NativeHost::NuGet, ReleaseChannel::Stable),
+            "Newtonsoft.Json",
+        )
+        .unwrap();
+        assert_eq!(
+            nuget.url,
+            "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/index.json"
+        );
+
+        // OData returns an Atom feed, not JSON.
+        let body = "<feed><entry><m:properties><d:Version>3.0.2</d:Version>                    </m:properties></entry><entry><m:properties>                    <d:Version>5.7.1</d:Version></m:properties></entry></feed>";
+        assert_eq!(
+            parse_versions(
+                &route(NativeHost::PowerShellGallery, ReleaseChannel::Stable),
+                body
+            )
+            .unwrap(),
+            vec!["3.0.2", "5.7.1"]
+        );
+    }
+
+    #[test]
+    fn the_swift_package_index_is_an_index_not_a_registry() {
+        // Every path under its `/api` returns 401 anonymously: it catalogues
+        // Git repositories rather than serving SE-0292 releases. Emitting a
+        // request that always 401s is worse than saying so.
+        let error = version_index_request(
+            &route(NativeHost::SwiftPackageIndex, ReleaseChannel::Stable),
+            "apple.swift-argument-parser",
+        )
+        .unwrap_err();
+        match error {
+            NativeHostClientError::IndexUnsupported { reason, .. } => {
+                assert!(reason.contains("tags"), "{reason}");
+            }
+            other => panic!("expected IndexUnsupported, got {other}"),
+        }
+    }
+
     #[test]
     fn base64_matches_rfc_4648_including_padding() {
         assert_eq!(base64_encode(b""), "");
@@ -1528,7 +1707,10 @@ mod tests {
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
-        assert_eq!(base64_encode(b"__token__:hunter2"), "X190b2tlbl9fOmh1bnRlcjI=");
+        assert_eq!(
+            base64_encode(b"__token__:hunter2"),
+            "X190b2tlbl9fOmh1bnRlcjI="
+        );
     }
 
     #[test]

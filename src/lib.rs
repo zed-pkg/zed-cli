@@ -20,9 +20,9 @@ pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
 pub mod mise_lock;
+pub mod native_host_client;
 pub mod nix_bundle_write;
 pub mod nix_export_bundle;
-pub mod native_host_client;
 pub mod nix_export_plan;
 #[path = "ops_entry.rs"]
 pub mod ops;
