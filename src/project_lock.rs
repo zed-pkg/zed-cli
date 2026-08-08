@@ -9,79 +9,53 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use anyhow::{Context, Result};
 use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 pub const OPERATION_LOCK_RELATIVE_PATH: &str = ".zed/operation.lock";
 
+/// One thread's reentrant ownership cache.
+///
+/// The map stores weak references so it never extends descriptor ownership.
+/// Stale entries are removed lazily on the next acquisition of that canonical
+/// checkout. Every live [`OperationGuard`] holds a strong reference to the same
+/// [`OwnedLock`], so nested handles may be dropped in any order without
+/// releasing the kernel lock before the final handle.
 thread_local! {
-    /// Same-thread facade composition is intentionally reentrant. For example,
-    /// the CLI may hold the checkout lock around Git-submodule synchronization
-    /// and then call the public installer facade, which must reuse that exact
-    /// ownership rather than deadlock on a second descriptor request.
-    static HELD_LOCKS: RefCell<HashMap<PathBuf, usize>> = RefCell::new(HashMap::new());
+    static HELD_LOCKS: RefCell<HashMap<PathBuf, Weak<OwnedLock>>> = RefCell::new(HashMap::new());
 }
 
-struct HeldMarker {
-    path: PathBuf,
-}
-
-impl HeldMarker {
-    fn enter(path: PathBuf) -> Self {
-        HELD_LOCKS.with(|held| {
-            *held.borrow_mut().entry(path.clone()).or_insert(0) += 1;
-        });
-        Self { path }
-    }
-}
-
-impl Drop for HeldMarker {
-    fn drop(&mut self) {
-        HELD_LOCKS.with(|held| {
-            let mut held = held.borrow_mut();
-            let remove = match held.get_mut(&self.path) {
-                Some(count) if *count > 1 => {
-                    *count -= 1;
-                    false
-                }
-                Some(_) => true,
-                None => false,
-            };
-            if remove {
-                held.remove(&self.path);
-            }
-        });
-    }
+struct OwnedLock {
+    _guard: LockGuard,
 }
 
 /// Owned checkout-local mutation authority.
 ///
-/// A nested same-thread acquisition carries only a depth marker because the
-/// outer guard already owns the descriptor lock. Independent threads and
-/// processes always contend through `zed-lock`.
+/// A nested same-thread acquisition clones the strong reference to the outer
+/// descriptor ownership. The operating-system lock therefore remains held until
+/// the final nested or outer handle is dropped, regardless of drop order.
+/// Independent threads and processes always contend through `zed-lock`.
 ///
 /// Reentrancy bookkeeping is thread-local, so this guard is intentionally
 /// neither [`Send`] nor [`Sync`]. It must be dropped on the thread that acquired
-/// it; moving it would otherwise detach marker cleanup from the originating
-/// thread.
+/// it; moving it would otherwise detach the ownership cache from the originating
+/// thread. The `Rc` field enforces both type-level constraints.
 ///
 /// ```compile_fail
 /// fn assert_send<T: Send>() {}
 /// assert_send::<zed_cli::project_lock::OperationGuard>();
 /// ```
-#[must_use = "dropping the operation guard releases project mutation ownership"]
+///
+/// ```compile_fail
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<zed_cli::project_lock::OperationGuard>();
+/// ```
+#[must_use = "dropping the operation guard releases one project-ownership handle"]
 pub struct OperationGuard {
-    // Drop the thread-local marker before the descriptor lock. That keeps the
-    // reentrancy view conservative for the entire lifetime of kernel ownership.
-    _marker: HeldMarker,
-    _guard: Option<LockGuard>,
-    // `Rc` is deliberately !Send + !Sync. The marker itself lives in a
-    // thread-local map and therefore cannot be cleaned up safely elsewhere.
-    _thread_affinity: PhantomData<Rc<()>>,
+    _ownership: Rc<OwnedLock>,
 }
 
 /// Canonical descriptor-lock identity for one checkout.
@@ -95,22 +69,27 @@ pub fn operation_lock_path(project: &Path) -> Result<PathBuf> {
     Ok(canonical.join(OPERATION_LOCK_RELATIVE_PATH))
 }
 
-fn is_held_on_this_thread(path: &Path) -> bool {
-    HELD_LOCKS.with(|held| held.borrow().contains_key(path))
+fn ownership_on_this_thread(path: &Path) -> Option<Rc<OwnedLock>> {
+    HELD_LOCKS.with(|held| {
+        let mut held = held.borrow_mut();
+        let ownership = held.get(path).and_then(Weak::upgrade);
+        if ownership.is_none() {
+            held.remove(path);
+        }
+        ownership
+    })
 }
 
 /// Acquire checkout-local mutation ownership and return an RAII guard.
 ///
 /// This form is useful when callers must span multiple library calls under one
-/// project mutation boundary. Nested calls on the same thread reuse the outer
+/// project mutation boundary. Nested calls on the same thread share the outer
 /// descriptor ownership rather than issuing a second kernel lock request.
 pub fn acquire(project: &Path, operation: &str) -> Result<OperationGuard> {
     let path = operation_lock_path(project)?;
-    if is_held_on_this_thread(&path) {
+    if let Some(ownership) = ownership_on_this_thread(&path) {
         return Ok(OperationGuard {
-            _marker: HeldMarker::enter(path),
-            _guard: None,
-            _thread_affinity: PhantomData,
+            _ownership: ownership,
         });
     }
 
@@ -126,10 +105,15 @@ pub fn acquire(project: &Path, operation: &str) -> Result<OperationGuard> {
                 path.display()
             )
         })?;
+    let ownership = Rc::new(OwnedLock { _guard: guard });
+    HELD_LOCKS.with(|held| {
+        let previous = held
+            .borrow_mut()
+            .insert(path, Rc::downgrade(&ownership));
+        debug_assert!(previous.and_then(|entry| entry.upgrade()).is_none());
+    });
     Ok(OperationGuard {
-        _marker: HeldMarker::enter(path),
-        _guard: Some(guard),
-        _thread_affinity: PhantomData,
+        _ownership: ownership,
     })
 }
 
@@ -150,7 +134,10 @@ pub fn with_lock<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use anyhow::Result;
+    use zed_lock::{LockClass, LockManager, LockRequest};
 
     use super::{OPERATION_LOCK_RELATIVE_PATH, acquire, operation_lock_path, with_lock};
 
@@ -186,6 +173,38 @@ mod tests {
         let _guard = acquire(project.path(), "multi-step mutation")?;
         with_lock(project.path(), "nested facade", || Ok(()))?;
         assert!(operation_lock_path(project.path())?.is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn nested_guards_keep_descriptor_ownership_until_the_last_drop() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        let path = operation_lock_path(project.path())?;
+        let outer = acquire(project.path(), "outer mutation")?;
+        let inner = acquire(project.path(), "inner mutation")?;
+        assert!(Rc::ptr_eq(&outer._ownership, &inner._ownership));
+        assert_eq!(Rc::strong_count(&inner._ownership), 2);
+
+        // Public guards are independent values and callers can drop them out of
+        // lexical order. The inner handle must continue owning the descriptor.
+        drop(outer);
+        assert_eq!(Rc::strong_count(&inner._ownership), 1);
+        let contender = LockManager::global().try_acquire(
+            LockRequest::exclusive(&path)
+                .operation("same-process contention probe")
+                .class(LockClass::ProjectMutation)
+                .queue_same_process(),
+        )?;
+        assert!(contender.is_none());
+
+        drop(inner);
+        let acquired = LockManager::global().try_acquire(
+            LockRequest::exclusive(&path)
+                .operation("post-release probe")
+                .class(LockClass::ProjectMutation)
+                .queue_same_process(),
+        )?;
+        assert!(acquired.is_some());
         Ok(())
     }
 }
