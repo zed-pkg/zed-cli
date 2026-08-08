@@ -1137,6 +1137,49 @@ package = "acme.client"
     }
 
     #[test]
+    fn a_single_language_package_routes_from_the_root_publish_section() {
+        // A repo with no `[targets.*]` declares its route at
+        // `[publish.native]`, so the channel and tag template have to be read
+        // from there. Looking only at `targets` silently dropped the declared
+        // channel and left such a package on the stable track.
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "zed-pkg-test"
+name = "node-lib"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/zed-pkg-test/node-lib"
+
+[publish.native]
+registry = "npm"
+package = "@zed-pkg-test/node-lib"
+channel = "beta"
+"#,
+        )
+        .unwrap();
+
+        let declared = build_plan(&manifest, ReleaseChannel::Stable, 1).unwrap();
+        assert_eq!(declared.native.len(), 1);
+        let route = &declared.native[0];
+        assert_eq!(route.channel.channel, ReleaseChannel::Beta);
+        assert_eq!(route.channel.version, "1.0.0-beta.1");
+        assert_eq!(route.channel.dist_tag.as_deref(), Some("beta"));
+        // The tag has to carry the channel version too, or the pre-release
+        // and the eventual 1.0.0 would claim the same ref.
+        assert_eq!(route.vcs_tag, "v1.0.0-beta.1");
+        assert_eq!(
+            route.version, "1.0.0",
+            "the release set version is unchanged"
+        );
+
+        let overridden = build_plan(&manifest, ReleaseChannel::Rc, 3).unwrap();
+        assert_eq!(overridden.native[0].channel.version, "1.0.0-rc.3");
+        assert_eq!(overridden.native[0].vcs_tag, "v1.0.0-rc.3");
+    }
+
+    #[test]
     fn a_manifest_declared_channel_applies_when_no_flag_overrides_it() {
         // A client generated from an unstable API surface only ever ships as
         // a candidate; that belongs in the manifest, not in every CI invocation.
