@@ -1,3 +1,4 @@
+# Trigger after the repair workflow exists on the branch.
 name: update immutable flags2env help-contract pin
 
 on:
