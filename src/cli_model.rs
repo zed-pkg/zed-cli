@@ -36,7 +36,7 @@ pub fn parse() -> Cli {
 /// registry/auth configuration, read saved credentials, or run transaction
 /// recovery before producing its JSON report.
 ///
-/// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` is canonical. The old environment key
+/// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST_ENV` is canonical. The old environment key
 /// remains the embedded compatibility key for this migration window so older
 /// scripts continue to work without changing the typed `Cmd::Install` shape.
 pub fn prepare_environment(args: &[OsString]) {
@@ -152,7 +152,9 @@ mod tests {
 
     #[test]
     fn root_command_exposes_read_only_inspect_help() {
-        let inspect = command().find_subcommand("inspect").expect("inspect command");
+        let inspect = command()
+            .find_subcommand("inspect")
+            .expect("inspect command");
         assert!(inspect.get_about().is_some());
     }
 
