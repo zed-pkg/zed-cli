@@ -20,6 +20,33 @@ fn max_artifact_bytes() -> u64 {
         .unwrap_or(DEFAULT_MAX_ARTIFACT_BYTES)
 }
 
+fn file_registry_path(raw: &str) -> Result<PathBuf> {
+    let url =
+        reqwest::Url::parse(raw).with_context(|| format!("invalid file registry url `{raw}`"))?;
+    if url.scheme() != "file" {
+        bail!("file registry url must use the `file` scheme");
+    }
+    if let Some(host) = url
+        .host_str()
+        .filter(|host| !host.is_empty() && !host.eq_ignore_ascii_case("localhost"))
+    {
+        bail!("unsupported file registry authority `{host}`; only local file URLs are supported");
+    }
+    url.to_file_path()
+        .map_err(|_| anyhow!("file registry url `{raw}` is not a local filesystem path"))
+}
+
+fn file_url_for_path(path: &Path) -> Result<String> {
+    reqwest::Url::from_file_path(path)
+        .map(|url| url.to_string())
+        .map_err(|_| {
+            anyhow!(
+                "cannot encode local file registry path `{}` as a file URL",
+                path.display()
+            )
+        })
+}
+
 /// Client-side registry abstraction. `file://` URLs get a directory-backed
 /// registry (hermetic tests, `zed test-local`, air-gapped mirrors); anything
 /// else goes over HTTP to a `zed-api-server`.
@@ -53,8 +80,8 @@ pub trait Registry {
 }
 
 pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
-    if let Some(path) = url.strip_prefix("file://") {
-        Ok(Box::new(FileRegistry::new(PathBuf::from(path))))
+    if url.starts_with("file://") {
+        Ok(Box::new(FileRegistry::new(file_registry_path(url)?)))
     } else if url.starts_with("http://") || url.starts_with("https://") {
         Ok(Box::new(HttpRegistry::new(url.to_string())?))
     } else {
@@ -152,7 +179,7 @@ impl Registry for FileRegistry {
             format: meta.format,
             vcs_tag: meta.vcs_tag.clone(),
             vcs_commit: meta.vcs_commit.clone(),
-            download_url: format!("file://{}", dest.display()),
+            download_url: file_url_for_path(&dest)?,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
         };
@@ -491,7 +518,37 @@ impl Registry for HttpRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::HttpRegistry;
+    use std::path::PathBuf;
+
+    use super::{HttpRegistry, file_registry_path, file_url_for_path};
+
+    #[test]
+    fn remote_file_registry_authority_is_rejected() {
+        let error = file_registry_path("file://example.test/registry").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported file registry authority")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_file_registry_url_round_trips_and_decodes_spaces() {
+        let path = PathBuf::from("/tmp/zed registry");
+        let url = file_url_for_path(&path).unwrap();
+        assert_eq!(url, "file:///tmp/zed%20registry");
+        assert_eq!(file_registry_path(&url).unwrap(), path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_registry_url_round_trips_drive_paths_and_spaces() {
+        let path = PathBuf::from(r"C:\zed registry");
+        let url = file_url_for_path(&path).unwrap();
+        assert_eq!(url, "file:///C:/zed%20registry");
+        assert_eq!(file_registry_path(&url).unwrap(), path);
+    }
 
     #[test]
     fn canonical_artifact_url_respects_registry_override() {
