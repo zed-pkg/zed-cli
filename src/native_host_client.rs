@@ -1109,14 +1109,80 @@ pub fn parse_versions(
     Ok(versions)
 }
 
+/// Hard ceiling on a registry response body (bytes).
+///
+/// A registry's own `Content-Length` is advisory and, for a hostile or
+/// compromised mirror, attacker-controlled — so the cap has to be the client's
+/// and has to be enforced while reading. The largest packuments in the wild are
+/// a few MiB; this is sized to stop an OOM, not to reject npm. Mirrors the Zed
+/// registry client's `ZED_PKG_MAX_ARTIFACT_BYTES`.
+const DEFAULT_MAX_REGISTRY_BYTES: u64 = 128 * 1024 * 1024;
+
+/// How long to wait on one registry request.
+///
+/// Set explicitly rather than inherited: a release job that blocks forever on
+/// one unresponsive mirror is a stuck pipeline, and a stuck pipeline is much
+/// harder to diagnose than a failed one.
+const REGISTRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Bounds applied to one registry request.
+///
+/// A struct rather than two globals so a test can pin them without mutating
+/// process environment — `cargo test` runs tests in parallel threads within one
+/// process, so an env-var override set by one test silently applies to every
+/// other test in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistryLimits {
+    pub max_bytes: u64,
+    pub timeout: std::time::Duration,
+}
+
+impl Default for RegistryLimits {
+    /// Reads `ZED_PKG_MAX_REGISTRY_BYTES` so an operator behind a mirror that
+    /// serves unusually large indexes can raise the ceiling.
+    fn default() -> Self {
+        Self {
+            max_bytes: std::env::var("ZED_PKG_MAX_REGISTRY_BYTES")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(DEFAULT_MAX_REGISTRY_BYTES),
+            timeout: REGISTRY_TIMEOUT,
+        }
+    }
+}
+
+/// Read a response body, refusing anything past the cap.
+///
+/// Reads one byte more than the limit so "exactly at the cap" is accepted and
+/// "over" is detected without trusting the declared length.
+fn read_capped(response: reqwest::blocking::Response, url: &str, cap: u64) -> Result<String> {
+    use std::io::Read;
+
+    let mut buffer = Vec::new();
+    response
+        .take(cap.saturating_add(1))
+        .read_to_end(&mut buffer)
+        .with_context(|| format!("read response body from {url}"))?;
+    if buffer.len() as u64 > cap {
+        anyhow::bail!("response from {url} exceeds the {cap}-byte registry response limit");
+    }
+    String::from_utf8(buffer).with_context(|| format!("response from {url} is not valid UTF-8"))
+}
+
 /// Send a built request and return its body.
 ///
 /// Kept separate from construction so every routing decision above is testable
 /// without a socket, and so a dry run exercises the identical code path up to
 /// the point of sending.
 pub fn execute(request: &RegistryRequest) -> Result<String> {
+    execute_with_limits(request, RegistryLimits::default())
+}
+
+/// [`execute`] with explicit bounds.
+pub fn execute_with_limits(request: &RegistryRequest, limits: RegistryLimits) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
+        .timeout(limits.timeout)
         .build()
         .context("build registry HTTP client")?;
 
@@ -1166,18 +1232,29 @@ pub fn execute(request: &RegistryRequest) -> Result<String> {
         .send()
         .with_context(|| format!("{} {}", request.method.as_str(), request.display_url()))?;
     let status = response.status();
-    let body = response.text().unwrap_or_default();
+    // The URL is printed through `display_url`, never `url`: a failed LuaRocks
+    // or Packagist request must not put its key in a log.
+    let display = request.display_url();
+    let body = read_capped(response, &display, limits.max_bytes);
+
     if !status.is_success() {
-        // The URL is printed through `display_url`, never `url`: a failed
-        // LuaRocks or Packagist upload must not put its key in a log.
+        // On a failure status the body is diagnostic, so a body that is itself
+        // unreadable must not mask the status the caller actually needs.
+        let detail = body
+            .as_deref()
+            .unwrap_or("<unreadable response body>")
+            .chars()
+            .take(500)
+            .collect::<String>();
         anyhow::bail!(
-            "{} {} failed with {status}: {}",
-            request.method.as_str(),
-            request.display_url(),
-            body.chars().take(500).collect::<String>()
+            "{} {display} failed with {status}: {detail}",
+            request.method.as_str()
         );
     }
-    Ok(body)
+    // On success an unreadable body is a hard error. Returning an empty string
+    // would read downstream as "this package has no versions", which is a
+    // wrong answer rather than a failure.
+    body
 }
 
 /// The npm publish envelope, minus the tarball attachment the caller adds.
