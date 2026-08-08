@@ -57,24 +57,195 @@ jobs:
             tests/mise_export_cli.rs
             tests/mise_export_reserved_paths_cli.rs
           )
+          clean_patch_files=(
+            README.md
+            docs/mise-export.md
+            src/lib.rs
+            src/main.rs
+            src/mise_export.rs
+            tests/mise_export_cli.rs
+            tests/mise_export_reserved_paths_cli.rs
+          )
 
-          git diff --binary "$feature_base" "$FEATURE_HEAD" -- "${feature_files[@]}" \
-            > "$RUNNER_TEMP/den-1462.patch"
-          test -s "$RUNNER_TEMP/den-1462.patch"
+          git diff --binary "$feature_base" "$FEATURE_HEAD" -- "${clean_patch_files[@]}" \
+            > "$RUNNER_TEMP/den-1462-clean.patch"
+          test -s "$RUNNER_TEMP/den-1462-clean.patch"
 
           cp .github/workflows/rebase-den-1462-export.yml \
             "$RUNNER_TEMP/rebase-den-1462-export.yml"
 
           git reset --hard "$main_head"
-          git apply --3way "$RUNNER_TEMP/den-1462.patch"
+          git apply --3way "$RUNNER_TEMP/den-1462-clean.patch"
 
           unresolved=$(git diff --name-only --diff-filter=U)
           if [[ -n "$unresolved" ]]; then
-            echo 'semantic patch left unresolved files:' >&2
+            echo 'clean exporter patch left unresolved files:' >&2
             printf '%s\n' "$unresolved" >&2
             git diff --cc >&2
             exit 1
           fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one anchor, found {count}')
+              return text.replace(old, new, 1)
+
+          flags = Path('.cli-flags.toml')
+          text = flags.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              '[commands.env]\nhelp = "Import and verify project-local developer environments."\n',
+              '[commands.env]\nhelp = "Import, verify, and export project-local developer environments."\n',
+              'environment command help',
+          )
+          export_contract_anchor = '''[commands.env.commands.verify]
+          help = "Verify config/lock coverage and normalized environment identity."
+
+          [commands.task]
+          '''
+          export_contract = '''[commands.env.commands.verify]
+          help = "Verify config/lock coverage and normalized environment identity."
+
+          [commands.env.commands.export]
+          help = "Project a schema-v2 EnvironmentPlan into deterministic manager configuration."
+
+          [commands.env.commands.export.flags.env_plan]
+          env = "ZED_PKG_ENV_PLAN"
+          aliases = ["plan"]
+          type = "string"
+          help = "Project-local schema-v2 environment plan path."
+
+          [commands.env.commands.export.flags.env_output]
+          env = "ZED_PKG_ENV_OUTPUT"
+          aliases = ["output"]
+          type = "string"
+          default = ".mise.toml"
+          help = "Project-local manager export path."
+
+          [commands.env.commands.export.flags.env_check]
+          env = "ZED_PKG_ENV_CHECK"
+          aliases = ["check"]
+          type = "bool"
+          default = "false"
+          help = "Verify the deterministic manager projection without writing."
+
+          [commands.env.commands.export.flags.env_write]
+          env = "ZED_PKG_ENV_WRITE"
+          aliases = ["write"]
+          type = "bool"
+          default = "false"
+          help = "Transactionally write a Zed-owned manager projection."
+
+          [commands.task]
+          '''
+          text = replace_once(
+              text,
+              export_contract_anchor,
+              export_contract,
+              'flags-to-env export command contract',
+          )
+          flags.write_text(text, encoding='utf-8')
+
+          cli = Path('src/cli.rs')
+          text = cli.read_text(encoding='utf-8')
+          text = replace_once(
+              text,
+              '    /// Import or verify project-local mise configuration.\n    Mise,\n',
+              '    /// Import, verify, or export project-local mise configuration.\n    Mise,\n',
+              'environment manager documentation',
+          )
+          verify_anchor = '''    /// Verify manager config/lock coverage and the normalized plan digest.
+              Verify {
+          '''
+          export_variant = '''    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.
+              Export {
+                  #[arg(value_enum)]
+                  manager: EnvironmentManagerArg,
+                  /// Project-local schema-v2 EnvironmentPlan (.toml or .json).
+                  #[arg(long, env = "ZED_PKG_ENV_PLAN")]
+                  plan: PathBuf,
+                  /// Project-local mise output path.
+                  #[arg(long, env = "ZED_PKG_ENV_OUTPUT", default_value = ".mise.toml")]
+                  output: PathBuf,
+                  /// Verify that the output already equals the deterministic projection.
+                  #[arg(long, env = "ZED_PKG_ENV_CHECK")]
+                  check: bool,
+                  /// Transactionally create/update a Zed-owned manager view.
+                  #[arg(long, env = "ZED_PKG_ENV_WRITE")]
+                  write: bool,
+                  /// Emit a machine-readable export result.
+                  #[arg(long, env = "ZED_PKG_ENV_JSON")]
+                  json: bool,
+              },
+          '''
+          text = replace_once(
+              text,
+              verify_anchor,
+              export_variant + verify_anchor,
+              'typed export subcommand',
+          )
+          text = replace_once(
+              text,
+              '    use super::{AuthCmd, Cli, Cmd};\n',
+              '    use super::{AuthCmd, Cli, Cmd, EnvCmd};\n',
+              'test EnvCmd import',
+          )
+          task_test_anchor = '''    #[test]
+              fn task_commands_are_typed_and_reject_zero_concurrency() {
+          '''
+          export_test = '''    #[test]
+              fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
+                  let cli = Cli::try_parse_from([
+                      "zed",
+                      "env",
+                      "export",
+                      "mise",
+                      "--plan",
+                      "zed-env.toml",
+                      "--output",
+                      ".mise.toml",
+                      "--check",
+                      "--json",
+                  ])
+                  .unwrap();
+                  assert!(matches!(cli.cmd, Cmd::Env { .. }));
+
+                  assert!(matches!(
+                      Cli::try_parse_from([
+                          "zed",
+                          "env",
+                          "export",
+                          "mise",
+                          "--plan",
+                          "zed-env.toml",
+                          "--check",
+                          "--write",
+                      ])
+                      .unwrap()
+                      .cmd,
+                      Cmd::Env {
+                          cmd: EnvCmd::Export {
+                              check: true,
+                              write: true,
+                              ..
+                          }
+                      }
+                  ));
+              }
+
+          '''
+          text = replace_once(
+              text,
+              task_test_anchor,
+              export_test + task_test_anchor,
+              'typed export parser test',
+          )
+          cli.write_text(text, encoding='utf-8')
+          PY
 
           mkdir -p .github/workflows
           cp "$RUNNER_TEMP/rebase-den-1462-export.yml" \
