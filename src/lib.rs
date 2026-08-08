@@ -10,6 +10,7 @@ pub mod config;
 mod dart_wiring;
 pub mod dev;
 pub mod environment;
+pub mod environment_export_cli;
 pub mod external_subcommands;
 pub mod fetch;
 pub mod flags;
@@ -101,6 +102,7 @@ pub mod mise_export {
 }
 pub mod mise_lock;
 pub mod nix_bundle_write;
+pub mod nix_environment_export;
 pub mod nix_export_bundle;
 pub mod nix_export_plan;
 #[path = "ops_entry.rs"]

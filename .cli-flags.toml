@@ -314,8 +314,13 @@ help = "Project-local schema-v2 environment plan path."
 env = "ZED_PKG_ENV_OUTPUT"
 aliases = ["output"]
 type = "string"
-default = ".mise.toml"
-help = "Project-local manager export path."
+help = "Project-local manager export path; defaults are manager-specific."
+
+[commands.env.commands.export.flags.env_receipt]
+env = "ZED_PKG_ENV_RECEIPT"
+aliases = ["receipt"]
+type = "string"
+help = "Zed-owned deterministic receipt path for Devbox or Flox export."
 
 [commands.env.commands.export.flags.env_check]
 env = "ZED_PKG_ENV_CHECK"
