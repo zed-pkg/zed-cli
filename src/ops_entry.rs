@@ -84,8 +84,9 @@ fn read_zedignore_rules(project: &Path) -> Result<Vec<String>> {
     match fs::read_to_string(&path) {
         Ok(contents) => Ok(parse_zedignore_rules(&contents)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => Err(error)
-            .with_context(|| format!("reading package ignore file {}", path.display())),
+        Err(error) => {
+            Err(error).with_context(|| format!("reading package ignore file {}", path.display()))
+        }
     }
 }
 
@@ -140,16 +141,11 @@ fn analyze_publish_ignore_rules(
     }
 
     conflicts.sort_by(|left, right| {
-        (
-            &left.path_family,
-            &left.manifest_rule,
-            &left.ignore_rule,
-        )
-            .cmp(&(
-                &right.path_family,
-                &right.manifest_rule,
-                &right.ignore_rule,
-            ))
+        (&left.path_family, &left.manifest_rule, &left.ignore_rule).cmp(&(
+            &right.path_family,
+            &right.manifest_rule,
+            &right.ignore_rule,
+        ))
     });
     conflicts.dedup();
 
@@ -371,8 +367,7 @@ mod publish_ignore_tests {
 
     #[test]
     fn later_zedignore_negation_is_reported_and_wins() {
-        let analysis =
-            analyze_publish_ignore_rules(&rules(&["target/**"]), &rules(&["!target"]));
+        let analysis = analyze_publish_ignore_rules(&rules(&["target/**"]), &rules(&["!target"]));
 
         assert_eq!(
             analysis.conflicts,
@@ -389,8 +384,7 @@ mod publish_ignore_tests {
 
     #[test]
     fn later_zedignore_exclusion_can_reapply_after_manifest_negation() {
-        let analysis =
-            analyze_publish_ignore_rules(&rules(&["!target"]), &rules(&["target/**"]));
+        let analysis = analyze_publish_ignore_rules(&rules(&["!target"]), &rules(&["target/**"]));
 
         assert_eq!(analysis.conflicts.len(), 1);
         let effective = effective_excludes(&analysis.ordered_rules, false);
