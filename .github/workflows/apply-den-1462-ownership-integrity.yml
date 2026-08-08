@@ -134,7 +134,7 @@ jobs:
                       .unwrap()
                       .output_sha256 = "0".repeat(64);
                   let mut corrupted = serde_json::to_vec_pretty(&state).unwrap();
-                  corrupted.push(b'\n');
+                  corrupted.push(10);
                   fs::write(&state_path, &corrupted).unwrap();
 
                   let repair =
