@@ -1,0 +1,38 @@
+name: CLI portability
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/cli-portability.yml'
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/cli-portability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cli-portability-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portability:
+    uses: ORESoftware/.github/.github/workflows/reusable-cli-portability.yml@5732c20d6741be9faf0c9ec36061ca4cb9f50f97
+    with:
+      language: rust
+      working-directory: .
+      rust-toolchain: stable
+      cargo-locked: true
+      run-smoke: true
