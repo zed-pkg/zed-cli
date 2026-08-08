@@ -42,146 +42,106 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          source = Path('src/mise_export.rs')
-          text = source.read_text(encoding='utf-8')
-          old_paths = '''    let plan_folded = plan_relative.to_ascii_lowercase();
-          let output_folded = output_relative.to_ascii_lowercase();
-          ensure!(
-              output_folded != plan_folded,
-              "mise output `{output_relative}` cannot overwrite its source environment plan"
-          );
-          ensure!(
-              output_folded != EXPORT_STATE_PATH.to_ascii_lowercase(),
-              "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
-          );
-          '''
-          new_paths = '''    let plan_folded = plan_relative.to_ascii_lowercase();
-          let output_folded = output_relative.to_ascii_lowercase();
-          let state_folded = EXPORT_STATE_PATH.to_ascii_lowercase();
-          ensure!(
-              output_folded != plan_folded,
-              "mise output `{output_relative}` cannot overwrite its source environment plan"
-          );
-          ensure!(
-              plan_folded != state_folded,
-              "environment plan cannot target reserved export state `{EXPORT_STATE_PATH}`"
-          );
-          ensure!(
-              output_folded != state_folded,
-              "mise output cannot target reserved export state `{EXPORT_STATE_PATH}`"
-          );
-          '''
-          if old_paths in text:
-              text = text.replace(old_paths, new_paths, 1)
-          elif new_paths not in text:
-              raise SystemExit('could not locate either old or hardened path relationship block')
+          path = Path('src/mise_export.rs')
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
 
-          path_anchor = '''    #[test]
-          fn export_paths_reject_parent_drive_unc_and_symlink_escape() {
-          '''
-          path_regression = '''    #[test]
-          fn reserved_export_state_cannot_be_used_as_plan_input() {
-              let temp = tempfile::tempdir().unwrap();
-              let reserved = temp.path().join(EXPORT_STATE_PATH);
-              fs::create_dir_all(reserved.parent().unwrap()).unwrap();
-              fs::write(&reserved, serde_json::to_vec_pretty(&simple_plan()).unwrap()).unwrap();
-
-              let error = export_mise(
-                  temp.path(),
-                  Path::new(EXPORT_STATE_PATH),
-                  Path::new("mise.toml"),
-                  MiseExportMode::Print,
-              )
-              .unwrap_err();
-              assert!(
-                  error
-                      .to_string()
-                      .contains("environment plan cannot target reserved export state")
-              );
-              assert!(!temp.path().join("mise.toml").exists());
-          }
-
-          '''
-          if 'fn reserved_export_state_cannot_be_used_as_plan_input()' not in text:
-              if text.count(path_anchor) != 1:
-                  raise SystemExit('could not locate reserved path regression insertion point')
-              text = text.replace(path_anchor, path_regression + path_anchor, 1)
-          source.write_text(text, encoding='utf-8')
-
-          cli_path = Path('tests/mise_export_reserved_paths_cli.rs')
-          cli = cli_path.read_text(encoding='utf-8')
-          test_anchor = '''#[test]
-          fn real_cli_refuses_source_state_and_transaction_staging_destinations() {
-          '''
-          helper = '''fn run_zed_with_plan(project: &Path, home: &Path, plan: &str, output: &str) -> Output {
-              let empty_path = home.join("empty-path");
-              fs::create_dir_all(&empty_path).unwrap();
-              let mut command = Command::new(zed_bin());
-              for (key, _) in std::env::vars_os() {
-                  if key.to_string_lossy().starts_with("ZED_PKG_") {
-                      command.env_remove(key);
-                  }
-              }
-              command
-                  .args([
-                      "env",
-                      "export",
-                      "mise",
-                      "--plan",
-                      plan,
-                      "--output",
-                      output,
-                      "--write",
-                  ])
-                  .current_dir(project)
-                  .env("HOME", home)
-                  .env("USERPROFILE", home)
-                  .env("XDG_CONFIG_HOME", home.join(".config"))
-                  .env("ZED_PKG_HOME", home.join(".zed-pkg"))
-                  .env("PATH", empty_path)
-                  .output()
-                  .unwrap()
-          }
-
-          '''
-          if 'fn run_zed_with_plan(' not in cli:
-              if cli.count(test_anchor) != 1:
-                  raise SystemExit('could not locate real CLI reserved path test')
-              cli = cli.replace(test_anchor, helper + test_anchor, 1)
-
-          final_anchor = '''    assert_eq!(
-              fs::read(project.join("zed-env.json")).unwrap(),
-              original_plan
-          );
-          '''
-          source_case = '''    fs::create_dir_all(project.join(".zed")).unwrap();
-          fs::write(
-              project.join(".zed/mise-export-state.json"),
-              &original_plan,
+          function_index = next(
+              index
+              for index, line in enumerate(lines)
+              if line.strip() == 'fn validate_export_path_relationships('
           )
-          .unwrap();
-          let reserved_source = run_zed_with_plan(
-              &project,
-              &home,
-              ".zed/mise-export-state.json",
-              "mise.toml",
-          );
-          assert!(!reserved_source.status.success());
-          let stderr = String::from_utf8_lossy(&reserved_source.stderr);
-          assert!(
-              stderr.contains("environment plan cannot target reserved export state"),
-              "unexpected reserved-source error: {stderr}"
-          );
-          assert!(!project.join("mise.toml").exists());
-          fs::remove_file(project.join(".zed/mise-export-state.json")).unwrap();
-          fs::remove_dir(project.join(".zed")).unwrap();
+          output_index = next(
+              index
+              for index in range(function_index, len(lines))
+              if lines[index].strip()
+              == 'let output_folded = output_relative.to_ascii_lowercase();'
+          )
+          if not any(
+              line.strip() == 'let state_folded = EXPORT_STATE_PATH.to_ascii_lowercase();'
+              for line in lines[output_index : output_index + 8]
+          ):
+              indent = lines[output_index][: len(lines[output_index]) - len(lines[output_index].lstrip())]
+              lines.insert(
+                  output_index + 1,
+                  f'{indent}let state_folded = EXPORT_STATE_PATH.to_ascii_lowercase();\n',
+              )
 
-          '''
-          if 'unexpected reserved-source error' not in cli:
-              if cli.count(final_anchor) != 1:
-                  raise SystemExit('could not locate final reserved path assertions')
-              cli = cli.replace(final_anchor, source_case + final_anchor, 1)
-          cli_path.write_text(cli, encoding='utf-8')
+          expression_index = next(
+              index
+              for index in range(function_index, len(lines))
+              if 'output_folded != EXPORT_STATE_PATH.to_ascii_lowercase()' in lines[index]
+              or lines[index].strip() == 'output_folded != state_folded,'
+          )
+          expression_indent = lines[expression_index][
+              : len(lines[expression_index]) - len(lines[expression_index].lstrip())
+          ]
+          lines[expression_index] = f'{expression_indent}output_folded != state_folded,\n'
+
+          if not any(
+              line.strip() == 'plan_folded != state_folded,'
+              for line in lines[output_index : expression_index + 4]
+          ):
+              ensure_start = expression_index - 1
+              while ensure_start >= function_index and lines[ensure_start].strip() != 'ensure!(':
+                  ensure_start -= 1
+              if ensure_start < function_index:
+                  raise SystemExit('could not locate reserved-output ensure block')
+              indent = lines[ensure_start][: len(lines[ensure_start]) - len(lines[ensure_start].lstrip())]
+              nested = indent + '    '
+              block = [
+                  f'{indent}ensure!(\n',
+                  f'{nested}plan_folded != state_folded,\n',
+                  f'{nested}"environment plan cannot target reserved export state `{{EXPORT_STATE_PATH}}`"\n',
+                  f'{indent});\n',
+              ]
+              lines[ensure_start:ensure_start] = block
+
+          if not any(
+              'fn reserved_export_state_cannot_be_used_as_plan_input()' in line
+              for line in lines
+          ):
+              target_index = next(
+                  index
+                  for index, line in enumerate(lines)
+                  if line.strip()
+                  == 'fn export_paths_reject_parent_drive_unc_and_symlink_escape() {'
+              )
+              insertion_index = target_index - 1
+              while insertion_index > 0 and lines[insertion_index].strip() != '#[test]':
+                  insertion_index -= 1
+              if lines[insertion_index].strip() != '#[test]':
+                  raise SystemExit('could not locate reserved path test insertion point')
+              indent = lines[target_index][
+                  : len(lines[target_index]) - len(lines[target_index].lstrip())
+              ]
+              nested = indent + '    '
+              block = [
+                  f'{indent}#[test]\n',
+                  f'{indent}fn reserved_export_state_cannot_be_used_as_plan_input() {{\n',
+                  f'{nested}let temp = tempfile::tempdir().unwrap();\n',
+                  f'{nested}let reserved = temp.path().join(EXPORT_STATE_PATH);\n',
+                  f'{nested}fs::create_dir_all(reserved.parent().unwrap()).unwrap();\n',
+                  f'{nested}fs::write(&reserved, serde_json::to_vec_pretty(&simple_plan()).unwrap()).unwrap();\n',
+                  '\n',
+                  f'{nested}let error = export_mise(\n',
+                  f'{nested}    temp.path(),\n',
+                  f'{nested}    Path::new(EXPORT_STATE_PATH),\n',
+                  f'{nested}    Path::new("mise.toml"),\n',
+                  f'{nested}    MiseExportMode::Print,\n',
+                  f'{nested})\n',
+                  f'{nested}.unwrap_err();\n',
+                  f'{nested}assert!(\n',
+                  f'{nested}    error\n',
+                  f'{nested}        .to_string()\n',
+                  f'{nested}        .contains("environment plan cannot target reserved export state")\n',
+                  f'{nested});\n',
+                  f'{nested}assert!(!temp.path().join("mise.toml").exists());\n',
+                  f'{indent}}}\n',
+                  '\n',
+              ]
+              lines[insertion_index:insertion_index] = block
+
+          path.write_text(''.join(lines), encoding='utf-8')
           PY
 
           cargo fmt --all
@@ -195,7 +155,7 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/mise_export.rs tests/mise_export_reserved_paths_cli.rs
+          git add src/mise_export.rs
           if git diff --cached --quiet; then
             echo 'reserved source hardening already present'
             exit 0
