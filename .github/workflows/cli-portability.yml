@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   portability:
-    uses: ORESoftware/.github/.github/workflows/reusable-cli-portability.yml@5732c20d6741be9faf0c9ec36061ca4cb9f50f97
+    uses: ORESoftware/.github/.github/workflows/reusable-cli-portability.yml@a44a422bd2e5a26126488c4dbffb17ed320ae957
     with:
       language: rust
       working-directory: .
