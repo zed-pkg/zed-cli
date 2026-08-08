@@ -107,9 +107,7 @@ pub fn acquire(project: &Path, operation: &str) -> Result<OperationGuard> {
         })?;
     let ownership = Rc::new(OwnedLock { _guard: guard });
     HELD_LOCKS.with(|held| {
-        let previous = held
-            .borrow_mut()
-            .insert(path, Rc::downgrade(&ownership));
+        let previous = held.borrow_mut().insert(path, Rc::downgrade(&ownership));
         debug_assert!(previous.and_then(|entry| entry.upgrade()).is_none());
     });
     Ok(OperationGuard {
