@@ -129,7 +129,14 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
             let report = crate::project_lock::with_lock(
                 &project,
                 "adopt Git submodules into Zed package graph",
-                || super::overtake(&project, &cfg),
+                || {
+                    // Modular takeover dispatch bypasses the ordinary `run`
+                    // entrypoint. Recover under the already-owned project lock
+                    // before reading `.gitmodules` or executing Git transport,
+                    // not only later when the first transaction begins.
+                    crate::transaction::recover_pending(&project)?;
+                    super::overtake(&project, &cfg)
+                },
             )?;
             println!(
                 "overtook {} Git submodule package(s) in {}",
