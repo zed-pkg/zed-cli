@@ -1,6 +1,8 @@
-use std::path::PathBuf;
+use std::fs;
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use zed_cli::tool_profile::{
     LockMode, default_zed_home, install_offline, list_target, load_environment_lock, verify_receipt,
@@ -136,7 +138,18 @@ fn run(cli: Cli) -> Result<()> {
                 Some(home) => root.join(home),
                 None => default_zed_home()?,
             };
-            let receipt = install_offline(&root, &loaded, &target, Some(&profile), &home)?;
+            let rollback_directories = absent_profile_directories(&root, &profile);
+            let receipt = match install_offline(&root, &loaded, &target, Some(&profile), &home) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    rollback_empty_profile_directories(&rollback_directories).with_context(|| {
+                        format!(
+                            "rolling back empty profile directories after installation failed: {error:#}"
+                        )
+                    })?;
+                    return Err(error);
+                }
+            };
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&receipt)?);
             } else {
@@ -151,6 +164,80 @@ fn run(cli: Cli) -> Result<()> {
                         tool.backend,
                         tool.executables.join(", ")
                     );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Record only profile-directory prefixes that do not exist before installation.
+/// Unsafe paths are left to the library validator and produce no rollback list.
+fn absent_profile_directories(root: &Path, profile: &Path) -> Vec<PathBuf> {
+    if profile.as_os_str().is_empty() || profile.is_absolute() {
+        return Vec::new();
+    }
+
+    let mut current = root.to_path_buf();
+    let mut absent = Vec::new();
+    for component in profile.components() {
+        let Component::Normal(segment) = component else {
+            return Vec::new();
+        };
+        current.push(segment);
+        if matches!(
+            fs::symlink_metadata(&current),
+            Err(error) if error.kind() == ErrorKind::NotFound
+        ) {
+            absent.push(current.clone());
+        }
+    }
+
+    let version = current.join("v1");
+    if matches!(
+        fs::symlink_metadata(&version),
+        Err(error) if error.kind() == ErrorKind::NotFound
+    ) {
+        absent.push(version);
+    }
+    absent
+}
+
+/// Remove only directories that were absent before this invocation and remain
+/// empty. Nonempty directories preserve forensic or concurrent state and are
+/// deliberately left alone; symlink or file replacement fails closed.
+fn rollback_empty_profile_directories(directories: &[PathBuf]) -> Result<()> {
+    for directory in directories.iter().rev() {
+        let metadata = match fs::symlink_metadata(directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("inspecting rollback directory `{}`", directory.display())
+                });
+            }
+        };
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "new profile path `{}` changed type during rollback",
+            directory.display()
+        );
+
+        match fs::remove_dir(directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                let has_entries = fs::read_dir(directory)
+                    .with_context(|| {
+                        format!("reading rollback directory `{}`", directory.display())
+                    })?
+                    .next()
+                    .transpose()?
+                    .is_some();
+                if !has_entries {
+                    return Err(error).with_context(|| {
+                        format!("removing empty rollback directory `{}`", directory.display())
+                    });
                 }
             }
         }
