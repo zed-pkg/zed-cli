@@ -1,0 +1,66 @@
+name: R2 publication contract
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/r2-publication-contract.yml
+      - .github/workflows/r2-release-publication.yml
+      - scripts/publish_r2_release.py
+      - tests/test_publish_r2_release.py
+      - docs/release-artifacts-r2.md
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/r2-publication-contract.yml
+      - .github/workflows/r2-release-publication.yml
+      - scripts/publish_r2_release.py
+      - tests/test_publish_r2_release.py
+      - docs/release-artifacts-r2.md
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run standard-library publication tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/publish_r2_release.py tests/test_publish_r2_release.py
+          python3 -m unittest discover -s tests -p 'test_publish_r2_release.py' -v
+      - name: Prove dry-run reports contain no credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp -d)"
+          trap 'rm -rf "$fixture"' EXIT
+          printf 'archive\n' > "$fixture/zed-test.tar.gz"
+          sha256sum "$fixture/zed-test.tar.gz" > "$fixture/zed-test.tar.gz.sha256"
+          python3 scripts/publish_r2_release.py \
+            --dry-run \
+            --directory "$fixture" \
+            --bucket zed-pkg-releases \
+            --prefix zed-cli/v0.0.0-contract \
+            --release v0.0.0-contract \
+            --source-repository zed-pkg/zed-cli \
+            --source-run-id 1 \
+            --report "$fixture/report.json"
+          python3 - "$fixture/report.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          report = json.loads(Path(sys.argv[1]).read_text())
+          serialized = json.dumps(report).lower()
+          assert "credential" not in serialized
+          assert "access_key" not in serialized
+          assert "secret" not in serialized
+          assert len(report["objects"]) == 2
+          PY
+          git diff --check
