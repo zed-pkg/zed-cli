@@ -215,7 +215,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 zed_cli::transaction::recover_pending(&project)?;
                 submodules::sync(&project)?;
                 managed_install::install(
-                    &cwd,
+                    &project,
                     &cfg,
                     &specs,
                     frozen,
