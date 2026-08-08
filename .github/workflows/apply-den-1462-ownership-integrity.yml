@@ -1,0 +1,165 @@
+name: apply DEN-1462 ownership-state integrity
+
+on:
+  push:
+    branches:
+      - agent/den-1462-mise-export-current-main
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-1462-ownership-integrity-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exporter branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/den-1462-mise-export-current-main
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Reject silent ownership transfer and state repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/mise_export.rs')
+          text = path.read_text(encoding='utf-8')
+          old = '''    let current = read_regular_file(output_path, "mise output")?;
+              let unchanged = current
+                  .as_deref()
+                  .is_some_and(|bytes| bytes == candidate.as_bytes());
+
+              if let Some(current) = current.as_deref()
+                  && !unchanged
+              {
+                  let current_sha256 = digest_bytes(current);
+                  let record = state.outputs.get(output_relative).with_context(|| {
+                      format!(
+                          "refusing to overwrite hand-authored `{output_relative}`: no Zed export state exists; move it aside, choose another --output, or make its contents match the deterministic projection before adopting it"
+                      )
+                  })?;
+                  ensure!(
+                      record.plan == plan_relative,
+                      "refusing to overwrite `{output_relative}` from `{plan_relative}` because it is owned by plan `{}`",
+                      record.plan
+                  );
+                  ensure!(
+                      record.output_sha256 == current_sha256,
+                      "refusing to overwrite edited `{output_relative}`: export state records sha256 {}, current file is {current_sha256}",
+                      record.output_sha256
+                  );
+              }
+          '''
+          new = '''    let current = read_regular_file(output_path, "mise output")?;
+              let unchanged = current
+                  .as_deref()
+                  .is_some_and(|bytes| bytes == candidate.as_bytes());
+
+              if let Some(record) = state.outputs.get(output_relative) {
+                  ensure!(
+                      record.plan == plan_relative,
+                      "refusing to change ownership of `{output_relative}` from plan `{}` to `{plan_relative}`",
+                      record.plan
+                  );
+                  if let Some(current) = current.as_deref() {
+                      let current_sha256 = digest_bytes(current);
+                      ensure!(
+                          record.output_sha256 == current_sha256,
+                          "refusing to overwrite edited `{output_relative}`: export state records sha256 {}, current file is {current_sha256}",
+                          record.output_sha256
+                      );
+                  }
+              }
+
+              if current.is_some() && !unchanged && !state.outputs.contains_key(output_relative) {
+                  bail!(
+                      "refusing to overwrite hand-authored `{output_relative}`: no Zed export state exists; move it aside, choose another --output, or make its contents match the deterministic projection before adopting it"
+                  );
+              }
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one ownership block, found {text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          anchor = '''    #[test]
+              fn hand_edits_and_unowned_outputs_are_never_overwritten() {
+          '''
+          regression = '''    #[test]
+              fn ownership_cannot_transfer_or_repair_state_silently() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let plan = simple_plan();
+                  let plan_path = write_plan(temp.path(), &plan);
+                  let output = Path::new(".mise.toml");
+                  export_mise(temp.path(), &plan_path, output, MiseExportMode::Write).unwrap();
+
+                  let alternate_plan = temp.path().join("alternate-env.toml");
+                  fs::write(&alternate_plan, plan.to_toml_string().unwrap()).unwrap();
+                  let output_before = fs::read(temp.path().join(output)).unwrap();
+                  let state_path = temp.path().join(EXPORT_STATE_PATH);
+                  let state_before = fs::read(&state_path).unwrap();
+                  let transfer = export_mise(
+                      temp.path(),
+                      Path::new("alternate-env.toml"),
+                      output,
+                      MiseExportMode::Write,
+                  )
+                  .unwrap_err();
+                  assert!(transfer.to_string().contains("change ownership"));
+                  assert_eq!(fs::read(temp.path().join(output)).unwrap(), output_before);
+                  assert_eq!(fs::read(&state_path).unwrap(), state_before);
+
+                  let mut state: MiseExportState = serde_json::from_slice(&state_before).unwrap();
+                  state
+                      .outputs
+                      .get_mut(".mise.toml")
+                      .unwrap()
+                      .output_sha256 = "0".repeat(64);
+                  let mut corrupted = serde_json::to_vec_pretty(&state).unwrap();
+                  corrupted.push(b'\n');
+                  fs::write(&state_path, &corrupted).unwrap();
+
+                  let repair =
+                      export_mise(temp.path(), &plan_path, output, MiseExportMode::Write).unwrap_err();
+                  assert!(repair.to_string().contains("export state records sha256"));
+                  assert_eq!(fs::read(temp.path().join(output)).unwrap(), output_before);
+                  assert_eq!(fs::read(&state_path).unwrap(), corrupted);
+              }
+
+          '''
+          if text.count(anchor) != 1:
+              raise SystemExit('could not locate ownership regression insertion point')
+          path.write_text(text.replace(anchor, regression + anchor, 1), encoding='utf-8')
+          PY
+
+          cargo fmt --all
+          git diff --check
+          cargo test --locked mise_export::tests::ownership_cannot_transfer_or_repair_state_silently
+          cargo test --locked mise_export
+          cargo test --locked --test mise_export_cli
+          cargo test --locked --test mise_export_reserved_paths_cli
+          cargo clippy --locked --all-targets -- -D warnings
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/mise_export.rs
+          git commit -m 'fix(DEN-1462): preserve exporter ownership-state integrity'
+          git push origin HEAD:agent/den-1462-mise-export-current-main
