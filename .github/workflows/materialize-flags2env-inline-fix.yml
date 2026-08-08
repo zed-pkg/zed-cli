@@ -1,0 +1,94 @@
+name: materialize flags2env inline-value fix
+
+on:
+  push:
+    branches:
+      - chore/flags2env-inline-value-fix-clean
+    paths:
+      - .github/workflows/materialize-flags2env-inline-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-flags2env-inline-fix
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact dependency branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: chore/flags2env-inline-value-fix-clean
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Add the product-level truncation regression
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/flags.rs')
+          text = path.read_text()
+          if 'fn long_inline_values_are_not_truncated()' not in text:
+              anchor = '''    #[test]
+                  fn diagnostics_redact_inline_values() {
+              '''
+              test = '''    #[test]
+                  fn long_inline_values_are_not_truncated() {
+                      let token = format!("header.{}.signature", "a".repeat(240));
+                      let argv = vec!["zed".to_string(), format!("--token={token}"), "find".to_string(), "http".to_string()];
+                      let parsed = parse_embedded(&argv).expect("long inline values must parse");
+                      assert!(parsed.unknown_options.is_empty());
+                      assert!(parsed.errors.is_empty());
+                      assert_eq!(
+                          parsed.flags.get("ZED_PKG_TOKEN").map(String::as_str),
+                          Some(token.as_str())
+                      );
+                  }
+
+                  #[test]
+                  fn diagnostics_redact_inline_values() {
+              '''
+              if anchor not in text:
+                  raise SystemExit('flags regression insertion anchor not found')
+              path.write_text(text.replace(anchor, test, 1))
+          PY
+
+      - name: Refresh the resolver-owned lock and validate
+        run: |
+          set -euo pipefail
+          cargo update -p flags2env
+          grep -F 'git+https://github.com/ORESoftware/flags-2-env.git?rev=8c8465561075a8d7ebb58074b3a8087138e97d8f#8c8465561075a8d7ebb58074b3a8087138e97d8f' Cargo.lock
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked flags::tests::long_inline_values_are_not_truncated
+          cargo test --locked --lib flags::tests
+          cargo test --locked --test startup_environment_contract
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit ordinary dependency and regression files
+        run: |
+          set -euo pipefail
+          rm .github/workflows/materialize-flags2env-inline-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock src/flags.rs .github/workflows/materialize-flags2env-inline-fix.yml
+          git diff --cached --check
+          git commit -m 'test: preserve long inline flags2env values'
+          git push origin HEAD:chore/flags2env-inline-value-fix-clean
