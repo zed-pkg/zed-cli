@@ -10,6 +10,7 @@ pub mod config;
 mod dart_wiring;
 pub mod dev;
 pub mod environment;
+pub mod external_subcommands;
 pub mod fetch;
 pub mod flags;
 pub mod git_submodules;
