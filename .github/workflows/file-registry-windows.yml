@@ -65,11 +65,11 @@ jobs:
         run: |
           $root = Join-Path $env:RUNNER_TEMP 'zed-file-registry-windows'
           $registry = Join-Path $root 'registry with spaces'
-          $home = Join-Path $root 'home'
+          $zedHome = Join-Path $root 'home'
           $lib = Join-Path $root 'node-lib'
           $app = Join-Path $root 'node-app'
           Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force $registry, $home | Out-Null
+          New-Item -ItemType Directory -Force $registry, $zedHome | Out-Null
           Copy-Item -Recurse zed-cli/tests/fixtures/docker-install/node-lib $lib
           Copy-Item -Recurse zed-cli/tests/fixtures/docker-install/node-app $app
 
@@ -95,7 +95,7 @@ jobs:
 
           Push-Location $app
           try {
-            & $zed install --registry $registryUri --home $home --install-mode copy
+            & $zed install --registry $registryUri --home $zedHome --install-mode copy
             if ($LASTEXITCODE -ne 0) { throw "install failed with exit $LASTEXITCODE" }
           } finally { Pop-Location }
 
