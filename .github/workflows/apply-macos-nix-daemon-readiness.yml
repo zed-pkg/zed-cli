@@ -1,0 +1,93 @@
+name: apply macOS Nix daemon readiness hardening
+
+on:
+  push:
+    branches:
+      - fix/macos-nix-daemon-readiness
+
+permissions:
+  contents: write
+
+concurrency:
+  group: macos-nix-daemon-readiness-materializer
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/macos-nix-daemon-readiness
+          fetch-depth: 0
+          persist-credentials: true
+          show-progress: false
+
+      - name: Add bounded Nix daemon readiness probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/nix-interop.yml')
+          text = path.read_text(encoding='utf-8')
+          anchor = '''      - name: Load the locked Nixpkgs input
+          '''
+          readiness = '''      - name: Wait for the Nix store to become ready
+              shell: bash
+              run: |
+                set -euo pipefail
+                if [[ "$RUNNER_OS" != "macOS" ]]; then
+                  nix store ping
+                  exit 0
+                fi
+
+                for attempt in $(seq 1 20); do
+                  if NIX_REMOTE=daemon nix store ping >/dev/null 2>&1; then
+                    printf 'NIX_REMOTE=daemon\\n' >> "$GITHUB_ENV"
+                    exit 0
+                  fi
+                  echo "Nix daemon is not ready yet (attempt ${attempt}/20)" >&2
+                  sudo launchctl kickstart -k system/org.nixos.nix-daemon >/dev/null 2>&1 || true
+                  sleep 2
+                done
+
+                sudo launchctl print system/org.nixos.nix-daemon || true
+                ls -la /nix/var/nix/daemon-socket || true
+                echo "Nix daemon did not become ready" >&2
+                exit 1
+
+              - name: Load the locked Nixpkgs input
+          '''
+          if 'name: Wait for the Nix store to become ready' not in text:
+              if text.count(anchor) != 1:
+                  raise SystemExit(f'expected one locked-input step anchor, found {text.count(anchor)}')
+              text = text.replace(anchor, readiness, 1)
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path('.github/workflows/nix-interop.yml').read_text(encoding='utf-8')
+          assert text.count('name: Wait for the Nix store to become ready') == 1
+          assert 'NIX_REMOTE=daemon nix store ping' in text
+          assert 'launchctl kickstart -k system/org.nixos.nix-daemon' in text
+          PY
+          git diff --check
+
+      - name: Commit the permanent workflow repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/apply-macos-nix-daemon-readiness.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/workflows/nix-interop.yml \
+            .github/workflows/apply-macos-nix-daemon-readiness.yml
+          git diff --cached --check
+          git commit -m 'fix: wait for the macOS Nix daemon before evaluation'
+          git push origin HEAD:fix/macos-nix-daemon-readiness
