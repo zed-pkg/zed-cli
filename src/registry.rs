@@ -21,8 +21,8 @@ fn max_artifact_bytes() -> u64 {
 }
 
 fn file_registry_path(raw: &str) -> Result<PathBuf> {
-    let url = reqwest::Url::parse(raw)
-        .with_context(|| format!("invalid file registry url `{raw}`"))?;
+    let url =
+        reqwest::Url::parse(raw).with_context(|| format!("invalid file registry url `{raw}`"))?;
     if url.scheme() != "file" {
         bail!("file registry url must use the `file` scheme");
     }
@@ -30,9 +30,7 @@ fn file_registry_path(raw: &str) -> Result<PathBuf> {
         .host_str()
         .filter(|host| !host.is_empty() && !host.eq_ignore_ascii_case("localhost"))
     {
-        bail!(
-            "unsupported file registry authority `{host}`; only local file URLs are supported"
-        );
+        bail!("unsupported file registry authority `{host}`; only local file URLs are supported");
     }
     url.to_file_path()
         .map_err(|_| anyhow!("file registry url `{raw}` is not a local filesystem path"))
@@ -522,12 +520,16 @@ impl Registry for HttpRegistry {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{file_registry_path, file_url_for_path, HttpRegistry};
+    use super::{HttpRegistry, file_registry_path, file_url_for_path};
 
     #[test]
     fn remote_file_registry_authority_is_rejected() {
         let error = file_registry_path("file://example.test/registry").unwrap_err();
-        assert!(error.to_string().contains("unsupported file registry authority"));
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported file registry authority")
+        );
     }
 
     #[cfg(unix)]
