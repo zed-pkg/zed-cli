@@ -1,3 +1,5 @@
+# This second app-authored commit intentionally triggers the one-shot repair
+# after the workflow definition already exists on the branch.
 name: serialize mise recovery with checkout ownership
 
 on:
