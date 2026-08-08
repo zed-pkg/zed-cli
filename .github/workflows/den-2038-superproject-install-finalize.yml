@@ -1,0 +1,52 @@
+name: DEN-2038 cooperative install root finalizer
+
+on:
+  push:
+    branches:
+      - agent/den-2038-overtake-operation-lock
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-2038-cooperative-install-root-finalizer
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out the exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+
+      - name: Apply and validate the superproject installer root
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/den-2038-superproject-install-finalize.py
+          cargo fmt --all -- --check
+          cargo check --locked --bin zed
+          cargo test --locked --lib project_lock
+          cargo test --locked --lib git_submodules
+          cargo clippy --locked --bin zed -- -D warnings
+          git diff --check
+
+      - name: Publish the validated source correction
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix(DEN-2038): install from the selected superproject'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
