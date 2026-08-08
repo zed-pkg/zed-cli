@@ -1,0 +1,70 @@
+name: DEN-3017 apply zedignore union
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-3017-zedignore-union
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3017-apply-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: alexanderdmills/den-3017-zedignore-union
+          fetch-depth: 0
+
+      - name: Install validation toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Assemble and apply the candidate patch
+        env:
+          INTERFACES_SHA: ab784d43c9add1bdd527f832a719fdcc3c9491c8
+        run: |
+          set -euo pipefail
+          base64 -d .github/den-3017-apply.py.gz.b64 | gzip -d > "$RUNNER_TEMP/den-3017-apply.py"
+          PYTHONDONTWRITEBYTECODE=1 python3 "$RUNNER_TEMP/den-3017-apply.py"
+          cargo update -p zed-interfaces --precise "$INTERFACES_SHA"
+          cargo fmt --all
+          cargo fmt --all --check
+          git diff --check
+          grep -F "rev = \"$INTERFACES_SHA\"" Cargo.toml
+          grep -F "$INTERFACES_SHA" Cargo.lock
+
+      - name: Focused unit tests
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib publish_rules
+          cargo test --locked --lib manifest_and_zedignore_exclusions_are_a_conflict_safe_union
+          cargo test --locked --lib same_source_negation_can_cancel_an_earlier_manifest_exclusion
+          cargo test --locked --lib polyglot_source_ignore_excludes_the_target_input
+
+      - name: Library tests and lint
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib
+          cargo clippy --locked --lib -- -D warnings
+
+      - name: Publish the exact candidate commit
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/den-3017-apply.yml .github/den-3017-apply.py.gz.b64
+          git add Cargo.toml Cargo.lock src docs/publish-ignore.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "feat(DEN-3017): unify .zedignore and manifest exclusions"
+          git push origin HEAD:alexanderdmills/den-3017-zedignore-union
