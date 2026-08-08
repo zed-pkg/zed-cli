@@ -32,16 +32,80 @@ jobs:
           echo "a1c840717609ec210cb80e703fe88ddd161b2738b8bd7cd1d9d506dcc71c4d47  /tmp/den-3089-apply.py" | sha256sum -c -
           PYTHONDONTWRITEBYTECODE=1 python /tmp/den-3089-apply.py
 
-      - name: Format and test
+      - name: Apply compile-only follow-up corrections
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              target.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/ops_entry.rs",
+              "use std::fs;\nuse std::io::ErrorKind;\nuse std::path::Path;\n",
+              "use std::path::Path;\n",
+          )
+          replace_once(
+              "src/ops_entry.rs",
+              """fn parse_zedignore_rules(contents: &str) -> Vec<String> {
+              crate::publish_ignore::parse_rules(contents)
+          }
+
+          fn read_zedignore_rules(project: &Path) -> Result<Vec<String>> {
+              crate::publish_ignore::read_rules(project)
+          }
+
+          """,
+              "",
+          )
+          ops = Path("src/ops_entry.rs")
+          text = ops.read_text()
+          text = text.replace(
+              "let ignore_rules = read_zedignore_rules(project)?;",
+              "let ignore_rules = crate::publish_ignore::read_rules(project)?;",
+          )
+          text = text.replace(
+              "let ignore_rules = read_zedignore_rules(&source)?;",
+              "let ignore_rules = crate::publish_ignore::read_rules(&source)?;",
+          )
+          text = text.replace(
+              "parse_zedignore_rules(\"\\n# local-only files\\n  .env*  \\n\\r\\n.idea/**\\r\\n\")",
+              "crate::publish_ignore::parse_rules(\"\\n# local-only files\\n  .env*  \\n\\r\\n.idea/**\\r\\n\")",
+          )
+          ops.write_text(text)
+
+          replace_once(
+              "tests/polyglot_zedignore.rs",
+              """    let error = pack_all(project.path(), &manifest, None).unwrap_err();
+              let rendered = format!("{error:#}");
+          """,
+              """    let error = match pack_all(project.path(), &manifest, None) {
+                  Ok(_) => panic!("invalid target-local .zedignore glob should fail packing"),
+                  Err(error) => error,
+              };
+              let rendered = format!("{error:#}");
+          """,
+          )
+          PY
+
+      - name: Format, test, and lint
         shell: bash
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
         run: |
           set -euo pipefail
-          rustup component add rustfmt
+          rustup component add rustfmt clippy
           cargo fmt --all
           cargo fmt --all -- --check
           cargo test --all-targets --locked
+          cargo clippy --locked --lib --bin zed -- -D warnings
           git diff --check
 
       - name: Publish immutable candidate commit
@@ -54,4 +118,4 @@ jobs:
           git config user.name "alex-main-agent"
           git config user.email "alex-main-agent@users.noreply.github.com"
           git commit -m "fix(DEN-3089): honor artifact-root zedignore in polyglot packs"
-          git push --force-with-lease origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
