@@ -51,8 +51,9 @@ jobs:
               text = text.replace(anchor, anchor + 'use zed_cli::project_lock;\n', 1)
 
           old = '''    if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
-              // Recovery writes into the project and must be serialized against
-              // every installer sharing the checkout.
+              // Every live project transaction already owns this kernel-backed
+              // install lock. Recover under the same lock so a concurrent process
+              // cannot mistake an in-flight rollback journal for an abandoned one.
               let store = Store::new(&cfg.home);
               let _recovery_lock = store.install_lock()?;
               zed_cli::transaction::recover_pending(&cwd)?;
@@ -88,6 +89,6 @@ jobs:
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/main.rs src/lib.rs tests/mise_export_api_boundaries.rs
-          git commit -m 'fix(DEN-1462): serialize exporter writes and recovery'
+          git add src/main.rs
+          git commit -m 'fix(DEN-1462): serialize exporter recovery'
           git push origin HEAD:agent/den-1462-mise-export-current-main
