@@ -1,4 +1,3 @@
-# Trigger after the workflow exists on the branch.
 name: materialize flags2env inline-value fix
 
 on:
@@ -47,28 +46,29 @@ jobs:
           path = Path('src/flags.rs')
           text = path.read_text()
           if 'fn long_inline_values_are_not_truncated()' not in text:
-              anchor = '''    #[test]
-                  fn diagnostics_redact_inline_values() {
-              '''
+              marker = '    #[test]\n    fn diagnostics_redact_inline_values() {'
               test = '''    #[test]
-                  fn long_inline_values_are_not_truncated() {
-                      let token = format!("header.{}.signature", "a".repeat(240));
-                      let argv = vec!["zed".to_string(), format!("--token={token}"), "find".to_string(), "http".to_string()];
-                      let parsed = parse_embedded(&argv).expect("long inline values must parse");
-                      assert!(parsed.unknown_options.is_empty());
-                      assert!(parsed.errors.is_empty());
-                      assert_eq!(
-                          parsed.flags.get("ZED_PKG_TOKEN").map(String::as_str),
-                          Some(token.as_str())
-                      );
-                  }
+              fn long_inline_values_are_not_truncated() {
+                  let token = format!("header.{}.signature", "a".repeat(240));
+                  let argv = vec![
+                      "zed".to_string(),
+                      format!("--token={token}"),
+                      "find".to_string(),
+                      "http".to_string(),
+                  ];
+                  let parsed = parse_embedded(&argv).expect("long inline values must parse");
+                  assert!(parsed.unknown_options.is_empty());
+                  assert!(parsed.errors.is_empty());
+                  assert_eq!(
+                      parsed.flags.get("ZED_PKG_TOKEN").map(String::as_str),
+                      Some(token.as_str())
+                  );
+              }
 
-                  #[test]
-                  fn diagnostics_redact_inline_values() {
-              '''
-              if anchor not in text:
-                  raise SystemExit('flags regression insertion anchor not found')
-              path.write_text(text.replace(anchor, test, 1))
+          '''
+              if marker not in text:
+                  raise SystemExit('flags regression insertion marker not found')
+              path.write_text(text.replace(marker, test + marker, 1))
           PY
 
       - name: Refresh the resolver-owned lock and validate
