@@ -1,0 +1,147 @@
+name: materialize project-before-store lock hierarchy
+
+on:
+  pull_request:
+    branches:
+      - chore/zed-lock-windows-contention
+    paths:
+      - .github/workflows/materialize-project-store-lock-order.yml
+      - src/store.rs
+      - src/project_lock.rs
+
+permissions:
+  contents: write
+
+concurrency:
+  group: project-before-store-lock-order
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  materialize:
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'fix/project-before-store-lock-order'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact repair branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/project-before-store-lock-order
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust quality components
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Give the global install lock its own hierarchy rank
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          store = Path('src/store.rs')
+          text = store.read_text()
+          constant_anchor = '''const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+          '''
+          constant = '''const MAX_ARCHIVE_ENTRIES: usize = 200_000;
+          /// Checkout mutation ownership is rank 10. The global install lock is
+          /// acquired after it and before refs/artifact/build locks.
+          const STORE_INSTALL_LOCK_CLASS: LockClass = LockClass::Custom(15);
+          '''
+          if 'const STORE_INSTALL_LOCK_CLASS' not in text:
+              if constant_anchor not in text:
+                  raise SystemExit('store lock-class constant anchor not found')
+              text = text.replace(constant_anchor, constant, 1)
+
+          old = '''    pub fn install_lock(&self) -> Result<ProcessLock> {
+                  acquire_process_lock(
+                      &self.locks_dir().join("install.lock"),
+                      "the install lock",
+                      LockClass::ProjectMutation,
+                  )
+              }
+          '''
+          new = '''    pub fn install_lock(&self) -> Result<ProcessLock> {
+                  acquire_process_lock(
+                      &self.locks_dir().join("install.lock"),
+                      "the install lock",
+                      STORE_INSTALL_LOCK_CLASS,
+                  )
+              }
+          '''
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'STORE_INSTALL_LOCK_CLASS,' not in text:
+              raise SystemExit('install_lock class anchor not found')
+          store.write_text(text)
+
+          project = Path('src/project_lock.rs')
+          text = project.read_text()
+          old_import = '''    use super::{OPERATION_LOCK_RELATIVE_PATH, acquire, operation_lock_path, with_lock};
+          '''
+          new_import = '''    use crate::store::Store;
+
+              use super::{OPERATION_LOCK_RELATIVE_PATH, acquire, operation_lock_path, with_lock};
+          '''
+          if 'use crate::store::Store;' not in text:
+              if old_import not in text:
+                  raise SystemExit('project-lock test import anchor not found')
+              text = text.replace(old_import, new_import, 1)
+
+          test_anchor = '''    #[test]
+              fn same_thread_facades_reuse_outer_ownership() -> Result<()> {
+          '''
+          test = '''    #[test]
+              fn checkout_ownership_precedes_the_global_install_lock() -> Result<()> {
+                  let project = tempfile::tempdir()?;
+                  let home = tempfile::tempdir()?;
+                  let _project_guard = acquire(project.path(), "project then store ordering")?;
+                  let store = Store::new(home.path());
+                  let _install_guard = store.install_lock()?;
+                  Ok(())
+              }
+
+              #[test]
+              fn same_thread_facades_reuse_outer_ownership() -> Result<()> {
+          '''
+          if 'fn checkout_ownership_precedes_the_global_install_lock()' not in text:
+              if test_anchor not in text:
+                  raise SystemExit('project-before-store test anchor not found')
+              text = text.replace(test_anchor, test, 1)
+          project.write_text(text)
+          PY
+
+      - name: Validate lock ordering and affected lifecycle paths
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib project_lock::tests
+          cargo test --locked --test lock_waiter_process_lock
+          cargo test --locked --test recursive_install_concurrency
+          cargo test --locked --test store_lock_evented
+          bash -n tests/durable-first-install-e2e.sh
+          cargo build --locked --bin zed
+          ZED_DURABLE_E2E_ROOT="$RUNNER_TEMP/durable-first-install" \
+            bash tests/durable-first-install-e2e.sh "$PWD/target/debug/zed"
+          cargo clippy --locked --bin zed \
+            --test lock_waiter_process_lock \
+            --test recursive_install_concurrency \
+            --test store_lock_evented -- -D warnings
+
+      - name: Commit ordinary product source and remove carrier
+        run: |
+          set -euo pipefail
+          rm .github/workflows/materialize-project-store-lock-order.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/store.rs src/project_lock.rs .github/workflows/materialize-project-store-lock-order.yml
+          git diff --cached --check
+          git commit -m 'fix: order checkout ownership before store installation'
+          git push origin HEAD:fix/project-before-store-lock-order
