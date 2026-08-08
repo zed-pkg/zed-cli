@@ -25,9 +25,10 @@ The dispatcher resolves `zed-gitops` beside the running `zed` executable first,
 then searches only absolute `PATH` entries. It never invokes a shell, never
 searches the current working directory implicitly, never permits an extension
 to shadow a built-in command or alias, and preserves the child process exit
-code. Root options placed before `gitops` are passed as their canonical
+code. Root options placed before or after `gitops` are passed as their canonical
 `ZED_PKG_*` environment variables rather than being exposed on the child
-command line.
+command line. A literal `--` ends global-option extraction and passes every
+remaining argument to the external command unchanged.
 
 ## Evidence checked
 

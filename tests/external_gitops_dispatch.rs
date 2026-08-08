@@ -28,7 +28,8 @@ fn root_dispatches_to_the_sibling_gitops_binary() {
         .expect("run zed gitops help");
     assert!(output.status.success(), "{}", text(&output));
     let text = text(&output);
-    assert!(text.contains("Usage: zed-gitops validate"), "{text}");
+    assert!(text.contains("Usage: zed-gitops"), "{text}");
+    assert!(text.contains("validate [OPTIONS]"), "{text}");
     assert!(text.contains("--offline"), "{text}");
 }
 

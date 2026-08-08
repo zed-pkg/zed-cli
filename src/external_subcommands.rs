@@ -33,11 +33,14 @@ const ROOT_BOOLEAN_OPTIONS: &[(&str, &str)] = &[
     ("--git-submodules", "ZED_PKG_GIT_SUBMODULES"),
 ];
 
+type ExternalEnvironment = Vec<(OsString, OsString)>;
+type ParsedExternalArguments = (Vec<OsString>, ExternalEnvironment);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExternalRoute {
     name: String,
     arguments: Vec<OsString>,
-    environment: Vec<(OsString, OsString)>,
+    environment: ExternalEnvironment,
 }
 
 /// Dispatch a root command to `zed-<command>` when it is not built in.
@@ -157,7 +160,8 @@ fn external_route(args: &[OsString]) -> Option<ExternalRoute> {
             if !valid_external_name(name) {
                 return None;
             }
-            let mut arguments = args[index + 2..].to_vec();
+            let (mut arguments, trailing_environment) = extract_root_options(&args[index + 2..])?;
+            environment.extend(trailing_environment);
             if !arguments
                 .iter()
                 .any(|argument| argument == OsStr::new("--help") || argument == OsStr::new("-h"))
@@ -174,14 +178,75 @@ fn external_route(args: &[OsString]) -> Option<ExternalRoute> {
         if !valid_external_name(token) {
             return None;
         }
+        let (arguments, trailing_environment) = extract_root_options(&args[index + 1..])?;
+        environment.extend(trailing_environment);
         return Some(ExternalRoute {
             name: token.to_owned(),
-            arguments: args[index + 1..].to_vec(),
+            arguments,
             environment,
         });
     }
 
     None
+}
+
+fn extract_root_options(args: &[OsString]) -> Option<ParsedExternalArguments> {
+    let mut arguments = Vec::new();
+    let mut environment = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let Some(token) = args[index].to_str() else {
+            arguments.push(args[index].clone());
+            index += 1;
+            continue;
+        };
+        if token == "--" {
+            arguments.extend_from_slice(&args[index..]);
+            break;
+        }
+
+        if let Some((key, inline)) = root_value_option(token) {
+            let (value, consumed) = match inline {
+                Some(value) if !value.is_empty() => (OsString::from(value), 1),
+                Some(_) => return None,
+                None => {
+                    let value = args.get(index + 1)?.clone();
+                    if value.is_empty() {
+                        return None;
+                    }
+                    (value, 2)
+                }
+            };
+            environment.push((OsString::from(key), value));
+            index += consumed;
+            continue;
+        }
+
+        if let Some((key, value)) = root_boolean_option(token) {
+            environment.push((OsString::from(key), OsString::from(value)));
+            index += 1;
+            continue;
+        }
+        if is_root_boolean_spelling(token) {
+            return None;
+        }
+
+        arguments.push(args[index].clone());
+        index += 1;
+    }
+
+    Some((arguments, environment))
+}
+
+fn is_root_boolean_spelling(token: &str) -> bool {
+    ROOT_BOOLEAN_OPTIONS.iter().any(|(option, _)| {
+        token == *option
+            || token == format!("--no-{}", option.trim_start_matches('-'))
+            || token
+                .strip_prefix(option)
+                .is_some_and(|tail| tail.starts_with('='))
+    })
 }
 
 fn root_value_option(token: &str) -> Option<(&'static str, Option<&str>)> {
@@ -391,6 +456,46 @@ mod tests {
                     OsString::from("false")
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn root_options_after_plugin_are_lifted_until_double_dash() {
+        let route = external_route(&os_args(&[
+            "zed",
+            "gitops",
+            "validate",
+            "--token",
+            "fixture-value",
+            "--offline",
+            "--",
+            "--home",
+            "child-owned-value",
+        ]))
+        .expect("external route");
+        assert_eq!(
+            route.arguments,
+            os_args(&["validate", "--offline", "--", "--home", "child-owned-value"])
+        );
+        assert_eq!(
+            route.environment,
+            vec![(
+                OsString::from("ZED_PKG_TOKEN"),
+                OsString::from("fixture-value")
+            )]
+        );
+    }
+
+    #[test]
+    fn malformed_trailing_root_boolean_fails_closed() {
+        assert!(
+            external_route(&os_args(&[
+                "zed",
+                "gitops",
+                "validate",
+                "--git-submodules=maybe"
+            ]))
+            .is_none()
         );
     }
 
