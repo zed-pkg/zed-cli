@@ -8,6 +8,10 @@ fn text(output: &Output) -> String {
     )
 }
 
+fn gitops_usage(suffix: &str) -> String {
+    format!("Usage: zed-gitops{}{suffix}", std::env::consts::EXE_SUFFIX)
+}
+
 #[test]
 fn root_help_advertises_gitops_validate() {
     let output = Command::new(env!("CARGO_BIN_EXE_zed"))
@@ -28,7 +32,7 @@ fn root_dispatches_to_the_sibling_gitops_binary() {
         .expect("run zed gitops help");
     assert!(output.status.success(), "{}", text(&output));
     let text = text(&output);
-    assert!(text.contains("Usage: zed-gitops validate"), "{text}");
+    assert!(text.contains(&gitops_usage(" validate")), "{text}");
     assert!(text.contains("--offline"), "{text}");
 }
 
@@ -39,5 +43,6 @@ fn root_help_alias_reaches_the_external_binary() {
         .output()
         .expect("run zed help gitops");
     assert!(output.status.success(), "{}", text(&output));
-    assert!(text(&output).contains("Usage: zed-gitops"));
+    let text = text(&output);
+    assert!(text.contains(&gitops_usage("")), "{text}");
 }
