@@ -92,7 +92,17 @@ fn main() {
             }
         }
     }
-    if let Some(result) = dev::dispatch(args) {
+    if let Some(result) = dev::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = zed_cli::external_subcommands::dispatch(args) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
