@@ -381,6 +381,9 @@ fn validate_source(source: &str) -> Result<()> {
                 "frozen file registry sources may not embed credentials, query strings, or fragments"
             );
         }
+        if url.host_str().is_some() {
+            bail!("frozen file registry source is not a local absolute path");
+        }
         let path = url.to_file_path().map_err(|_| {
             anyhow::anyhow!("frozen file registry source is not a local absolute path")
         })?;
@@ -455,16 +458,14 @@ fn verify_registry_metadata(locked: &LockedPackage, metadata: &VersionMetadata) 
     }
     if metadata.format != locked.format {
         bail!(
-            "registry artifact format changed for {}@{} (lock {} vs registry {}); refusing",
+            "registry artifact format changed for {}@{}; refusing",
             locked.full_name(),
-            locked.version,
-            locked.format,
-            metadata.format
+            locked.version
         );
     }
     if metadata.vcs_tag != locked.vcs_tag || metadata.vcs_commit != locked.vcs_commit {
         bail!(
-            "registry VCS provenance changed for {}@{}; refusing frozen fetch",
+            "registry provenance changed for {}@{}; refusing frozen fetch",
             locked.full_name(),
             locked.version
         );
@@ -477,715 +478,402 @@ fn ensure_artifact(
     store: &Store,
     metadata: &VersionMetadata,
 ) -> Result<PathBuf> {
-    require_sha256(&metadata.sha256)?;
-    if !is_slug(&metadata.org) || !is_slug(&metadata.name) {
-        bail!("registry returned an invalid package identity");
+    if store.has_package(&metadata.sha256) {
+        return Ok(store.package_dir(&metadata.sha256));
     }
-    if store.has(&metadata.sha256) {
-        return Ok(store.pkg_dir(&metadata.sha256));
-    }
-    let cached = store.cached_artifact(&metadata.sha256);
-    if !cached.exists() {
-        registry.download(metadata, &cached)?;
-    }
-    store.add_artifact(&cached, &metadata.sha256)
+    let artifact = registry.download_artifact(metadata)?;
+    let expected = require_sha256(&metadata.sha256)?;
+    store.verify_artifact(&artifact, &expected, metadata.size)?;
+    store.extract_verified(&artifact, metadata.format, &metadata.sha256)
 }
 
-fn prepare_output_path(
-    requested_root: &Path,
-    project: &Path,
-    requested_output: &Path,
-) -> Result<PathBuf> {
-    if requested_output.as_os_str().is_empty()
-        || requested_output
-            .components()
-            .any(|component| component == Component::ParentDir)
-    {
-        bail!("--output must be a non-empty path without `..` components");
-    }
-
-    let raw = if requested_output.is_absolute() {
-        requested_output.to_path_buf()
+fn prepare_output_path(requested: &Path, project: &Path, output: &Path) -> Result<PathBuf> {
+    let absolute = if output.is_absolute() {
+        output.to_path_buf()
     } else {
-        requested_root.join(requested_output)
+        requested.join(output)
     };
-    let project = fs::canonicalize(project)?;
-
-    // Reject project-tree and project-ancestor destinations before inspecting
-    // the parent, so the source tree remains an immutable input on every path.
-    if raw.starts_with(&project) || project.starts_with(&raw) {
-        bail!(
-            "--output must be outside the project tree and may not contain it ({})",
-            project.display()
-        );
-    }
-    if fs::symlink_metadata(&raw).is_ok() {
-        bail!("fetch output already exists: {}", raw.display());
-    }
-
-    let parent = raw.parent().context("fetch output has no parent")?;
-    let parent_metadata = fs::metadata(parent).with_context(|| {
+    let parent = absolute
+        .parent()
+        .context("fetch output must have an existing parent directory")?;
+    let canonical_parent = fs::canonicalize(parent).with_context(|| {
         format!(
             "fetch output parent must already exist and be a directory: {}",
             parent.display()
         )
     })?;
-    if !parent_metadata.is_dir() {
+    if !canonical_parent.is_dir() {
         bail!(
             "fetch output parent must already exist and be a directory: {}",
             parent.display()
         );
     }
-    let canonical_parent = fs::canonicalize(parent)
-        .with_context(|| format!("canonicalizing fetch output parent {}", parent.display()))?;
-    let name = raw
+    let file_name = absolute
         .file_name()
         .filter(|name| !name.is_empty())
-        .context("fetch output has no directory name")?;
-    let output = canonical_parent.join(name);
-
-    // A symlinked parent can redirect an apparently external path back into
-    // the project. Canonicalize it before creating staging or final state.
-    if output.starts_with(&project) || project.starts_with(&output) {
-        bail!("canonical fetch output must remain outside the project tree");
+        .context("fetch output must name a new directory")?;
+    if file_name == OsStr::new(".") || file_name == OsStr::new("..") {
+        bail!("fetch output must name a new directory");
     }
-    if fs::symlink_metadata(&output).is_ok() {
-        bail!("fetch output already exists: {}", output.display());
+    let canonical_output = canonical_parent.join(file_name);
+    if canonical_output.exists() {
+        bail!(
+            "fetch output already exists; refusing to overwrite {}",
+            canonical_output.display()
+        );
     }
-    Ok(output)
+    if canonical_output.starts_with(project) || project.starts_with(&canonical_output) {
+        bail!(
+            "canonical fetch output must be outside the project tree: {}",
+            canonical_output.display()
+        );
+    }
+    Ok(canonical_output)
 }
 
 fn copy_package_tree(source: &Path, destination: &Path) -> Result<()> {
-    for entry in WalkDir::new(source).follow_links(false).sort_by_file_name() {
+    fs::create_dir_all(destination)?;
+    for entry in WalkDir::new(source).follow_links(false) {
         let entry = entry?;
-        if entry.depth() == 0 {
-            fs::create_dir_all(destination)?;
+        let relative = entry.path().strip_prefix(source)?;
+        if relative.as_os_str().is_empty() {
             continue;
         }
-        let relative = entry.path().strip_prefix(source)?;
         let target = destination.join(relative);
-        let file_type = entry.file_type();
-        if file_type.is_symlink() {
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.file_type().is_symlink() {
             bail!(
-                "verified store package unexpectedly contains a symlink at {}",
+                "verified package tree contains a symlink at {}; refusing frozen export",
                 relative.display()
             );
         }
-        if file_type.is_dir() {
+        if metadata.is_dir() {
             fs::create_dir_all(&target)?;
-        } else if file_type.is_file() {
-            fs::create_dir_all(target.parent().context("package file parent")?)?;
+        } else if metadata.is_file() {
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
             fs::copy(entry.path(), &target)?;
-        } else {
-            bail!(
-                "verified store package contains unsupported special file {}",
-                relative.display()
-            );
         }
     }
     Ok(())
 }
 
-fn sha256_bytes(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
-fn route(args: &[OsString]) -> Route {
-    let help_requested = args
-        .iter()
-        .skip(1)
-        .any(|value| value == OsStr::new("--help") || value == OsStr::new("-h"));
-    let Some((command_index, command)) = first_command(args) else {
-        return if help_requested {
-            Route::RootHelp
+fn source_kind(source: &str) -> &'static str {
+    if let Some(path) = source.strip_prefix("file://") {
+        if Path::new(path).starts_with("/nix/store") {
+            "immutable-nix-store-input"
         } else {
-            Route::Existing
+            "file"
+        }
+    } else if source.starts_with("https://") {
+        "https"
+    } else if source.starts_with("http://") {
+        "http"
+    } else {
+        "other"
+    }
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn validate_fetch_flags(args: &[String]) -> Result<()> {
+    let parser = BundledFlags2Env::new();
+    parser
+        .audit_config_from_str(FETCH_CONTRACT)
+        .context("auditing embedded zed fetch flags contract")?;
+    let parsed = parser
+        .parse_structured_from_str(args, FETCH_CONTRACT)
+        .context("parsing zed fetch arguments through flags-2-env")?;
+    if !parsed.unknown_options.is_empty() {
+        bail!(
+            "unknown zed fetch option(s): {}",
+            parsed.unknown_options.join(", ")
+        );
+    }
+    if !parsed.errors.is_empty() {
+        bail!("invalid zed fetch arguments: {}", parsed.errors.join("; "));
+    }
+    for (key, value) in parsed.provided_flags {
+        if matches!(key.as_str(), "ZED_PKG_FROZEN" | "ZED_PKG_FETCH_OUTPUT") {
+            // SAFETY: fetch CLI parsing is single-threaded and completes before
+            // any worker is started.
+            unsafe { env::set_var(key, value) };
+        }
+    }
+    Ok(())
+}
+
+fn normalize_boolean_environment() -> Result<()> {
+    if let Ok(value) = env::var("ZED_PKG_FROZEN") {
+        let normalized = match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => "true",
+            "0" | "false" | "no" | "off" | "" => "false",
+            _ => bail!("ZED_PKG_FROZEN must be a boolean"),
         };
-    };
-
-    match command.as_str() {
-        "fetch" => Route::Fetch,
-        "help" => match next_positional(args, command_index + 1) {
-            Some((target_index, target)) if target == "fetch" => Route::FetchHelp {
-                help_index: command_index,
-                target_index,
-            },
-            None => Route::RootHelp,
-            _ => Route::Existing,
-        },
-        _ => Route::Existing,
+        // SAFETY: fetch CLI parsing is single-threaded and completes before any
+        // worker is started.
+        unsafe { env::set_var("ZED_PKG_FROZEN", normalized) };
     }
-}
-
-fn first_command(args: &[OsString]) -> Option<(usize, String)> {
-    let mut index = 1;
-    while index < args.len() {
-        let token = args[index].to_string_lossy();
-        if token == "--" {
-            return next_positional(args, index + 1);
-        }
-        if global_option_takes_value(&token) {
-            index += if token.contains('=') { 1 } else { 2 };
-            continue;
-        }
-        if token.starts_with('-') {
-            index += 1;
-            continue;
-        }
-        return Some((index, token.into_owned()));
-    }
-    None
-}
-
-fn next_positional(args: &[OsString], mut index: usize) -> Option<(usize, String)> {
-    while index < args.len() {
-        let token = args[index].to_string_lossy();
-        if !token.starts_with('-') {
-            return Some((index, token.into_owned()));
-        }
-        index += 1;
-    }
-    None
-}
-
-fn global_option_takes_value(token: &str) -> bool {
-    const OPTIONS: &[&str] = &[
-        "--registry",
-        "--home",
-        "--token",
-        "--auth-url",
-        "--supabase-url",
-        "--supabase-key",
-    ];
-    OPTIONS.iter().any(|option| {
-        token == *option
-            || token
-                .strip_prefix(option)
-                .is_some_and(|remainder| remainder.starts_with('='))
-    })
+    Ok(())
 }
 
 fn utf8_args(args: &[OsString]) -> Result<Vec<String>> {
     args.iter()
-        .map(|value| {
-            value
+        .map(|argument| {
+            argument
                 .to_str()
                 .map(str::to_owned)
-                .context("flags-2-env requires UTF-8 command-line arguments")
+                .context("zed fetch arguments must be UTF-8")
         })
         .collect()
 }
 
-fn validate_fetch_flags(argv: &[String]) -> Result<()> {
-    let parser_argv: Vec<String> = argv
+fn option_takes_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--home"
+            | "--registry"
+            | "--cache"
+            | "--jobs"
+            | "--color"
+            | "--log-level"
+            | "--lock-timeout"
+            | "--lock-timeout-seconds"
+            | "--output"
+    )
+}
+
+fn is_help(argument: &str) -> bool {
+    matches!(argument, "-h" | "--help")
+}
+
+fn route(args: &[OsString]) -> Route {
+    let strings = args
         .iter()
-        .filter(|token| !matches!(token.as_str(), "--help" | "-h" | "--version" | "-V"))
-        .cloned()
-        .collect();
-    let parsed = parse_embedded(&parser_argv)?;
-    if !parsed.unknown_options.is_empty() {
-        bail!(
-            "flags2env rejected unknown zed fetch option(s): {}",
-            parsed
-                .unknown_options
-                .iter()
-                .map(|value| redact_option_value(value))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-    }
-    if !parsed.errors.is_empty() {
-        bail!(
-            "flags2env rejected invalid zed fetch value(s): {}",
-            parsed
-                .errors
-                .iter()
-                .map(|value| redact_option_value(value))
-                .collect::<Vec<_>>()
-                .join("; ")
-        );
-    }
-    Ok(())
-}
-
-fn parse_embedded(argv: &[String]) -> Result<flags2env::StructuredParse> {
-    let contract_dir = tempfile::tempdir().context("creating zed fetch flags2env directory")?;
-    let contract_path = contract_dir.path().join(".cli-flags.toml");
-    fs::write(&contract_path, FETCH_CONTRACT).context("writing embedded zed fetch contract")?;
-    let contract_path = contract_path
-        .to_str()
-        .context("embedded zed fetch contract path is not valid UTF-8")?;
-
-    let parser = BundledFlags2Env::new();
-    parser
-        .audit_config(Some(contract_path))
-        .map_err(|error| anyhow::anyhow!("zed fetch flags2env audit failed: {error}"))?;
-    parser
-        .parse_structured(argv, Some(contract_path))
-        .map_err(|error| anyhow::anyhow!("zed fetch flags2env parse failed: {error}"))
-}
-
-fn normalize_boolean_environment() -> Result<()> {
-    for key in ["ZED_PKG_FROZEN", "ZED_PKG_INTERACTIVE"] {
-        let Some(raw) = env::var_os(key) else {
+        .map(|argument| argument.to_string_lossy())
+        .collect::<Vec<_>>();
+    let mut index = 1;
+    let mut root_help = None;
+    while index < strings.len() {
+        let argument = strings[index].as_ref();
+        if is_help(argument) {
+            root_help = Some(index);
+            index += 1;
             continue;
-        };
-        let raw = raw
-            .to_str()
-            .with_context(|| format!("boolean environment variable `{key}` is not UTF-8"))?;
-        let normalized = match raw.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" | "yes" | "on" => "true",
-            "false" | "0" | "no" | "off" => "false",
-            _ => bail!(
-                "boolean environment variable `{key}` must be true/false, 1/0, yes/no, or on/off"
-            ),
-        };
-        if raw != normalized {
-            // SAFETY: this runs once at process startup before worker threads.
-            unsafe { env::set_var(key, normalized) };
         }
+        if argument == "fetch" {
+            if let Some(help_index) = root_help {
+                return Route::FetchHelp {
+                    help_index,
+                    target_index: index,
+                };
+            }
+            return Route::Fetch;
+        }
+        if argument.starts_with('-') {
+            if !argument.contains('=') && option_takes_value(argument) {
+                index += 2;
+            } else {
+                index += 1;
+            }
+            continue;
+        }
+        return Route::Existing;
     }
-    Ok(())
-}
-
-fn redact_option_value(value: &str) -> String {
-    match value.split_once('=') {
-        Some((option, _)) if option.starts_with('-') => format!("{option}=<redacted>"),
-        _ => value.to_string(),
+    if root_help.is_some() {
+        Route::RootHelp
+    } else {
+        Route::Existing
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
-    use flate2::{Compression, GzBuilder};
-    use serde_json::Value;
-    use zed_interfaces::artifact::ArtifactFormat;
-    use zed_interfaces::lockfile::LockedPackage;
-
     use super::*;
 
-    fn config(home: PathBuf) -> Config {
-        Config {
-            registry: "file:///intentionally-wrong-fallback".to_string(),
-            home,
-            token: None,
-            auth_url: "http://127.0.0.1/unused".to_string(),
-            supabase_url: None,
-            supabase_key: None,
-            interactive: false,
-        }
-    }
-
-    fn create_artifact(registry: &Path, files: &[(&str, &[u8])]) -> (String, u64) {
-        let archive_dir = tempfile::tempdir().unwrap();
-        let archive_path = archive_dir.path().join("artifact.tar.gz");
-        let file = fs::File::create(&archive_path).unwrap();
-        let encoder = GzBuilder::new()
-            .mtime(0)
-            .write(file, Compression::default());
-        let mut archive = tar::Builder::new(encoder);
-        archive.mode(tar::HeaderMode::Deterministic);
-        for (path, bytes) in files {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(bytes.len() as u64);
-            header.set_mode(0o644);
-            header.set_mtime(0);
-            header.set_uid(0);
-            header.set_gid(0);
-            header.set_cksum();
-            archive
-                .append_data(&mut header, format!("pkg/{path}"), Cursor::new(*bytes))
-                .unwrap();
-        }
-        let encoder = archive.into_inner().unwrap();
-        encoder.finish().unwrap();
-
-        let bytes = fs::read(&archive_path).unwrap();
-        let sha256 = sha256_bytes(&bytes);
-        let size = bytes.len() as u64;
-        let destination = registry.join("artifacts").join(format!("{sha256}.tar.gz"));
-        fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        fs::write(destination, bytes).unwrap();
-        (sha256, size)
-    }
-
-    fn seed_package(
-        registry: &Path,
-        org: &str,
-        name: &str,
-        version: &str,
-        files: &[(&str, &[u8])],
-    ) -> LockedPackage {
-        let (sha256, size) = create_artifact(registry, files);
-        let metadata = VersionMetadata {
-            org: org.to_string(),
-            name: name.to_string(),
-            version: version.to_string(),
-            sha256: sha256.clone(),
-            size,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: format!("v{version}"),
-            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-            download_url: "ignored-by-file-registry".to_string(),
-            published_at: "1970-01-01T00:00:00Z".to_string(),
-            yanked: false,
-        };
-        let version_path = registry
-            .join("packages")
-            .join(org)
-            .join(name)
-            .join("versions")
-            .join(format!("{version}.json"));
-        fs::create_dir_all(version_path.parent().unwrap()).unwrap();
-        fs::write(
-            version_path,
-            serde_json::to_string_pretty(&metadata).unwrap(),
-        )
-        .unwrap();
-
-        LockedPackage {
-            org: org.to_string(),
-            name: name.to_string(),
-            version: version.to_string(),
-            sha256,
-            size,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: format!("v{version}"),
-            vcs_commit: metadata.vcs_commit,
-            source: format!("file://{}", registry.display()),
-        }
-    }
-
-    fn write_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
-        let lock = Lockfile {
-            version: Lockfile::CURRENT_VERSION,
-            packages,
-            native_dependencies: Vec::new(),
-            nix_adapters: Vec::new(),
-        };
-        let bytes = lock.to_toml_string().unwrap().into_bytes();
-        fs::write(project.join(LOCKFILE_FILE), &bytes).unwrap();
-        bytes
-    }
-
-    /// Serialize intentionally malformed lock fixtures without invoking the
-    /// shared writer's validity checks. Production code never calls this; the
-    /// negative tests need malformed bytes to reach the resolver boundary.
-    fn write_unchecked_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
-        let lock = Lockfile {
-            version: Lockfile::CURRENT_VERSION,
-            packages,
-            native_dependencies: Vec::new(),
-            nix_adapters: Vec::new(),
-        };
-        let bytes = toml::to_string(&lock).unwrap().into_bytes();
-        fs::write(project.join(LOCKFILE_FILE), &bytes).unwrap();
-        bytes
-    }
-
-    fn file_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
-        let mut files = BTreeMap::new();
-        for entry in WalkDir::new(root).sort_by_file_name().into_iter().flatten() {
-            if entry.file_type().is_file() {
-                let relative = entry
-                    .path()
-                    .strip_prefix(root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                files.insert(relative, fs::read(entry.path()).unwrap());
-            }
-        }
-        files
-    }
-
-    fn no_fetch_staging(parent: &Path) -> bool {
-        fs::read_dir(parent).unwrap().flatten().all(|entry| {
-            !entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".zed-fetch-")
-        })
-    }
-
     #[test]
-    fn frozen_fetch_is_deterministic_source_redacted_and_project_read_only() {
-        let project = tempfile::tempdir().unwrap();
-        let registry = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        fs::write(project.path().join("owned.txt"), b"consumer-owned\n").unwrap();
-        let locked = seed_package(
-            registry.path(),
-            "acme",
-            "http-kit",
-            "1.2.3",
-            &[
-                ("lib/value.txt", b"verified payload\n"),
-                (
-                    ".zpkg.toml",
-                    b"[package]\norg='acme'\nname='http-kit'\nversion='1.2.3'\n",
-                ),
-            ],
-        );
-        let lock_bytes = write_lock(project.path(), vec![locked.clone()]);
-        let before = file_snapshot(project.path());
-        let home = outputs.path().join("global-home-must-not-be-created");
-        let cfg = config(home.clone());
-
-        let first = outputs.path().join("first");
-        let second = outputs.path().join("second");
-        let report = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: first.clone(),
-            },
-        )
-        .unwrap();
-        run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: second.clone(),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(report.packages, 1);
-        assert_eq!(report.lock_sha256, sha256_bytes(&lock_bytes));
-        assert_eq!(file_snapshot(&first), file_snapshot(&second));
-        assert_eq!(file_snapshot(project.path()), before);
-        assert!(
-            !home.exists(),
-            "fetch must not use the ambient global store"
-        );
-        assert!(
-            first
-                .join("packages")
-                .join(&locked.sha256)
-                .join("pkg/lib/value.txt")
-                .is_file()
-        );
-
-        let index_text = fs::read_to_string(first.join("metadata/index.json")).unwrap();
-        assert!(!index_text.contains(&registry.path().to_string_lossy().to_string()));
-        let index: Value = serde_json::from_str(&index_text).unwrap();
-        assert_eq!(index["schema"], FETCH_SCHEMA);
-        assert_eq!(index["lock_sha256"], sha256_bytes(&lock_bytes));
-        assert_eq!(index["packages"][0]["source_kind"], "file");
-        assert_eq!(index["packages"][0]["sha256"], locked.sha256);
-        assert!(no_fetch_staging(outputs.path()));
-    }
-
-    #[test]
-    fn tampered_lock_digest_fails_before_atomic_publish() {
-        let project = tempfile::tempdir().unwrap();
-        let registry = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        let mut locked = seed_package(
-            registry.path(),
-            "acme",
-            "tamper-target",
-            "1.0.0",
-            &[("payload.txt", b"trusted\n")],
-        );
-        // Keep the digest structurally valid so the failure is the intended
-        // registry-versus-lock mismatch rather than lock-shape validation.
-        locked.sha256 = "f".repeat(64);
-        write_lock(project.path(), vec![locked]);
-        let output = outputs.path().join("must-not-exist");
-
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home")),
-            FetchArgs {
-                frozen: true,
-                output: output.clone(),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("digest changed"));
-        assert!(!output.exists());
-        assert!(no_fetch_staging(outputs.path()));
-    }
-
-    #[test]
-    fn fetch_rejects_missing_frozen_opt_in_existing_outputs_and_project_paths() {
-        let project = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
-        write_lock(project.path(), Vec::new());
-        let cfg = config(outputs.path().join("home"));
-
-        let error = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: false,
-                output: outputs.path().join("not-frozen"),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("frozen-only"));
-
-        let existing = outputs.path().join("existing");
-        fs::create_dir(&existing).unwrap();
-        let error = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: existing,
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("already exists"));
-
-        let error = run(
-            project.path(),
-            &cfg,
-            FetchArgs {
-                frozen: true,
-                output: project.path().join("generated"),
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("outside the project tree"));
-        assert!(!project.path().join("generated").exists());
-    }
-
-    #[test]
-    fn duplicate_identities_and_credential_bearing_sources_fail_closed() {
-        let project = tempfile::tempdir().unwrap();
-        let outputs = tempfile::tempdir().unwrap();
+    fn rejects_duplicate_package_identity() {
         let package = LockedPackage {
-            org: "acme".to_string(),
-            name: "duplicate".to_string(),
-            version: "1.0.0".to_string(),
+            org: "acme".into(),
+            name: "demo".into(),
+            version: "1.0.0".into(),
             sha256: "a".repeat(64),
             size: 1,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-            source: "file:///registry".to_string(),
+            format: zed_interfaces::artifact::ArtifactFormat::TarGz,
+            vcs_tag: "v1.0.0".into(),
+            vcs_commit: None,
+            source: "https://registry.example.com".into(),
         };
-        write_unchecked_lock(project.path(), vec![package.clone(), package]);
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home")),
-            FetchArgs {
-                frozen: true,
-                output: outputs.path().join("duplicate"),
-            },
-        )
-        .unwrap_err();
-        let message = format!("{error:#}");
-        assert!(
-            message.contains("duplicate locked package identity")
-                && message.contains("acme/duplicate"),
-            "unexpected duplicate diagnostic: {message}"
-        );
-
-        let mut credentialed = LockedPackage {
-            org: "acme".to_string(),
-            name: "credentialed".to_string(),
-            version: "1.0.0".to_string(),
-            sha256: "b".repeat(64),
-            size: 1,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v1.0.0".to_string(),
-            vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-            source: "https://person:super-secret@example.com/registry".to_string(),
+        let lock = Lockfile {
+            version: Lockfile::CURRENT_VERSION,
+            packages: vec![package.clone(), package],
+            native_dependencies: Vec::new(),
+            nix_adapters: Vec::new(),
         };
-        write_unchecked_lock(project.path(), vec![credentialed.clone()]);
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home-2")),
-            FetchArgs {
-                frozen: true,
-                output: outputs.path().join("credentialed"),
-            },
-        )
-        .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("may not embed credentials"));
-        assert!(!message.contains("super-secret"));
-
-        credentialed.source = "https://example.com/registry?token=also-secret".to_string();
-        write_unchecked_lock(project.path(), vec![credentialed]);
-        let error = run(
-            project.path(),
-            &config(outputs.path().join("home-3")),
-            FetchArgs {
-                frozen: true,
-                output: outputs.path().join("query-secret"),
-            },
-        )
-        .unwrap_err();
-        assert!(!error.to_string().contains("also-secret"));
+        let error = validate_locked_packages(&lock, "https://registry.example.com")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("duplicate package identity"));
     }
 
     #[test]
-    fn modular_route_help_and_completion_model_include_fetch() {
-        let args = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
-        assert_eq!(
-            route(&args(&["zed", "fetch", "--frozen", "--output", "x"])),
-            Route::Fetch
-        );
-        assert_eq!(
-            route(&args(&["zed", "--home", "/tmp/home", "fetch", "--help"])),
-            Route::Fetch
-        );
-        assert!(matches!(
-            route(&args(&["zed", "help", "fetch"])),
-            Route::FetchHelp { .. }
-        ));
-        assert_eq!(route(&args(&["zed", "install"])), Route::Existing);
-
-        let command =
-            augment_root_command(crate::dev::augment_root_command(crate::cli::Cli::command()));
-        let fetch = command
-            .get_subcommands()
-            .find(|subcommand| subcommand.get_name() == "fetch")
-            .expect("fetch command must be visible");
+    fn rejects_malformed_sha256_before_network_access() {
+        let lock = Lockfile {
+            version: Lockfile::CURRENT_VERSION,
+            packages: vec![LockedPackage {
+                org: "acme".into(),
+                name: "demo".into(),
+                version: "1.0.0".into(),
+                sha256: "not-a-digest".into(),
+                size: 1,
+                format: zed_interfaces::artifact::ArtifactFormat::TarGz,
+                vcs_tag: "v1.0.0".into(),
+                vcs_commit: None,
+                source: "https://registry.example.com".into(),
+            }],
+            native_dependencies: Vec::new(),
+            nix_adapters: Vec::new(),
+        };
         assert!(
-            fetch
-                .get_arguments()
-                .any(|argument| argument.get_long() == Some("frozen"))
-        );
-        assert!(
-            fetch
-                .get_arguments()
-                .any(|argument| argument.get_long() == Some("output"))
+            validate_locked_packages(&lock, "https://registry.example.com")
+                .unwrap_err()
+                .to_string()
+                .contains("64 lowercase hexadecimal")
         );
     }
 
     #[test]
-    fn embedded_fetch_flags_contract_is_valid_and_rejects_unknown_options() {
-        let valid = vec![
-            "zed".to_string(),
-            "fetch".to_string(),
-            "--frozen".to_string(),
-            "--output".to_string(),
-            "/tmp/bundle".to_string(),
-        ];
-        let parsed = parse_embedded(&valid).unwrap();
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        assert!(
-            parsed.unknown_options.is_empty(),
-            "{:?}",
-            parsed.unknown_options
-        );
+    fn rejects_file_registry_authorities_without_echoing_source() {
+        let source = "file://remote-registry.invalid/private/path";
+        let error = validate_source(source).unwrap_err().to_string();
+        assert!(error.contains("not a local absolute path"));
+        assert!(!error.contains(source));
+    }
 
-        let invalid = vec![
-            "zed".to_string(),
-            "fetch".to_string(),
-            "--surprise".to_string(),
-        ];
-        let parsed = parse_embedded(&invalid).unwrap();
-        assert!(!parsed.unknown_options.is_empty());
+    #[test]
+    fn rejects_file_registry_query_without_echoing_secret() {
+        let secret = "super-secret-query-value";
+        let source = format!("file:///tmp/registry?token={secret}");
+        let error = validate_source(&source).unwrap_err().to_string();
+        assert!(error.contains("may not embed"));
+        assert!(!error.contains(secret));
+    }
+
+    #[test]
+    fn verifies_registry_metadata_against_lock() {
+        let locked = LockedPackage {
+            org: "acme".into(),
+            name: "demo".into(),
+            version: "1.0.0".into(),
+            sha256: "a".repeat(64),
+            size: 10,
+            format: zed_interfaces::artifact::ArtifactFormat::TarGz,
+            vcs_tag: "v1.0.0".into(),
+            vcs_commit: Some("b".repeat(40)),
+            source: "https://registry.example.com".into(),
+        };
+        let mut metadata = VersionMetadata {
+            org: "acme".into(),
+            name: "demo".into(),
+            version: "1.0.0".into(),
+            sha256: "a".repeat(64),
+            size: 10,
+            format: zed_interfaces::artifact::ArtifactFormat::TarGz,
+            artifact_url: "https://registry.example.com/acme/demo/1.0.0.tar.gz".into(),
+            vcs_tag: "v1.0.0".into(),
+            vcs_commit: Some("b".repeat(40)),
+        };
+        verify_registry_metadata(&locked, &metadata).unwrap();
+        metadata.size = 11;
+        assert!(
+            verify_registry_metadata(&locked, &metadata)
+                .unwrap_err()
+                .to_string()
+                .contains("size changed")
+        );
+    }
+
+    #[test]
+    fn output_path_must_be_new_and_outside_project() {
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        let external = root.path().join("external");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&external).unwrap();
+
+        let inside = project.join("bundle");
+        assert!(prepare_output_path(&project, &project, &inside).is_err());
+
+        let outside = external.join("bundle");
+        assert_eq!(
+            prepare_output_path(&project, &project, &outside).unwrap(),
+            outside
+        );
+        fs::create_dir(&outside).unwrap();
+        assert!(prepare_output_path(&project, &project, &outside).is_err());
+    }
+
+    #[test]
+    fn lock_root_walks_to_the_nearest_ancestor() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("a/b/c");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.path().join(LOCKFILE_FILE), "version = 2\n").unwrap();
+        assert_eq!(lock_root(&nested).unwrap(), root.path());
+    }
+
+    #[test]
+    fn root_help_is_routed_to_the_existing_cli_with_fetch_augmented() {
+        assert_eq!(
+            route(&[OsString::from("zed"), OsString::from("--help")]),
+            Route::RootHelp
+        );
+        assert_eq!(
+            route(&[
+                OsString::from("zed"),
+                OsString::from("--help"),
+                OsString::from("fetch")
+            ]),
+            Route::FetchHelp {
+                help_index: 1,
+                target_index: 2
+            }
+        );
+    }
+
+    #[test]
+    fn unrelated_commands_remain_on_the_existing_parser() {
+        assert_eq!(
+            route(&[OsString::from("zed"), OsString::from("install")]),
+            Route::Existing
+        );
+    }
+
+    #[test]
+    fn fetch_command_is_detected_after_global_options() {
+        assert_eq!(
+            route(&[
+                OsString::from("zed"),
+                OsString::from("--home"),
+                OsString::from("/tmp/home"),
+                OsString::from("fetch"),
+                OsString::from("--frozen"),
+                OsString::from("--output"),
+                OsString::from("/tmp/out"),
+            ]),
+            Route::Fetch
+        );
+    }
+
+    #[test]
+    fn embedded_fetch_contract_stays_auditable() {
+        BundledFlags2Env::new()
+            .audit_config_from_str(FETCH_CONTRACT)
+            .unwrap();
     }
 }
