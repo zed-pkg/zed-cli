@@ -23,7 +23,7 @@ jobs:
   update:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.head_ref == 'chore/zed-lock-windows-contention'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Check out exact integration branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,9 +46,15 @@ jobs:
           grep -F '#1db0da00d30fcf2e0762f50eedb1f88458020b52' Cargo.lock
           cargo fmt --all --check
           cargo test --locked --lib project_lock::tests
-          cargo test --locked --test workspace_uninstall_cli
+          cargo test --locked --test lock_waiter_process_lock
+          cargo test --locked --test recursive_install_concurrency
+          cargo test --locked --test store_lock_evented
           cargo test --locked --test global_cli
-          cargo clippy --locked --bin zed --test workspace_uninstall_cli -- -D warnings
+          cargo clippy --locked --bin zed \
+            --test lock_waiter_process_lock \
+            --test recursive_install_concurrency \
+            --test store_lock_evented \
+            --test global_cli -- -D warnings
 
       - name: Commit resolver-owned lock delta and remove carrier
         run: |
