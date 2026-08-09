@@ -14,6 +14,7 @@ use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
 use zed_cli::managed_install;
+use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
 use zed_cli::ops;
@@ -267,6 +268,31 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     asdf_environment::print_import(&imported, json)
                 }
             },
+            EnvCmd::Export {
+                manager: EnvironmentManagerArg::Mise,
+                plan,
+                output,
+                check,
+                write,
+                json,
+            } => {
+                if check && write {
+                    anyhow::bail!("the arguments '--check' and '--write' cannot be used together");
+                }
+                let mode = if check {
+                    MiseExportMode::Check
+                } else if write {
+                    MiseExportMode::Write
+                } else {
+                    MiseExportMode::Print
+                };
+                let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
+                mise_export::print_export(&exported, json)
+            }
+            EnvCmd::Export {
+                manager: EnvironmentManagerArg::Asdf,
+                ..
+            } => anyhow::bail!("asdf export is not implemented; use `zed env export mise`"),
             EnvCmd::Verify {
                 manager,
                 config,

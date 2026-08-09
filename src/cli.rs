@@ -162,7 +162,7 @@ impl From<CompletionShell> for clap_complete::Shell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvironmentManagerArg {
-    /// Import or verify project-local mise configuration.
+    /// Import, verify, or export project-local mise configuration.
     Mise,
     /// Import or verify project-local asdf configuration and Zed-owned provenance.
     Asdf,
@@ -443,6 +443,26 @@ pub enum EnvCmd {
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
     },
+    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.
+    Export {
+        #[arg(value_enum)]
+        manager: EnvironmentManagerArg,
+        /// Project-local schema-v2 EnvironmentPlan (.toml or .json).
+        #[arg(long, env = "ZED_PKG_ENV_PLAN")]
+        plan: PathBuf,
+        /// Project-local mise output path.
+        #[arg(long, env = "ZED_PKG_ENV_OUTPUT", default_value = ".mise.toml")]
+        output: PathBuf,
+        /// Verify that the output already equals the deterministic projection.
+        #[arg(long, env = "ZED_PKG_ENV_CHECK")]
+        check: bool,
+        /// Transactionally create/update a Zed-owned manager view.
+        #[arg(long, env = "ZED_PKG_ENV_WRITE")]
+        write: bool,
+        /// Emit a machine-readable export result.
+        #[arg(long, env = "ZED_PKG_ENV_JSON")]
+        json: bool,
+    },
     /// Verify manager config/lock coverage and the normalized plan digest.
     Verify {
         #[arg(value_enum)]
@@ -597,7 +617,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AuthCmd, Cli, Cmd};
+    use super::{AuthCmd, Cli, Cmd, EnvCmd};
 
     #[test]
     fn flat_and_nested_auth_spellings_dispatch_identically() {
@@ -740,6 +760,46 @@ mod tests {
                 assert!(matches!(cli.cmd, Cmd::Env { .. }));
             }
         }
+    }
+
+    #[test]
+    fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
+        let cli = Cli::try_parse_from([
+            "zed",
+            "env",
+            "export",
+            "mise",
+            "--plan",
+            "zed-env.toml",
+            "--output",
+            ".mise.toml",
+            "--check",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(cli.cmd, Cmd::Env { .. }));
+
+        assert!(matches!(
+            Cli::try_parse_from([
+                "zed",
+                "env",
+                "export",
+                "mise",
+                "--plan",
+                "zed-env.toml",
+                "--check",
+                "--write",
+            ])
+            .unwrap()
+            .cmd,
+            Cmd::Env {
+                cmd: EnvCmd::Export {
+                    check: true,
+                    write: true,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]
