@@ -33,7 +33,7 @@ jobs:
           toolchain: stable
           components: rustfmt,clippy
 
-      - name: Pin the merged native-registry interface contract everywhere
+      - name: Integrate the merged native-registry contract
         shell: bash
         run: |
           set -euo pipefail
@@ -75,7 +75,25 @@ jobs:
               if count != 1:
                   raise SystemExit(f"expected one ZED_INTERFACES_SHA in {path}")
               path.write_text(updated)
+
+          # The merged interface now enforces that a whole-repository target
+          # uses the root package's canonical identity. The recovered tests
+          # still used the pre-contract synthetic `clients-repository` name.
+          for filename in ("src/pack.rs", "src/release.rs"):
+              path = Path(filename)
+              text = path.read_text()
+              updated, count = text.replace(
+                  'name = "clients-repository"',
+                  'name = "clients"',
+                  1,
+              ), text.count('name = "clients-repository"')
+              if count != 1:
+                  raise SystemExit(
+                      f"expected one legacy whole-repository identity in {filename}, found {count}"
+                  )
+              path.write_text(updated)
           PY
+
           cargo update -p zed-interfaces
           grep -Fq 'rev = "b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40"' Cargo.toml
           for workflow in \
@@ -86,6 +104,9 @@ jobs:
             grep -Fq 'ZED_INTERFACES_SHA: b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' "$workflow"
           done
           grep -Fq '#b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' Cargo.lock
+          ! grep -R -F 'name = "clients-repository"' src/pack.rs src/release.rs
+          grep -Fq 'name = "clients"' src/pack.rs
+          grep -Fq 'name = "clients"' src/release.rs
           git diff --check
 
       - name: Validate the integrated successor
@@ -101,6 +122,28 @@ jobs:
           python3 scripts/audit-github-actions.py
           git diff --check
 
+      - name: Enforce the integration change boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only | sort > /tmp/actual
+          cat > /tmp/allowed <<'EOF'
+          .github/workflows/frozen-lock-integrity.yml
+          .github/workflows/nix-bundle-write.yml
+          .github/workflows/nix-export-bundle.yml
+          Cargo.lock
+          Cargo.toml
+          src/pack.rs
+          src/release.rs
+          EOF
+          sort -o /tmp/allowed /tmp/allowed
+          unexpected="$(comm -23 /tmp/actual /tmp/allowed)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'unexpected integration paths:\n%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          grep -Fq 'zed-interfaces.git?rev=b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40#b3093e7b' Cargo.lock
+
       - name: Commit and publish the integrated candidate
         shell: bash
         run: |
@@ -111,8 +154,10 @@ jobs:
             Cargo.toml Cargo.lock \
             .github/workflows/nix-bundle-write.yml \
             .github/workflows/frozen-lock-integrity.yml \
-            .github/workflows/nix-export-bundle.yml
+            .github/workflows/nix-export-bundle.yml \
+            src/pack.rs src/release.rs
           if ! git diff --cached --quiet; then
-            git commit -m 'fix: pin the merged native registry interface contract'
+            git diff --cached --check
+            git commit -m 'fix: integrate the merged native registry contract'
           fi
           git push --force-with-lease origin HEAD:refs/heads/recovery/native-registry-http-candidate
