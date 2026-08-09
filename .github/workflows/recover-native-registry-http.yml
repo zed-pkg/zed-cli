@@ -124,8 +124,8 @@ jobs:
         run: |
           set -uo pipefail
           cargo fmt --all
-          cargo check --all-targets > /tmp/native-registry-cargo-check.log 2>&1
-          status=$?
+          status=0
+          cargo check --all-targets > /tmp/native-registry-cargo-check.log 2>&1 || status=$?
           printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
           tail -n 240 /tmp/native-registry-cargo-check.log
           exit 0
