@@ -1,0 +1,14 @@
+[package]
+org = "acme"
+name = "validator-fixture"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/validator-fixture"
+
+[dependencies]
+"acme/runtime" = "^1.2"
+
+[build-dependencies]
+"acme/tool" = "=2.0.0"

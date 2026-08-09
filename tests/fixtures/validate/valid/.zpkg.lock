@@ -1,0 +1,23 @@
+version = 1
+
+[[package]]
+org = "acme"
+name = "runtime"
+version = "1.9.0"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+size = 101
+format = "tar.gz"
+vcs_tag = "v1.9.0"
+vcs_commit = "1111111111111111111111111111111111111111"
+source = "https://registry.zpkg.net"
+
+[[package]]
+org = "acme"
+name = "tool"
+version = "2.0.0"
+sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+size = 202
+format = "zip"
+vcs_tag = "v2.0.0"
+vcs_commit = "2222222222222222222222222222222222222222"
+source = "https://registry.zpkg.net"

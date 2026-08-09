@@ -101,6 +101,27 @@ Foreign tag spellings are tolerated on resolution: a leading `v`, Go's
 `+incompatible`, and common PEP 440 pre-releases all normalize to a comparable
 version. See [zed-interfaces `version`](https://github.com/zed-pkg/zed-interfaces/blob/main/src/version.rs).
 
+Validate package metadata before install or publication with `zed validate`.
+The command is offline and read-only: it never fetches, prompts, authenticates,
+recovers transactions, or accesses the package store. It applies the pinned
+zed-interfaces runtime validators plus the checked-in manifest/lock schema
+shape, so malformed TOML, unknown canonical fields, invalid slugs or
+provenance, unsupported lock versions, and direct requirement drift fail
+closed. The known additive `[[git-submodule]]` lock extension is validated by
+its own typed contract rather than rejected as an unknown canonical field.
+
+```sh
+zed validate
+zed validate --require-lock
+zed validate --manifest path/to/.zpkg.toml --lock path/to/.zpkg.lock --json
+```
+
+Lockfile v1 does not encode dependency edges. Validation therefore proves that
+every direct runtime/build requirement is present and satisfied when a lock is
+available, but explicitly does not claim transitive completeness. Without
+`--require-lock`, an absent lock is reported as a warning so manifest-only
+package artifacts can still smoke-test their authored metadata.
+
 ## Artifact formats
 
 Artifacts are `tar.gz` by default; `zip` is fully supported (both pack
@@ -111,6 +132,7 @@ registry hosts both on S3/Cloudflare R2.
 
 | Command | What it does |
 | --- | --- |
+| `zed validate [--manifest PATH] [--lock PATH] [--require-lock] [--json]` | Validate canonical package metadata offline and without mutation; direct lock coverage is checked, while v1 transitive completeness is explicitly not claimed |
 | `zed init` | Write a `.zpkg.toml` template |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
@@ -205,7 +227,7 @@ protocols.
 `zed install` accepts package specs in an existing repository or folder:
 
 ```sh
-zed install oresoftware/flags-2-env@^0.1
+zed install flags-2-env/flags-2-env@^0.3
 ```
 
 Zed first searches upward for a Zed manifest. Without one, it looks for the
@@ -233,7 +255,7 @@ does not bypass that guard.
 Use the canonical escape hatch when the project must remain manifestless:
 
 ```sh
-zed install oresoftware/flags-2-env@^0.1 --do-not-write-new-manifest
+zed install flags-2-env/flags-2-env@^0.3 --do-not-write-new-manifest
 ```
 
 This preserves the established in-memory consumer plan. The normal installer
@@ -386,7 +408,7 @@ command = "make install CC=clang"
 
 ## Flags-2-env
 
-Following the [flags-2-env](https://github.com/oresoftware/flags-2-env)
+Following the [flags-2-env](https://github.com/flags-2-env/flags-2-env)
 convention, every flag can be set via a `ZED_PKG_*` environment variable. The
 full mapping is declared, TOML-only, in
 [`.cli-flags.toml`](.cli-flags.toml) — a `cargo test` asserts that file and the
@@ -401,6 +423,10 @@ actual CLI never drift, so it is always authoritative:
 | `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
 | `--supabase-key` | `ZED_PKG_SUPABASE_KEY` | optional public publishable/anon key |
 | `--interactive` | `ZED_PKG_INTERACTIVE` | off; confirm each mutating lifecycle step in a real terminal |
+| `--manifest` (validate) | `ZED_PKG_VALIDATE_MANIFEST` | `.zpkg.toml` |
+| `--lock` (validate) | `ZED_PKG_VALIDATE_LOCK` | `.zpkg.lock` |
+| `--require-lock` (validate) | `ZED_PKG_VALIDATE_REQUIRE_LOCK` | off |
+| `--json` (validate) | `ZED_PKG_VALIDATE_JSON` | off |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |

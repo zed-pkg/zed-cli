@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::env;
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -147,6 +148,7 @@ fn zed_install_command(project: &Path, cfg: &Config) -> Command {
     command
 }
 
+#[cfg(unix)]
 fn path_with(directory: &Path) -> OsString {
     let mut entries = vec![directory.to_path_buf()];
     entries.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
@@ -1551,6 +1553,7 @@ fn build_hooks_stage_build_and_cache() {
 /// installed before package staging, and exposed to ordered lifecycle hooks.
 /// A lifecycle cache hit never re-runs author code.
 #[test]
+#[cfg(unix)]
 fn native_dependencies_and_install_hooks_are_graph_wide_staged_and_cached() {
     let tmp = tempfile::tempdir().unwrap();
     let registry_dir = tmp.path().join("registry");
@@ -1858,6 +1861,7 @@ post-install = ['exit 17']
 /// build. Zed must still use its own content-addressed profile, inject that
 /// profile into hooks, and reuse both the native profile and lifecycle cache.
 #[test]
+#[cfg(unix)]
 fn nix_shell_uses_a_zed_managed_profile_and_reuses_it() {
     let tmp = tempfile::tempdir().unwrap();
     let registry_dir = tmp.path().join("registry");

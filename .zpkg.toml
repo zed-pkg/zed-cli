@@ -31,7 +31,7 @@ dir = ".vendor/.zed"
 [publish]
 include_readme = true
 tag_format = "v{version}"
-smoke_test = "test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help"
+smoke_test = "test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help"
 exclude = [
   ".env",
   ".env.*",
@@ -51,4 +51,3 @@ package = "zed-cli"
 
 [scripts]
 test = "bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
-validate-package-graph = "bash scripts/validate-zed-package-graph.sh"

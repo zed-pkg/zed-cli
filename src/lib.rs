@@ -121,6 +121,7 @@ pub mod terminal_context;
 pub mod tool_profile;
 pub mod transaction;
 pub mod update;
+pub mod validation;
 pub mod vcs;
 
 pub mod tool_versions;

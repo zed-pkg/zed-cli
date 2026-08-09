@@ -108,9 +108,9 @@ fn executable_exists(program: &str) -> bool {
         }
         #[cfg(windows)]
         {
-            return ["exe", "cmd", "bat", "com"]
+            ["exe", "cmd", "bat", "com"]
                 .iter()
-                .any(|ext| is_executable_file(&dir.join(format!("{program}.{ext}"))));
+                .any(|ext| is_executable_file(&dir.join(format!("{program}.{ext}"))))
         }
         #[cfg(not(windows))]
         false
