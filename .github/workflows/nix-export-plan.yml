@@ -138,6 +138,11 @@ jobs:
           workflow = Path('.github/workflows/nix-export-plan.yml').read_text()
           assert 'contents: read' in workflow
           assert 'persist-credentials: false' in workflow
-          for forbidden in ('contents: write', 'git push', 'pull_request_target:'):
+          # Split the sentinels so this self-audit does not match its own source.
+          for forbidden in (
+              'contents:' + ' write',
+              'git' + ' push',
+              'pull_request' + '_target:',
+          ):
               assert forbidden not in workflow, forbidden
           PY

@@ -80,8 +80,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          root_help="$(cargo run --quiet --locked -- --help)"
-          fetch_help="$(cargo run --quiet --locked -- fetch --help)"
+          root_help="$(cargo run --quiet --locked --bin zed -- --help)"
+          fetch_help="$(cargo run --quiet --locked --bin zed -- fetch --help)"
           grep -F 'fetch' <<<"$root_help"
           grep -F -- '--frozen' <<<"$fetch_help"
           grep -F -- '--output' <<<"$fetch_help"
