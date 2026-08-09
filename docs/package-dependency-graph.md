@@ -29,10 +29,12 @@ operational composition.
 ## Native Rust edges
 
 `Cargo.toml` retains the immutable `zed-interfaces` dependency used by the
-implementation and pins `zed-lock` to the exact hardened v0.1.1 merge commit
-`a0dc78d385bc3ab553d3027b427f5f1428239c9c`. The former in-tree
-`crates/zed-lock` copy remains deleted: Cargo and Zed both reference the same
-independently owned package rather than maintaining two authorities.
+implementation and pins `zed-lock` to exact commit
+`1db0da00d30fcf2e0762f50eedb1f88458020b52`. That revision retains the hardened
+v0.1.1 package contract and adds DEN-3167's Windows `ERROR_LOCK_VIOLATION`
+contention normalization. The former in-tree `crates/zed-lock` copy remains
+deleted: Cargo and Zed both reference the same independently owned package
+rather than maintaining two authorities.
 
 The clients relationship remains represented in the Zed graph, so Zed can
 resolve and verify the reusable polyglot package without coupling ordinary
@@ -53,7 +55,7 @@ The dependency-free `zed-lock` package likewise has no placeholder Zed lock.
 ## CI
 
 `.github/workflows/zed-package-graph.yml` checks out the CLI, interfaces,
-clients, and the exact hardened lock-package merge commit as siblings. The gate
+clients, and the exact certified lock-package revision as siblings. The gate
 checks canonical package names, versions, URLs, native publication metadata,
 Cargo revision and lock provenance, Zed dependency edges, the clients package's
 own interfaces edge and Rust target, `.vendor/.zed` materialization,

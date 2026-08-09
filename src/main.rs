@@ -4,7 +4,7 @@ use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
-    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
+    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
 };
 use zed_cli::completion;
 use zed_cli::config::Config;
@@ -21,6 +21,7 @@ use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
 use zed_cli::store::Store;
+use zed_cli::task_cli::{self, TaskAction};
 use zed_cli::update;
 
 fn main() {
@@ -91,7 +92,17 @@ fn main() {
             }
         }
     }
-    if let Some(result) = dev::dispatch(args) {
+    if let Some(result) = dev::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = zed_cli::external_subcommands::dispatch(args) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -162,12 +173,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let git_submodules = cli.globals.git_submodules;
     let cwd = std::env::current_dir()?;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
-        // Every live project transaction already owns this kernel-backed
-        // install lock. Recover under the same lock so a concurrent process
-        // cannot mistake an in-flight rollback journal for an abandoned one.
-        let store = Store::new(&cfg.home);
-        let _recovery_lock = store.install_lock()?;
-        zed_cli::transaction::recover_pending(&cwd)?;
+        // Recovery mutates the checkout and must use the same canonical
+        // descriptor-lock boundary as every new lifecycle mutation. Unlike the
+        // old Store install lock, this also coordinates processes using
+        // different ZED_PKG_HOME values without serializing unrelated projects.
+        zed_cli::project_lock::with_lock(
+            &cwd,
+            "recover interrupted Zed project transaction",
+            || zed_cli::transaction::recover_pending(&cwd).map(|_| ()),
+        )?;
     }
     match cli.cmd {
         Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
@@ -184,21 +198,50 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_ecosystem_mismatch,
         } => {
             if git_submodules {
-                submodules::sync(&cwd)?;
+                // Git synchronization mutates the submodule worktrees and must
+                // share one descriptor lifetime with manifest/lock resolution,
+                // materialization, adapter wiring, and Git-lock finalization.
+                // Resolve the superproject first so nested invocations and root
+                // invocations converge on one checkout-local ownership path.
+                let project = submodules::find_root(&cwd).unwrap_or_else(|| cwd.clone());
+                let operation = if frozen {
+                    "synchronize Git submodules and restore frozen Zed dependency graph"
+                } else {
+                    "synchronize Git submodules and install Zed dependency graph"
+                };
+                let _guard = zed_cli::project_lock::acquire(&project, operation)?;
+                // Close the journal-created-between-startup-and-lock window and
+                // recover a superproject journal when invoked below the root.
+                zed_cli::transaction::recover_pending(&project)?;
+                submodules::sync(&project)?;
+                managed_install::install(
+                    &project,
+                    &cfg,
+                    &specs,
+                    frozen,
+                    install_mode,
+                    adapter,
+                    allow_build,
+                    target.as_deref(),
+                    allow_no_manifest,
+                    allow_ecosystem_mismatch,
+                )
+                .map(|_| ())
+            } else {
+                managed_install::install(
+                    &cwd,
+                    &cfg,
+                    &specs,
+                    frozen,
+                    install_mode,
+                    adapter,
+                    allow_build,
+                    target.as_deref(),
+                    allow_no_manifest,
+                    allow_ecosystem_mismatch,
+                )
+                .map(|_| ())
             }
-            managed_install::install(
-                &cwd,
-                &cfg,
-                &specs,
-                frozen,
-                install_mode,
-                adapter,
-                allow_build,
-                target.as_deref(),
-                allow_no_manifest,
-                allow_ecosystem_mismatch,
-            )
-            .map(|_| ())
         }
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
         Cmd::Env { cmd } => match cmd {
@@ -247,6 +290,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
         },
+        Cmd::Task { plan, json, cmd } => {
+            let action = match cmd {
+                TaskCmd::List { all } => TaskAction::List { all },
+                TaskCmd::Info { task } => TaskAction::Info { task },
+                TaskCmd::Graph { task } => TaskAction::Graph { task },
+                TaskCmd::Run {
+                    task,
+                    dry_run,
+                    yes,
+                    jobs,
+                    no_cache,
+                    args,
+                } => TaskAction::Run {
+                    task,
+                    dry_run,
+                    yes,
+                    jobs,
+                    no_cache,
+                    args,
+                },
+            };
+            task_cli::execute(&cwd, plan.as_deref(), json, action)
+        }
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

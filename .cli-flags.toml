@@ -15,7 +15,7 @@ url = "https://github.com/zed-pkg/zed-cli"
 env = "ZED_PKG_REGISTRY"
 aliases = ["registry"]
 type = "string"
-default = "https://registry.zpkg.tech"
+default = "https://registry.zpkg.net"
 help = "Registry base URL."
 
 [flags.home]
@@ -300,6 +300,69 @@ help = "Import manager-native state as a normalized EnvironmentPlan."
 
 [commands.env.commands.verify]
 help = "Verify config/lock coverage and normalized environment identity."
+
+[commands.task]
+help = "List, inspect, graph, or execute native schema-v2 project tasks."
+
+[commands.task.flags.plan]
+env = "ZED_TASK_PLAN"
+aliases = ["plan"]
+type = "string"
+help = "Project-local schema-v2 environment plan."
+
+[commands.task.flags.json]
+env = "ZED_TASK_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit stable machine-readable task output."
+
+[commands.task.commands.list]
+help = "List project tasks in deterministic name order."
+
+[commands.task.commands.list.flags.all]
+env = "ZED_TASK_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Include hidden tasks."
+
+[commands.task.commands.info]
+help = "Show one task's metadata and dependency classes."
+
+[commands.task.commands.graph]
+help = "Print the validated static task graph."
+
+[commands.task.commands.run]
+help = "Execute one task and its validated dependency graph."
+
+[commands.task.commands.run.flags.dry_run]
+env = "ZED_TASK_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Plan execution without starting subprocesses or writing cache state."
+
+[commands.task.commands.run.flags.yes]
+env = "ZED_TASK_YES"
+aliases = ["yes"]
+type = "bool"
+default = "false"
+help = "Approve explicit task confirmation requirements."
+
+[commands.task.commands.run.flags.jobs]
+env = "ZED_TASK_JOBS"
+aliases = ["jobs"]
+type = "int"
+default = "1"
+help = "Maximum concurrent task command processes."
+
+[commands.task.commands.run.flags.no_cache]
+env = "ZED_TASK_NO_CACHE"
+aliases = ["no-cache"]
+type = "bool"
+default = "false"
+help = "Disable content-verified incremental cache reads and writes."
 
 [commands.completions]
 help = "Generate Bash or Zsh completion from the typed CLI model."

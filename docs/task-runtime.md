@@ -1,25 +1,35 @@
 # Native task runtime
 
-`zed-task` is the staged execution surface for schema-v2 `EnvironmentPlanV2`
-tasks. It is intentionally manager-neutral: mise, asdf, Devbox, Flox, Nix, or
-native Zed adapters must first produce the shared plan contract. The runtime
-does not parse manager configuration or execute manager plugins.
+`zed task` is the canonical execution surface for schema-v2
+`EnvironmentPlanV2` tasks. It is intentionally manager-neutral: mise, asdf,
+Devbox, Flox, Nix, or native Zed adapters must first produce the shared plan
+contract. The runtime does not parse manager configuration or execute manager
+plugins.
+
+The separately installed `zed-task` binary remains a compatibility and focused
+certification surface. Both binaries call the same `zed_cli::task_cli` command
+layer, so parsing after the command boundary, output, execution, error, cache,
+and observer semantics do not diverge.
 
 ## Commands
 
 ```console
-zed-task [--plan zed-env.toml] list [--all]
-zed-task [--plan zed-env.toml] info <task>
-zed-task [--plan zed-env.toml] graph <task>
-zed-task [--plan zed-env.toml] run <task> [--dry-run] [--yes] [--jobs N] [--no-cache] [-- <args>...]
+zed task [--plan zed-env.toml] [--json] list [--all]
+zed task [--plan zed-env.toml] [--json] info <task>
+zed task [--plan zed-env.toml] [--json] graph <task>
+zed task [--plan zed-env.toml] run <task> [--dry-run] [--yes] [--jobs N] [--no-cache] [-- <args>...]
 ```
+
+Compatibility spellings use the same trailing arguments after replacing
+`zed task` with `zed-task`.
 
 `--jobs` is a positive integer. Zero is rejected during argument parsing before
 plan discovery, so a malformed concurrency request cannot partially inspect or
 execute a project plan. The same validation applies to `ZED_TASK_JOBS` after
-flags-2-env normalization.
+flags-to-environment normalization.
 
-Every option has one flags-2-env identity in `.task-cli-flags.toml`:
+Every option has one environment identity in the main `.cli-flags.toml` and the
+staging `.task-cli-flags.toml` contract:
 
 - `ZED_TASK_PLAN`
 - `ZED_TASK_JSON`
@@ -29,12 +39,12 @@ Every option has one flags-2-env identity in `.task-cli-flags.toml`:
 - `ZED_TASK_JOBS`
 - `ZED_TASK_NO_CACHE`
 
-The eventual `zed task` integration must reuse those names rather than creating
-a second configuration plane.
+The canonical route reuses these names rather than creating a second
+configuration plane.
 
 ## Supported execution semantics
 
-The first native slice supports:
+The native slice supports:
 
 - validated task and alias lookup;
 - `depends`, `wait_for`, and `depends_post` ordering;
@@ -85,7 +95,7 @@ excessive byte counts fail closed.
 
 ## Deliberate fail-closed boundaries
 
-The staged runtime does not yet execute:
+The runtime does not yet execute:
 
 - task-local tool overlays;
 - manager templates or task `vars`;
@@ -101,4 +111,4 @@ when converting to operating-system process variables.
 
 The next certified slices add native tool activation, typed usage arguments,
 capability profiles/process isolation, cancellation of complete descendant
-process trees, watch mode, and canonical `zed task` routing.
+process trees, and watch mode.

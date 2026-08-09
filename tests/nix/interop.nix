@@ -72,6 +72,7 @@ let
       test -f .vendor/.zed/zed-pkg/docker-node-lib/package.json
       test -f node_modules/@zed-pkg/docker-node-lib/package.json
       test ! -e .vendor/.zed/zed-pkg/docker-node-lib/generated/output.txt
+      test ! -e .zed/operation.lock
       runHook postCheck
     '';
 
