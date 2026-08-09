@@ -38,18 +38,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin \
-            refs/heads/baseline/zed-cli-local-main:refs/remotes/origin/baseline/zed-cli-local-main \
-            refs/heads/feat/native-registry-publish-and-pull:refs/remotes/origin/feat/native-registry-publish-and-pull
+          readonly FEATURE_BASE=c17d4ef262006f99f61e86d5fba538bc2294d5a1
+          readonly FEATURE_HEAD=075e930a033b9d56af4ab4eb2e58e31ca1dfe640
+          git cat-file -e "${FEATURE_BASE}^{commit}"
+          git cat-file -e "${FEATURE_HEAD}^{commit}"
           git checkout -B recovery/native-registry-http-clean origin/main
-          mapfile -t commits < <(git rev-list --reverse \
-            origin/baseline/zed-cli-local-main..origin/feat/native-registry-publish-and-pull)
-          test "${#commits[@]}" -eq 8
+          mapfile -t commits < <(git rev-list --reverse "${FEATURE_BASE}..${FEATURE_HEAD}")
+          printf 'reviewed feature commits (%s):\n' "${#commits[@]}"
+          printf '  %s\n' "${commits[@]}"
+          if [[ "${#commits[@]}" -ne 8 ]]; then
+            echo "expected exactly 8 reviewed feature commits" >&2
+            exit 1
+          fi
           git -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
             cherry-pick -X ours "${commits[@]}"
 
-      - name: Enforce the product-only path boundary
+      - name: Enforce the product-only path and feature boundary
         shell: bash
         run: |
           set -euo pipefail
@@ -75,6 +80,14 @@ jobs:
             echo 'new conflict marker detected' >&2
             exit 1
           fi
+          test -f src/native_host_client.rs
+          test -f tests/native_registry_adversarial.rs
+          grep -Fq 'pub mod native_host_client;' src/lib.rs
+          grep -Fq 'ReleaseCmd::Publish' src/main.rs
+          grep -Fq 'ReleaseCmd::Versions' src/main.rs
+          grep -Fq 'ZED_PKG_RELEASE_CHANNEL' .cli-flags.toml
+          grep -Fq 'pub fn publish(' src/release.rs
+          grep -Fq 'pub fn versions(' src/release.rs
 
       - name: Format and validate
         shell: bash
@@ -103,4 +116,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git push origin HEAD:refs/heads/recovery/native-registry-http-clean
+          git push --force-with-lease origin HEAD:refs/heads/recovery/native-registry-http-clean
