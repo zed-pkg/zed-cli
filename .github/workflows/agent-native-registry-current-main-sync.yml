@@ -80,8 +80,11 @@ jobs:
               path.write_text(value.replace(old_interfaces, new_interfaces, 1), encoding='utf-8')
           PY
 
-          cargo update -p zed-interfaces --precise 5394b2e7b070354ee79a4c6ac79c26d6264970cd
-          cargo update -p zed-lock --precise 1db0da00d30fcf2e0762f50eedb1f88458020b52
+          # Two git dependency revisions change together in this semantic union.
+          # Regenerate the complete graph once instead of asking two package-
+          # scoped updates to operate on an already stale intermediate lock.
+          rm Cargo.lock
+          cargo generate-lockfile
           cargo metadata --locked --no-deps >/dev/null
 
           grep -F 'rev = "5394b2e7b070354ee79a4c6ac79c26d6264970cd"' Cargo.toml
