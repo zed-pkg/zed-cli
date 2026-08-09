@@ -1,4 +1,4 @@
-# Registered recovery trigger; retry against the current main snapshot, then remove after the clean successor branch is published.
+# Registered recovery trigger; preserve the exact replay candidate for diagnosis, then remove after the clean successor branch is published.
 name: Recover native registry HTTP feature
 
 on:
@@ -110,6 +110,12 @@ jobs:
           grep -Fq 'pub fn publish(' src/release.rs
           grep -Fq 'pub fn versions(' src/release.rs
 
+      - name: Preserve exact replay candidate before validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push --force origin HEAD:refs/heads/recovery/native-registry-http-candidate
+
       - name: Format and validate
         shell: bash
         run: |
@@ -137,4 +143,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git push --force-with-lease origin HEAD:refs/heads/recovery/native-registry-http-clean
+          git push --force origin HEAD:refs/heads/recovery/native-registry-http-clean
