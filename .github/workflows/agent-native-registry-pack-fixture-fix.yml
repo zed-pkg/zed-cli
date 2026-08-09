@@ -81,6 +81,7 @@ jobs:
           git add Cargo.lock src/pack.rs src/release.rs
           git diff --cached --check
           changed="$(git diff --cached --name-only | paste -sd ' ' -)"
-          test "$changed" = 'Cargo.lock src/pack.rs src/release.rs'
+          expected='.github/workflows/agent-native-registry-pack-fixture-fix.yml Cargo.lock src/pack.rs src/release.rs'
+          test "$changed" = "$expected"
           git commit -m 'test: align native-registry branch with interface contract'
           git push origin HEAD:recovery/native-registry-http-candidate
