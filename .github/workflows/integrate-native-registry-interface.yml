@@ -1,0 +1,83 @@
+name: Integrate native registry interface contract
+
+on:
+  push:
+    branches:
+      - recovery/native-registry-http-main
+    paths:
+      - .github/workflows/integrate-native-registry-interface.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: integrate-native-registry-interface
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the preserved successor candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: recovery/native-registry-http-candidate
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Restore the exact reviewed interface revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('Cargo.toml')
+          text = path.read_text()
+          replacement = 'zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599" }'
+          updated, count = re.subn(
+              r'zed-interfaces = \{ git = "https://github\.com/zed-pkg/zed-interfaces\.git", rev = "[0-9a-f]{40}" \}',
+              replacement,
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit('expected exactly one zed-interfaces dependency declaration')
+          path.write_text(updated)
+          PY
+          cargo update -p zed-interfaces
+          grep -Fq 'rev = "4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599"' Cargo.toml
+          git diff --check
+
+      - name: Validate the integrated successor
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo check --all-targets
+          cargo test --all-targets
+          cargo test --doc
+          cargo clippy --all-targets -- -D warnings
+          git diff --check
+
+      - name: Commit and publish the integrated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix: restore reviewed native registry interface contract'
+          fi
+          git push --force-with-lease origin HEAD:refs/heads/recovery/native-registry-http-candidate
