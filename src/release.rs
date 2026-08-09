@@ -1637,7 +1637,6 @@ package = "acme-client"
 
 [targets.repository]
 dir = "."
-name = "clients-repository"
 
 [targets.nodejs]
 dir = "clients/typescript"

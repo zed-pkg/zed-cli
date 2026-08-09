@@ -466,7 +466,6 @@ exclude = [".zed-pack/**"]
 
 [targets.repository]
 dir = "."
-name = "clients-repository"
 
 [targets.nodejs]
 dir = "clients/ts"
