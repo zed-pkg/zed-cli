@@ -95,6 +95,26 @@ type = "bool"
 default = "false"
 help = "Allow dependency build hooks."
 
+[flags.allow_native_deps]
+env = "ZED_PKG_ALLOW_NATIVE_DEPS"
+aliases = ["allow-native-deps"]
+type = "bool"
+default = "false"
+help = "Allow zed to install host-native prerequisites declared by packages."
+
+[flags.allow_install_hooks]
+env = "ZED_PKG_ALLOW_INSTALL_HOOKS"
+aliases = ["allow-install-hooks"]
+type = "bool"
+default = "false"
+help = "Allow package-authored pre-install and post-install hooks."
+
+[flags.native_manager]
+env = "ZED_PKG_NATIVE_MANAGER"
+aliases = ["native-manager"]
+type = "string"
+help = "Pin the graph-wide native package manager."
+
 [flags.target]
 env = "ZED_PKG_TARGET"
 aliases = ["target"]

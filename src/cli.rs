@@ -210,6 +210,21 @@ pub enum Cmd {
         /// (artifact, platform, command) under ~/.zed-pkg/builds)
         #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
         allow_build: bool,
+        /// Install host-native prerequisites declared by packages. This may
+        /// invoke an OS package manager and is independent from build-hook
+        /// consent.
+        #[arg(long, env = "ZED_PKG_ALLOW_NATIVE_DEPS")]
+        allow_native_deps: bool,
+        /// Run package-authored pre-install and post-install commands in a
+        /// writable staging copy. Off by default because hooks are arbitrary
+        /// author code.
+        #[arg(long, env = "ZED_PKG_ALLOW_INSTALL_HOOKS")]
+        allow_install_hooks: bool,
+        /// Pin the native package manager selected for the complete dependency
+        /// graph (for example apt, apk, brew, or nix). Omitted = detect one
+        /// manager supported by every package that declares native deps.
+        #[arg(long, env = "ZED_PKG_NATIVE_MANAGER")]
+        native_manager: Option<String>,
         /// Which language subtree to take from polyglot dependencies (a repo
         /// shipping e.g. node/, python/, go/). Overrides [install].target;
         /// omitted = infer from the project
@@ -269,6 +284,15 @@ pub enum Cmd {
         /// Rebuild even when the build cache already has an entry
         #[arg(long, env = "ZED_PKG_FORCE")]
         force: bool,
+        /// Install host-native prerequisites before preparing dependencies.
+        #[arg(long, env = "ZED_PKG_ALLOW_NATIVE_DEPS")]
+        allow_native_deps: bool,
+        /// Run package-authored pre-install and post-install commands.
+        #[arg(long, env = "ZED_PKG_ALLOW_INSTALL_HOOKS")]
+        allow_install_hooks: bool,
+        /// Pin the graph-wide native package manager.
+        #[arg(long, env = "ZED_PKG_NATIVE_MANAGER")]
+        native_manager: Option<String>,
     },
     /// Run an executable a dependency exposes via [bin] (hoisted into
     /// zed_modules/.bin) or any command, with zed_modules/.bin prepended to
@@ -817,6 +841,61 @@ mod tests {
         let error =
             Cli::try_parse_from(["zed", "task", "run", "build", "--jobs", "0"]).unwrap_err();
         assert!(error.to_string().contains("at least one"));
+    }
+
+    #[test]
+    fn native_dependency_and_hook_flags_remain_independent() {
+        let cli = Cli::try_parse_from([
+            "zed",
+            "install",
+            "--allow-native-deps",
+            "--allow-install-hooks",
+            "--native-manager",
+            "apt",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Install {
+                allow_build,
+                allow_native_deps,
+                allow_install_hooks,
+                native_manager,
+                ..
+            } => {
+                assert!(
+                    !allow_build,
+                    "native prerequisites must not imply build consent"
+                );
+                assert!(allow_native_deps);
+                assert!(allow_install_hooks);
+                assert_eq!(native_manager.as_deref(), Some("apt"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let build = Cli::try_parse_from([
+            "zed",
+            "build",
+            "--allow-native-deps",
+            "--allow-install-hooks",
+            "--native-manager",
+            "nix",
+        ])
+        .unwrap();
+        match build.cmd {
+            Cmd::Build {
+                force,
+                allow_native_deps,
+                allow_install_hooks,
+                native_manager,
+            } => {
+                assert!(!force);
+                assert!(allow_native_deps);
+                assert!(allow_install_hooks);
+                assert_eq!(native_manager.as_deref(), Some("nix"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

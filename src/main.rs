@@ -194,10 +194,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             install_mode,
             adapter,
             allow_build,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager,
             target,
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
+            let permissions = ops::InstallPermissions {
+                allow_build,
+                allow_native_deps,
+                allow_install_hooks,
+                native_manager,
+            };
             if git_submodules {
                 // Git synchronization mutates the submodule worktrees and must
                 // share one descriptor lifetime with manifest/lock resolution,
@@ -215,28 +224,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 // recover a superproject journal when invoked below the root.
                 zed_cli::transaction::recover_pending(&project)?;
                 submodules::sync(&project)?;
-                managed_install::install(
+                managed_install::install_with_permissions(
                     &project,
                     &cfg,
                     &specs,
                     frozen,
                     install_mode,
                     adapter,
-                    allow_build,
+                    &permissions,
                     target.as_deref(),
                     allow_no_manifest,
                     allow_ecosystem_mismatch,
                 )
                 .map(|_| ())
             } else {
-                managed_install::install(
+                managed_install::install_with_permissions(
                     &cwd,
                     &cfg,
                     &specs,
                     frozen,
                     install_mode,
                     adapter,
-                    allow_build,
+                    &permissions,
                     target.as_deref(),
                     allow_no_manifest,
                     allow_ecosystem_mismatch,
@@ -343,7 +352,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             completion::print(shell.into());
             Ok(())
         }
-        Cmd::Build { force } => ops::build_cmd(&cwd, &cfg, force),
+        Cmd::Build {
+            force,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager,
+        } => ops::build_cmd(
+            &cwd,
+            &cfg,
+            force,
+            allow_native_deps,
+            allow_install_hooks,
+            native_manager.as_deref(),
+        ),
         Cmd::Run { command, args } => match ops::run(&cwd, &command, &args) {
             Ok(code) => std::process::exit(code),
             Err(error) => Err(error),

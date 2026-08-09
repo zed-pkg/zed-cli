@@ -35,7 +35,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZED_INTERFACES_SHA: d1bf8ef7c88a75292cbe8d697bfd269f30d62e2b
+  ZED_INTERFACES_SHA: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
 
 jobs:
   integrity:
@@ -66,9 +66,9 @@ jobs:
           test "$(grep -c "$ZED_INTERFACES_SHA" zed-cli/Cargo.lock)" -eq 1
           grep -F "ZED_INTERFACES_SHA: $ZED_INTERFACES_SHA" \
             zed-cli/.github/workflows/frozen-lock-integrity.yml
-          grep -F 'vcs_commit must be explicitly present' zed-interfaces/src/lockfile.rs
-          grep -F 'artifact-sha256:' zed-interfaces/src/lockfile.rs
-          grep -F 'normalize_missing_package_revisions' zed-interfaces/src/lockfile.rs
+          grep -F 'vcs_commit must be explicitly present' zed-interfaces/src/rust/lockfile.rs
+          grep -F 'artifact-sha256:' zed-interfaces/src/rust/lockfile.rs
+          grep -F 'normalize_missing_package_revisions' zed-interfaces/src/rust/lockfile.rs
           grep -F '"vcs_commit"' zed-interfaces/schemas/lockfile.json
           test ! -e zed-cli/.github/workflows/den-1464-retarget.yml
           for old in \

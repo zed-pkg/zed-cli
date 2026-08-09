@@ -117,7 +117,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
     manifest
         .native_release_routes()
         .into_iter()
-        .map(|route| {
+        .filter_map(|route| {
             let target_root = project.join(&route.dir);
             let gemspec = gemspec_filename(&target_root, &route.package);
             let (program, args) = match route.registry {
@@ -127,7 +127,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                 ),
                 NativeRegistry::CratesIo => ("cargo", vec!["package", "--list", "--allow-dirty"]),
                 NativeRegistry::PubDev => ("dart", vec!["pub", "publish", "--dry-run"]),
-                NativeRegistry::PyPi => (
+                NativeRegistry::PyPi | NativeRegistry::TestPyPi => (
                     python_program(),
                     vec![
                         "-m",
@@ -137,7 +137,7 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                         ".zed/native-preflight/pypi",
                     ],
                 ),
-                NativeRegistry::MavenCentral => {
+                NativeRegistry::MavenCentral | NativeRegistry::Clojars => {
                     ("mvn", vec!["--batch-mode", "-DskipTests", "package"])
                 }
                 NativeRegistry::RubyGems => (
@@ -160,15 +160,20 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                     ("composer", vec!["validate", "--strict", "--no-interaction"])
                 }
                 NativeRegistry::GoModules => ("go", vec!["list", "./..."]),
+                // The remaining registries are still represented in release
+                // plans, but do not yet have a safe local packaging command.
+                // Omitting a preflight spec is preferable to inventing a
+                // command that could execute the wrong ecosystem hooks.
+                _ => return None,
             };
-            NativePreflightSpec {
+            Some(NativePreflightSpec {
                 target: route.target,
                 registry: route.registry,
                 package: route.package,
                 cwd: target_root,
                 program: program.to_string(),
                 args: args.into_iter().map(str::to_string).collect(),
-            }
+            })
         })
         .collect()
 }

@@ -211,7 +211,7 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
                     &manifest.package.version,
                 )?;
             }
-            NativeRegistry::PyPi => {
+            NativeRegistry::PyPi | NativeRegistry::TestPyPi => {
                 validate_pyproject_manifest(
                     &target_root.join("pyproject.toml"),
                     &route.target,
@@ -219,7 +219,7 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
                     &manifest.package.version,
                 )?;
             }
-            NativeRegistry::MavenCentral => {
+            NativeRegistry::MavenCentral | NativeRegistry::Clojars => {
                 validate_maven_manifest(
                     &target_root.join("pom.xml"),
                     &route.target,
@@ -254,6 +254,16 @@ pub fn validate_native_manifests(project: &Path, manifest: &Manifest) -> Result<
             NativeRegistry::GoModules => {
                 validate_go_manifest(&target_root.join("go.mod"), &route.target, &route.package)?;
             }
+            // These routes remain part of the release plan. Their native
+            // manifests are executable code or use formats for which the CLI
+            // does not yet have a sound parser, so make the gap visible rather
+            // than treating an unchecked route as a successful comparison.
+            other => eprintln!(
+                "warning: unchecked {} [{}]: no native-manifest parser yet; \
+                 the route is planned but its manifest was not cross-checked",
+                route.target,
+                other.as_str()
+            ),
         }
     }
     Ok(())
@@ -766,7 +776,7 @@ package = "acme-client"
 
 [targets.repository]
 dir = "."
-name = "clients-repository"
+name = "clients"
 
 [targets.nodejs]
 dir = "clients/typescript"

@@ -44,8 +44,8 @@ impl std::error::Error for GitLockFinalizeError {}
 mod implementation;
 
 pub use implementation::{
-    InstallOutcome, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean, find, gc, login,
-    org_audit, org_claim, run, split_key, store_prune, store_status, yank,
+    InstallOutcome, InstallPermissions, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean,
+    find, gc, login, org_audit, org_claim, run, split_key, store_prune, store_status, yank,
 };
 
 pub(crate) use implementation::{
@@ -263,6 +263,33 @@ pub fn install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    let permissions = InstallPermissions {
+        allow_build,
+        ..InstallPermissions::default()
+    };
+    install_with_permissions(
+        project,
+        cfg,
+        frozen,
+        mode,
+        adapter,
+        &permissions,
+        target,
+        allow_ecosystem_mismatch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn install_with_permissions(
+    project: &Path,
+    cfg: &Config,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    permissions: &InstallPermissions,
+    target: Option<&str>,
+    allow_ecosystem_mismatch: bool,
+) -> Result<InstallOutcome> {
     let operation = if frozen {
         "restore frozen Zed dependency graph"
     } else {
@@ -273,26 +300,26 @@ pub fn install(
         let git_lock = crate::git_submodules::prepare_install(project, frozen)?;
         let outcome = if frozen {
             crate::install_graph::prefetch(project, cfg, true)?;
-            implementation::install(
+            implementation::install_with_permissions(
                 project,
                 cfg,
                 true,
                 mode,
                 adapter,
-                allow_build,
+                permissions,
                 target,
                 allow_ecosystem_mismatch,
             )?
         } else {
             let prepared = crate::install_graph::prepare(project, cfg)?;
             config::with_resolved_requirements(project, prepared.exact_requirements(), || {
-                implementation::install(
+                implementation::install_with_permissions(
                     project,
                     cfg,
                     false,
                     mode,
                     adapter,
-                    allow_build,
+                    permissions,
                     target,
                     allow_ecosystem_mismatch,
                 )
@@ -306,12 +333,12 @@ pub fn install(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn install_frozen_lock_only(
+pub(crate) fn install_frozen_lock_only_with_permissions(
     project: &Path,
     cfg: &Config,
     mode: InstallMode,
     adapter: Adapter,
-    allow_build: bool,
+    permissions: &InstallPermissions,
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
@@ -319,12 +346,12 @@ pub(crate) fn install_frozen_lock_only(
         crate::git_submodules::preflight_gitmodules_metadata(project)?;
         let git_lock = crate::git_submodules::prepare_install(project, true)?;
         crate::install_graph::prefetch(project, cfg, true)?;
-        let outcome = implementation::install_frozen_lock_only(
+        let outcome = implementation::install_frozen_lock_only_with_permissions(
             project,
             cfg,
             mode,
             adapter,
-            allow_build,
+            permissions,
             target,
             allow_ecosystem_mismatch,
         )?;

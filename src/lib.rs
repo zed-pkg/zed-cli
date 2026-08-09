@@ -100,6 +100,7 @@ pub mod mise_export {
     }
 }
 pub mod mise_lock;
+pub mod native;
 pub mod nix_bundle_write;
 pub mod nix_export_bundle;
 pub mod nix_export_plan;
