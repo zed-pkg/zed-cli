@@ -1,4 +1,4 @@
-# Registered recovery trigger; preserve the exact replay candidate for diagnosis, then remove after the clean successor branch is published.
+# Registered recovery trigger; preserve and diagnose the exact replay candidate, then remove after the clean successor branch is published.
 name: Recover native registry HTTP feature
 
 on:
@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 concurrency:
   group: recover-native-registry-http
@@ -116,11 +118,41 @@ jobs:
           set -euo pipefail
           git push --force origin HEAD:refs/heads/recovery/native-registry-http-candidate
 
-      - name: Format and validate
+      - name: Capture compiler diagnostics
+        id: compile
+        shell: bash
+        run: |
+          set -uo pipefail
+          cargo fmt --all
+          cargo check --all-targets > /tmp/native-registry-cargo-check.log 2>&1
+          status=$?
+          printf 'status=%s\n' "$status" >> "$GITHUB_OUTPUT"
+          tail -n 240 /tmp/native-registry-cargo-check.log
+          exit 0
+
+      - name: Post bounded compiler diagnostics to the successor PR
+        if: steps.compile.outputs.status != '0'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          {
+            printf '### Recovery compiler diagnostics\n\n'
+            printf 'Exact replay candidate: `%s`\n\n' "$(git rev-parse HEAD)"
+            printf '```text\n'
+            tail -n 220 /tmp/native-registry-cargo-check.log
+            printf '\n```\n'
+          } > /tmp/native-registry-comment.md
+          gh api "repos/${GITHUB_REPOSITORY}/issues/261/comments" \
+            -F body=@/tmp/native-registry-comment.md
+          exit 1
+
+      - name: Run full Rust validation
+        if: steps.compile.outputs.status == '0'
         shell: bash
         run: |
           set -euo pipefail
-          cargo fmt --all
           cargo fmt --all -- --check
           cargo test --all-targets
           cargo test --doc
@@ -128,6 +160,7 @@ jobs:
           git diff --check
 
       - name: Record formatter output if needed
+        if: steps.compile.outputs.status == '0'
         shell: bash
         run: |
           set -euo pipefail
@@ -140,6 +173,7 @@ jobs:
           fi
 
       - name: Push the clean successor branch
+        if: steps.compile.outputs.status == '0'
         shell: bash
         run: |
           set -euo pipefail
