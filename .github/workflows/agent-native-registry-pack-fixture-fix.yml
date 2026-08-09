@@ -1,0 +1,80 @@
+name: agent native-registry pack fixture fix
+
+on:
+  push:
+    branches:
+      - recovery/native-registry-http-candidate
+    paths:
+      - .github/workflows/agent-native-registry-pack-fixture-fix.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-native-registry-pack-fixture-fix
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact recovery branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: recovery/native-registry-http-candidate
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain action
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Repair the stale whole-repository manifest fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/pack.rs')
+          source = path.read_text(encoding='utf-8')
+          old = '''[targets.repository]
+          dir = "."
+          name = "clients-repository"
+
+          [targets.nodejs]'''
+          new = '''[targets.repository]
+          dir = "."
+          name = "clients"
+
+          [targets.nodejs]'''
+          if source.count(old) != 1:
+              raise SystemExit('expected exactly one stale whole-repository fixture')
+          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Verify focused compatibility and full Rust contracts
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked pack::tests::whole_repository_target_uses_the_canonical_package_identity -- --exact
+          cargo test --locked native_host_client::tests -- --test-threads=1
+          cargo test --locked --test native_registry_adversarial -- --test-threads=1
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit only the verified durable repair and remove this helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/agent-native-registry-pack-fixture-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/pack.rs
+          git diff --cached --check
+          changed="$(git diff --cached --name-only)"
+          test "$changed" = 'src/pack.rs'
+          git commit -m 'test: align whole-repository pack fixture with canonical identity'
+          git push origin HEAD:recovery/native-registry-http-candidate
