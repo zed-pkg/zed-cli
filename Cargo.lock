@@ -2071,7 +2071,7 @@ dependencies = [
 [[package]]
 name = "zed-lock"
 version = "0.1.1"
-source = "git+https://github.com/zed-pkg/zed-lock.git?rev=a0dc78d385bc3ab553d3027b427f5f1428239c9c#a0dc78d385bc3ab553d3027b427f5f1428239c9c"
+source = "git+https://github.com/zed-pkg/zed-lock.git?rev=1db0da00d30fcf2e0762f50eedb1f88458020b52#1db0da00d30fcf2e0762f50eedb1f88458020b52"
 dependencies = [
  "anyhow",
  "fs2",
