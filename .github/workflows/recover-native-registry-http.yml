@@ -1,0 +1,105 @@
+name: Recover native registry HTTP feature
+
+on:
+  push:
+    branches:
+      - recovery/native-registry-http-main
+    paths:
+      - .github/workflows/recover-native-registry-http.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: recover-native-registry-http
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out current main with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Replay only the eight reviewed feature commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin \
+            refs/heads/baseline/zed-cli-local-main:refs/remotes/origin/baseline/zed-cli-local-main \
+            refs/heads/feat/native-registry-publish-and-pull:refs/remotes/origin/feat/native-registry-publish-and-pull
+          git checkout -B recovery/native-registry-http-clean origin/main
+          mapfile -t commits < <(git rev-list --reverse \
+            origin/baseline/zed-cli-local-main..origin/feat/native-registry-publish-and-pull)
+          test "${#commits[@]}" -eq 8
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            cherry-pick -X ours "${commits[@]}"
+
+      - name: Enforce the product-only path boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --name-only origin/main...HEAD | sort > /tmp/actual-paths
+          cat > /tmp/expected-paths <<'EOF'
+          .cli-flags.toml
+          Cargo.lock
+          Cargo.toml
+          README.md
+          src/cli.rs
+          src/lib.rs
+          src/main.rs
+          src/native_host_client.rs
+          src/preflight.rs
+          src/release.rs
+          tests/native_registry_adversarial.rs
+          EOF
+          sort -o /tmp/expected-paths /tmp/expected-paths
+          diff -u /tmp/expected-paths /tmp/actual-paths
+          ! git diff --name-only origin/main...HEAD | grep -E '(^|/)(den-564|materialize-manifestless|harden-manifestless|prepare-manifestless)'
+          git diff --check origin/main...HEAD
+          if git diff --unified=0 origin/main...HEAD | grep -E '^\+(<<<<<<<|=======|>>>>>>>)'; then
+            echo 'new conflict marker detected' >&2
+            exit 1
+          fi
+
+      - name: Format and validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --all-targets
+          cargo test --doc
+          cargo clippy --all-targets -- -D warnings
+          git diff --check
+
+      - name: Record formatter output if needed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add -A
+            git diff --cached --check
+            git commit -m 'style: format native registry recovery'
+          fi
+
+      - name: Push the clean successor branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:refs/heads/recovery/native-registry-http-clean
