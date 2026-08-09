@@ -2056,7 +2056,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=d1bf8ef7c88a75292cbe8d697bfd269f30d62e2b#d1bf8ef7c88a75292cbe8d697bfd269f30d62e2b"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40#b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40"
 dependencies = [
  "hex",
  "schemars",
@@ -2071,7 +2071,7 @@ dependencies = [
 [[package]]
 name = "zed-lock"
 version = "0.1.1"
-source = "git+https://github.com/zed-pkg/zed-lock.git?rev=1db0da00d30fcf2e0762f50eedb1f88458020b52#1db0da00d30fcf2e0762f50eedb1f88458020b52"
+source = "git+https://github.com/zed-pkg/zed-lock.git?rev=a0dc78d385bc3ab553d3027b427f5f1428239c9c#a0dc78d385bc3ab553d3027b427f5f1428239c9c"
 dependencies = [
  "anyhow",
  "fs2",
