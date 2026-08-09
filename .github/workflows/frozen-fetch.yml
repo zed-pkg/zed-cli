@@ -96,7 +96,12 @@ jobs:
           workflow = Path('.github/workflows/frozen-fetch.yml').read_text()
           assert 'contents: read' in workflow
           assert 'persist-credentials: false' in workflow
-          forbidden = ['contents: write', 'git push', 'pull_request_target:']
+          # Split the sentinels so this self-audit does not match its own source.
+          forbidden = [
+              'contents:' + ' write',
+              'git' + ' push',
+              'pull_request' + '_target:',
+          ]
           for token in forbidden:
               assert token not in workflow, token
           PY
