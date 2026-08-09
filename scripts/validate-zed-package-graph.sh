@@ -47,7 +47,7 @@ manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
-expected_lock_revision = "a0dc78d385bc3ab553d3027b427f5f1428239c9c"
+expected_lock_revision = "1db0da00d30fcf2e0762f50eedb1f88458020b52"
 expected_lock_source = (
     "git+https://github.com/zed-pkg/zed-lock.git?"
     f"rev={expected_lock_revision}#{expected_lock_revision}"
@@ -69,12 +69,12 @@ else:
     if native_lock.get("git") != "https://github.com/zed-pkg/zed-lock.git":
         errors.append("zed-lock Cargo dependency must use the canonical repository")
     if native_lock.get("rev") != expected_lock_revision:
-        errors.append("zed-lock Cargo dependency must pin the hardened v0.1.1 merge commit")
+        errors.append("zed-lock Cargo dependency must pin the certified Windows contention revision")
 
 if 'name = "zed-lock"\nversion = "0.1.1"' not in cargo_lock:
     errors.append("Cargo.lock must resolve zed-lock version 0.1.1")
 if expected_lock_source not in cargo_lock:
-    errors.append("Cargo.lock must resolve the exact hardened zed-lock merge commit")
+    errors.append("Cargo.lock must resolve the exact certified zed-lock revision")
 
 for name in manifest.get("dependencies", {}):
     package = name.lower().split("/", 1)[-1]
@@ -125,4 +125,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership\n'
+printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership and DEN-3167 contention semantics\n'

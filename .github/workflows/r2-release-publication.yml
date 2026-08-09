@@ -1,0 +1,173 @@
+name: publish release artifacts to private R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: GitHub Actions release workflow run containing the seven target artifacts
+        required: true
+        type: string
+      release:
+        description: Immutable release-candidate namespace, for example v0.1.0-rc.3
+        required: true
+        type: string
+      bucket:
+        description: Private R2 bucket
+        required: true
+        default: zed-pkg-releases
+        type: string
+      prefix_root:
+        description: Object-key root before the release namespace
+        required: true
+        default: zed-cli
+        type: string
+      create_bucket:
+        description: Create the bucket when it does not already exist
+        required: true
+        default: false
+        type: boolean
+      overwrite:
+        description: Permit replacement of a non-identical object (normally false)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: r2-release-${{ inputs.bucket }}-${{ inputs.prefix_root }}-${{ inputs.release }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: r2-release-publication
+    env:
+      SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      RELEASE: ${{ inputs.release }}
+      R2_BUCKET: ${{ inputs.bucket }}
+      PREFIX_ROOT: ${{ inputs.prefix_root }}
+      CREATE_BUCKET: ${{ inputs.create_bucket }}
+      OVERWRITE: ${{ inputs.overwrite }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Validate non-secret inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          [[ "$R2_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]
+          [[ "$PREFIX_ROOT" =~ ^[0-9A-Za-z._/-]+$ ]]
+          [[ "$PREFIX_ROOT" != /* ]]
+          [[ "$PREFIX_ROOT" != *".."* ]]
+
+      - name: Download exact release-run artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.source_run_id }}
+          pattern: zed-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify the seven-platform artifact set
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          mapfile -d '' archives < <(
+            find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print0 | sort -z
+          )
+          mapfile -d '' checksums < <(
+            find . -maxdepth 1 -type f -name '*.sha256' -print0 | sort -z
+          )
+          test "${#archives[@]}" -eq 7
+          test "${#checksums[@]}" -eq 7
+          for checksum in "${checksums[@]}"; do
+            sha256sum --check "${checksum#./}"
+          done
+          cat "${checksums[@]}" | sort -k2 > SHA256SUMS
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          evidence = {
+              "schema": "https://zpkg.net/schemas/release-source/v1",
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "release": os.environ["RELEASE"],
+              "source_run_id": os.environ["SOURCE_RUN_ID"],
+              "source_run_url": (
+                  f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                  f"{os.environ['SOURCE_RUN_ID']}"
+              ),
+              "mirror_workflow_sha": os.environ["GITHUB_SHA"],
+          }
+          Path("SOURCE.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Produce credential-free publication plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/publish_r2_release.py \
+            --dry-run \
+            --directory dist \
+            --bucket "$R2_BUCKET" \
+            --prefix "$PREFIX_ROOT/$RELEASE" \
+            --release "$RELEASE" \
+            --source-repository "$GITHUB_REPOSITORY" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --report r2-plan.json
+
+      - name: Require the R2 secret boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "missing required GitHub environment secret: $name" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish and verify private R2 objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          [[ "$CREATE_BUCKET" == "true" ]] && args+=(--create-bucket)
+          [[ "$OVERWRITE" == "true" ]] && args+=(--overwrite)
+          python3 scripts/publish_r2_release.py \
+            --directory dist \
+            --bucket "$R2_BUCKET" \
+            --prefix "$PREFIX_ROOT/$RELEASE" \
+            --release "$RELEASE" \
+            --source-repository "$GITHUB_REPOSITORY" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --report r2-publication.json \
+            "${args[@]}"
+
+      - name: Retain non-secret publication evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: r2-publication-${{ inputs.release }}
+          path: |
+            dist/SHA256SUMS
+            dist/SOURCE.json
+            r2-plan.json
+            r2-publication.json
+          if-no-files-found: warn
+          retention-days: 30
