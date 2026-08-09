@@ -1,6 +1,6 @@
 # flags-2-env contract for zed. clap remains the typed command parser; this
 # file is the portable flag/env and nested-command description shared with
-# github.com/ORESoftware/flags-2-env.
+# github.com/flags-2-env/flags-2-env.
 
 [parse]
 command_env = "ZED_PKG_COMMAND"
@@ -294,6 +294,37 @@ help = "Emit environment interoperability output as JSON."
 
 [commands.init]
 help = "Create a package manifest."
+
+[commands.validate]
+help = "Validate .zpkg.toml and .zpkg.lock offline without mutation."
+
+[commands.validate.flags.manifest]
+env = "ZED_PKG_VALIDATE_MANIFEST"
+aliases = ["manifest"]
+type = "string"
+default = ".zpkg.toml"
+help = "Package manifest path."
+
+[commands.validate.flags.lock]
+env = "ZED_PKG_VALIDATE_LOCK"
+aliases = ["lock"]
+type = "string"
+default = ".zpkg.lock"
+help = "Package lockfile path."
+
+[commands.validate.flags.require_lock]
+env = "ZED_PKG_VALIDATE_REQUIRE_LOCK"
+aliases = ["require-lock"]
+type = "bool"
+default = "false"
+help = "Fail when the lockfile is absent."
+
+[commands.validate.flags.json]
+env = "ZED_PKG_VALIDATE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable JSON."
 
 [commands.add]
 help = "Add a dependency."

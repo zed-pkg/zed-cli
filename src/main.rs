@@ -24,6 +24,7 @@ use zed_cli::release;
 use zed_cli::store::Store;
 use zed_cli::task_cli::{self, TaskAction};
 use zed_cli::update;
+use zed_cli::validation;
 
 fn main() {
     let args = std::env::args_os().collect::<Vec<_>>();
@@ -170,9 +171,22 @@ fn root_global_option_takes_value(token: &str) -> bool {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    let cwd = std::env::current_dir()?;
+    if let Cmd::Validate {
+        manifest,
+        lock,
+        require_lock,
+        json,
+    } = &cli.cmd
+    {
+        // Validation is deliberately dispatched before Config construction,
+        // transaction recovery, store access, authentication, or any command
+        // that can fetch or mutate project state.
+        return validation::run(&cwd, manifest, lock, *require_lock, *json);
+    }
+
     let cfg = Config::from_globals(&cli.globals)?;
     let git_submodules = cli.globals.git_submodules;
-    let cwd = std::env::current_dir()?;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Recovery mutates the checkout and must use the same canonical
         // descriptor-lock boundary as every new lifecycle mutation. Unlike the
@@ -185,6 +199,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         )?;
     }
     match cli.cmd {
+        Cmd::Validate { .. } => unreachable!("validation returned before mutable CLI setup"),
         Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),

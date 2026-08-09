@@ -112,9 +112,14 @@ if lock_path:
     rust_target = lock_package.get("targets", {}).get("rust", {})
     if rust_target.get("dir") != ".":
         errors.append("zed-lock must publish its root Rust target")
-    native = rust_target.get("native", {})
-    if native.get("registry") != "crates-io" or native.get("package") != "zed-lock":
-        errors.append("zed-lock must retain its crates-io native publication route")
+    if rust_target.get("adapter") != "rust":
+        errors.append("zed-lock root target must retain the Rust adapter")
+    if "native" in rust_target:
+        errors.append(
+            "zed-lock root target must not declare native release metadata: "
+            "the root is the canonical Zed repository package, while cargo publish "
+            "remains an independent crates.io release operation"
+        )
     sibling_placeholder = lock_path.parent / ".zpkg.lock"
     if sibling_placeholder.exists():
         errors.append("dependency-free zed-lock must not restore a placeholder .zpkg.lock")
@@ -125,4 +130,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership and DEN-3167 contention semantics\n'
+printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership, independent crates.io release, and DEN-3167 contention semantics\n'

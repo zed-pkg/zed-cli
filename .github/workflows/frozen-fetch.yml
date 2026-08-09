@@ -63,7 +63,8 @@ jobs:
         run: cargo build --locked --bin zed
 
       - name: Run deterministic and fail-closed fetch unit tests
-        run: cargo test --locked fetch::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked fetch::tests:: -- --test-threads=1
 
       - name: Run black-box fetch conformance
         run: cargo test --locked --test frozen_fetch_cli -- --test-threads=1
@@ -72,7 +73,8 @@ jobs:
         run: cargo test --locked --test frozen_fetch_boundaries -- --test-threads=1
 
       - name: Verify generated completion coverage
-        run: cargo test --locked completion::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked completion::tests:: -- --test-threads=1
 
       - name: Verify modular help routing
         shell: bash

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
-/// following the flags-2-env convention (github.com/oresoftware/flags-2-env).
+/// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
 #[derive(Debug, Parser)]
 #[command(
     name = "zed",
@@ -170,6 +170,21 @@ pub enum EnvironmentManagerArg {
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
+    /// Validate package manifest and lock metadata without network or filesystem mutation
+    Validate {
+        /// Package manifest to validate
+        #[arg(long, env = "ZED_PKG_VALIDATE_MANIFEST", default_value = ".zpkg.toml")]
+        manifest: PathBuf,
+        /// Package lockfile to validate when present
+        #[arg(long, env = "ZED_PKG_VALIDATE_LOCK", default_value = ".zpkg.lock")]
+        lock: PathBuf,
+        /// Fail when the lockfile is absent
+        #[arg(long, env = "ZED_PKG_VALIDATE_REQUIRE_LOCK")]
+        require_lock: bool,
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_VALIDATE_JSON")]
+        json: bool,
+    },
     /// Create a .zpkg.toml manifest in the current directory
     Init {
         #[arg(long, env = "ZED_PKG_ORG")]
@@ -906,7 +921,7 @@ mod tests {
         }
     }
 
-    /// The flags-2-env convention (github.com/oresoftware/flags-2-env):
+    /// The flags-2-env convention (github.com/flags-2-env/flags-2-env):
     /// every user-facing option must be settable via a ZED_PKG_* env var.
     #[test]
     fn flags_2_env_convention_holds() {
@@ -971,7 +986,7 @@ mod tests {
     }
 
     /// `.cli-flags.toml` is the declarative flags-2-env registry
-    /// (github.com/oresoftware/flags-2-env). It must stay a byte-for-byte
+    /// (github.com/flags-2-env/flags-2-env). It must stay a byte-for-byte
     /// match with what clap actually exposes: every CLI flag is declared, and
     /// nothing declared is stale. This is what keeps `zed r2g`'s flags (and
     /// every other command's) documented and env-addressable.
