@@ -127,8 +127,17 @@ jobs:
             .github/workflows/nix-bundle-write.yml \
             .github/workflows/nix-export-bundle.yml
           git diff --cached --check
-          changed="$(git diff --cached --name-only | paste -sd ' ' -)"
-          expected='.github/workflows/agent-native-registry-current-main-sync.yml .github/workflows/frozen-lock-integrity.yml .github/workflows/nix-bundle-write.yml .github/workflows/nix-export-bundle.yml Cargo.lock Cargo.toml'
-          test "$changed" = "$expected"
+          git diff --cached --name-only | LC_ALL=C sort > /tmp/changed-files
+          cat > /tmp/expected-files <<'EOF'
+          .github/workflows/agent-native-registry-current-main-sync.yml
+          .github/workflows/frozen-lock-integrity.yml
+          .github/workflows/nix-bundle-write.yml
+          .github/workflows/nix-export-bundle.yml
+          Cargo.lock
+          Cargo.toml
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          LC_ALL=C sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/changed-files
           git commit -m 'merge: align native-registry union with current dependency contracts'
           git push origin HEAD:recovery/native-registry-http-candidate
