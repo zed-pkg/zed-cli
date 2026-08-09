@@ -38,7 +38,7 @@ permissions:
 
 concurrency:
   group: r2-release-${{ inputs.bucket }}-${{ inputs.prefix_root }}-${{ inputs.release }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   publish:
