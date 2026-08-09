@@ -1,4 +1,4 @@
-name: agent native-registry pack fixture fix
+name: agent native-registry interface compatibility fix
 
 on:
   push:
@@ -12,13 +12,13 @@ permissions:
   contents: write
 
 concurrency:
-  group: agent-native-registry-pack-fixture-fix
+  group: agent-native-registry-interface-compatibility-fix
   cancel-in-progress: true
 
 jobs:
   apply:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Check out exact recovery branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -31,10 +31,11 @@ jobs:
         with:
           components: rustfmt,clippy
 
-      - name: Repair the stale whole-repository manifest fixture
+      - name: Align the lock and whole-repository fixture with the reviewed interface pin
         shell: bash
         run: |
           set -euo pipefail
+          cargo update -p zed-interfaces --precise b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40
           python3 - <<'PY'
           from pathlib import Path
 
@@ -54,6 +55,7 @@ jobs:
               raise SystemExit('expected exactly one stale whole-repository fixture')
           path.write_text(source.replace(old, new, 1), encoding='utf-8')
           PY
+          grep -F '#b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' Cargo.lock
 
       - name: Verify focused compatibility and full Rust contracts
         run: |
@@ -65,16 +67,16 @@ jobs:
           cargo test --locked --all-targets
           cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Commit only the verified durable repair and remove this helper
+      - name: Commit only the verified durable repairs and remove this helper
         shell: bash
         run: |
           set -euo pipefail
           git rm .github/workflows/agent-native-registry-pack-fixture-fix.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/pack.rs
+          git add Cargo.lock src/pack.rs
           git diff --cached --check
-          changed="$(git diff --cached --name-only)"
-          test "$changed" = 'src/pack.rs'
-          git commit -m 'test: align whole-repository pack fixture with canonical identity'
+          changed="$(git diff --cached --name-only | paste -sd ' ' -)"
+          test "$changed" = 'Cargo.lock src/pack.rs'
+          git commit -m 'test: align native-registry branch with interface contract'
           git push origin HEAD:recovery/native-registry-http-candidate
