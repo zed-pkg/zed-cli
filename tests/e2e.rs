@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::env;
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -147,6 +148,7 @@ fn zed_install_command(project: &Path, cfg: &Config) -> Command {
     command
 }
 
+#[cfg(unix)]
 fn path_with(directory: &Path) -> OsString {
     let mut entries = vec![directory.to_path_buf()];
     entries.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
