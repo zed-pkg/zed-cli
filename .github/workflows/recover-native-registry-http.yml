@@ -59,7 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff --name-only origin/main...HEAD | sort > /tmp/actual-paths
-          cat > /tmp/expected-paths <<'EOF'
+          cat > /tmp/allowed-paths <<'EOF'
           .cli-flags.toml
           Cargo.lock
           Cargo.toml
@@ -72,8 +72,29 @@ jobs:
           src/release.rs
           tests/native_registry_adversarial.rs
           EOF
-          sort -o /tmp/expected-paths /tmp/expected-paths
-          diff -u /tmp/expected-paths /tmp/actual-paths
+          cat > /tmp/required-paths <<'EOF'
+          .cli-flags.toml
+          README.md
+          src/cli.rs
+          src/lib.rs
+          src/main.rs
+          src/native_host_client.rs
+          src/preflight.rs
+          src/release.rs
+          tests/native_registry_adversarial.rs
+          EOF
+          sort -o /tmp/allowed-paths /tmp/allowed-paths
+          sort -o /tmp/required-paths /tmp/required-paths
+          unexpected="$(comm -23 /tmp/actual-paths /tmp/allowed-paths)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'unexpected recovery paths:\n%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          missing="$(comm -23 /tmp/required-paths /tmp/actual-paths)"
+          if [[ -n "$missing" ]]; then
+            printf 'missing required feature paths:\n%s\n' "$missing" >&2
+            exit 1
+          fi
           ! git diff --name-only origin/main...HEAD | grep -E '(^|/)(den-564|materialize-manifestless|harden-manifestless|prepare-manifestless)'
           git diff --check origin/main...HEAD
           if git diff --unified=0 origin/main...HEAD | grep -E '^\+(<<<<<<<|=======|>>>>>>>)'; then
