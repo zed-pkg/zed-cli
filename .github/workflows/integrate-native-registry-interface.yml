@@ -33,7 +33,7 @@ jobs:
           toolchain: stable
           components: rustfmt,clippy
 
-      - name: Restore the exact reviewed interface revision
+      - name: Pin the merged native-registry interface contract everywhere
         shell: bash
         run: |
           set -euo pipefail
@@ -41,9 +41,14 @@ jobs:
           from pathlib import Path
           import re
 
-          path = Path('Cargo.toml')
-          text = path.read_text()
-          replacement = 'zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599" }'
+          merged = "b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40"
+
+          cargo = Path("Cargo.toml")
+          text = cargo.read_text()
+          replacement = (
+              'zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", '
+              f'rev = "{merged}" }}'
+          )
           updated, count = re.subn(
               r'zed-interfaces = \{ git = "https://github\.com/zed-pkg/zed-interfaces\.git", rev = "[0-9a-f]{40}" \}',
               replacement,
@@ -51,11 +56,36 @@ jobs:
               count=1,
           )
           if count != 1:
-              raise SystemExit('expected exactly one zed-interfaces dependency declaration')
-          path.write_text(updated)
+              raise SystemExit("expected exactly one zed-interfaces dependency declaration")
+          cargo.write_text(updated)
+
+          workflows = [
+              Path(".github/workflows/nix-bundle-write.yml"),
+              Path(".github/workflows/frozen-lock-integrity.yml"),
+              Path(".github/workflows/nix-export-bundle.yml"),
+          ]
+          for path in workflows:
+              text = path.read_text()
+              updated, count = re.subn(
+                  r"(?m)^(\s*ZED_INTERFACES_SHA:\s*)[0-9a-f]{40}\s*$",
+                  rf"\g<1>{merged}",
+                  text,
+                  count=1,
+              )
+              if count != 1:
+                  raise SystemExit(f"expected one ZED_INTERFACES_SHA in {path}")
+              path.write_text(updated)
           PY
           cargo update -p zed-interfaces
-          grep -Fq 'rev = "4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599"' Cargo.toml
+          grep -Fq 'rev = "b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40"' Cargo.toml
+          for workflow in \
+            .github/workflows/nix-bundle-write.yml \
+            .github/workflows/frozen-lock-integrity.yml \
+            .github/workflows/nix-export-bundle.yml
+          do
+            grep -Fq 'ZED_INTERFACES_SHA: b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' "$workflow"
+          done
+          grep -Fq '#b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' Cargo.lock
           git diff --check
 
       - name: Validate the integrated successor
@@ -68,6 +98,7 @@ jobs:
           cargo test --all-targets
           cargo test --doc
           cargo clippy --all-targets -- -D warnings
+          python3 scripts/audit-github-actions.py
           git diff --check
 
       - name: Commit and publish the integrated candidate
@@ -76,8 +107,12 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.toml Cargo.lock
+          git add \
+            Cargo.toml Cargo.lock \
+            .github/workflows/nix-bundle-write.yml \
+            .github/workflows/frozen-lock-integrity.yml \
+            .github/workflows/nix-export-bundle.yml
           if ! git diff --cached --quiet; then
-            git commit -m 'fix: restore reviewed native registry interface contract'
+            git commit -m 'fix: pin the merged native registry interface contract'
           fi
           git push --force-with-lease origin HEAD:refs/heads/recovery/native-registry-http-candidate
