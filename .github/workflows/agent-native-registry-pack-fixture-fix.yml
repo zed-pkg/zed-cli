@@ -18,7 +18,7 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - name: Check out exact recovery branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -31,7 +31,7 @@ jobs:
         with:
           components: rustfmt,clippy
 
-      - name: Align the lock and whole-repository fixture with the reviewed interface pin
+      - name: Align the lock and shared fixtures with the reviewed interface pin
         shell: bash
         run: |
           set -euo pipefail
@@ -39,8 +39,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('src/pack.rs')
-          source = path.read_text(encoding='utf-8')
           old = '''[targets.repository]
           dir = "."
           name = "clients-repository"
@@ -51,9 +49,14 @@ jobs:
           name = "clients"
 
           [targets.nodejs]'''
-          if source.count(old) != 1:
-              raise SystemExit('expected exactly one stale whole-repository fixture')
-          path.write_text(source.replace(old, new, 1), encoding='utf-8')
+          for filename in ('src/pack.rs', 'src/release.rs'):
+              path = Path(filename)
+              source = path.read_text(encoding='utf-8')
+              if source.count(old) != 1:
+                  raise SystemExit(
+                      f'expected exactly one stale whole-repository fixture in {filename}'
+                  )
+              path.write_text(source.replace(old, new, 1), encoding='utf-8')
           PY
           grep -F '#b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' Cargo.lock
 
@@ -62,6 +65,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check
           cargo test --locked pack::tests::whole_repository_target_uses_the_canonical_package_identity -- --exact
+          cargo test --locked release::tests::polyglot_plan_is_deterministic_and_includes_native_routes -- --exact
           cargo test --locked native_host_client::tests -- --test-threads=1
           cargo test --locked --test native_registry_adversarial -- --test-threads=1
           cargo test --locked --all-targets
@@ -74,9 +78,9 @@ jobs:
           git rm .github/workflows/agent-native-registry-pack-fixture-fix.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add Cargo.lock src/pack.rs
+          git add Cargo.lock src/pack.rs src/release.rs
           git diff --cached --check
           changed="$(git diff --cached --name-only | paste -sd ' ' -)"
-          test "$changed" = 'Cargo.lock src/pack.rs'
+          test "$changed" = 'Cargo.lock src/pack.rs src/release.rs'
           git commit -m 'test: align native-registry branch with interface contract'
           git push origin HEAD:recovery/native-registry-http-candidate
