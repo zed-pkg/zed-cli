@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: r2-publication-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   contract:
     runs-on: ubuntu-24.04
