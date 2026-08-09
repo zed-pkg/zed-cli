@@ -1,3 +1,4 @@
+# Registered recovery trigger; remove after the clean successor branch is published.
 name: Recover native registry HTTP feature
 
 on:
