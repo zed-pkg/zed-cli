@@ -22,6 +22,7 @@ name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
+# Native registry hosts and release-channel routing are a versioned cross-repo contract.
 zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "4f1a7a07c5b868c2ec3305cd4fe904f1b7a80599" }
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "a0dc78d385bc3ab553d3027b427f5f1428239c9c" }
 anyhow = "1"
