@@ -549,6 +549,34 @@ pub enum EnvCmd {
     },
 }
 
+/// Release track. How this becomes a version string is the destination
+/// registry's business — npm wants `1.4.0-rc.1` plus a dist-tag, PyPI wants
+/// `1.4.0rc1`, Maven wants `1.4.0-RC1` — so the channel is named here and
+/// resolved per host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ChannelArg {
+    Stable,
+    Rc,
+    Beta,
+    Alpha,
+    Nightly,
+    Snapshot,
+}
+
+impl From<ChannelArg> for zed_interfaces::native_host::ReleaseChannel {
+    fn from(value: ChannelArg) -> Self {
+        use zed_interfaces::native_host::ReleaseChannel as C;
+        match value {
+            ChannelArg::Stable => C::Stable,
+            ChannelArg::Rc => C::Rc,
+            ChannelArg::Beta => C::Beta,
+            ChannelArg::Alpha => C::Alpha,
+            ChannelArg::Nightly => C::Nightly,
+            ChannelArg::Snapshot => C::Snapshot,
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TaskCmd {
     /// List project tasks in deterministic name order.
@@ -594,9 +622,35 @@ pub enum ReleaseCmd {
         /// Emit machine-readable JSON rather than the human summary
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
+        /// Release track to resolve every native route against
+        #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
+        channel: Option<ChannelArg>,
+        /// Candidate number within a pre-release channel (rc.1, rc.2, ...)
+        #[arg(long, default_value_t = 1, env = "ZED_PKG_RELEASE_ITERATION")]
+        iteration: u32,
     },
     /// Run fixed, credential-free native package preflight adapters
     Preflight,
+    /// Upload every native route to its ecosystem registry over that
+    /// registry's own HTTP API
+    Publish {
+        #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
+        channel: Option<ChannelArg>,
+        #[arg(long, default_value_t = 1, env = "ZED_PKG_RELEASE_ITERATION")]
+        iteration: u32,
+        /// Print the exact requests, with credentials redacted, and send none
+        #[arg(long, env = "ZED_PKG_DRY_RUN")]
+        dry_run: bool,
+        /// Restrict to one target from `[targets.*]`
+        #[arg(long, env = "ZED_PKG_TARGET")]
+        target: Option<String>,
+    },
+    /// List the versions each native route's registry already serves
+    Versions {
+        /// Restrict to one target from `[targets.*]`
+        #[arg(long, env = "ZED_PKG_TARGET")]
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
