@@ -17,12 +17,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::manifest::is_slug;
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MODULES_DIR};
+use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::cli::{Adapter, Globals, InstallMode};
 use crate::config::Config;
@@ -186,14 +186,6 @@ struct StagedExecutable {
     destination: PathBuf,
     temporary: PathBuf,
     desired: DesiredBin,
-}
-
-struct GlobalLock(fs::File);
-
-impl Drop for GlobalLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.0);
-    }
 }
 
 /// Route the modular global-package command before the typed project command
@@ -366,18 +358,18 @@ fn global_flag(args: &[OsString]) -> Option<usize> {
         .position(|value| value == OsStr::new("--global"))
 }
 
-fn acquire_lock(cfg: &Config) -> Result<GlobalLock> {
+fn acquire_lock(cfg: &Config) -> Result<LockGuard> {
     let root = global_root(cfg);
     fs::create_dir_all(&root)?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join(LOCK_FILE))?;
-    file.lock_exclusive()
-        .context("locking global package profiles")?;
-    Ok(GlobalLock(file))
+    let lock_path = root.join(LOCK_FILE);
+    LockManager::global()
+        .acquire_blocking(
+            LockRequest::exclusive(&lock_path)
+                .operation("global package profiles")
+                .class(LockClass::Custom(5))
+                .queue_same_process(),
+        )
+        .context("locking global package profiles")
 }
 
 fn global_root(cfg: &Config) -> PathBuf {
