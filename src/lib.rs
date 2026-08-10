@@ -15,6 +15,7 @@ pub mod fetch;
 pub mod flags;
 pub mod git_submodules;
 pub mod global;
+pub mod inspect;
 pub mod install_graph;
 pub mod interactive;
 pub mod lock_waiter;
