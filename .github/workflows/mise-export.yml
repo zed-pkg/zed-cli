@@ -1,0 +1,98 @@
+name: deterministic mise export
+
+on:
+  pull_request:
+    paths:
+      - .cli-flags.toml
+      - src/cli.rs
+      - src/lib.rs
+      - src/main.rs
+      - src/mise_export.rs
+      - tests/mise_export_cli.rs
+      - docs/mise-export.md
+      - .github/workflows/mise-export.yml
+  push:
+    branches: [main]
+    paths:
+      - .cli-flags.toml
+      - src/cli.rs
+      - src/lib.rs
+      - src/main.rs
+      - src/mise_export.rs
+      - tests/mise_export_cli.rs
+      - docs/mise-export.md
+      - .github/workflows/mise-export.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mise-export-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  export:
+    name: export / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-2025
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install declared Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Check formatting and flags contract
+        run: |
+          cargo fmt --all --check
+          cargo test --locked cli::tests::environment_export_is_typed_and_rejects_ambiguous_write_modes
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+
+      - name: Run module and real CLI export tests
+        run: |
+          cargo test --locked mise_export
+          cargo test --locked --test mise_export_cli
+
+      - name: Lint every target
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Re-run deterministic and conflict canaries
+        run: |
+          cargo test --locked mise_export::tests::deterministic_export_preserves_multi_version_and_command_order
+          cargo test --locked mise_export::tests::hand_edits_and_unowned_outputs_are_never_overwritten
+
+  gate:
+    name: All mise export platforms passed
+    if: always()
+    needs: export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Enforce aggregate result
+        env:
+          MATRIX_RESULT: ${{ needs.export.result }}
+        run: |
+          set -euo pipefail
+          printf 'mise-export=%s\n' "$MATRIX_RESULT"
+          test "$MATRIX_RESULT" = success

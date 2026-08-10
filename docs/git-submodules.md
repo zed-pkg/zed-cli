@@ -53,6 +53,7 @@ participate in `.zpkg.toml` and `.zpkg.lock` authority. Before Zed parses
 `.gitmodules`, its worktree entry must be a regular file and any indexed entry
 must be a stage-zero regular Git blob; symlinked, conflicted, directory, or other
 indirect metadata fails closed.
+participate in `.zpkg.toml` and `.zpkg.lock` authority.
 
 ## Overtaking submodules
 
@@ -69,6 +70,9 @@ Takeover performs these steps:
 2. discovers top-level submodules containing `.zpkg.toml` and leaves ordinary
    non-Zed submodules under Git authority;
 3. requires every discovered `.zpkg.toml` to be a regular file and valid;
+2. discovers top-level submodules containing a regular-file `.zpkg.toml` and
+   leaves ordinary non-Zed submodules under Git authority;
+3. requires every discovered package manifest to be valid;
 4. verifies that `.gitmodules` and each adopted gitlink are committed at
    superproject `HEAD`;
 5. requires each adopted checkout to match its committed gitlink and have no
@@ -86,6 +90,12 @@ submodule while adopting only its Zed SDK packages. Missing `.zpkg.toml` means
 of the configured submodules are Zed packages, takeover still performs the
 requested cooperative Git synchronization but leaves `.zpkg.toml`, `.zpkg.lock`,
 and materialized Zed state unchanged before returning an actionable error.
+“leave this submodule Git-managed”; a present but malformed, directory-valued,
+dangling, or symlinked `.zpkg.toml` is an error rather than something Zed
+silently ignores. When none of the configured submodules are Zed packages,
+takeover still performs the requested cooperative Git synchronization but
+leaves `.zpkg.toml`, `.zpkg.lock`, and materialized Zed state unchanged before
+returning an actionable error.
 
 The authority migration is failure-safe. If resolution or materialization fails
 before the ordinary install transaction commits, Zed restores the exact prior
@@ -206,6 +216,7 @@ Zed refuses takeover or lock refresh when:
 - an adopted submodule or any of its nested submodules is dirty, uninitialized,
   conflicted, or checked out at a different commit; or
 - a discovered package manifest is invalid or is not a regular file.
+- a discovered package manifest is non-regular or invalid.
 
 These checks keep `zed install --frozen` reproducible without making Git and Zed
 mutually exclusive.

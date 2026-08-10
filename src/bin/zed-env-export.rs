@@ -1,12 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
-
-#[path = "../nix_environment_export.rs"]
-#[allow(private_interfaces)]
-mod nix_environment_export;
-
-use nix_environment_export::{ExportManager, export_environment};
+use zed_cli::environment_export_cli::{self, ExportOptions};
+use zed_cli::nix_environment_export::ExportManager;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,40 +51,17 @@ fn main() {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    let root = std::env::current_dir()?;
-    match cli.command {
-        Command::Devbox(args) => run_one(&root, ExportManager::Devbox, args),
-        Command::Flox(args) => run_one(&root, ExportManager::Flox, args),
-    }
-}
-
-fn run_one(root: &Path, manager: ExportManager, args: ExportArgs) -> anyhow::Result<()> {
-    let result = export_environment(
-        root,
+    let (manager, args) = match cli.command {
+        Command::Devbox(args) => (ExportManager::Devbox, args),
+        Command::Flox(args) => (ExportManager::Flox, args),
+    };
+    environment_export_cli::execute_current_dir(
         manager,
-        Some(&args.plan),
-        args.out.as_deref(),
-        args.receipt.as_deref(),
-    )?;
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        println!(
-            "{} environment {}: {}",
-            result.manager.as_str(),
-            if result.changed {
-                "exported"
-            } else {
-                "unchanged"
-            },
-            result.output_path
-        );
-        println!("receipt: {}", result.receipt_path);
-        println!(
-            "environment-plan-sha256: {}",
-            result.environment_plan_sha256
-        );
-        println!("output-sha256: {}", result.output_sha256);
-    }
-    Ok(())
+        ExportOptions {
+            plan: Some(args.plan),
+            output: args.out,
+            receipt: args.receipt,
+            json: args.json,
+        },
+    )
 }

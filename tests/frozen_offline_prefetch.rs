@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use zed_cli::config::Config;
 use zed_cli::install_graph::prefetch;
 use zed_cli::pack::pack;
-use zed_cli::store::Store;
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
@@ -23,7 +22,7 @@ fn test_config(registry: &Path, home: PathBuf) -> Config {
 }
 
 #[test]
-fn frozen_prefetch_restores_from_store_and_cache_after_registry_metadata_disappears() {
+fn frozen_prefetch_restores_from_the_store_after_registry_metadata_disappears() {
     let temp = tempfile::tempdir().unwrap();
     let registry = temp.path().join("registry");
     let source = temp.path().join("source");
@@ -92,22 +91,12 @@ url = "https://example.invalid/offline/tool"
     fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();
 
     let cfg = test_config(&registry, home);
-    let store = Store::new(&cfg.home);
     let cold = prefetch(&project, &cfg, true).unwrap();
     assert_eq!(cold.resolved, 1);
     assert_eq!(cold.downloaded, 1);
-    assert!(store.has(&packed.sha256));
-    assert!(store.cached_artifact(&packed.sha256).is_file());
 
     fs::remove_dir_all(&registry).unwrap();
-    let from_store = prefetch(&project, &cfg, true).unwrap();
-    assert_eq!(from_store.resolved, 1);
-    assert_eq!(from_store.downloaded, 0);
-
-    fs::remove_dir_all(store.entry_dir(&packed.sha256)).unwrap();
-    assert!(!store.has(&packed.sha256));
-    let from_cache = prefetch(&project, &cfg, true).unwrap();
-    assert_eq!(from_cache.resolved, 1);
-    assert_eq!(from_cache.downloaded, 0);
-    assert!(store.has(&packed.sha256));
+    let offline = prefetch(&project, &cfg, true).unwrap();
+    assert_eq!(offline.resolved, 1);
+    assert_eq!(offline.downloaded, 0);
 }

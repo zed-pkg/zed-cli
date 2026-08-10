@@ -4,15 +4,16 @@
 //! The failure mode it kills is "works in my repo, breaks once installed."
 //! Instead of testing the working tree, r2g exercises the *published
 //! artifact* the way a real consumer would: it packs the package (the same
-//! pruned, deterministic tarball `zed publish` uploads), publishes it to a
-//! throwaway `file://` registry, installs it into a mock consumer project
-//! under the user's home directory, and runs the package's
-//! `publish.smoke_test` against the installed copy — optionally inside a
-//! fresh OCI container so the artifact is proven in a clean, host-independent
-//! environment (fresh `$HOME`, distro libraries, no host toolchain leaking
-//! in). If the configured registry is `file://`, r2g first snapshots it into
-//! the throwaway registry so declared dependencies can resolve without ever
-//! mutating the caller's registry. If it passes here, it will pass for your users.
+//! pruned, deterministic tarball `zed publish` uploads), publishes it either
+//! to a throwaway `file://` registry (the safe default) or, only when
+//! explicitly requested, to the configured HTTP(S) Zed server, installs it
+//! into a mock consumer project, and runs the package's `publish.smoke_test`
+//! against the installed copy — optionally inside a fresh OCI container so
+//! the artifact is proven in a clean, host-independent environment (fresh
+//! `$HOME`, distro libraries, no host toolchain leaking in). In isolated mode,
+//! a configured `file://` registry is snapshotted into the throwaway registry
+//! so declared dependencies can resolve without ever mutating the caller's
+//! registry. If it passes here, it will pass for your users.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -28,18 +29,20 @@ use zed_interfaces::paths::MANIFEST_FILE;
 use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::VersionScheme;
 
-use crate::cli::{Adapter, ContainerRuntime, InstallMode};
+use crate::cli::{Adapter, ContainerRuntime, InstallMode, R2gRegistryMode};
 use crate::config::{Config, read_manifest, write_manifest};
 use crate::interactive;
 use crate::ops::{build_publish_meta, install};
 use crate::pack;
-use crate::registry::{FileRegistry, Registry};
+use crate::registry::registry_for;
 use crate::store::human_size;
 
 /// Options for `zed r2g`, mirroring its CLI flags (all also `ZED_PKG_R2G_*`
 /// environment variables per the flags-2-env convention).
 #[derive(Debug, Clone)]
 pub struct R2gOptions {
+    /// Registry boundary to exercise. Isolated is the safe default.
+    pub registry_mode: R2gRegistryMode,
     /// Run the install + smoke test inside a throwaway OCI container.
     pub docker: bool,
     /// Base image for container mode.
@@ -55,6 +58,7 @@ pub struct R2gOptions {
 impl Default for R2gOptions {
     fn default() -> Self {
         Self {
+            registry_mode: R2gRegistryMode::Isolated,
             docker: false,
             image: "debian:stable-slim".to_string(),
             runtime: None,
@@ -66,6 +70,46 @@ impl Default for R2gOptions {
 
 /// Mount point for the mock consumer project inside the container.
 const CONTAINER_CONSUMER: &str = "/r2g/consumer";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegistryTarget {
+    url: String,
+    token: Option<String>,
+    persistent: bool,
+}
+
+fn prepare_registry_target(
+    cfg: &Config,
+    mode: R2gRegistryMode,
+    registry_dir: &Path,
+) -> Result<RegistryTarget> {
+    match mode {
+        R2gRegistryMode::Isolated => Ok(RegistryTarget {
+            url: format!("file://{}", registry_dir.display()),
+            token: None,
+            persistent: false,
+        }),
+        R2gRegistryMode::Server => {
+            if cfg.registry.starts_with("file://") {
+                bail!(
+                    "r2g --registry-mode server requires an HTTP(S) registry; \
+                     omit the flag for the safe isolated file-registry roundtrip"
+                );
+            }
+            if !(cfg.registry.starts_with("http://") || cfg.registry.starts_with("https://")) {
+                bail!(
+                    "r2g --registry-mode server requires an http:// or https:// registry, got {}",
+                    cfg.registry
+                );
+            }
+            Ok(RegistryTarget {
+                url: cfg.registry.clone(),
+                token: cfg.resolve_token()?,
+                persistent: true,
+            })
+        }
+    }
+}
 
 pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     let manifest = read_manifest(project)?;
@@ -87,11 +131,19 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     let home_dir = workspace.join("home");
     println!("r2g: workspace {}", workspace.display());
 
-    // 2. An explicitly configured file:// registry is a dependency input, not
-    //    the output registry. Snapshot it into the private workspace so r2g
-    //    can test packages that depend on other unpublished fixtures while
-    //    preserving the same no-shared-state guarantee as an empty registry.
-    snapshot_configured_file_registry(&cfg.registry, &registry_dir)?;
+    // 2. Isolated mode treats a configured file:// registry as a dependency
+    //    input, never as the output registry. Server mode intentionally uses
+    //    the configured HTTP(S) registry itself for both publish and install.
+    if opts.registry_mode == R2gRegistryMode::Isolated {
+        snapshot_configured_file_registry(&cfg.registry, &registry_dir)?;
+    }
+    let registry_target = prepare_registry_target(cfg, opts.registry_mode, &registry_dir)?;
+    if registry_target.persistent {
+        println!(
+            "r2g: SERVER MODE — publishing to {}; this version persists after the run",
+            registry_target.url
+        );
+    }
 
     // 3. Pack the exact artifact `zed publish` would upload (tarball roundtrip).
     interactive::confirm(
@@ -106,14 +158,42 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         packed.excluded_count
     );
 
-    // 4. Publish it to the throwaway file:// registry.
+    // 4. Publish the exact tarball through the same registry abstraction as
+    //    `zed publish`: private file storage by default, HTTP Rust server only
+    //    after the explicit server-mode flag. Preserve `zed publish` retry
+    //    semantics: byte-identical same-version retries are accepted, while a
+    //    changed artifact at an immutable version is rejected before upload.
     let meta = build_publish_meta(&manifest, &packed, None);
-    let file_registry = FileRegistry::new(registry_dir.clone());
-    interactive::confirm(
-        cfg.interactive,
-        &format!("r2g step 2/5: publish {full} to the throwaway file registry"),
-    )?;
-    file_registry.publish(&meta, &packed.path, None)?;
+    let registry = registry_for(&registry_target.url)?;
+    let identity = &meta.manifest.package;
+    let already_published =
+        match registry.get_version(&identity.org, &identity.name, &identity.version) {
+            Ok(existing) if existing.sha256 == meta.sha256 => {
+                println!(
+                    "r2g: already published {}/{}@{} with identical sha256; reusing it",
+                    identity.org, identity.name, identity.version
+                );
+                true
+            }
+            Ok(existing) => {
+                bail!(
+                    "{}/{}@{} already exists with sha256 {}; refusing to replace it with {}",
+                    identity.org,
+                    identity.name,
+                    identity.version,
+                    existing.sha256,
+                    meta.sha256
+                );
+            }
+            Err(_) => false,
+        };
+    if !already_published {
+        interactive::confirm(
+            cfg.interactive,
+            &format!("r2g step 2/5: publish {full} to {}", registry_target.url),
+        )?;
+        registry.publish(&meta, &packed.path, registry_target.token.as_deref())?;
+    }
 
     // 5. Synthesize a mock consumer that depends on exactly this version.
     let mut dependencies = BTreeMap::new();
@@ -156,7 +236,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     fs::create_dir_all(&consumer_dir)?;
     write_manifest(&consumer_dir, &consumer_manifest)?;
 
-    // 6. Install it the way a consumer would, from the throwaway registry into
+    // 6. Install it the way a consumer would, from the selected registry into
     //    a throwaway store. Container mode uses copy install so the installed
     //    files are self-contained (no store symlinks) and can be bind-mounted
     //    into the container — the same guarantee `--install-mode copy` gives
@@ -167,9 +247,9 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         InstallMode::Symlink
     };
     let test_cfg = Config {
-        registry: format!("file://{}", registry_dir.display()),
+        registry: registry_target.url.clone(),
         home: home_dir,
-        token: None,
+        token: registry_target.token.clone(),
         auth_url: cfg.auth_url.clone(),
         supabase_url: cfg.supabase_url.clone(),
         supabase_key: cfg.supabase_key.clone(),
@@ -257,6 +337,12 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
             &format!("remove successful r2g workspace {}", workspace.display()),
         )?;
         fs::remove_dir_all(&workspace)?;
+        if registry_target.persistent {
+            println!(
+                "r2g: local workspace removed; {}@{} remains published on {}",
+                full, manifest.package.version, registry_target.url
+            );
+        }
     } else {
         println!(
             "r2g: workspace left at {} (pass --clean to remove it)",
@@ -521,6 +607,65 @@ mod tests {
     use zed_interfaces::paths::MODULES_DIR;
 
     use super::*;
+
+    fn test_config(registry: String, home: PathBuf, token: Option<String>) -> Config {
+        Config {
+            registry,
+            home,
+            token,
+            auth_url: "https://auth.example.test".to_string(),
+            supabase_url: None,
+            supabase_key: None,
+            interactive: false,
+        }
+    }
+
+    #[test]
+    fn isolated_registry_target_remains_private_and_credential_free() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let cfg = test_config(
+            "https://registry.example.test".to_string(),
+            temp.path().join("home"),
+            Some("secret".to_string()),
+        );
+        let private = temp.path().join("workspace/registry");
+        let target = prepare_registry_target(&cfg, R2gRegistryMode::Isolated, &private)?;
+        assert_eq!(target.url, format!("file://{}", private.display()));
+        assert_eq!(target.token, None);
+        assert!(!target.persistent);
+        Ok(())
+    }
+
+    #[test]
+    fn server_registry_target_uses_the_configured_http_endpoint_and_token() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let cfg = test_config(
+            "http://127.0.0.1:48080".to_string(),
+            temp.path().join("home"),
+            Some("zpkg_test".to_string()),
+        );
+        let target =
+            prepare_registry_target(&cfg, R2gRegistryMode::Server, &temp.path().join("unused"))?;
+        assert_eq!(target.url, "http://127.0.0.1:48080");
+        assert_eq!(target.token.as_deref(), Some("zpkg_test"));
+        assert!(target.persistent);
+        Ok(())
+    }
+
+    #[test]
+    fn server_registry_mode_rejects_file_registries() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let cfg = test_config(
+            format!("file://{}", temp.path().join("shared").display()),
+            temp.path().join("home"),
+            None,
+        );
+        let error =
+            prepare_registry_target(&cfg, R2gRegistryMode::Server, &temp.path().join("unused"))
+                .expect_err("server mode must fail closed for file registries");
+        assert!(error.to_string().contains("requires an HTTP(S) registry"));
+        Ok(())
+    }
 
     #[test]
     fn configured_file_registry_is_snapshotted_without_mutating_source() -> Result<()> {

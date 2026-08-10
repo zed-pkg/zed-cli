@@ -1,0 +1,125 @@
+name: kick DEN-1420 mise adapter
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.ref == 'feat/den-1420-mise-dev-adapter'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/den-1420-mise-dev-adapter
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Extract, verify, and apply reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          from pathlib import Path
+
+          source = Path('.github/workflows/apply-den-1420-mise.yml').read_text(encoding='utf-8')
+          lines = source.splitlines()
+          start = next(i for i, line in enumerate(lines) if "base64 -d <<'PATCH_GZ'" in line) + 1
+          end = next(i for i in range(start, len(lines)) if lines[i].strip() == 'PATCH_GZ')
+          payload = ''.join(line.strip() for line in lines[start:end])
+          Path('/tmp/den-1420.patch').write_bytes(gzip.decompress(base64.b64decode(payload)))
+          PY
+
+          printf '%s  %s\n' 'd0d0a867d249556a41322169483f27f9107a58d4131a2a92270e16d4967623bc' /tmp/den-1420.patch | sha256sum -c -
+          patch --batch --forward --fuzz=3 -p1 < /tmp/den-1420.patch
+
+          # One low-context assertion hunk can land beside the contract-parity
+          # test under GNU patch fuzz. Relocate it structurally, then verify
+          # every product file against the reviewed pre-format blob.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/dev.rs')
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
+
+          def assertion_bounds(index: int) -> tuple[int, int]:
+              start = index
+              while start >= 0 and lines[start].strip() != 'assert!(':
+                  start -= 1
+              if start < 0:
+                  raise SystemExit('could not locate assertion start')
+              end = index
+              while end < len(lines) and lines[end].strip() != ');':
+                  end += 1
+              if end == len(lines):
+                  raise SystemExit('could not locate assertion end')
+              return start, end + 1
+
+          help_index = next(
+              i for i, line in enumerate(lines)
+              if 'fn augmented_root_help_contains_the_command_and_alias()' in line
+          )
+
+          misplaced = [
+              i for i, line in enumerate(lines[:help_index])
+              if 'Some("mise")' in line
+          ]
+          for index in reversed(misplaced):
+              start, end = assertion_bounds(index)
+              del lines[start:end]
+
+          help_index = next(
+              i for i, line in enumerate(lines)
+              if 'fn augmented_root_help_contains_the_command_and_alias()' in line
+          )
+          next_test = next(
+              (i for i in range(help_index + 1, len(lines)) if lines[i].strip() == '#[test]'),
+              len(lines),
+          )
+          if not any('Some("mise")' in line for line in lines[help_index:next_test]):
+              nix_index = next(
+                  i for i in range(help_index, next_test)
+                  if 'Some("nix")' in lines[i]
+              )
+              _, insert_at = assertion_bounds(nix_index)
+              lines[insert_at:insert_at] = [
+                  '        assert!(\n',
+                  '            develop\n',
+                  '                .get_arguments()\n',
+                  '                .any(|arg| arg.get_long() == Some("mise"))\n',
+                  '        );\n',
+              ]
+
+          path.write_text(''.join(lines), encoding='utf-8')
+          PY
+
+          if find . -name '*.rej' -print -quit | grep -q .; then
+            echo 'patch left reject files:' >&2
+            find . -name '*.rej' -print -exec cat {} \; >&2
+            exit 1
+          fi
+
+          test "$(git hash-object src/dev.rs)" = 'ad55ef52dc4703afa7025bcba3c60de5d444cca1'
+          test "$(git hash-object .dev-cli-flags.toml)" = 'd4b6a979f3274a87370ef518d58a49705fcdc3af'
+          test "$(git hash-object docs/develop.md)" = 'a53eb8e6f35aaf84465149d1146d65166e6d12ff'
+          test "$(git hash-object .github/workflows/develop-shell.yml)" = '14c23135d931e20423084be1a698d67ac155e15e'
+
+          rm .github/workflows/apply-den-1420-mise.yml
+          rm .github/workflows/kick-den-1420-mise.yml
+          cargo fmt --all
+          git diff --check
+          cargo test --locked
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat(DEN-1420): compose zed dev with mise'
+          git push origin HEAD:feat/den-1420-mise-dev-adapter

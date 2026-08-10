@@ -1,0 +1,70 @@
+name: apply Nix cross-build implementation
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths:
+      - ".github/workflows/agent-source-snapshot.yml"
+      - ".github/patch-trigger"
+      - ".github/patch-parts/**"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the implementation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Rebase, apply, and publish one clean implementation commit
+        shell: bash
+        env:
+          EXPECTED_PATCH_SHA256: 89b9b37b66cc261d90276cfce219329ddff0de310a444b8ae3af0565e697ff4f
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          TARGET_BRANCH: agent/nix-cross-build-contract
+        run: |
+          set -euo pipefail
+
+          cat .github/patch-parts/part-* \
+            | base64 --decode \
+            | gzip --decompress \
+            > "$RUNNER_TEMP/nix-cross-build.patch"
+          printf '%s  %s\n' \
+            "$EXPECTED_PATCH_SHA256" \
+            "$RUNNER_TEMP/nix-cross-build.patch" \
+            | sha256sum --check --strict
+
+          git fetch --no-tags origin main
+          git reset --hard origin/main
+
+          # Apply against the latest main tree. New unrelated files are kept;
+          # overlapping edits are merged from recorded base blobs or fail
+          # closed with conflicts instead of deleting newer work. The patch's
+          # deletion of this temporary workflow is excluded because main never
+          # contains the publisher in the first place.
+          git apply \
+            --exclude=.github/workflows/agent-source-snapshot.yml \
+            --3way \
+            --index \
+            --whitespace=error-all \
+            "$RUNNER_TEMP/nix-cross-build.patch"
+          git diff --cached --check
+
+          git config user.name "zed-pkg automation"
+          git config user.email "automation@users.noreply.github.com"
+          git commit -m "feat: add target-aware offline source builds for Nix"
+          git push \
+            --force-with-lease="refs/heads/$TARGET_BRANCH:$EXPECTED_HEAD_SHA" \
+            origin "HEAD:refs/heads/$TARGET_BRANCH"

@@ -17,6 +17,7 @@ use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
+use zed_cli::oci_command;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -39,6 +40,16 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if let Some(result) = oci_command::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
     let global_requested = args.iter().skip(1).any(|argument| {
         let argument = argument.as_os_str();
@@ -394,6 +405,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ReleaseCmd::Plan { json } => release::plan(&cwd, json),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
         },
+        Cmd::Oci { .. } => unreachable!("OCI commands return before Config construction"),
         Cmd::Publish {
             dry_run,
             allow_dirty,
@@ -404,6 +416,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
         Cmd::R2g {
+            registry_mode,
             docker,
             image,
             runtime,
@@ -413,6 +426,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             &cwd,
             &cfg,
             &R2gOptions {
+                registry_mode,
                 docker,
                 image,
                 runtime,

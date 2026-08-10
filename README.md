@@ -59,6 +59,9 @@ git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
 zed publish
 
+# derive the exact immutable OCI identity without credentials or uploads
+zed oci plan oci://ghcr.io/acme/my-lib:0.1.0
+
 # consume packages from a manifest
 zed add acme/http-kit@^1
 zed install
@@ -139,7 +142,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
-| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
+| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool and lock subset as a normalized `EnvironmentPlan`; never load parent/global config or execute hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
 | `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |
 | `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |
@@ -149,8 +152,12 @@ registry hosts both on S3/Cloudflare R2.
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed oci plan <oci://registry/repository:version> [--target <name>] [--out <layout>] [--json]` | Derive exact OCI identities and optionally materialize a verified local image layout without credentials or network transport |
+| `zed oci push <layout> <oci://registry/repository:version>` | Verify a local OCI layout, copy it through ORAS using one explicit authentication mode, and require the remote tag to resolve to the expected digest |
+| `zed oci plan <oci://registry/repository:version> [--target <name>] [--json]` | Pack in a temporary directory and print exact OCI config, layer, manifest, and resolved digest identities without credentials, network, or uploads |
+| `zed oci push <layout> <oci://registry/repository:version>` | Verify an immutable local OCI layout, copy it through ORAS with one explicit authentication mode, and require the remote tag to resolve to the verified manifest digest |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
-| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
+| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact through a private file registry by default, or through the configured Rust HTTP registry with explicit `--registry-mode server`; then install it into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
@@ -436,6 +443,8 @@ actual CLI never drift, so it is always authoritative:
 | `--native-manager <name>` | `ZED_PKG_NATIVE_MANAGER` | auto-detect one graph-compatible manager |
 | `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
 | deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
+| `--target` (OCI plan/polyglot install) | `ZED_PKG_TARGET` | required for a polyglot OCI plan; inferred for install when possible |
+| `--json` (OCI plan) | `ZED_PKG_OCI_JSON` | off |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
@@ -448,6 +457,7 @@ actual CLI never drift, so it is always authoritative:
 | `--name` (init) | `ZED_PKG_NAME` | directory name |
 | `--check` (self-update) | `ZED_PKG_UPDATE_CHECK` | off |
 | `--force` (self-update) | `ZED_PKG_UPDATE_FORCE` | off |
+| `--registry-mode` (r2g) | `ZED_PKG_R2G_REGISTRY_MODE` | `isolated`; `server` intentionally persists the package version on the configured HTTP(S) registry |
 | `--docker` (r2g) | `ZED_PKG_R2G_DOCKER` | off |
 | `--image` (r2g) | `ZED_PKG_R2G_IMAGE` | `debian:stable-slim` |
 | `--runtime` (r2g) | `ZED_PKG_R2G_RUNTIME` | auto (docker, then podman) |
@@ -455,7 +465,7 @@ actual CLI never drift, so it is always authoritative:
 | `--clean` (r2g) | `ZED_PKG_R2G_CLEAN` | off |
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
-air-gapped mirrors, and `zed r2g` all use it.
+air-gapped mirrors, and the default `zed r2g` mode all use it.
 
 ## Authentication
 
@@ -475,6 +485,26 @@ mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
 always removes the local session.
 
 ## Containers & OCI
+
+### Immutable OCI publication plans
+
+`zed oci plan` derives the exact OCI artifact bytes and identities before any
+registry is contacted:
+
+```sh
+zed oci plan oci://ghcr.io/acme/tool:1.2.3
+zed oci plan oci://ghcr.io/acme/tool-rust:1.2.3 --target rust --json
+```
+
+The input is a tagged destination. Contract v1 requires that tag to equal the
+package version and rejects a caller-supplied digest. Zed validates the source
+manifest and frozen dependency provenance, packs in a temporary directory, and
+hashes the package archive, Zed manifest, optional lockfile, config JSON, and
+OCI image manifest. The output includes the resolved immutable
+`oci://...@sha256:...` reference. Planning reads no registry credentials,
+performs no network request, uploads nothing, and leaves no `.zed/pack` output.
+A later transport command can consume the same descriptors without changing
+what is signed, attested, or pushed.
 
 Symlinks into `$HOME/.zed-pkg` do not survive a `COPY --from=build` between
 image stages, so use copy mode inside builds and cache-mount the store:
@@ -511,7 +541,8 @@ consumer would:
 
 1. **Pack** — builds the exact pruned, deterministic tarball `zed publish`
    would upload.
-2. **Publish** — to a throwaway `file://` registry.
+2. **Publish** — to a private throwaway `file://` registry by default, or to
+   the configured HTTP(S) server only with `--registry-mode server`.
 3. **Install** — into a mock consumer project (`zed-local/consumer`) with its
    own throwaway store, so the tarball actually roundtrips through
    extraction — no reaching back into your source tree.
@@ -525,10 +556,27 @@ are left behind for inspection (pass `--clean`, or set `--r2g-root` to
 relocate them). `zed test-local` is a backwards-compatible alias.
 
 ```sh
-zed r2g                       # roundtrip on the host
+zed r2g                       # safe, hermetic roundtrip on the host
 zed r2g --docker              # ...inside a fresh debian:stable-slim container
 zed r2g --docker --image node:22-slim   # pick an image with the runtime you need
+
+# Certify a disposable Rust registry reached through a port-forward. Publishing
+# is persistent from the registry's point of view: an identical retry reuses
+# the immutable version, while changed bytes require a new version or a reset.
+zed --registry http://127.0.0.1:48080 --token "$ZED_PKG_TOKEN" \
+  r2g --registry-mode server --clean
 ```
+
+Server mode is deliberately loud and explicit. It uses the ordinary HTTP
+registry client for both upload and consumer install, including the configured
+credential. The package version remains published after `--clean`; cleanup
+only removes the local mock consumer and store. A byte-identical repeated run
+reuses the immutable version. If the package bytes change without a version
+bump, r2g fails before upload; publish a new version or reset the disposable
+registry metadata and process-memory artifact store together. This is the mode
+used to certify the bounded Rust process-memory backend on the AWS and Hetzner
+Kubernetes deployment paths; the ordinary pre-publish developer loop remains
+hermetic.
 
 With `--docker`, r2g installs in copy mode (self-contained, zero symlinks —
 the same guarantee `--install-mode copy` gives OCI builds), bind-mounts the
