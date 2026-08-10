@@ -20,6 +20,7 @@ use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_environment_export::ExportManager;
 use zed_cli::nix_export_plan;
+use zed_cli::oci_command;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -48,6 +49,16 @@ fn main() {
         argument == OsStr::new("global") || argument == OsStr::new("--global")
     });
     if global_requested && let Some(result) = global::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = oci_command::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),

@@ -8,15 +8,18 @@ use clap_complete::{Shell, generate};
 use crate::cli_model;
 use crate::{
     dev, external_subcommands, fetch, git_submodules, global, nix_bundle_write, nix_export_plan,
+    oci_command,
 };
 
 /// Build the complete built-in command tree without external extensions.
 /// The external dispatcher uses this model to guarantee that a `zed-*`
 /// executable can never shadow a built-in name or alias.
 pub(crate) fn built_in_root_command() -> clap::Command {
-    global::augment_root_command(git_submodules::augment_root_command(
-        nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
-            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
+    global::augment_root_command(oci_command::augment_root_command(
+        git_submodules::augment_root_command(nix_bundle_write::augment_root_command(
+            nix_export_plan::augment_root_command(fetch::augment_root_command(
+                dev::augment_root_command(cli_model::command()),
+            )),
         )),
     ))
 }
@@ -77,6 +80,8 @@ mod tests {
             "export",
             "bundle",
             "write",
+            "oci",
+            "push",
             "develop",
             "dev",
             "overtake",
@@ -106,6 +111,8 @@ mod tests {
             "--flake-lock",
             "--out",
             "--output",
+            "--password-stdin",
+            "--registry-config",
             "--python-venv",
             "--isolated-home",
             "--catalog",
@@ -133,6 +140,8 @@ mod tests {
             "export",
             "bundle",
             "write",
+            "oci",
+            "push",
             "develop",
             "dev",
             "overtake",
@@ -162,6 +171,8 @@ mod tests {
             "--flake-lock",
             "--out",
             "--output",
+            "--password-stdin",
+            "--registry-config",
             "--python-venv",
             "--isolated-home",
             "--catalog",
