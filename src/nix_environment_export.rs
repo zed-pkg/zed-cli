@@ -262,7 +262,7 @@ pub fn export_environment(
     })
 }
 
-pub fn generate_devbox(packages: &[ManagerPackage]) -> Result<Vec<u8>> {
+fn generate_devbox(packages: &[ManagerPackage]) -> Result<Vec<u8>> {
     let mut output_packages = BTreeMap::new();
     for package in packages {
         let candidate = DevboxPackage {
@@ -292,7 +292,7 @@ pub fn generate_devbox(packages: &[ManagerPackage]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub fn generate_flox(plan: &EnvironmentPlan, packages: &[ManagerPackage]) -> Result<Vec<u8>> {
+fn generate_flox(plan: &EnvironmentPlan, packages: &[ManagerPackage]) -> Result<Vec<u8>> {
     let mut install = BTreeMap::new();
     for package in packages {
         validate_flox_alias(&package.logical_name)?;

@@ -162,10 +162,20 @@ impl From<CompletionShell> for clap_complete::Shell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvironmentManagerArg {
-    /// Import, verify, or export project-local mise configuration.
+    /// Import or verify project-local mise configuration.
     Mise,
     /// Import or verify project-local asdf configuration and Zed-owned provenance.
     Asdf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EnvironmentExportManagerArg {
+    /// Export deterministic mise TOML from a schema-v2 plan.
+    Mise,
+    /// Export deterministic Devbox JSON and a Zed-owned receipt.
+    Devbox,
+    /// Export deterministic Flox manifest TOML and a Zed-owned receipt.
+    Flox,
 }
 
 #[derive(Debug, Subcommand)]
@@ -482,20 +492,23 @@ pub enum EnvCmd {
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
     },
-    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.
+    /// Export a schema-v2 EnvironmentPlan to deterministic manager configuration.
     Export {
         #[arg(value_enum)]
-        manager: EnvironmentManagerArg,
-        /// Project-local schema-v2 EnvironmentPlan (.toml or .json).
+        manager: EnvironmentExportManagerArg,
+        /// Project-local schema-v2 EnvironmentPlan. Devbox/Flox default to `.zed/environment-plan.json`; mise requires this flag.
         #[arg(long, env = "ZED_PKG_ENV_PLAN")]
-        plan: PathBuf,
-        /// Project-local mise output path.
-        #[arg(long, env = "ZED_PKG_ENV_OUTPUT", default_value = ".mise.toml")]
-        output: PathBuf,
-        /// Verify that the output already equals the deterministic projection.
+        plan: Option<PathBuf>,
+        /// Project-local manager output path. Defaults are manager-specific.
+        #[arg(long, env = "ZED_PKG_ENV_OUTPUT")]
+        output: Option<PathBuf>,
+        /// Zed-owned deterministic receipt path for Devbox/Flox export.
+        #[arg(long, env = "ZED_PKG_ENV_RECEIPT")]
+        receipt: Option<PathBuf>,
+        /// Verify that the mise output already equals the deterministic projection.
         #[arg(long, env = "ZED_PKG_ENV_CHECK")]
         check: bool,
-        /// Transactionally create/update a Zed-owned manager view.
+        /// Transactionally create/update a Zed-owned mise view.
         #[arg(long, env = "ZED_PKG_ENV_WRITE")]
         write: bool,
         /// Emit a machine-readable export result.
@@ -802,21 +815,23 @@ mod tests {
     }
 
     #[test]
-    fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
-        let cli = Cli::try_parse_from([
-            "zed",
-            "env",
-            "export",
-            "mise",
-            "--plan",
-            "zed-env.toml",
-            "--output",
-            ".mise.toml",
-            "--check",
-            "--json",
-        ])
-        .unwrap();
-        assert!(matches!(cli.cmd, Cmd::Env { .. }));
+    fn environment_export_is_typed_and_preserves_manager_boundaries() {
+        for manager in ["mise", "devbox", "flox"] {
+            let mut args = vec!["zed", "env", "export", manager, "--json"];
+            if manager == "mise" {
+                args.extend([
+                    "--plan",
+                    "zed-env.toml",
+                    "--output",
+                    ".mise.toml",
+                    "--check",
+                ]);
+            } else {
+                args.extend(["--receipt", ".zed/receipt.json"]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Env { .. }));
+        }
 
         assert!(matches!(
             Cli::try_parse_from([
