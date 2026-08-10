@@ -6,22 +6,29 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
     name: Bash, Zsh, Fish, Python venv, failures, and PTY smoke
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - name: Install shell and Python fixtures
         run: sudo apt-get update && sudo apt-get install -y zsh fish python3-venv
       - name: Build the real CLI
@@ -305,16 +312,19 @@ jobs:
   windows-smoke:
     name: PowerShell and cmd.exe smoke
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - name: Build and run portable parser tests
         working-directory: zed-cli
         run: |

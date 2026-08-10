@@ -51,11 +51,11 @@ jobs:
           repository: zed-pkg/zed-clients
           path: zed-clients
           persist-credentials: false
-      - name: Check out hardened zed-lock package
+      - name: Check out current canonical zed-lock package contract
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: zed-pkg/zed-lock
-          ref: a0dc78d385bc3ab553d3027b427f5f1428239c9c
+          ref: 03b1ad855a80c31b8be2e743877ec7367bebdb48
           path: zed-lock
           persist-credentials: false
       - name: Install minimum supported Rust toolchain

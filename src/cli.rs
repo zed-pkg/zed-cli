@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
-/// following the flags-2-env convention (github.com/oresoftware/flags-2-env).
+/// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
 #[derive(Debug, Parser)]
 #[command(
     name = "zed",
@@ -162,7 +162,7 @@ impl From<CompletionShell> for clap_complete::Shell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvironmentManagerArg {
-    /// Import or verify project-local mise configuration.
+    /// Import, verify, or export project-local mise configuration.
     Mise,
     /// Import or verify project-local asdf configuration and Zed-owned provenance.
     Asdf,
@@ -170,6 +170,21 @@ pub enum EnvironmentManagerArg {
 
 #[derive(Debug, Subcommand)]
 pub enum Cmd {
+    /// Validate package manifest and lock metadata without network or filesystem mutation
+    Validate {
+        /// Package manifest to validate
+        #[arg(long, env = "ZED_PKG_VALIDATE_MANIFEST", default_value = ".zpkg.toml")]
+        manifest: PathBuf,
+        /// Package lockfile to validate when present
+        #[arg(long, env = "ZED_PKG_VALIDATE_LOCK", default_value = ".zpkg.lock")]
+        lock: PathBuf,
+        /// Fail when the lockfile is absent
+        #[arg(long, env = "ZED_PKG_VALIDATE_REQUIRE_LOCK")]
+        require_lock: bool,
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_VALIDATE_JSON")]
+        json: bool,
+    },
     /// Create a .zpkg.toml manifest in the current directory
     Init {
         #[arg(long, env = "ZED_PKG_ORG")]
@@ -210,6 +225,21 @@ pub enum Cmd {
         /// (artifact, platform, command) under ~/.zed-pkg/builds)
         #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
         allow_build: bool,
+        /// Install host-native prerequisites declared by packages. This may
+        /// invoke an OS package manager and is independent from build-hook
+        /// consent.
+        #[arg(long, env = "ZED_PKG_ALLOW_NATIVE_DEPS")]
+        allow_native_deps: bool,
+        /// Run package-authored pre-install and post-install commands in a
+        /// writable staging copy. Off by default because hooks are arbitrary
+        /// author code.
+        #[arg(long, env = "ZED_PKG_ALLOW_INSTALL_HOOKS")]
+        allow_install_hooks: bool,
+        /// Pin the native package manager selected for the complete dependency
+        /// graph (for example apt, apk, brew, or nix). Omitted = detect one
+        /// manager supported by every package that declares native deps.
+        #[arg(long, env = "ZED_PKG_NATIVE_MANAGER")]
+        native_manager: Option<String>,
         /// Which language subtree to take from polyglot dependencies (a repo
         /// shipping e.g. node/, python/, go/). Overrides [install].target;
         /// omitted = infer from the project
@@ -245,6 +275,17 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: EnvCmd,
     },
+    /// List, inspect, graph, or execute native schema-v2 project tasks.
+    Task {
+        /// Project-local schema-v2 environment plan; conventional names are discovered when omitted.
+        #[arg(long, env = "ZED_TASK_PLAN")]
+        plan: Option<PathBuf>,
+        /// Emit stable machine-readable JSON. Live command execution requires human streaming output.
+        #[arg(long, env = "ZED_TASK_JSON")]
+        json: bool,
+        #[command(subcommand)]
+        cmd: TaskCmd,
+    },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {
         #[arg(value_enum)]
@@ -258,6 +299,15 @@ pub enum Cmd {
         /// Rebuild even when the build cache already has an entry
         #[arg(long, env = "ZED_PKG_FORCE")]
         force: bool,
+        /// Install host-native prerequisites before preparing dependencies.
+        #[arg(long, env = "ZED_PKG_ALLOW_NATIVE_DEPS")]
+        allow_native_deps: bool,
+        /// Run package-authored pre-install and post-install commands.
+        #[arg(long, env = "ZED_PKG_ALLOW_INSTALL_HOOKS")]
+        allow_install_hooks: bool,
+        /// Pin the graph-wide native package manager.
+        #[arg(long, env = "ZED_PKG_NATIVE_MANAGER")]
+        native_manager: Option<String>,
     },
     /// Run an executable a dependency exposes via [bin] (hoisted into
     /// zed_modules/.bin) or any command, with zed_modules/.bin prepended to
@@ -432,6 +482,26 @@ pub enum EnvCmd {
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
     },
+    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.
+    Export {
+        #[arg(value_enum)]
+        manager: EnvironmentManagerArg,
+        /// Project-local schema-v2 EnvironmentPlan (.toml or .json).
+        #[arg(long, env = "ZED_PKG_ENV_PLAN")]
+        plan: PathBuf,
+        /// Project-local mise output path.
+        #[arg(long, env = "ZED_PKG_ENV_OUTPUT", default_value = ".mise.toml")]
+        output: PathBuf,
+        /// Verify that the output already equals the deterministic projection.
+        #[arg(long, env = "ZED_PKG_ENV_CHECK")]
+        check: bool,
+        /// Transactionally create/update a Zed-owned manager view.
+        #[arg(long, env = "ZED_PKG_ENV_WRITE")]
+        write: bool,
+        /// Emit a machine-readable export result.
+        #[arg(long, env = "ZED_PKG_ENV_JSON")]
+        json: bool,
+    },
     /// Verify manager config/lock coverage and the normalized plan digest.
     Verify {
         #[arg(value_enum)]
@@ -448,6 +518,44 @@ pub enum EnvCmd {
         /// Emit a machine-readable verification result.
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TaskCmd {
+    /// List project tasks in deterministic name order.
+    List {
+        /// Include tasks marked hidden.
+        #[arg(long, env = "ZED_TASK_ALL")]
+        all: bool,
+    },
+    /// Show one task's aliases, dependencies, cache policy, and description.
+    Info { task: String },
+    /// Print the validated task dependency and invocation graph.
+    Graph { task: String },
+    /// Execute one task and its validated dependency graph.
+    Run {
+        task: String,
+        /// Plan commands and cache decisions without subprocesses or mutation.
+        #[arg(long, env = "ZED_TASK_DRY_RUN")]
+        dry_run: bool,
+        /// Approve an explicit task confirmation requirement.
+        #[arg(long, env = "ZED_TASK_YES")]
+        yes: bool,
+        /// Maximum number of concurrently running task commands.
+        #[arg(
+            long,
+            env = "ZED_TASK_JOBS",
+            default_value_t = 1,
+            value_parser = crate::task_cli::parse_positive_jobs
+        )]
+        jobs: usize,
+        /// Disable content-verified incremental cache reads and writes.
+        #[arg(long, env = "ZED_TASK_NO_CACHE")]
+        no_cache: bool,
+        /// Arguments are exposed through ZED_TASK_ARGC, ZED_TASK_ARGS_JSON, and ZED_TASK_ARG_<n>.
+        #[arg(last = true, allow_hyphen_values = true)]
+        args: Vec<String>,
     },
 }
 
@@ -548,7 +656,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AuthCmd, Cli, Cmd};
+    use super::{AuthCmd, Cli, Cmd, EnvCmd};
 
     #[test]
     fn flat_and_nested_auth_spellings_dispatch_identically() {
@@ -694,6 +802,118 @@ mod tests {
     }
 
     #[test]
+    fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
+        let cli = Cli::try_parse_from([
+            "zed",
+            "env",
+            "export",
+            "mise",
+            "--plan",
+            "zed-env.toml",
+            "--output",
+            ".mise.toml",
+            "--check",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(cli.cmd, Cmd::Env { .. }));
+
+        assert!(matches!(
+            Cli::try_parse_from([
+                "zed",
+                "env",
+                "export",
+                "mise",
+                "--plan",
+                "zed-env.toml",
+                "--check",
+                "--write",
+            ])
+            .unwrap()
+            .cmd,
+            Cmd::Env {
+                cmd: EnvCmd::Export {
+                    check: true,
+                    write: true,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn task_commands_are_typed_and_reject_zero_concurrency() {
+        for args in [
+            vec!["zed", "task", "list", "--all"],
+            vec!["zed", "task", "--json", "info", "build"],
+            vec!["zed", "task", "graph", "build"],
+            vec!["zed", "task", "run", "build", "--dry-run", "--jobs", "2"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Task { .. }));
+        }
+
+        let error =
+            Cli::try_parse_from(["zed", "task", "run", "build", "--jobs", "0"]).unwrap_err();
+        assert!(error.to_string().contains("at least one"));
+    }
+
+    #[test]
+    fn native_dependency_and_hook_flags_remain_independent() {
+        let cli = Cli::try_parse_from([
+            "zed",
+            "install",
+            "--allow-native-deps",
+            "--allow-install-hooks",
+            "--native-manager",
+            "apt",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Install {
+                allow_build,
+                allow_native_deps,
+                allow_install_hooks,
+                native_manager,
+                ..
+            } => {
+                assert!(
+                    !allow_build,
+                    "native prerequisites must not imply build consent"
+                );
+                assert!(allow_native_deps);
+                assert!(allow_install_hooks);
+                assert_eq!(native_manager.as_deref(), Some("apt"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let build = Cli::try_parse_from([
+            "zed",
+            "build",
+            "--allow-native-deps",
+            "--allow-install-hooks",
+            "--native-manager",
+            "nix",
+        ])
+        .unwrap();
+        match build.cmd {
+            Cmd::Build {
+                force,
+                allow_native_deps,
+                allow_install_hooks,
+                native_manager,
+            } => {
+                assert!(!force);
+                assert!(allow_native_deps);
+                assert!(allow_install_hooks);
+                assert_eq!(native_manager.as_deref(), Some("nix"));
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
     fn completion_shells_are_typed_positionals() {
         for shell in ["bash", "zsh"] {
             let cli = Cli::try_parse_from(["zed", "completions", shell]).unwrap();
@@ -701,7 +921,7 @@ mod tests {
         }
     }
 
-    /// The flags-2-env convention (github.com/oresoftware/flags-2-env):
+    /// The flags-2-env convention (github.com/flags-2-env/flags-2-env):
     /// every user-facing option must be settable via a ZED_PKG_* env var.
     #[test]
     fn flags_2_env_convention_holds() {
@@ -716,8 +936,8 @@ mod tests {
                 .unwrap_or_else(|| panic!("--{long} lacks an env fallback"))
                 .to_string_lossy();
             assert!(
-                env.starts_with("ZED_PKG_"),
-                "--{long} env `{env}` must use the ZED_PKG_ prefix"
+                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
         }
 
@@ -755,8 +975,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string();
             assert!(
-                env.starts_with("ZED_PKG_"),
-                "--{long} env `{env}` must use the ZED_PKG_ prefix"
+                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
             envs.insert(env);
         }
@@ -766,7 +986,7 @@ mod tests {
     }
 
     /// `.cli-flags.toml` is the declarative flags-2-env registry
-    /// (github.com/oresoftware/flags-2-env). It must stay a byte-for-byte
+    /// (github.com/flags-2-env/flags-2-env). It must stay a byte-for-byte
     /// match with what clap actually exposes: every CLI flag is declared, and
     /// nothing declared is stale. This is what keeps `zed r2g`'s flags (and
     /// every other command's) documented and env-addressable.
@@ -801,8 +1021,8 @@ mod tests {
                         .and_then(toml::Value::as_str)
                         .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
                     assert!(
-                        env.starts_with("ZED_PKG_"),
-                        "flag --{} env `{env}` must use the ZED_PKG_ prefix",
+                        env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                        "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
                         name.replace('_', "-")
                     );
                     assert!(

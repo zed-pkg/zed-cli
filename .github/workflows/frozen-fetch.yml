@@ -63,7 +63,8 @@ jobs:
         run: cargo build --locked --bin zed
 
       - name: Run deterministic and fail-closed fetch unit tests
-        run: cargo test --locked fetch::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked fetch::tests:: -- --test-threads=1
 
       - name: Run black-box fetch conformance
         run: cargo test --locked --test frozen_fetch_cli -- --test-threads=1
@@ -72,14 +73,15 @@ jobs:
         run: cargo test --locked --test frozen_fetch_boundaries -- --test-threads=1
 
       - name: Verify generated completion coverage
-        run: cargo test --locked completion::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked completion::tests:: -- --test-threads=1
 
       - name: Verify modular help routing
         shell: bash
         run: |
           set -euo pipefail
-          root_help="$(cargo run --quiet --locked -- --help)"
-          fetch_help="$(cargo run --quiet --locked -- fetch --help)"
+          root_help="$(cargo run --quiet --locked --bin zed -- --help)"
+          fetch_help="$(cargo run --quiet --locked --bin zed -- fetch --help)"
           grep -F 'fetch' <<<"$root_help"
           grep -F -- '--frozen' <<<"$fetch_help"
           grep -F -- '--output' <<<"$fetch_help"
@@ -94,7 +96,12 @@ jobs:
           workflow = Path('.github/workflows/frozen-fetch.yml').read_text()
           assert 'contents: read' in workflow
           assert 'persist-credentials: false' in workflow
-          forbidden = ['contents: write', 'git push', 'pull_request_target:']
+          # Split the sentinels so this self-audit does not match its own source.
+          forbidden = [
+              'contents:' + ' write',
+              'git' + ' push',
+              'pull_request' + '_target:',
+          ]
           for token in forbidden:
               assert token not in workflow, token
           PY

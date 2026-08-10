@@ -101,6 +101,27 @@ Foreign tag spellings are tolerated on resolution: a leading `v`, Go's
 `+incompatible`, and common PEP 440 pre-releases all normalize to a comparable
 version. See [zed-interfaces `version`](https://github.com/zed-pkg/zed-interfaces/blob/main/src/version.rs).
 
+Validate package metadata before install or publication with `zed validate`.
+The command is offline and read-only: it never fetches, prompts, authenticates,
+recovers transactions, or accesses the package store. It applies the pinned
+zed-interfaces runtime validators plus the checked-in manifest/lock schema
+shape, so malformed TOML, unknown canonical fields, invalid slugs or
+provenance, unsupported lock versions, and direct requirement drift fail
+closed. The known additive `[[git-submodule]]` lock extension is validated by
+its own typed contract rather than rejected as an unknown canonical field.
+
+```sh
+zed validate
+zed validate --require-lock
+zed validate --manifest path/to/.zpkg.toml --lock path/to/.zpkg.lock --json
+```
+
+Lockfile v1 does not encode dependency edges. Validation therefore proves that
+every direct runtime/build requirement is present and satisfied when a lock is
+available, but explicitly does not claim transitive completeness. Without
+`--require-lock`, an absent lock is reported as a warning so manifest-only
+package artifacts can still smoke-test their authored metadata.
+
 ## Artifact formats
 
 Artifacts are `tar.gz` by default; `zip` is fully supported (both pack
@@ -111,6 +132,7 @@ registry hosts both on S3/Cloudflare R2.
 
 | Command | What it does |
 | --- | --- |
+| `zed validate [--manifest PATH] [--lock PATH] [--require-lock] [--json]` | Validate canonical package metadata offline and without mutation; direct lock coverage is checked, while v1 transitive completeness is explicitly not claimed |
 | `zed init` | Write a `.zpkg.toml` template |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
@@ -119,8 +141,10 @@ registry hosts both on S3/Cloudflare R2.
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
+| `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |
 | `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |
 | `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |
+| `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
@@ -203,7 +227,7 @@ protocols.
 `zed install` accepts package specs in an existing repository or folder:
 
 ```sh
-zed install oresoftware/flags-2-env@^0.1
+zed install flags-2-env/flags-2-env@^0.3
 ```
 
 Zed first searches upward for a Zed manifest. Without one, it looks for the
@@ -231,7 +255,7 @@ does not bypass that guard.
 Use the canonical escape hatch when the project must remain manifestless:
 
 ```sh
-zed install oresoftware/flags-2-env@^0.1 --do-not-write-new-manifest
+zed install flags-2-env/flags-2-env@^0.3 --do-not-write-new-manifest
 ```
 
 This preserves the established in-memory consumer plan. The normal installer
@@ -308,13 +332,55 @@ instead of the registry, so edits are live in consumers with no publish step:
 members = ["packages/*", "apps/*"]
 ```
 
-When a dependency resolves to a workspace member, `zed install` symlinks the
-member's source directory straight into `zed_modules/` and keeps resolving its
-transitive deps. Members are not pinned in `.zpkg.lock` (there is no artifact).
+When a dependency resolves to a workspace member, `zed install` normally
+symlinks the member's source directory straight into `zed_modules/` and keeps
+resolving its transitive deps. A member with install hooks or a build step is
+prepared in a writable staging copy and copied into the consumer instead, so
+its finalized files never point at an ephemeral staging directory. Members are
+not pinned in `.zpkg.lock` (there is no published artifact).
 
-### Build hooks (compiled dependencies)
+### Native dependencies, install hooks, and builds
 
-A package with native code or a codegen step declares a `[build]`:
+A package declares host prerequisites by package-manager name. Package specs
+are data, not commands: Zed maps each supported manager to a fixed argv
+invocation and never interpolates a package spec into a shell.
+
+```toml
+[native-dependencies]
+apt = ["pkg-config", "libssl-dev"]
+apk = ["pkgconf", "openssl-dev"]
+brew = ["pkg-config", "openssl@3"]
+nix = ["pkg-config", "openssl"]
+
+[hooks]
+pre-install = ["./scripts/pre-install.sh"]
+post-install = ["./scripts/post-install.sh"]
+```
+
+Polyglot packages may append target-specific entries under
+`[targets.<target>.native-dependencies]` and `[targets.<target>.hooks]`.
+Package-level hooks run before target hooks in each phase. Zed selects one
+manager supported by every package in the resolved graph, de-duplicates its
+package list, and installs it once before opening the consumer-project
+transaction. Override detection with `--native-manager <name>`.
+
+Native package installation and lifecycle hooks are separate trust decisions:
+
+```sh
+zed install --allow-native-deps --allow-install-hooks
+```
+
+The equivalent environment variables are `ZED_PKG_ALLOW_NATIVE_DEPS=1` and
+`ZED_PKG_ALLOW_INSTALL_HOOKS=1`. Outside a Nix build, the `nix` route uses a
+content-addressed Zed-managed profile below `$ZED_PKG_HOME/native/nix/` and
+adds its build paths only to package lifecycle commands; it never changes the
+user's default Nix profile. Inside a Nix build, Zed never invokes a package
+manager: put declared prerequisites in `nativeBuildInputs` / `buildInputs`,
+expose a `nix` route in the manifest, and set
+`ZED_PKG_NATIVE_DEPS_PROVIDED=1` after the derivation has supplied them.
+
+A package with native code or a codegen step may additionally declare a
+`[build]`:
 
 ```toml
 [build]
@@ -325,12 +391,14 @@ outputs = ["target/release/libfoo.so"]   # empty = keep the whole tree
 "acme/cmake" = "^3.20"
 ```
 
-Builds run in an isolated staging copy — never inside the immutable source
-store — and results cache per `(sha256, platform, command)` under
-`~/.zed-pkg/builds/`, so a consumer override never collides with the
-package's own build.
-Because a build runs arbitrary author code, it is opt-in: pass `--allow-build`
-(or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or replace a
+The lifecycle order is native prerequisites → `pre-install` hooks → build →
+`post-install` hooks → cache promotion → project materialization. Hooks and
+builds run in an isolated staging copy—never inside the immutable source store
+or consumer project—and results cache by source hash, platform, lifecycle
+commands, selected target, and native route under `~/.zed-pkg/builds/`.
+Because a build runs arbitrary author code, it remains independently opt-in:
+pass `--allow-build` (or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or
+replace a
 dependency's build without waiting on upstream:
 
 ```toml
@@ -340,7 +408,7 @@ command = "make install CC=clang"
 
 ## Flags-2-env
 
-Following the [flags-2-env](https://github.com/oresoftware/flags-2-env)
+Following the [flags-2-env](https://github.com/flags-2-env/flags-2-env)
 convention, every flag can be set via a `ZED_PKG_*` environment variable. The
 full mapping is declared, TOML-only, in
 [`.cli-flags.toml`](.cli-flags.toml) — a `cargo test` asserts that file and the
@@ -348,17 +416,24 @@ actual CLI never drift, so it is always authoritative:
 
 | Flag | Env var | Default |
 | --- | --- | --- |
-| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.tech` |
+| `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
 | `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
 | `--supabase-key` | `ZED_PKG_SUPABASE_KEY` | optional public publishable/anon key |
 | `--interactive` | `ZED_PKG_INTERACTIVE` | off; confirm each mutating lifecycle step in a real terminal |
+| `--manifest` (validate) | `ZED_PKG_VALIDATE_MANIFEST` | `.zpkg.toml` |
+| `--lock` (validate) | `ZED_PKG_VALIDATE_LOCK` | `.zpkg.lock` |
+| `--require-lock` (validate) | `ZED_PKG_VALIDATE_REQUIRE_LOCK` | off |
+| `--json` (validate) | `ZED_PKG_VALIDATE_JSON` | off |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
+| `--allow-native-deps` | `ZED_PKG_ALLOW_NATIVE_DEPS` | off |
+| `--allow-install-hooks` | `ZED_PKG_ALLOW_INSTALL_HOOKS` | off |
+| `--native-manager <name>` | `ZED_PKG_NATIVE_MANAGER` | auto-detect one graph-compatible manager |
 | `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
 | deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
@@ -521,8 +596,11 @@ Artifacts arrive over the network, so the client treats them as untrusted:
 - **Bounded downloads.** Artifact fetches are size-capped
   (`ZED_PKG_MAX_ARTIFACT_BYTES`) and a registry-supplied `download_url` must
   be https (or loopback/http only when the registry itself is http).
-- **No install-time code execution.** Installing a dependency never runs its
-  scripts; `[build]` steps run only with explicit `--allow-build`.
+- **No implicit install-time code execution or privilege use.** Native package
+  installation, package lifecycle hooks, and builds require independent
+  explicit consent. Native specs use fixed argv templates; hooks/builds run in
+  disposable writable staging copies, never in the source store or consumer
+  project.
 - **Generated identities fail closed.** A first-install consumer manifest
   cannot be published until its inferred local package identity is reviewed
   and the generated marker is removed.

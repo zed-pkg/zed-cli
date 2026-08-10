@@ -13,13 +13,18 @@ repository = "https://github.com/zed-pkg/zed-cli"
 name = "zed"
 path = "src/main.rs"
 
+[[bin]]
+name = "zed-gitops"
+path = "src/bin/zed-gitops.rs"
+
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "a23cdd2ac509a39ca6fd6d21a3774fdd3a0f7660" }
-zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "a0dc78d385bc3ab553d3027b427f5f1428239c9c" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "60a8ab55f8a55eb212a72dcb334c1c118047c7ef" }
+# Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
+zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
@@ -39,5 +44,5 @@ toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
 fs2 = "0.4.3"
-flags2env = { git = "https://github.com/ORESoftware/flags-2-env.git", rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7" }
+flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "2946224fb3a1bd84c0e39146b24f5f1ca8d69862" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

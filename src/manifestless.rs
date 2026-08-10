@@ -82,11 +82,20 @@ pub fn install(
     mode: InstallMode,
     adapter: Adapter,
     allow_build: bool,
+    allow_native_deps: bool,
+    allow_install_hooks: bool,
+    native_manager: Option<&str>,
     target: Option<&str>,
     allow_no_manifest: bool,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
     let selection = select_project(requested_root);
+    let permissions = ops::InstallPermissions {
+        allow_build,
+        allow_native_deps,
+        allow_install_hooks,
+        native_manager: native_manager.map(str::to_owned),
+    };
 
     if selection.has_manifest {
         if !specs.is_empty() {
@@ -94,13 +103,13 @@ pub fn install(
                 "package operands on `zed install` are only supported when no {MANIFEST_FILE} exists; use `zed add <org>/<name>[@requirement]` to persist a dependency in this project"
             );
         }
-        return ops::install(
+        return ops::install_with_permissions(
             &selection.root,
             cfg,
             frozen,
             mode,
             adapter,
-            allow_build,
+            &permissions,
             target,
             allow_ecosystem_mismatch,
         );
@@ -140,23 +149,23 @@ pub fn install(
     );
     config::with_manifest_override(&selection.root, manifest_text, || {
         if lock_only {
-            ops::install_frozen_lock_only(
+            ops::install_frozen_lock_only_with_permissions(
                 &selection.root,
                 cfg,
                 mode,
                 adapter,
-                allow_build,
+                &permissions,
                 inferred_target.as_deref(),
                 allow_ecosystem_mismatch,
             )
         } else {
-            ops::install(
+            ops::install_with_permissions(
                 &selection.root,
                 cfg,
                 frozen,
                 mode,
                 adapter,
-                allow_build,
+                &permissions,
                 inferred_target.as_deref(),
                 allow_ecosystem_mismatch,
             )

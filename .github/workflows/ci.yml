@@ -8,6 +8,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -17,28 +24,31 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           components: rustfmt, clippy
       - name: Install mold (fast linker)
         if: runner.os == 'Linux'
-        uses: rui314/setup-mold@v1
+        uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444
         with:
           make-default: true
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: zed-cli
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@9e3720000324bf314ab081346108fc3bab8d6b74
       - name: Format
         run: cargo fmt --check
         working-directory: zed-cli
@@ -56,14 +66,17 @@ jobs:
   docker-install:
     name: Docker install boundaries
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
       - name: Build a container with the zed CLI
         run: |
@@ -251,27 +264,28 @@ jobs:
     env:
       ECOSYSTEM: ${{ matrix.ecosystem }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-          persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
-          persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg-test/${{ matrix.ecosystem }}-lib
           path: fixture-lib
-          persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg-test/${{ matrix.ecosystem }}-app
           path: fixture-app
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: zed-cli
 
@@ -429,14 +443,17 @@ jobs:
   first-install-manifest:
     name: Durable first-install manifest and explicit ephemeral mode
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
       - name: Build the real CLI container
         run: |
@@ -673,16 +690,19 @@ jobs:
   shell-contract:
     name: Bash, Zsh, and terminal help contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           path: zed-cli
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
           path: zed-interfaces
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - name: Install Zsh
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends zsh
       - name: Verify the immutable parser lock and build the real executable
@@ -690,8 +710,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7"' Cargo.toml
-          grep -F '2f62e40932a0fcb8b9bf1b4c84473e34fa3c51c7' Cargo.lock
+          grep -F 'flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "2946224fb3a1bd84c0e39146b24f5f1ca8d69862" }' Cargo.toml
+          grep -F 'git+https://github.com/flags-2-env/flags-2-env.git?rev=2946224fb3a1bd84c0e39146b24f5f1ca8d69862#2946224fb3a1bd84c0e39146b24f5f1ca8d69862' Cargo.lock
           cargo build --locked --bin zed
       - name: Terminal help exposes the synchronized install contract
         shell: bash

@@ -1,0 +1,13 @@
+version = 1
+
+[[git-submodule]]
+name = "vendor/subtool"
+path = "vendor/subtool"
+package = "acme/subtool"
+version = "3.4.0"
+url = "https://github.com/acme/subtool.git"
+commit = "3333333333333333333333333333333333333333"
+sha256 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+size = 303
+format = "tar.gz"
+branch = "main"

@@ -420,6 +420,33 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_consent_flags_map_independently() {
+        let argv = vec![
+            "zed".to_string(),
+            "install".to_string(),
+            "--allow-native-deps".to_string(),
+            "--allow-install-hooks".to_string(),
+            "--allow-build".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).unwrap();
+        for env in [
+            "ZED_PKG_ALLOW_NATIVE_DEPS",
+            "ZED_PKG_ALLOW_INSTALL_HOOKS",
+            "ZED_PKG_ALLOW_BUILD",
+        ] {
+            assert_eq!(parsed.flags.get(env).map(String::as_str), Some("true"));
+        }
+        assert_eq!(
+            explicit_env_keys(&argv, &parsed.subcommands).unwrap(),
+            BTreeSet::from([
+                "ZED_PKG_ALLOW_BUILD".to_string(),
+                "ZED_PKG_ALLOW_INSTALL_HOOKS".to_string(),
+                "ZED_PKG_ALLOW_NATIVE_DEPS".to_string(),
+            ])
+        );
+    }
+
+    #[test]
     fn install_scope_declares_the_manifestless_boolean_environment() {
         let contract: toml::Value = toml::from_str(CONTRACT).unwrap();
         let envs = active_boolean_env_keys(&contract, &["install".to_string()]).unwrap();
@@ -476,6 +503,24 @@ mod tests {
             "-V".to_string(),
         ]);
         assert_eq!(filtered, ["zed", "install"]);
+    }
+
+    #[test]
+    fn long_inline_values_are_not_truncated() {
+        let token = format!("header.{}.signature", "a".repeat(240));
+        let argv = vec![
+            "zed".to_string(),
+            format!("--token={token}"),
+            "find".to_string(),
+            "http".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).expect("long inline values must parse");
+        assert!(parsed.unknown_options.is_empty());
+        assert!(parsed.errors.is_empty());
+        assert_eq!(
+            parsed.flags.get("ZED_PKG_TOKEN").map(String::as_str),
+            Some(token.as_str())
+        );
     }
 
     #[test]

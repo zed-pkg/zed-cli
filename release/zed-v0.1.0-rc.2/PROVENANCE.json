@@ -1,0 +1,9 @@
+{
+  "bundle_sha256": "a79567208408702d0616793dc74f994ecab7acf511ac630b42a84bfb5885999d",
+  "release": "v0.1.0-rc.2",
+  "schema": "https://zpkg.net/schemas/release-evidence/v1",
+  "source_commit": "ea259a828a26f5f8eb4536bfbfaecee36c934907",
+  "source_repository": "zed-pkg/zed-cli",
+  "source_run_id": "31033977230",
+  "targets": 7
+}
