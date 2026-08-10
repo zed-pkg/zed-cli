@@ -15,7 +15,7 @@ url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/develop.md"
 env = "ZED_PKG_REGISTRY"
 aliases = ["registry"]
 type = "string"
-default = "https://registry.zpkg.tech"
+default = "https://registry.zpkg.net"
 help = "Registry base URL."
 
 [flags.home]
@@ -120,6 +120,26 @@ aliases = ["allow-build"]
 type = "bool"
 default = "false"
 help = "Allow dependency build hooks."
+
+[commands.develop.flags.allow_native_deps]
+env = "ZED_PKG_ALLOW_NATIVE_DEPS"
+aliases = ["allow-native-deps"]
+type = "bool"
+default = "false"
+help = "Allow zed to install host-native prerequisites declared by packages."
+
+[commands.develop.flags.allow_install_hooks]
+env = "ZED_PKG_ALLOW_INSTALL_HOOKS"
+aliases = ["allow-install-hooks"]
+type = "bool"
+default = "false"
+help = "Allow package-authored pre-install and post-install hooks."
+
+[commands.develop.flags.native_manager]
+env = "ZED_PKG_NATIVE_MANAGER"
+aliases = ["native-manager"]
+type = "string"
+help = "Pin the graph-wide native package manager."
 
 [commands.develop.flags.isolated_home]
 env = "ZED_DEV_ISOLATED_HOME"

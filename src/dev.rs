@@ -100,6 +100,18 @@ pub struct DevelopArgs {
     #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
     pub allow_build: bool,
 
+    /// Permit zed to install host-native prerequisites declared by packages.
+    #[arg(long, env = "ZED_PKG_ALLOW_NATIVE_DEPS")]
+    pub allow_native_deps: bool,
+
+    /// Permit package-authored pre-install and post-install hooks.
+    #[arg(long, env = "ZED_PKG_ALLOW_INSTALL_HOOKS")]
+    pub allow_install_hooks: bool,
+
+    /// Pin the graph-wide host package manager used during restoration.
+    #[arg(long, env = "ZED_PKG_NATIVE_MANAGER", value_name = "MANAGER")]
+    pub native_manager: Option<String>,
+
     /// Redirect HOME and XDG config/data into `.zed/dev` as well as caches.
     #[arg(long, env = "ZED_DEV_ISOLATED_HOME")]
     pub isolated_home: bool,
@@ -408,6 +420,8 @@ fn normalize_boolean_environment() -> Result<()> {
         "ZED_DEV_NO_INSTALL",
         "ZED_PKG_FROZEN",
         "ZED_PKG_ALLOW_BUILD",
+        "ZED_PKG_ALLOW_NATIVE_DEPS",
+        "ZED_PKG_ALLOW_INSTALL_HOOKS",
         "ZED_PKG_INTERACTIVE",
         "ZED_DEV_ISOLATED_HOME",
         "ZED_DEV_PRINT_ENV",
@@ -586,6 +600,15 @@ fn maybe_reenter_through_nix(
     }
     if options.allow_build {
         command.arg("--allow-build");
+    }
+    if options.allow_native_deps {
+        command.arg("--allow-native-deps");
+    }
+    if options.allow_install_hooks {
+        command.arg("--allow-install-hooks");
+    }
+    if let Some(manager) = &options.native_manager {
+        command.arg("--native-manager").arg(manager);
     }
     if options.isolated_home {
         command.arg("--isolated-home");
@@ -862,13 +885,19 @@ fn prepare_directories(root: &Path, isolated_home: bool) -> Result<()> {
 
 fn install_declared_tools(root: &Path, cfg: &Config, options: &DevelopArgs) -> Result<()> {
     if root.join(MANIFEST_FILE).is_file() {
-        ops::install(
+        let permissions = ops::InstallPermissions {
+            allow_build: options.allow_build,
+            allow_native_deps: options.allow_native_deps,
+            allow_install_hooks: options.allow_install_hooks,
+            native_manager: options.native_manager.clone(),
+        };
+        ops::install_with_permissions(
             root,
             cfg,
             options.frozen,
             InstallMode::Symlink,
             Adapter::Auto,
-            options.allow_build,
+            &permissions,
             None,
             false,
         )?;
@@ -884,6 +913,9 @@ fn install_declared_tools(root: &Path, cfg: &Config, options: &DevelopArgs) -> R
             InstallMode::Symlink,
             Adapter::Auto,
             options.allow_build,
+            options.allow_native_deps,
+            options.allow_install_hooks,
+            options.native_manager.as_deref(),
             None,
             true,
             false,
@@ -1342,6 +1374,9 @@ mod tests {
             no_install: true,
             frozen: false,
             allow_build: false,
+            allow_native_deps: false,
+            allow_install_hooks: false,
+            native_manager: None,
             isolated_home: false,
             print_env: false,
             python_venv: PythonVenvMode::Never,

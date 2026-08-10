@@ -67,7 +67,7 @@ jobs:
 
       - name: Verify the immutable standalone zed-lock source
         run: |
-          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "a0dc78d385bc3ab553d3027b427f5f1428239c9c" in source, source; print(source)'
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "1db0da00d30fcf2e0762f50eedb1f88458020b52" in source, source; print(source)'
           test ! -d crates/zed-lock
 
       - name: Check formatting
@@ -118,7 +118,7 @@ jobs:
 
       - name: Verify the immutable standalone zed-lock source
         run: |
-          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "a0dc78d385bc3ab553d3027b427f5f1428239c9c" in source, source; print(source)'
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; data=json.load(sys.stdin); packages=[p for p in data["packages"] if p["name"]=="zed-lock"]; assert len(packages)==1, packages; source=packages[0]["source"] or ""; assert "github.com/zed-pkg/zed-lock" in source and "1db0da00d30fcf2e0762f50eedb1f88458020b52" in source, source; print(source)'
           test ! -d crates/zed-lock
 
       - name: Run event-driven zed-cli lock queue, isolation, and crash contracts

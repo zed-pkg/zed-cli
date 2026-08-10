@@ -16,6 +16,8 @@ for dependency in \
 done
 
 grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must be .vendor/.zed' >&2; exit 1; }
+grep -Fq 'outputs = ["target/release/zed", "target/release/zed-gitops"]' .zpkg.toml || { echo 'Zed package must publish both root and GitOps executables' >&2; exit 1; }
+grep -Fq '"zed-gitops" = "target/release/zed-gitops"' .zpkg.toml || { echo 'Zed package must install the sibling zed-gitops executable' >&2; exit 1; }
 grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
 
 if [[ -f .zpkg.lock ]] && [[ "$(wc -c < .zpkg.lock)" -le 12 ]]; then
@@ -45,7 +47,7 @@ manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
-expected_lock_revision = "a0dc78d385bc3ab553d3027b427f5f1428239c9c"
+expected_lock_revision = "1db0da00d30fcf2e0762f50eedb1f88458020b52"
 expected_lock_source = (
     "git+https://github.com/zed-pkg/zed-lock.git?"
     f"rev={expected_lock_revision}#{expected_lock_revision}"
@@ -67,12 +69,12 @@ else:
     if native_lock.get("git") != "https://github.com/zed-pkg/zed-lock.git":
         errors.append("zed-lock Cargo dependency must use the canonical repository")
     if native_lock.get("rev") != expected_lock_revision:
-        errors.append("zed-lock Cargo dependency must pin the hardened v0.1.1 merge commit")
+        errors.append("zed-lock Cargo dependency must pin the certified Windows contention revision")
 
 if 'name = "zed-lock"\nversion = "0.1.1"' not in cargo_lock:
     errors.append("Cargo.lock must resolve zed-lock version 0.1.1")
 if expected_lock_source not in cargo_lock:
-    errors.append("Cargo.lock must resolve the exact hardened zed-lock merge commit")
+    errors.append("Cargo.lock must resolve the exact certified zed-lock revision")
 
 for name in manifest.get("dependencies", {}):
     package = name.lower().split("/", 1)[-1]
@@ -110,9 +112,14 @@ if lock_path:
     rust_target = lock_package.get("targets", {}).get("rust", {})
     if rust_target.get("dir") != ".":
         errors.append("zed-lock must publish its root Rust target")
-    native = rust_target.get("native", {})
-    if native.get("registry") != "crates-io" or native.get("package") != "zed-lock":
-        errors.append("zed-lock must retain its crates-io native publication route")
+    if rust_target.get("adapter") != "rust":
+        errors.append("zed-lock root target must retain the Rust adapter")
+    if "native" in rust_target:
+        errors.append(
+            "zed-lock root target must not declare native release metadata: "
+            "the root is the canonical Zed repository package, while cargo publish "
+            "remains an independent crates.io release operation"
+        )
     sibling_placeholder = lock_path.parent / ".zpkg.lock"
     if sibling_placeholder.exists():
         errors.append("dependency-free zed-lock must not restore a placeholder .zpkg.lock")
@@ -123,4 +130,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership\n'
+printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership, independent crates.io release, and DEN-3167 contention semantics\n'

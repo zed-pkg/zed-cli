@@ -1,0 +1,11 @@
+[package]
+org = "acme"
+name = "submodule-consumer"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/submodule-consumer"
+
+[dependencies]
+"acme/subtool" = "^3"

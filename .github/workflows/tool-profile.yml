@@ -1,0 +1,110 @@
+name: frozen offline tool profiles
+
+on:
+  pull_request:
+    paths:
+      - .tool-cli-flags.toml
+      - docs/tool-profile.md
+      - src/tool_profile.rs
+      - src/bin/zed-tool.rs
+      - src/lib.rs
+      - tests/tool_profile_cli.rs
+      - .github/workflows/tool-profile.yml
+  push:
+    branches: [main]
+    paths:
+      - .tool-cli-flags.toml
+      - docs/tool-profile.md
+      - src/tool_profile.rs
+      - src/bin/zed-tool.rs
+      - src/lib.rs
+      - tests/tool_profile_cli.rs
+      - .github/workflows/tool-profile.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tool-profile-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  tool-profile:
+    name: frozen profile / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Validate staged flags-to-environment contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path('.tool-cli-flags.toml').read_text())
+          observed = set()
+          for flag in data.get('flags', {}).values():
+              observed.add(flag['env'])
+          for command in data.get('commands', {}).values():
+              for flag in command.get('flags', {}).values():
+                  observed.add(flag['env'])
+          expected = {
+              'ZED_TOOL_LOCK',
+              'ZED_TOOL_JSON',
+              'ZED_TOOL_PORTABLE',
+              'ZED_TOOL_PLAN_DIGEST',
+              'ZED_TOOL_TARGET',
+              'ZED_TOOL_OFFLINE',
+              'ZED_TOOL_PROFILE',
+              'ZED_PKG_HOME',
+          }
+          assert observed == expected, (observed, expected)
+          PY
+
+      - name: Formatting, unit, and compiled CLI tests
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo test --locked --lib tool_profile::tests
+          cargo test --locked --test tool_profile_cli
+
+      - name: Current store and lock compatibility
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib store::tests
+          cargo test --locked --lib project_lock::tests
+          cargo test --locked --test frozen_offline_prefetch
+
+      - name: Strict Clippy
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --bin zed-tool --test tool_profile_cli -- -D warnings
+
+      - name: Require a clean checkout
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git status --porcelain=v1 --untracked-files=all | tee /tmp/tool-profile-status.txt
+          test ! -s /tmp/tool-profile-status.txt

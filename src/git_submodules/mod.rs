@@ -34,6 +34,10 @@ use git::{
 pub use cli::{OvertakeArgs, augment_root_command, dispatch};
 pub(crate) use lock::{preflight_mutation, prepare_install, refresh_lock_extensions};
 
+pub(crate) fn validate_lock_extensions(text: &str) -> Result<BTreeMap<String, String>> {
+    lock::validate_lock_extensions(text)
+}
+
 #[derive(Debug)]
 pub struct OvertakeReport {
     pub project: PathBuf,

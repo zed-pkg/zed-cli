@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use zed_interfaces::language::{Ecosystem, Language, detect_ecosystems};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
-    BuildSection, Manifest, PackageSection, PublishSection, RepositorySection, ScriptsSection,
-    is_slug,
+    BuildSection, InstallHooksSection, Manifest, NativeDependencies, PackageSection,
+    PublishSection, RepositorySection, ScriptsSection, is_slug,
 };
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, current_platform};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
@@ -20,6 +20,7 @@ use zed_interfaces::version::{self, Requirement};
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::interactive;
+use crate::native::{self, NativeInstallOutcome, NativeRequirement};
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, human_size, require_sha256};
@@ -270,6 +271,52 @@ fn collect_workspace_links_for_frozen(
 #[derive(Debug)]
 pub struct InstallOutcome {
     pub installed: Vec<(String, String)>,
+}
+
+/// Independent trust decisions for package-authored lifecycle behavior.
+/// Existing library callers that use [`install`] retain the historical
+/// build-only opt-in while the CLI uses [`install_with_permissions`] to pass
+/// native-dependency and install-hook consent explicitly.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InstallPermissions {
+    pub allow_build: bool,
+    pub allow_native_deps: bool,
+    pub allow_install_hooks: bool,
+    pub native_manager: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PackageSource {
+    dir: PathBuf,
+    manifest: Option<Manifest>,
+}
+
+fn projected_root_target<'a>(manifest: &Manifest, requested: Option<&'a str>) -> Option<&'a str> {
+    requested.filter(|target| {
+        manifest.targets.is_empty() || manifest.resolve_target_key(target).is_some()
+    })
+}
+
+fn package_install_metadata(
+    manifest: Option<&Manifest>,
+    target: Option<&str>,
+) -> Result<(NativeDependencies, InstallHooksSection)> {
+    let Some(manifest) = manifest else {
+        return Ok((NativeDependencies::new(), InstallHooksSection::default()));
+    };
+    Ok((
+        manifest.effective_native_dependencies(target)?,
+        manifest.effective_install_hooks(target)?,
+    ))
+}
+
+fn read_artifact_manifest(dir: &Path, key: &str) -> Result<Manifest> {
+    read_manifest(dir).with_context(|| {
+        format!(
+            "artifact for `{key}` is missing a valid {MANIFEST_FILE} at {}",
+            dir.display()
+        )
+    })
 }
 
 fn ensure_artifact(reg: &dyn Registry, store: &Store, vm: &VersionMetadata) -> Result<PathBuf> {
@@ -914,30 +961,53 @@ pub fn install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
+    let permissions = InstallPermissions {
+        allow_build,
+        ..InstallPermissions::default()
+    };
+    install_with_permissions(
+        project,
+        cfg,
+        frozen,
+        mode,
+        adapter,
+        &permissions,
+        target,
+        allow_ecosystem_mismatch,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn install_with_permissions(
+    project: &Path,
+    cfg: &Config,
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    permissions: &InstallPermissions,
+    target: Option<&str>,
+    allow_ecosystem_mismatch: bool,
+) -> Result<InstallOutcome> {
     install_with_frozen_policy(
         project,
         cfg,
         frozen,
         mode,
         adapter,
-        allow_build,
+        permissions,
         target,
         true,
         allow_ecosystem_mismatch,
     )
 }
 
-/// Restore every package pinned by an existing lockfile when there is no
-/// persistent consumer manifest. The lock still verifies package identities,
-/// versions, registry metadata, and artifact hashes; only manifest-drift
-/// validation is inapplicable because no manifest exists to compare against.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn install_frozen_lock_only(
+pub(crate) fn install_frozen_lock_only_with_permissions(
     project: &Path,
     cfg: &Config,
     mode: InstallMode,
     adapter: Adapter,
-    allow_build: bool,
+    permissions: &InstallPermissions,
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<InstallOutcome> {
@@ -947,7 +1017,7 @@ pub(crate) fn install_frozen_lock_only(
         true,
         mode,
         adapter,
-        allow_build,
+        permissions,
         target,
         false,
         allow_ecosystem_mismatch,
@@ -961,7 +1031,7 @@ fn install_with_frozen_policy(
     frozen: bool,
     mode: InstallMode,
     adapter: Adapter,
-    allow_build: bool,
+    permissions: &InstallPermissions,
     target: Option<&str>,
     validate_manifest_requirements: bool,
     allow_ecosystem_mismatch: bool,
@@ -977,7 +1047,7 @@ fn install_with_frozen_policy(
         frozen,
         mode,
         adapter,
-        allow_build,
+        permissions,
         target,
         validate_manifest_requirements,
         allow_ecosystem_mismatch,
@@ -1120,7 +1190,7 @@ fn install_locked(
     frozen: bool,
     mode: InstallMode,
     adapter: Adapter,
-    allow_build: bool,
+    permissions: &InstallPermissions,
     target: Option<&str>,
     validate_manifest_requirements: bool,
     allow_ecosystem_mismatch: bool,
@@ -1277,15 +1347,84 @@ fn install_locked(
                 break vm;
             };
             let pkg_dir = ensure_artifact(reg.as_ref(), store, &vm)?;
-            resolved.insert(key, vm);
-            if let Ok(sub_manifest) = read_manifest(&pkg_dir) {
-                for (sub_key, sub_req) in sub_manifest.dependencies {
-                    let (sub_org, sub_name) = split_key(&sub_key)?;
-                    queue.push_back((sub_org, sub_name, sub_req));
-                }
+            resolved.insert(key.clone(), vm);
+            let sub_manifest = read_artifact_manifest(&pkg_dir, &key)?;
+            for (sub_key, sub_req) in sub_manifest.dependencies {
+                let (sub_org, sub_name) = split_key(&sub_key)?;
+                queue.push_back((sub_org, sub_name, sub_req));
             }
         }
     }
+
+    // Resolve and validate every package's install metadata before touching the
+    // consumer project. Native host packages are installed as one graph-wide
+    // operation so manager conflicts and missing consent fail before a project
+    // transaction exists.
+    let mut package_sources: BTreeMap<String, PackageSource> = BTreeMap::new();
+    let mut native_requirements = Vec::new();
+    let mut lifecycle_requirements: Vec<(String, Option<BuildSection>, InstallHooksSection)> =
+        Vec::new();
+    let root_target = projected_root_target(&manifest, resolved_target.as_deref());
+    native_requirements.push(NativeRequirement::new(
+        manifest.full_name(),
+        manifest.effective_native_dependencies(root_target)?,
+    ));
+
+    for (key, vm) in &resolved {
+        let dir = ensure_artifact(reg.as_ref(), store, vm)?;
+        let package_manifest = Some(read_artifact_manifest(&dir, key)?);
+        let (native_dependencies, hooks) =
+            package_install_metadata(package_manifest.as_ref(), resolved_target.as_deref())?;
+        let dep_build = package_manifest
+            .as_ref()
+            .and_then(|item| item.build.as_ref());
+        let build = manifest.effective_build(key, dep_build);
+        lifecycle_requirements.push((key.clone(), build, hooks));
+        native_requirements.push(NativeRequirement::new(key.clone(), native_dependencies));
+        package_sources.insert(
+            key.clone(),
+            PackageSource {
+                dir,
+                manifest: package_manifest,
+            },
+        );
+    }
+
+    let mut workspace_manifests: BTreeMap<String, Manifest> = BTreeMap::new();
+    for (key, member_dir) in &workspace_links {
+        let member = read_manifest(member_dir).with_context(|| {
+            format!(
+                "reading workspace package `{key}` from {}",
+                member_dir.display()
+            )
+        })?;
+        let (native_dependencies, hooks) =
+            package_install_metadata(Some(&member), resolved_target.as_deref())?;
+        let build = manifest.effective_build(key, member.build.as_ref());
+        lifecycle_requirements.push((key.clone(), build, hooks));
+        native_requirements.push(NativeRequirement::new(key.clone(), native_dependencies));
+        workspace_manifests.insert(key.clone(), member);
+    }
+
+    // Consent and manager compatibility are checked in a stable order before
+    // any host package manager runs: native prerequisites first, then all
+    // package-authored hooks and builds.
+    native::preflight(
+        &native_requirements,
+        permissions.allow_native_deps,
+        permissions.native_manager.as_deref(),
+    )?;
+    for (key, build, hooks) in &lifecycle_requirements {
+        ensure_lifecycle_permissions(key, build.as_ref(), hooks, permissions)?;
+    }
+
+    let native_outcome = native::install(
+        &native_requirements,
+        permissions.allow_native_deps,
+        permissions.native_manager.as_deref(),
+        cfg.interactive,
+        &cfg.home,
+    )?;
 
     let modules_dir = manifest.modules_dir();
     let modules = project.join(modules_dir);
@@ -1338,32 +1477,39 @@ fn install_locked(
             cfg.interactive,
             &format!("install {}/{}@{}", vm.org, vm.name, vm.version),
         )?;
-        let pkg_dir = ensure_artifact(reg.as_ref(), store, vm)?;
-        let pkg_manifest = read_manifest(&pkg_dir).ok();
-        // A [build] step (the package's own, or the consumer's override)
-        // swaps the link source from the pristine store entry to the
-        // per-platform build-cache entry.
         let key = format!("{}/{}", vm.org, vm.name);
-        let dep_build = pkg_manifest.as_ref().and_then(|m| m.build.as_ref());
-        let link_src = match manifest.effective_build(&key, dep_build) {
-            Some(build) => build_artifact(
-                cfg,
-                store,
-                vm,
-                &pkg_dir,
-                pkg_manifest.as_ref(),
-                &build,
-                allow_build,
-                false,
-            )?,
-            None => pkg_dir.clone(),
-        };
+        let source = package_sources
+            .get(&key)
+            .with_context(|| format!("resolved package `{key}` has no prepared source"))?;
+        let pkg_dir = &source.dir;
+        let pkg_manifest = source.manifest.as_ref();
+        let (native_dependencies, hooks) =
+            package_install_metadata(pkg_manifest, resolved_target.as_deref())?;
+        // Package lifecycle preparation swaps the link source from the
+        // pristine store entry to a platform cache entry. Hooks and builds run
+        // only in a writable staging copy.
+        let dep_build = pkg_manifest.and_then(|m| m.build.as_ref());
+        let build = manifest.effective_build(&key, dep_build);
+        let link_src = prepare_artifact(
+            cfg,
+            store,
+            vm,
+            pkg_dir,
+            pkg_manifest,
+            build.as_ref(),
+            &hooks,
+            &native_dependencies,
+            &native_outcome,
+            permissions,
+            resolved_target.as_deref(),
+            false,
+        )?;
         // A per-language package (e.g. `acme-clients-java`) states the
         // ecosystem it is for. Refuse to drop it into a project that has no
         // such toolchain: the files would sit in zed_modules/ unread, and the
         // consumer would debug a "missing" client that installed "fine".
         if !allow_ecosystem_mismatch
-            && let Some(pm) = pkg_manifest.as_ref()
+            && let Some(pm) = pkg_manifest
             && let Some(problem) = ecosystem_mismatch(
                 key.as_str(),
                 &vm.name,
@@ -1378,7 +1524,7 @@ fn install_locked(
         // language subtree, so a Python project gets `python/` at its import
         // root instead of a tree with the Node and Go sources beside it.
         // Single-language packages are unaffected (target_subdir -> None).
-        let link_src = match pkg_manifest.as_ref() {
+        let link_src = match pkg_manifest {
             Some(pm) => match pm.target_subdir(resolved_target.as_deref()) {
                 Ok(Some(subdir)) => {
                     let scoped = link_src.join(subdir);
@@ -1465,11 +1611,9 @@ fn install_locked(
             key: format!("{}/{}", vm.org, vm.name),
             version: vm.version.clone(),
             language: pkg_manifest
-                .as_ref()
                 .map(|pm| pm.package.language)
                 .unwrap_or_default(),
             ecosystem: pkg_manifest
-                .as_ref()
                 .map(|pm| pm.package.ecosystem())
                 .unwrap_or_default(),
             path: dest.clone(),
@@ -1479,6 +1623,44 @@ fn install_locked(
     }
     for (key, member_dir) in &workspace_links {
         interactive::confirm(cfg.interactive, &format!("link workspace package {key}"))?;
+        let member_manifest = workspace_manifests
+            .get(key)
+            .with_context(|| format!("workspace package `{key}` has no parsed manifest"))?;
+        let (native_dependencies, hooks) =
+            package_install_metadata(Some(member_manifest), resolved_target.as_deref())?;
+        let build = manifest.effective_build(key, member_manifest.build.as_ref());
+        let temporary = prepare_workspace_artifact(
+            cfg,
+            store,
+            key,
+            &member_manifest.package.version,
+            member_dir,
+            member_manifest,
+            build.as_ref(),
+            &hooks,
+            &native_dependencies,
+            &native_outcome,
+            permissions,
+            resolved_target.as_deref(),
+        )?;
+        let (prepared_source, workspace_mode) = match temporary.as_ref() {
+            Some(prepared) => (&prepared.path, InstallMode::Copy),
+            None => (member_dir, mode),
+        };
+        let link_source = match member_manifest.target_subdir(resolved_target.as_deref()) {
+            Ok(Some(subdir)) => {
+                let scoped = prepared_source.join(subdir);
+                if !scoped.is_dir() {
+                    bail!(
+                        "workspace package `{key}` declares target `{}` at `{subdir}`, but that directory is missing after lifecycle preparation",
+                        resolved_target.as_deref().unwrap_or_default()
+                    );
+                }
+                scoped
+            }
+            Ok(None) => prepared_source.to_path_buf(),
+            Err(error) => bail!("{error}"),
+        };
         let (org, name) = split_key(key)?;
         let member_manifest = read_manifest(member_dir).with_context(|| {
             format!(
@@ -1499,10 +1681,11 @@ fn install_locked(
         }
 
         let dest = modules.join(&org).join(&name);
-        // Workspace dependencies obey the same ownership decision as registry
-        // packages. Copy mode must remain self-contained after the member source
-        // directory leaves the Docker/OCI build context.
-        link_or_copy(member_dir, &dest, mode)?;
+        // A workspace package with lifecycle commands is copied from its
+        // temporary finalized staging tree; a plain workspace package keeps
+        // the historical live-link behavior in symlink mode. Adapter wiring
+        // must point at the same finalized source rather than bypassing hooks.
+        link_or_copy(&link_source, &dest, workspace_mode)?;
         for (bin_name, rel_target) in &member_manifest.bin {
             bins.insert(bin_name.clone(), dest.join(rel_target));
         }
@@ -1526,7 +1709,7 @@ fn install_locked(
                     .join(format!("@{org}"))
                     .join(&name);
                 transaction.backup(&node_dest)?;
-                link_or_copy(member_dir, &node_dest, mode)?;
+                link_or_copy(&link_source, &node_dest, workspace_mode)?;
             }
             Adapter::Java => {
                 used_java_adapter = true;
@@ -1564,12 +1747,12 @@ fn install_locked(
         }
         wired_packages.push(WiredPackage {
             key: key.clone(),
-            version: "workspace".to_string(),
+            version: member_manifest.package.version.clone(),
             language: member_manifest.package.language,
             ecosystem: member_manifest.package.ecosystem(),
             path: dest,
         });
-        installed.push((key.clone(), "workspace".to_string()));
+        installed.push((key.clone(), member_manifest.package.version.clone()));
     }
     hoist_bins(&modules, &bins, mode)?;
     if used_java_adapter {
@@ -1868,220 +2051,542 @@ pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// build hooks (zed-docs issue #5)
+// package lifecycle preparation (native deps, install hooks, and builds)
 
-/// Build-cache key for a source artifact built with a given command: the
-/// source sha256 plus a short hash of the command and declared outputs. Two
-/// builds with different commands (e.g. a consumer override) never share an
-/// entry.
-fn build_cache_key(source_sha: &str, build: &BuildSection) -> String {
+/// Cache identity for every package-authored operation that can change the
+/// materialized artifact. The immutable source hash is the primary identity;
+/// consumer build overrides, target selection, hooks, and the selected native
+/// route are hashed into a short suffix.
+fn lifecycle_cache_key(
+    source_sha: &str,
+    build: Option<&BuildSection>,
+    hooks: &InstallHooksSection,
+    native_dependencies: &NativeDependencies,
+    native_outcome: &NativeInstallOutcome,
+    target: Option<&str>,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(build.command.as_bytes());
+    hasher.update(b"zed-install-lifecycle-v1");
     hasher.update([0]);
-    for out in &build.outputs {
-        hasher.update(out.as_bytes());
+    if let Some(build) = build {
+        hasher.update(b"build");
+        hasher.update([0]);
+        hasher.update(build.command.as_bytes());
+        hasher.update([0]);
+        for output in &build.outputs {
+            hasher.update(output.as_bytes());
+            hasher.update([0]);
+        }
+    }
+    for (phase, commands) in [
+        (b"pre-install".as_slice(), &hooks.pre_install),
+        (b"post-install".as_slice(), &hooks.post_install),
+    ] {
+        hasher.update(phase);
+        hasher.update([0]);
+        for command in commands {
+            hasher.update(command.as_bytes());
+            hasher.update([0]);
+        }
+    }
+    if let Some(manager) = &native_outcome.manager {
+        hasher.update(b"native-manager");
+        hasher.update([0]);
+        hasher.update(manager.as_bytes());
+        hasher.update([0]);
+        for package in native_outcome.packages_for(native_dependencies) {
+            hasher.update(package.as_bytes());
+            hasher.update([0]);
+        }
+    }
+    if let Some(target) = target {
+        hasher.update(b"target");
+        hasher.update([0]);
+        hasher.update(target.as_bytes());
         hasher.update([0]);
     }
-    let cmd_hash = hex::encode(hasher.finalize());
-    format!("{source_sha}-{}", &cmd_hash[..16])
+    let lifecycle_hash = hex::encode(hasher.finalize());
+    format!("{source_sha}-{}", &lifecycle_hash[..16])
 }
 
-/// Execute a dependency's build step, isolated from the immutable source
-/// store (issue: source vs build caching):
-///
-///   store/<sha>/pkg  --copy-->  staging  --command-->  builds/<platform>/<sha>-<cmd>/pkg
-///
-/// Results cache per (sha256, platform, command); the staging dir gets the
-/// package's `[build-dependencies]` installed into its own zed_modules
-/// first. Builds run arbitrary package-author code, so they require
-/// --allow-build; without it the pristine source is linked and a warning
-/// explains how to opt in. `force` rebuilds even on a cache hit.
+fn ensure_lifecycle_permissions(
+    key: &str,
+    build: Option<&BuildSection>,
+    hooks: &InstallHooksSection,
+    permissions: &InstallPermissions,
+) -> Result<()> {
+    if !hooks.is_empty() && !permissions.allow_install_hooks {
+        bail!(
+            "{key} declares package install hooks; re-run with --allow-install-hooks or ZED_PKG_ALLOW_INSTALL_HOOKS=1"
+        );
+    }
+    if build.is_some() && !hooks.is_empty() && !permissions.allow_build {
+        bail!(
+            "{key} declares both install hooks and a [build] step; re-run with --allow-build so zed can execute the complete pre-install -> build -> post-install lifecycle"
+        );
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_permissions(
+    key: &str,
+    build: Option<&BuildSection>,
+    hooks: &InstallHooksSection,
+    permissions: &InstallPermissions,
+) -> Result<bool> {
+    if build.is_none() && hooks.is_empty() {
+        return Ok(false);
+    }
+    ensure_lifecycle_permissions(key, build, hooks, permissions)?;
+    if build.is_some() && !permissions.allow_build {
+        eprintln!(
+            "warning: {key} declares a [build] step; linking unbuilt source \
+             (re-run with --allow-build or ZED_PKG_ALLOW_BUILD=1 to execute it)"
+        );
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
+    Manifest {
+        package: PackageSection {
+            org: "zed-build".to_string(),
+            name: "staging".to_string(),
+            version: "0.0.0".to_string(),
+            version_scheme: version::VersionScheme::Semver,
+            description: None,
+            license: None,
+            repository: RepositorySection {
+                vcs: Vcs::Git,
+                url: "https://localhost/zed-build/staging".to_string(),
+            },
+            keywords: Vec::new(),
+            language: Default::default(),
+            ecosystem: Default::default(),
+        },
+        dependencies: build_dependencies,
+        build_dependencies: BTreeMap::new(),
+        native_dependencies: NativeDependencies::new(),
+        hooks: InstallHooksSection::default(),
+        publish: PublishSection::default(),
+        scripts: ScriptsSection::default(),
+        bin: BTreeMap::new(),
+        build: None,
+        workspace: None,
+        overrides: Default::default(),
+        install: Default::default(),
+        targets: Default::default(),
+    }
+}
+
+fn install_build_dependencies(
+    cfg: &Config,
+    store: &Store,
+    staging: &Path,
+    pkg_manifest: Option<&Manifest>,
+    permissions: &InstallPermissions,
+    native_outcome: &NativeInstallOutcome,
+) -> Result<Option<PathBuf>> {
+    let build_dependencies = pkg_manifest
+        .map(|manifest| manifest.build_dependencies.clone())
+        .unwrap_or_default();
+    if build_dependencies.is_empty() {
+        return Ok(None);
+    }
+
+    let deps_dir = staging.join("build-deps");
+    fs::create_dir_all(&deps_dir)?;
+    write_manifest(&deps_dir, &staging_manifest(build_dependencies))?;
+    let nested_permissions = InstallPermissions {
+        allow_build: permissions.allow_build,
+        allow_native_deps: permissions.allow_native_deps,
+        allow_install_hooks: permissions.allow_install_hooks,
+        native_manager: native_outcome
+            .manager
+            .clone()
+            .or_else(|| permissions.native_manager.clone()),
+    };
+    install_locked(
+        &deps_dir,
+        cfg,
+        store,
+        false,
+        InstallMode::Symlink,
+        Adapter::None,
+        &nested_permissions,
+        None,
+        true,
+        true,
+    )?;
+    Ok(Some(deps_dir.join(MODULES_DIR)))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn build_artifact(
+fn configure_lifecycle_command(
+    command: &mut Command,
+    work: &Path,
+    platform: &str,
+    key: &str,
+    version: &str,
+    phase: &str,
+    target: Option<&str>,
+    build_modules: Option<&Path>,
+    native_dependencies: &NativeDependencies,
+    native_outcome: &NativeInstallOutcome,
+) -> Result<()> {
+    command
+        .current_dir(work)
+        .env("ZED_INSTALL_PHASE", phase)
+        .env("ZED_INSTALL_PACKAGE", key)
+        .env("ZED_INSTALL_VERSION", version)
+        .env("ZED_INSTALL_PLATFORM", platform)
+        .env("ZED_INSTALL_ROOT", work)
+        .env("ZED_INSTALL_SOURCE", work)
+        .env("ZED_BUILD_PLATFORM", platform)
+        .env("ZED_BUILD_SRC", work);
+    if let Some(target) = target {
+        command
+            .env("ZED_INSTALL_TARGET", target)
+            .env("ZED_BUILD_TARGET", target);
+    }
+    let mut lifecycle_paths = Vec::new();
+    if let Some(modules) = build_modules {
+        lifecycle_paths.push(modules.join(BIN_DIR));
+        command
+            .env("ZED_BUILD_MODULES", modules)
+            .env("ZED_INSTALL_MODULES", modules);
+    }
+    if let Some(profile) = &native_outcome.profile {
+        lifecycle_paths.push(profile.join("bin"));
+    }
+    if !lifecycle_paths.is_empty() {
+        lifecycle_paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        command.env(
+            "PATH",
+            std::env::join_paths(lifecycle_paths).context("constructing lifecycle PATH")?,
+        );
+    }
+    native::environment(command, native_outcome, native_dependencies)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_install_hooks(
+    commands: &[String],
+    phase: &str,
+    work: &Path,
+    platform: &str,
+    key: &str,
+    version: &str,
+    target: Option<&str>,
+    build_modules: Option<&Path>,
+    native_dependencies: &NativeDependencies,
+    native_outcome: &NativeInstallOutcome,
+) -> Result<()> {
+    for (index, hook) in commands.iter().enumerate() {
+        println!(
+            "running {phase} hook {}/{} for {key}@{version}",
+            index + 1,
+            commands.len()
+        );
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(hook)
+            .env("ZED_INSTALL_HOOK_INDEX", (index + 1).to_string());
+        configure_lifecycle_command(
+            &mut command,
+            work,
+            platform,
+            key,
+            version,
+            phase,
+            target,
+            build_modules,
+            native_dependencies,
+            native_outcome,
+        )?;
+        let status = command
+            .status()
+            .with_context(|| format!("running {phase} hook {} for {key}", index + 1))?;
+        if !status.success() {
+            bail!("{phase} hook {} for {key} failed with {status}", index + 1);
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_staged_lifecycle(
+    cfg: &Config,
+    store: &Store,
+    staging: &Path,
+    work: &Path,
+    key: &str,
+    version: &str,
+    pkg_manifest: Option<&Manifest>,
+    build: Option<&BuildSection>,
+    hooks: &InstallHooksSection,
+    native_dependencies: &NativeDependencies,
+    native_outcome: &NativeInstallOutcome,
+    permissions: &InstallPermissions,
+    target: Option<&str>,
+) -> Result<()> {
+    let platform = current_platform();
+    let build_modules = install_build_dependencies(
+        cfg,
+        store,
+        staging,
+        pkg_manifest,
+        permissions,
+        native_outcome,
+    )?;
+
+    run_install_hooks(
+        &hooks.pre_install,
+        "pre-install",
+        work,
+        &platform,
+        key,
+        version,
+        target,
+        build_modules.as_deref(),
+        native_dependencies,
+        native_outcome,
+    )?;
+
+    if let Some(build) = build {
+        println!("building {key}@{version} for {platform}...");
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(&build.command);
+        configure_lifecycle_command(
+            &mut command,
+            work,
+            &platform,
+            key,
+            version,
+            "build",
+            target,
+            build_modules.as_deref(),
+            native_dependencies,
+            native_outcome,
+        )?;
+        let status = command
+            .status()
+            .with_context(|| format!("running [build] command for {key}"))?;
+        if !status.success() {
+            bail!(
+                "[build] command for {key} failed with {status} \
+                 (override it via [overrides.build.\"{key}\"] in your manifest)"
+            );
+        }
+    }
+
+    run_install_hooks(
+        &hooks.post_install,
+        "post-install",
+        work,
+        &platform,
+        key,
+        version,
+        target,
+        build_modules.as_deref(),
+        native_dependencies,
+        native_outcome,
+    )?;
+    Ok(())
+}
+
+fn copy_finalized_artifact(
+    work: &Path,
+    destination: &Path,
+    build: Option<&BuildSection>,
+    key: &str,
+) -> Result<()> {
+    if build.is_none_or(|section| section.outputs.is_empty()) {
+        copy_dir(work, destination)?;
+        let _ = fs::remove_dir_all(destination.join(MODULES_DIR));
+        let _ = fs::remove_file(destination.join(LOCKFILE_FILE));
+        let _ = fs::remove_dir_all(destination.join(crate::transaction::STAGING_DIR));
+        return Ok(());
+    }
+
+    fs::create_dir_all(destination)?;
+    for output in &build.expect("checked above").outputs {
+        let from = work.join(output);
+        let to = destination.join(output);
+        if from.is_dir() {
+            copy_dir(&from, &to)?;
+        } else if from.is_file() {
+            if let Some(parent) = to.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&from, &to)?;
+        } else {
+            bail!("[build] output `{output}` was not produced by the build of {key}");
+        }
+    }
+    let manifest_source = work.join(MANIFEST_FILE);
+    if manifest_source.is_file() {
+        fs::copy(&manifest_source, destination.join(MANIFEST_FILE))?;
+    }
+    Ok(())
+}
+
+/// Prepare one immutable registry artifact through its package lifecycle and
+/// return either the pristine source or a platform-specific cached result.
+#[allow(clippy::too_many_arguments)]
+fn prepare_artifact(
     cfg: &Config,
     store: &Store,
     vm: &VersionMetadata,
     pkg_dir: &Path,
     pkg_manifest: Option<&Manifest>,
-    build: &BuildSection,
-    allow_build: bool,
+    build: Option<&BuildSection>,
+    hooks: &InstallHooksSection,
+    native_dependencies: &NativeDependencies,
+    native_outcome: &NativeInstallOutcome,
+    permissions: &InstallPermissions,
+    target: Option<&str>,
     force: bool,
 ) -> Result<PathBuf> {
     let key = format!("{}/{}", vm.org, vm.name);
-    if !allow_build {
-        eprintln!(
-            "warning: {key} declares a [build] step; linking unbuilt source \
-             (re-run with --allow-build or ZED_PKG_ALLOW_BUILD=1 to execute it)"
-        );
+    if !validate_lifecycle_permissions(&key, build, hooks, permissions)? {
         return Ok(pkg_dir.to_path_buf());
     }
+
     let platform = current_platform();
-    let cache_key = build_cache_key(&vm.sha256, build);
-    let built = store.build_pkg_dir(&platform, &cache_key);
-    if built.is_dir() && !force {
-        return Ok(built);
+    let cache_key = lifecycle_cache_key(
+        &vm.sha256,
+        build,
+        hooks,
+        native_dependencies,
+        native_outcome,
+        target,
+    );
+    let prepared = store.build_pkg_dir(&platform, &cache_key);
+    if prepared.is_dir() && !force {
+        return Ok(prepared);
     }
     let _lock = store.build_lock(&platform, &cache_key)?;
-    if built.is_dir() {
+    if prepared.is_dir() {
         if !force {
-            return Ok(built);
+            return Ok(prepared);
         }
         let _ = fs::remove_dir_all(store.build_entry(&platform, &cache_key));
     }
 
-    println!("building {key}@{} for {platform}...", vm.version);
+    println!("preparing {key}@{} for {platform}...", vm.version);
     let staging = tempfile::tempdir()?;
     let work = staging.path().join("pkg");
     copy_dir(pkg_dir, &work)?;
+    execute_staged_lifecycle(
+        cfg,
+        store,
+        staging.path(),
+        &work,
+        &key,
+        &vm.version,
+        pkg_manifest,
+        build,
+        hooks,
+        native_dependencies,
+        native_outcome,
+        permissions,
+        target,
+    )?;
 
-    let build_deps = pkg_manifest
-        .map(|m| m.build_dependencies.clone())
-        .unwrap_or_default();
-    if !build_deps.is_empty() {
-        // Build deps live only in the staging dir for the duration of the
-        // command; they are never linked into the consumer's project.
-        let staging_manifest = Manifest {
-            package: PackageSection {
-                org: "zed-build".to_string(),
-                name: "staging".to_string(),
-                version: "0.0.0".to_string(),
-                version_scheme: version::VersionScheme::Semver,
-                description: None,
-                license: None,
-                repository: RepositorySection {
-                    vcs: Vcs::Git,
-                    url: "https://localhost/zed-build/staging".to_string(),
-                },
-                keywords: Vec::new(),
-                // A synthetic staging manifest, not a published package: no
-                // language claim, so nothing ecosystem-gates it.
-                language: Default::default(),
-                ecosystem: Default::default(),
-            },
-            dependencies: build_deps,
-            build_dependencies: BTreeMap::new(),
-            native_dependencies: Default::default(),
-            hooks: Default::default(),
-            publish: PublishSection::default(),
-            scripts: ScriptsSection::default(),
-            bin: BTreeMap::new(),
-            build: None,
-            workspace: None,
-            overrides: Default::default(),
-            install: Default::default(),
-            targets: Default::default(),
-        };
-        let deps_dir = staging.path().join("build-deps");
-        fs::create_dir_all(&deps_dir)?;
-        write_manifest(&deps_dir, &staging_manifest)?;
-        install_locked(
-            &deps_dir,
-            cfg,
-            store,
-            false,
-            InstallMode::Symlink,
-            Adapter::None,
-            false,
-            // Build dependencies are toolchain, not the consumer's language:
-            // take them whole rather than slicing them to a target.
-            None,
-            // The staging manifest is synthesized from build_deps a few lines
-            // up, so requirement validation is trivially satisfied; keep it on
-            // so a genuinely unsatisfiable build dep still surfaces here.
-            true,
-            // Not ecosystem-gated, for the same reason as the target above: a
-            // Java codegen tool is a legitimate build dep of a Python package.
-            true,
-        )?;
-    }
-
-    let mut command = Command::new("sh");
-    command
-        .arg("-c")
-        .arg(&build.command)
-        .current_dir(&work)
-        .env("ZED_BUILD_PLATFORM", &platform)
-        .env("ZED_BUILD_SRC", &work);
-    if !pkg_manifest
-        .map(|m| m.build_dependencies.is_empty())
-        .unwrap_or(true)
-    {
-        let bin_dir = staging
-            .path()
-            .join("build-deps")
-            .join(MODULES_DIR)
-            .join(BIN_DIR);
-        let modules_dir = staging.path().join("build-deps").join(MODULES_DIR);
-        let path_var = std::env::var("PATH").unwrap_or_default();
-        command
-            .env("PATH", format!("{}:{path_var}", bin_dir.display()))
-            .env("ZED_BUILD_MODULES", &modules_dir);
-    }
-    let status = command
-        .status()
-        .with_context(|| format!("running [build] command for {key}"))?;
-    if !status.success() {
-        bail!(
-            "[build] command for {key} failed with {status} \
-             (override it via [overrides.build.\"{key}\"] in your manifest)"
-        );
-    }
-
-    // Promote into the per-platform cache: either the whole staged tree or
-    // just the declared outputs (plus the manifest so consumers can always
-    // introspect what they linked).
+    // `execute_staged_lifecycle` above has already installed build-only
+    // dependencies, run pre-install/build/post-install once, and validated the
+    // declared outputs. Promotion must never execute package code a second time.
     let entry = store.build_entry(&platform, &cache_key);
     let entry_parent = entry.parent().context("build entry has a parent")?;
     fs::create_dir_all(entry_parent)?;
     let promote_tmp = tempfile::tempdir_in(entry_parent)?;
     let promoted = promote_tmp.path().join("pkg");
-    if build.outputs.is_empty() {
-        copy_dir(&work, &promoted)?;
-        // Staging-only artifacts never ship to consumers.
-        let _ = fs::remove_dir_all(promoted.join(MODULES_DIR));
-        let _ = fs::remove_file(promoted.join(LOCKFILE_FILE));
-    } else {
-        fs::create_dir_all(&promoted)?;
-        for output in &build.outputs {
-            let from = work.join(output);
-            let to = promoted.join(output);
-            if from.is_dir() {
-                copy_dir(&from, &to)?;
-            } else if from.is_file() {
-                if let Some(parent) = to.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::copy(&from, &to)?;
-            } else {
-                bail!("[build] output `{output}` was not produced by the build of {key}");
-            }
-        }
-        let manifest_src = work.join(MANIFEST_FILE);
-        if manifest_src.is_file() {
-            fs::copy(&manifest_src, promoted.join(MANIFEST_FILE))?;
-        }
-    }
+    copy_finalized_artifact(&work, &promoted, build, &key)?;
     fs::create_dir_all(&entry)?;
     let promote_path = promote_tmp.keep().join("pkg");
-    match fs::rename(&promote_path, &built) {
+    match fs::rename(&promote_path, &prepared) {
         Ok(()) => {}
-        Err(_) if built.is_dir() => {
+        Err(_) if prepared.is_dir() => {
             let _ = fs::remove_dir_all(promote_path.parent().unwrap_or(&promote_path));
         }
-        Err(e) => {
+        Err(error) => {
             let _ = fs::remove_dir_all(promote_path.parent().unwrap_or(&promote_path));
-            return Err(e.into());
+            return Err(error.into());
         }
     }
-    println!("built {key}@{} -> {}", vm.version, built.display());
-    Ok(built)
+    println!("prepared {key}@{} -> {}", vm.version, prepared.display());
+    Ok(prepared)
 }
 
-/// `zed build [--force]` — run (or warm) the [build] steps of the locked
-/// dependency graph on this machine. Running the command is itself consent
-/// to execute package-author build code, like `install --allow-build`.
-pub fn build_cmd(project: &Path, cfg: &Config, force: bool) -> Result<()> {
+struct TemporaryPreparedSource {
+    _staging: tempfile::TempDir,
+    path: PathBuf,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_workspace_artifact(
+    cfg: &Config,
+    store: &Store,
+    key: &str,
+    version: &str,
+    source: &Path,
+    manifest: &Manifest,
+    build: Option<&BuildSection>,
+    hooks: &InstallHooksSection,
+    native_dependencies: &NativeDependencies,
+    native_outcome: &NativeInstallOutcome,
+    permissions: &InstallPermissions,
+    target: Option<&str>,
+) -> Result<Option<TemporaryPreparedSource>> {
+    if !validate_lifecycle_permissions(key, build, hooks, permissions)? {
+        return Ok(None);
+    }
+    let staging = tempfile::tempdir()?;
+    let work = staging.path().join("pkg");
+    copy_dir(source, &work)?;
+    execute_staged_lifecycle(
+        cfg,
+        store,
+        staging.path(),
+        &work,
+        key,
+        version,
+        Some(manifest),
+        build,
+        hooks,
+        native_dependencies,
+        native_outcome,
+        permissions,
+        target,
+    )?;
+    let finalized = staging.path().join("finalized");
+    copy_finalized_artifact(&work, &finalized, build, key)?;
+    Ok(Some(TemporaryPreparedSource {
+        _staging: staging,
+        path: finalized,
+    }))
+}
+
+/// `zed build [--force]` warms the package lifecycle cache for the locked
+/// dependency graph. Build commands are explicitly requested by this command;
+/// install hooks and native host packages retain their own independent consent.
+#[allow(clippy::too_many_arguments)]
+pub fn build_cmd(
+    project: &Path,
+    cfg: &Config,
+    force: bool,
+    allow_native_deps: bool,
+    allow_install_hooks: bool,
+    native_manager: Option<&str>,
+) -> Result<()> {
     let manifest = read_manifest(project)?;
+    let resolved_target = resolve_target(project, &manifest, None);
     let reg = registry_for(&cfg.registry)?;
     let store = Store::new(&cfg.home);
     let _install_lock = store.install_lock()?;
@@ -2090,34 +2595,95 @@ pub fn build_cmd(project: &Path, cfg: &Config, force: bool) -> Result<()> {
         .with_context(|| format!("zed build needs {LOCKFILE_FILE}; run `zed install` first"))?;
     let lock = Lockfile::parse(&text)?;
 
-    let mut built = 0usize;
+    let preflight_permissions = InstallPermissions {
+        allow_build: true,
+        allow_native_deps,
+        allow_install_hooks,
+        native_manager: native_manager.map(str::to_owned),
+    };
+    let mut packages = Vec::new();
+    let mut native_requirements = vec![NativeRequirement::new(
+        manifest.full_name(),
+        manifest.effective_native_dependencies(projected_root_target(
+            &manifest,
+            resolved_target.as_deref(),
+        ))?,
+    )];
     for locked in &lock.packages {
         let vm = reg.get_version(&locked.org, &locked.name, &locked.version)?;
-        let pkg_dir = ensure_artifact(reg.as_ref(), &store, &vm)?;
-        let pkg_manifest = read_manifest(&pkg_dir).ok();
+        if vm.sha256 != locked.sha256 {
+            bail!(
+                "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
+                locked.full_name(),
+                locked.version,
+                locked.sha256,
+                vm.sha256
+            );
+        }
+        let source = ensure_artifact(reg.as_ref(), &store, &vm)?;
+        let package_manifest = Some(read_artifact_manifest(
+            &source,
+            &format!("{}/{}", locked.org, locked.name),
+        )?);
         let key = format!("{}/{}", locked.org, locked.name);
-        let dep_build = pkg_manifest.as_ref().and_then(|m| m.build.as_ref());
-        let Some(build) = manifest.effective_build(&key, dep_build) else {
+        let (native_dependencies, hooks) =
+            package_install_metadata(package_manifest.as_ref(), resolved_target.as_deref())?;
+        let dep_build = package_manifest
+            .as_ref()
+            .and_then(|item| item.build.as_ref());
+        let build = manifest.effective_build(&key, dep_build);
+        ensure_lifecycle_permissions(&key, build.as_ref(), &hooks, &preflight_permissions)?;
+        native_requirements.push(NativeRequirement::new(key, native_dependencies));
+        packages.push((vm, source, package_manifest));
+    }
+
+    let native_outcome = native::install(
+        &native_requirements,
+        allow_native_deps,
+        native_manager,
+        cfg.interactive,
+        &cfg.home,
+    )?;
+    let mut permissions = preflight_permissions;
+    permissions.native_manager = native_outcome
+        .manager
+        .clone()
+        .or(permissions.native_manager);
+
+    let mut prepared_count = 0usize;
+    for (vm, source, package_manifest) in packages {
+        let key = format!("{}/{}", vm.org, vm.name);
+        let dep_build = package_manifest
+            .as_ref()
+            .and_then(|item| item.build.as_ref());
+        let build = manifest.effective_build(&key, dep_build);
+        let (native_dependencies, hooks) =
+            package_install_metadata(package_manifest.as_ref(), resolved_target.as_deref())?;
+        if build.is_none() && hooks.is_empty() {
             continue;
-        };
-        let out = build_artifact(
+        }
+        let output = prepare_artifact(
             cfg,
             &store,
             &vm,
-            &pkg_dir,
-            pkg_manifest.as_ref(),
-            &build,
-            true,
+            &source,
+            package_manifest.as_ref(),
+            build.as_ref(),
+            &hooks,
+            &native_dependencies,
+            &native_outcome,
+            &permissions,
+            resolved_target.as_deref(),
             force,
         )?;
-        println!("built {key}@{} -> {}", locked.version, out.display());
-        built += 1;
+        println!("prepared {key}@{} -> {}", vm.version, output.display());
+        prepared_count += 1;
     }
-    if built == 0 {
-        println!("no dependencies declare a build step");
+    if prepared_count == 0 {
+        println!("no dependencies declare install hooks or a build step");
     } else {
         println!(
-            "built {built} package(s) (build cache: {})",
+            "prepared {prepared_count} package(s) (lifecycle cache: {})",
             store.builds_root().display()
         );
     }

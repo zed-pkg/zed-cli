@@ -1,6 +1,6 @@
 # flags-2-env contract for zed. clap remains the typed command parser; this
 # file is the portable flag/env and nested-command description shared with
-# github.com/ORESoftware/flags-2-env.
+# github.com/flags-2-env/flags-2-env.
 
 [parse]
 command_env = "ZED_PKG_COMMAND"
@@ -15,7 +15,7 @@ url = "https://github.com/zed-pkg/zed-cli"
 env = "ZED_PKG_REGISTRY"
 aliases = ["registry"]
 type = "string"
-default = "https://registry.zpkg.tech"
+default = "https://registry.zpkg.net"
 help = "Registry base URL."
 
 [flags.home]
@@ -94,6 +94,26 @@ aliases = ["allow-build"]
 type = "bool"
 default = "false"
 help = "Allow dependency build hooks."
+
+[flags.allow_native_deps]
+env = "ZED_PKG_ALLOW_NATIVE_DEPS"
+aliases = ["allow-native-deps"]
+type = "bool"
+default = "false"
+help = "Allow zed to install host-native prerequisites declared by packages."
+
+[flags.allow_install_hooks]
+env = "ZED_PKG_ALLOW_INSTALL_HOOKS"
+aliases = ["allow-install-hooks"]
+type = "bool"
+default = "false"
+help = "Allow package-authored pre-install and post-install hooks."
+
+[flags.native_manager]
+env = "ZED_PKG_NATIVE_MANAGER"
+aliases = ["native-manager"]
+type = "string"
+help = "Pin the graph-wide native package manager."
 
 [flags.target]
 env = "ZED_PKG_TARGET"
@@ -282,6 +302,37 @@ help = "Emit environment interoperability output as JSON."
 [commands.init]
 help = "Create a package manifest."
 
+[commands.validate]
+help = "Validate .zpkg.toml and .zpkg.lock offline without mutation."
+
+[commands.validate.flags.manifest]
+env = "ZED_PKG_VALIDATE_MANIFEST"
+aliases = ["manifest"]
+type = "string"
+default = ".zpkg.toml"
+help = "Package manifest path."
+
+[commands.validate.flags.lock]
+env = "ZED_PKG_VALIDATE_LOCK"
+aliases = ["lock"]
+type = "string"
+default = ".zpkg.lock"
+help = "Package lockfile path."
+
+[commands.validate.flags.require_lock]
+env = "ZED_PKG_VALIDATE_REQUIRE_LOCK"
+aliases = ["require-lock"]
+type = "bool"
+default = "false"
+help = "Fail when the lockfile is absent."
+
+[commands.validate.flags.json]
+env = "ZED_PKG_VALIDATE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable JSON."
+
 [commands.add]
 help = "Add a dependency."
 
@@ -300,13 +351,106 @@ aliases = ["un"]
 help = "Remove materialized dependencies while retaining the lockfile."
 
 [commands.env]
-help = "Import and verify project-local developer environments."
+help = "Import, verify, and export project-local developer environments."
 
 [commands.env.commands.import]
 help = "Import manager-native state as a normalized EnvironmentPlan."
 
 [commands.env.commands.verify]
 help = "Verify config/lock coverage and normalized environment identity."
+
+[commands.env.commands.export]
+help = "Project a schema-v2 EnvironmentPlan into deterministic manager configuration."
+
+[commands.env.commands.export.flags.env_plan]
+env = "ZED_PKG_ENV_PLAN"
+aliases = ["plan"]
+type = "string"
+help = "Project-local schema-v2 environment plan path."
+
+[commands.env.commands.export.flags.env_output]
+env = "ZED_PKG_ENV_OUTPUT"
+aliases = ["output"]
+type = "string"
+default = ".mise.toml"
+help = "Project-local manager export path."
+
+[commands.env.commands.export.flags.env_check]
+env = "ZED_PKG_ENV_CHECK"
+aliases = ["check"]
+type = "bool"
+default = "false"
+help = "Verify the deterministic manager projection without writing."
+
+[commands.env.commands.export.flags.env_write]
+env = "ZED_PKG_ENV_WRITE"
+aliases = ["write"]
+type = "bool"
+default = "false"
+help = "Transactionally write a Zed-owned manager projection."
+
+[commands.task]
+help = "List, inspect, graph, or execute native schema-v2 project tasks."
+
+[commands.task.flags.plan]
+env = "ZED_TASK_PLAN"
+aliases = ["plan"]
+type = "string"
+help = "Project-local schema-v2 environment plan."
+
+[commands.task.flags.json]
+env = "ZED_TASK_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit stable machine-readable task output."
+
+[commands.task.commands.list]
+help = "List project tasks in deterministic name order."
+
+[commands.task.commands.list.flags.all]
+env = "ZED_TASK_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Include hidden tasks."
+
+[commands.task.commands.info]
+help = "Show one task's metadata and dependency classes."
+
+[commands.task.commands.graph]
+help = "Print the validated static task graph."
+
+[commands.task.commands.run]
+help = "Execute one task and its validated dependency graph."
+
+[commands.task.commands.run.flags.dry_run]
+env = "ZED_TASK_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Plan execution without starting subprocesses or writing cache state."
+
+[commands.task.commands.run.flags.yes]
+env = "ZED_TASK_YES"
+aliases = ["yes"]
+type = "bool"
+default = "false"
+help = "Approve explicit task confirmation requirements."
+
+[commands.task.commands.run.flags.jobs]
+env = "ZED_TASK_JOBS"
+aliases = ["jobs"]
+type = "int"
+default = "1"
+help = "Maximum concurrent task command processes."
+
+[commands.task.commands.run.flags.no_cache]
+env = "ZED_TASK_NO_CACHE"
+aliases = ["no-cache"]
+type = "bool"
+default = "false"
+help = "Disable content-verified incremental cache reads and writes."
 
 [commands.completions]
 help = "Generate Bash or Zsh completion from the typed CLI model."

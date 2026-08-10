@@ -365,6 +365,24 @@ rec {
           ${postUnpack}
         '';
         postPatch = ''
+          # A source checkout may carry the durable operation rendezvous created
+          # by prior Zed commands. Its diagnostic bytes are mutable coordination
+          # state, not package input, and must not enter the immutable consumer
+          # output. Preserve every other deterministic `.zed` adapter artifact.
+          operation_lock=".zed/operation.lock"
+          if [[ -L "$operation_lock" ]]; then
+            echo "mkZedPackage: operation lock must not be a symlink" >&2
+            exit 1
+          fi
+          if [[ -e "$operation_lock" ]]; then
+            if [[ ! -f "$operation_lock" ]]; then
+              echo "mkZedPackage: operation lock must be a regular file" >&2
+              exit 1
+            fi
+            rm -f -- "$operation_lock"
+            rmdir .zed 2>/dev/null || true
+          fi
+
           if [[ ! -d ${zedDeps}/tree ]]; then
             echo "mkZedPackage: zedDeps does not contain the Nix bridge tree" >&2
             exit 1

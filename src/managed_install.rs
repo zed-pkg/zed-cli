@@ -61,6 +61,40 @@ pub fn install(
     do_not_write_new_manifest: bool,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
+    let permissions = ops::InstallPermissions {
+        allow_build,
+        ..ops::InstallPermissions::default()
+    };
+    install_with_permissions(
+        requested_root,
+        cfg,
+        specs,
+        frozen,
+        mode,
+        adapter,
+        &permissions,
+        target,
+        do_not_write_new_manifest,
+        allow_ecosystem_mismatch,
+    )
+}
+
+/// Permission-aware form used by the CLI. Native package-manager consent,
+/// package hook consent, and build consent remain independent through durable
+/// first-manifest creation as well as the existing-manifest path.
+#[allow(clippy::too_many_arguments)]
+pub fn install_with_permissions(
+    requested_root: &Path,
+    cfg: &Config,
+    specs: &[String],
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    permissions: &ops::InstallPermissions,
+    target: Option<&str>,
+    do_not_write_new_manifest: bool,
+    allow_ecosystem_mismatch: bool,
+) -> Result<ops::InstallOutcome> {
     let initial = select_project(requested_root);
 
     if do_not_write_new_manifest {
@@ -84,7 +118,10 @@ pub fn install(
             frozen,
             mode,
             adapter,
-            allow_build,
+            permissions.allow_build,
+            permissions.allow_native_deps,
+            permissions.allow_install_hooks,
+            permissions.native_manager.as_deref(),
             target,
             true,
             allow_ecosystem_mismatch,
@@ -100,7 +137,10 @@ pub fn install(
                 frozen,
                 mode,
                 adapter,
-                allow_build,
+                permissions.allow_build,
+                permissions.allow_native_deps,
+                permissions.allow_install_hooks,
+                permissions.native_manager.as_deref(),
                 target,
                 false,
                 allow_ecosystem_mismatch,
@@ -120,7 +160,7 @@ pub fn install(
                 frozen,
                 mode,
                 adapter,
-                allow_build,
+                permissions,
                 target,
                 allow_ecosystem_mismatch,
             );
@@ -133,7 +173,7 @@ pub fn install(
             frozen,
             mode,
             adapter,
-            allow_build,
+            permissions,
             target,
             allow_ecosystem_mismatch,
         );
@@ -163,7 +203,7 @@ pub fn install(
             frozen,
             mode,
             adapter,
-            allow_build,
+            permissions,
             target,
             allow_ecosystem_mismatch,
         );
@@ -176,7 +216,7 @@ pub fn install(
         frozen,
         mode,
         adapter,
-        allow_build,
+        permissions,
         target,
         allow_ecosystem_mismatch,
     )
@@ -204,7 +244,7 @@ fn create_manifest_and_install(
     frozen: bool,
     mode: InstallMode,
     adapter: Adapter,
-    allow_build: bool,
+    permissions: &ops::InstallPermissions,
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
@@ -240,13 +280,13 @@ fn create_manifest_and_install(
         adapter_name(effective_adapter).unwrap_or("none")
     );
 
-    match ops::install(
+    match ops::install_with_permissions(
         project,
         cfg,
         frozen,
         mode,
         adapter,
-        allow_build,
+        permissions,
         target,
         allow_ecosystem_mismatch,
     ) {
@@ -274,18 +314,18 @@ fn install_with_generated_manifest(
     frozen: bool,
     mode: InstallMode,
     adapter: Adapter,
-    allow_build: bool,
+    permissions: &ops::InstallPermissions,
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
     if specs.is_empty() {
-        return ops::install(
+        return ops::install_with_permissions(
             project,
             cfg,
             frozen,
             mode,
             adapter,
-            allow_build,
+            permissions,
             target,
             allow_ecosystem_mismatch,
         );
@@ -331,13 +371,13 @@ fn install_with_generated_manifest(
     manifest.validate()?;
     let replacement_text = manifest.to_toml_string()?;
     replace_atomic(&path, replacement_text.as_bytes())?;
-    match ops::install(
+    match ops::install_with_permissions(
         project,
         cfg,
         frozen,
         mode,
         adapter,
-        allow_build,
+        permissions,
         target,
         allow_ecosystem_mismatch,
     ) {

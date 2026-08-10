@@ -342,14 +342,24 @@ pub(super) fn read_lock_extensions(project: &Path) -> Result<Vec<GitSubmoduleLoc
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
     };
-    let mut entries = toml::from_str::<LockExtensions>(&text)
-        .with_context(|| format!("parsing Git extensions in {}", path.display()))?
-        .git_submodules;
+    parse_lock_extensions(&text)
+        .with_context(|| format!("parsing Git extensions in {}", path.display()))
+}
+
+fn parse_lock_extensions(text: &str) -> Result<Vec<GitSubmoduleLock>> {
+    let mut entries = toml::from_str::<LockExtensions>(text)?.git_submodules;
     entries.sort_by(|left, right| {
         (&left.package, &left.path, &left.name).cmp(&(&right.package, &right.path, &right.name))
     });
     validate_lock_entries(&entries)?;
     Ok(entries)
+}
+
+pub(super) fn validate_lock_extensions(text: &str) -> Result<BTreeMap<String, String>> {
+    Ok(parse_lock_extensions(text)?
+        .into_iter()
+        .map(|entry| (entry.package, entry.version))
+        .collect())
 }
 
 pub(super) fn write_lock_extensions(project: &Path, entries: &[GitSubmoduleLock]) -> Result<()> {
@@ -409,7 +419,10 @@ fn validate_lock_entries(entries: &[GitSubmoduleLock]) -> Result<()> {
         }
         validate_relative_path(&entry.path)?;
         let (org, name) = crate::ops::split_key(&entry.package)?;
-        if format!("{org}/{name}") != entry.package {
+        if !zed_interfaces::manifest::is_slug(&org)
+            || !zed_interfaces::manifest::is_slug(&name)
+            || format!("{org}/{name}") != entry.package
+        {
             bail!("non-canonical Git submodule package `{}`", entry.package);
         }
         if entry.version.trim().is_empty() {

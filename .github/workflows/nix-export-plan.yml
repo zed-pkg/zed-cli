@@ -60,8 +60,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "625ba7bdf4339df7d0880f791a0715ca894558fe"' Cargo.toml
-          grep -F '#625ba7bdf4339df7d0880f791a0715ca894558fe' Cargo.lock
+          grep -F 'rev = "60a8ab55f8a55eb212a72dcb334c1c118047c7ef"' Cargo.toml
+          grep -F '#60a8ab55f8a55eb212a72dcb334c1c118047c7ef' Cargo.lock
 
       - name: Check formatting and warnings
         run: |
@@ -69,13 +69,15 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run planner unit tests
-        run: cargo test --locked nix_export_plan::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked nix_export_plan::tests:: -- --test-threads=1
 
       - name: Run black-box planner conformance
         run: cargo test --locked --test nix_export_plan -- --test-threads=1
 
       - name: Verify generated completion coverage
-        run: cargo test --locked completion::tests:: -- --test-threads=1
+        run: |
+          cargo test --locked completion::tests:: -- --test-threads=1
 
       - name: Verify modular help and credential-free JSON
         shell: bash
@@ -136,6 +138,11 @@ jobs:
           workflow = Path('.github/workflows/nix-export-plan.yml').read_text()
           assert 'contents: read' in workflow
           assert 'persist-credentials: false' in workflow
-          for forbidden in ('contents: write', 'git push', 'pull_request_target:'):
+          # Split the sentinels so this self-audit does not match its own source.
+          for forbidden in (
+              'contents:' + ' write',
+              'git' + ' push',
+              'pull_request' + '_target:',
+          ):
               assert forbidden not in workflow, forbidden
           PY
