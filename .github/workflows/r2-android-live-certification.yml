@@ -24,7 +24,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   SERVER_REPOSITORY: zed-pkg/zed-api-server.rs
-  SERVER_SHA: 30c4b8d9f621d37682bbbab89b84425ac1e1bc3b
+  SERVER_SHA: a483572594758196adf906119b46e594aa921622
   R2_BUCKET: zed-pkg-artifacts
   AWS_DEFAULT_REGION: auto
   AWS_REGION: auto

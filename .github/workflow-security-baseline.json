@@ -7,6 +7,9 @@
     ".github/workflows/polyglot.yml": "c94b7196f897159dcebbc6690fe2ed802b8dfc67"
   },
   "allowed_job_write_permissions": {
+    ".github/workflows/r2-android-live-certification.yml": {
+      "real-r2-android-roundtrip": ["issues"]
+    },
     ".github/workflows/release.yml": {
       "release": ["contents"]
     }
