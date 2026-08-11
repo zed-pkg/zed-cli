@@ -22,7 +22,7 @@ name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "4d40ae96f5ce6240356ad4fa5e455d0310b1c97d" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "15577e17a820c3b2b1a39ee178d4645185309a05" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
