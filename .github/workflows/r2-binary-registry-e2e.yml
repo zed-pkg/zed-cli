@@ -1,0 +1,388 @@
+name: R2 binary registry e2e
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/r2-binary-registry-e2e.yml
+      - src/bin/zed-binary.rs
+      - src/binary_archive/**
+      - Cargo.toml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: r2-binary-registry-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SERVER_REPOSITORY: zed-pkg/zed-api-server.rs
+  SERVER_SHA: 5d736dcdf390fc8a430add913d911a2309638fbc
+  R2_BUCKET: zed-pkg-artifacts
+  AWS_DEFAULT_REGION: auto
+  AWS_REGION: auto
+
+jobs:
+  real-r2-roundtrip:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    environment: r2-release-publication
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_USER: zed
+          POSTGRES_PASSWORD: zed
+          POSTGRES_DB: zed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zed -d zed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out the binary CLI change
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check out the reviewed registry server
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.SERVER_REPOSITORY }}
+          ref: ${{ env.SERVER_SHA }}
+          path: registry-server
+          persist-credentials: false
+
+      - name: Require the real R2 secret boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_ACCOUNT_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "missing required GitHub environment secret: $name" >&2
+              exit 1
+            fi
+          done
+          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]
+          command -v aws >/dev/null
+          aws --version
+          printf 'S3_ENDPOINT_URL=https://%s.r2.cloudflarestorage.com\n' \
+            "$CLOUDFLARE_ACCOUNT_ID" >>"$GITHUB_ENV"
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: real-r2-binary-registry-e2e
+          workspaces: |
+            .
+            registry-server
+
+      - name: Build the locked CLI and registry server
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --quiet --locked --bins
+          cargo build --quiet --locked --manifest-path registry-server/Cargo.toml
+          "$GITHUB_WORKSPACE/target/debug/zed" --help >/dev/null
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" --help >/dev/null
+          "$GITHUB_WORKSPACE/registry-server/target/debug/zed-api-server" --help >/dev/null
+
+      - name: Start the registry with the production R2 storage adapter
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+          AUTO_MIGRATE: "true"
+          BIND_ADDR: 127.0.0.1:8080
+          PUBLIC_BASE_URL: http://127.0.0.1:8080
+          STORAGE_BACKEND: s3
+          S3_BUCKET: ${{ env.R2_BUCKET }}
+          S3_REGION: auto
+          S3_FORCE_PATH_STYLE: "true"
+          ZED_VERIFY_TAGS: "off"
+          ZED_AUTH_DISABLED: "1"
+          ZED_RATE_LIMIT_DISABLED: "1"
+          DB_CONNECT_MAX_WAIT_SECS: "30"
+          RUST_LOG: info
+        run: |
+          set -euo pipefail
+          "$GITHUB_WORKSPACE/registry-server/target/debug/zed-api-server" \
+            >"$RUNNER_TEMP/zed-api-r2.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/zed-api-r2.pid"
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/zed-api-r2.log"
+          exit 1
+
+      - name: Mint a token and create a unique immutable package identity
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+          PUBLIC_BASE_URL: http://127.0.0.1:8080
+          STORAGE_BACKEND: s3
+          S3_BUCKET: ${{ env.R2_BUCKET }}
+          S3_REGION: auto
+          S3_FORCE_PATH_STYLE: "true"
+          ZED_VERIFY_TAGS: "off"
+          ZED_PKG_REGISTRY: http://127.0.0.1:8080
+          ZED_PKG_INTERACTIVE: "false"
+        run: |
+          set -euo pipefail
+          output=$("$GITHUB_WORKSPACE/registry-server/target/debug/zed-api-server" \
+            create-token --name real-r2-binary-e2e --expires-in-days 1)
+          token=$(printf '%s\n' "$output" | tail -n 1)
+          case "$token" in
+            zpkg_*) ;;
+            *) printf '%s\n' "$output" >&2; exit 1 ;;
+          esac
+          echo "::add-mask::$token"
+          printf 'ZED_PKG_TOKEN=%s\n' "$token" >>"$GITHUB_ENV"
+
+          org="r2-e2e-${GITHUB_RUN_ID}"
+          version="0.0.0-r2.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          package_dir="$RUNNER_TEMP/r2-binary-package"
+          download_dir="$RUNNER_TEMP/r2-binary-download"
+          mkdir -p "$package_dir/bin" "$download_dir"
+          printf 'TEST_ORG=%s\nTEST_VERSION=%s\nPACKAGE_DIR=%s\nDOWNLOAD_DIR=%s\n' \
+            "$org" "$version" "$package_dir" "$download_dir" >>"$GITHUB_ENV"
+
+          "$GITHUB_WORKSPACE/target/debug/zed" org claim "$org"
+
+      - name: Compile and tag a native binary fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >"$PACKAGE_DIR/main.rs" <<'RS'
+          fn main() {
+              println!("hello from the real Cloudflare R2 binary roundtrip");
+          }
+          RS
+          rustc "$PACKAGE_DIR/main.rs" -o "$PACKAGE_DIR/bin/r2-binary-smoke"
+          test -x "$PACKAGE_DIR/bin/r2-binary-smoke"
+
+          cat >"$PACKAGE_DIR/.zpkg.toml" <<TOML
+          [package]
+          org = "$TEST_ORG"
+          name = "r2-binary-smoke"
+          version = "$TEST_VERSION"
+          description = "Ephemeral real-R2 binary publication certification"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/$GITHUB_REPOSITORY"
+
+          [bin]
+          r2-binary-smoke = "bin/r2-binary-smoke"
+          TOML
+          printf 'MIT fixture license\n' >"$PACKAGE_DIR/LICENSE"
+          printf 'target/\n.zed/\n' >"$PACKAGE_DIR/.gitignore"
+
+          git -C "$PACKAGE_DIR" init -q
+          git -C "$PACKAGE_DIR" config user.name "Zed Real R2 E2E"
+          git -C "$PACKAGE_DIR" config user.email "zed-r2-e2e@example.invalid"
+          git -C "$PACKAGE_DIR" add .
+          git -C "$PACKAGE_DIR" commit -qm "real R2 binary fixture $TEST_VERSION"
+          git -C "$PACKAGE_DIR" tag "v$TEST_VERSION"
+          test -z "$(git -C "$PACKAGE_DIR" status --porcelain)"
+
+      - name: Publish through the registry into the actual R2 bucket
+        shell: bash
+        env:
+          ZED_PKG_REGISTRY: http://127.0.0.1:8080
+          ZED_PKG_INTERACTIVE: "false"
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE_DIR"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" publish \
+            --target x86_64-unknown-linux-gnu \
+            --os linux \
+            --arch x86_64 \
+            --libc gnu \
+            --json | tee "$RUNNER_TEMP/r2-publish.json"
+          jq -e --arg package "$TEST_ORG/r2-binary-smoke" --arg version "$TEST_VERSION" '
+            .package == $package
+            and .version == $version
+            and .target == "x86_64-unknown-linux-gnu"
+            and .uploaded == true
+            and (.sha256 | test("^[0-9a-f]{64}$"))
+            and .size > 0
+          ' "$RUNNER_TEMP/r2-publish.json" >/dev/null
+
+          sha=$(jq -r .sha256 "$RUNNER_TEMP/r2-publish.json")
+          size=$(jq -r .size "$RUNNER_TEMP/r2-publish.json")
+          key="artifacts/${sha}.zip"
+          printf 'ARTIFACT_SHA=%s\nARTIFACT_SIZE=%s\nOBJECT_KEY=%s\n' \
+            "$sha" "$size" "$key" >>"$GITHUB_ENV"
+
+      - name: Verify R2 HEAD metadata and immutable cache policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws --endpoint-url "$S3_ENDPOINT_URL" s3api head-object \
+            --bucket "$R2_BUCKET" \
+            --key "$OBJECT_KEY" \
+            >"$RUNNER_TEMP/r2-head.json"
+          jq . "$RUNNER_TEMP/r2-head.json"
+          jq -e --argjson size "$ARTIFACT_SIZE" '
+            .ContentLength == $size
+            and .ContentType == "application/zip"
+            and .CacheControl == "public, max-age=31536000, immutable"
+          ' "$RUNNER_TEMP/r2-head.json" >/dev/null
+
+      - name: Download through both registry and direct R2 APIs
+        shell: bash
+        env:
+          ZED_PKG_REGISTRY: http://127.0.0.1:8080
+          ZED_PKG_INTERACTIVE: "false"
+        run: |
+          set -euo pipefail
+          registry_archive="$DOWNLOAD_DIR/registry.zip"
+          direct_archive="$DOWNLOAD_DIR/direct-r2.zip"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" download \
+            "$TEST_ORG/r2-binary-smoke@$TEST_VERSION" \
+            --out "$registry_archive" \
+            --target x86_64-unknown-linux-gnu \
+            --json | tee "$RUNNER_TEMP/r2-download.json"
+
+          aws --endpoint-url "$S3_ENDPOINT_URL" s3api get-object \
+            --bucket "$R2_BUCKET" \
+            --key "$OBJECT_KEY" \
+            "$direct_archive" \
+            >"$RUNNER_TEMP/r2-get.json"
+
+          registry_sha=$(sha256sum "$registry_archive" | awk '{print $1}')
+          direct_sha=$(sha256sum "$direct_archive" | awk '{print $1}')
+          test "$registry_sha" = "$ARTIFACT_SHA"
+          test "$direct_sha" = "$ARTIFACT_SHA"
+          cmp "$registry_archive" "$direct_archive"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" verify \
+            "$registry_archive" \
+            --target x86_64-unknown-linux-gnu \
+            --json | tee "$RUNNER_TEMP/r2-verify-registry.json"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" verify \
+            "$direct_archive" \
+            --target x86_64-unknown-linux-gnu \
+            --json | tee "$RUNNER_TEMP/r2-verify-direct.json"
+
+      - name: Exercise presigned-download concurrency and payload execution
+        shell: bash
+        env:
+          ZED_PKG_REGISTRY: http://127.0.0.1:8080
+          ZED_PKG_INTERACTIVE: "false"
+        run: |
+          set -euo pipefail
+          pids=()
+          for index in $(seq 1 8); do
+            (
+              out="$DOWNLOAD_DIR/concurrent-$index.zip"
+              "$GITHUB_WORKSPACE/target/debug/zed-binary" download \
+                "$TEST_ORG/r2-binary-smoke@$TEST_VERSION" \
+                --out "$out" \
+                --target x86_64-unknown-linux-gnu \
+                --json >/dev/null
+              test "$(sha256sum "$out" | awk '{print $1}')" = "$ARTIFACT_SHA"
+            ) &
+            pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do
+            wait "$pid"
+          done
+
+          extract="$DOWNLOAD_DIR/extracted"
+          python3 - "$DOWNLOAD_DIR/registry.zip" "$extract" <<'PY'
+          import pathlib
+          import sys
+          import zipfile
+
+          archive = pathlib.Path(sys.argv[1])
+          extract = pathlib.Path(sys.argv[2])
+          with zipfile.ZipFile(archive) as bundle:
+              bundle.extractall(extract)
+          PY
+          chmod 0755 "$extract/pkg/bin/r2-binary-smoke"
+          output=$("$extract/pkg/bin/r2-binary-smoke")
+          test "$output" = 'hello from the real Cloudflare R2 binary roundtrip'
+
+      - name: Prove idempotency leaves the exact R2 object unchanged
+        shell: bash
+        env:
+          ZED_PKG_REGISTRY: http://127.0.0.1:8080
+          ZED_PKG_INTERACTIVE: "false"
+        run: |
+          set -euo pipefail
+          before=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api head-object \
+            --bucket "$R2_BUCKET" --key "$OBJECT_KEY")
+          cd "$PACKAGE_DIR"
+          output=$("$GITHUB_WORKSPACE/target/debug/zed-binary" publish \
+            --target x86_64-unknown-linux-gnu \
+            --os linux \
+            --arch x86_64 \
+            --libc gnu 2>&1)
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" \
+            | grep -Eiq 'already published.*identical|identical binary ZIP|skipping'
+          after=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3api head-object \
+            --bucket "$R2_BUCKET" --key "$OBJECT_KEY")
+          test "$(jq -r .ContentLength <<<"$before")" = "$(jq -r .ContentLength <<<"$after")"
+          test "$(jq -r .ETag <<<"$before")" = "$(jq -r .ETag <<<"$after")"
+
+      - name: Retain credential-free R2 certification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-r2-binary-registry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/r2-publish.json
+            ${{ runner.temp }}/r2-head.json
+            ${{ runner.temp }}/r2-get.json
+            ${{ runner.temp }}/r2-download.json
+            ${{ runner.temp }}/r2-verify-registry.json
+            ${{ runner.temp }}/r2-verify-direct.json
+            ${{ runner.temp }}/zed-api-r2.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Delete the ephemeral certification object from R2
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          if [[ -n "${OBJECT_KEY:-}" && -n "${S3_ENDPOINT_URL:-}" ]]; then
+            aws --endpoint-url "$S3_ENDPOINT_URL" s3api delete-object \
+              --bucket "$R2_BUCKET" --key "$OBJECT_KEY" >/dev/null
+            for _ in $(seq 1 15); do
+              if ! aws --endpoint-url "$S3_ENDPOINT_URL" s3api head-object \
+                --bucket "$R2_BUCKET" --key "$OBJECT_KEY" >/dev/null 2>&1; then
+                exit 0
+              fi
+              sleep 1
+            done
+            echo "ephemeral R2 object still exists after delete" >&2
+            exit 1
+          fi
+
+      - name: Stop the registry
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/zed-api-r2.pid"; then
+            kill "$(cat "$RUNNER_TEMP/zed-api-r2.pid")" 2>/dev/null || true
+          fi
