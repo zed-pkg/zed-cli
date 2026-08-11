@@ -50,6 +50,14 @@ if "#[derive(Debug)]\npub struct PackResult" not in text:
     )
 pack.write_text(text)
 
+validation = Path("src/validation.rs")
+text = validation.read_text()
+if OLD in text:
+    text = text.replace(OLD, NEW)
+elif NEW not in text:
+    raise SystemExit("src/validation.rs interface revision marker not found")
+validation.write_text(text)
+
 registry = Path("src/registry.rs")
 text = registry.read_text()
 old_fn = '''    fn artifact_file(&self, sha256: &str) -> PathBuf {
