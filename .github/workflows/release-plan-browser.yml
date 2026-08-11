@@ -87,7 +87,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 4d40ae96f5ce6240356ad4fa5e455d0310b1c97d
+          ref: 15577e17a820c3b2b1a39ee178d4645185309a05
           path: zed-interfaces
           persist-credentials: false
 
