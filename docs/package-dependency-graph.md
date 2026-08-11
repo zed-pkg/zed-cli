@@ -30,7 +30,7 @@ operational composition.
 
 `Cargo.toml` retains the immutable `zed-interfaces` dependency used by the
 implementation and pins its graph response contract to exact commit
-`15577e17a820c3b2b1a39ee178d4645185309a05`. It pins `zed-lock` to exact commit
+`7d31f80dd8a310f218931165a3ad636a2f32b932`. It pins `zed-lock` to exact commit
 `1db0da00d30fcf2e0762f50eedb1f88458020b52`. That revision retains the hardened
 v0.1.1 package contract and adds DEN-3167's Windows `ERROR_LOCK_VIOLATION`
 contention normalization. The former in-tree `crates/zed-lock` copy remains

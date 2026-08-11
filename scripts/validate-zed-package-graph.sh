@@ -47,7 +47,7 @@ manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
-expected_interfaces_revision = "15577e17a820c3b2b1a39ee178d4645185309a05"
+expected_interfaces_revision = "7d31f80dd8a310f218931165a3ad636a2f32b932"
 expected_interfaces_source = (
     "git+https://github.com/zed-pkg/zed-interfaces.git?"
     f"rev={expected_interfaces_revision}#{expected_interfaces_revision}"
