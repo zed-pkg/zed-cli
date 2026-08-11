@@ -3,6 +3,11 @@ use super::*;
 use zed_interfaces::registry::PackageMetadata;
 use zed_interfaces::version::VersionScheme;
 
+/// Registry-controlled dependency graphs must not grow provenance paths until
+/// recursive solving exhausts the process stack or memory.
+const MAX_DEPENDENCY_DEPTH: usize = 256;
+const MAX_GRAPH_COORDINATES: usize = 10_000;
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PreparedInstall {
     packages: BTreeMap<String, Candidate>,
@@ -133,6 +138,20 @@ fn constraint_depth(constraints: &[Constraint]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+fn render_constraint_path(path: &[String]) -> String {
+    const HEAD: usize = 4;
+    const TAIL: usize = 8;
+    if path.len() <= HEAD + TAIL {
+        return path.join(" -> ");
+    }
+    let omitted = path.len() - HEAD - TAIL;
+    format!(
+        "{} -> ... {omitted} segment(s) omitted ... -> {}",
+        path[..HEAD].join(" -> "),
+        path[path.len() - TAIL..].join(" -> ")
+    )
+}
+
 #[derive(Debug, Clone, Default)]
 struct SolveState {
     constraints: BTreeMap<String, Vec<Constraint>>,
@@ -143,6 +162,18 @@ struct SolveState {
 impl SolveState {
     fn add_constraint(&mut self, key: String, constraint: Constraint) -> Result<bool> {
         split_key(&key)?;
+        let depth = constraint.path.len().saturating_sub(1);
+        if depth > MAX_DEPENDENCY_DEPTH {
+            bail!(
+                "dependency graph exceeds the maximum depth of {MAX_DEPENDENCY_DEPTH} while resolving `{key}` via {}; refusing",
+                render_constraint_path(&constraint.path)
+            );
+        }
+        if !self.constraints.contains_key(&key) && self.constraints.len() >= MAX_GRAPH_COORDINATES {
+            bail!(
+                "dependency graph exceeds the {MAX_GRAPH_COORDINATES}-coordinate limit while adding `{key}`; refusing"
+            );
+        }
         let constraints = self.constraints.entry(key).or_default();
         if constraints.contains(&constraint) {
             return Ok(false);
@@ -225,7 +256,7 @@ impl SolveFailure {
             lines.push(format!(
                 "{indent}  - `{}` via {}",
                 constraint.requirement,
-                constraint.path.join(" -> ")
+                render_constraint_path(&constraint.path)
             ));
         }
         if self.constraints.len() > 32 {
@@ -689,7 +720,14 @@ pub(super) fn solve_install(
         )?;
     }
 
-    let workspace = SolverWorkspace::discover(project);
+    let mut workspace = SolverWorkspace::discover(project);
+    let root_key = manifest.full_name();
+    if manifest.dependencies.contains_key(&root_key) {
+        // A direct self-dependency is an explicit published-artifact test.
+        // Package-internal cycles remain supported and terminate through the
+        // existing cycle-back-edge propagation rule.
+        workspace.members.remove(&root_key);
+    }
     let mut source = RegistrySource::new(registry, pool);
     let outcome = GraphSolver {
         source: &mut source,
@@ -1015,5 +1053,103 @@ mod tests {
         assert_eq!(solved.report.resolved, 2);
         assert_eq!(solved.selected_version("test/a"), Some("1.0.0"));
         assert_eq!(solved.selected_version("test/b"), Some("1.0.0"));
+    }
+
+    #[test]
+    fn matching_package_self_dependency_resolves_exactly_once() {
+        let mut source = MemorySource::default();
+        source.publish("test/self", "1.0.0", &[("test/self", "^1")]);
+
+        let solved = solve_memory(&mut source, &[("test/self", "^1")]).unwrap();
+        assert_eq!(solved.report.resolved, 1);
+        assert_eq!(solved.selected_version("test/self"), Some("1.0.0"));
+        assert_eq!(solved.exact_requirements().len(), 1);
+    }
+
+    #[test]
+    fn conflicting_package_self_dependency_reports_both_paths() {
+        let mut source = MemorySource::default();
+        source.publish("test/self", "1.0.0", &[("test/self", "^2")]);
+
+        let error = solve_memory(&mut source, &[("test/self", "^1")])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("version conflict for test/self"), "{error}");
+        assert!(
+            error.contains("`^1` via consumer/app@0.1.0 -> test/self"),
+            "{error}"
+        );
+        assert!(
+            error.contains("`^2` via consumer/app@0.1.0 -> test/self@1.0.0 -> test/self"),
+            "{error}"
+        );
+    }
+
+    fn publish_linear_chain(source: &mut MemorySource, count: usize) -> String {
+        assert!(count > 0);
+        for index in (0..count).rev() {
+            let key = format!("test/depth-{index:04}");
+            if index + 1 < count {
+                let next = format!("test/depth-{:04}", index + 1);
+                source.publish(&key, "1.0.0", &[(next.as_str(), "=1.0.0")]);
+            } else {
+                source.publish(&key, "1.0.0", &[]);
+            }
+        }
+        "test/depth-0000".to_string()
+    }
+
+    #[test]
+    fn nested_chain_at_the_depth_limit_resolves() {
+        let mut source = MemorySource::default();
+        let root = publish_linear_chain(&mut source, MAX_DEPENDENCY_DEPTH);
+        let solved = solve_memory(&mut source, &[(root.as_str(), "=1.0.0")]).unwrap();
+        assert_eq!(solved.report.resolved, MAX_DEPENDENCY_DEPTH);
+    }
+
+    #[test]
+    fn nested_chain_beyond_the_depth_limit_is_rejected_deterministically() {
+        let mut source = MemorySource::default();
+        let root = publish_linear_chain(&mut source, MAX_DEPENDENCY_DEPTH + 1);
+        let error = solve_memory(&mut source, &[(root.as_str(), "=1.0.0")])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("exceeds the maximum depth of 256"),
+            "{error}"
+        );
+        assert!(error.contains("test/depth-0256"), "{error}");
+        assert!(error.contains("segment(s) omitted"), "{error}");
+    }
+
+    #[test]
+    fn graph_coordinate_limit_is_enforced_before_unbounded_growth() {
+        let mut state = SolveState::default();
+        for index in 0..MAX_GRAPH_COORDINATES {
+            let key = format!("test/width-{index:05}");
+            state
+                .add_constraint(
+                    key.clone(),
+                    Constraint {
+                        requirement: "=1.0.0".to_string(),
+                        path: vec!["consumer/app@0.1.0".to_string(), key],
+                        propagate: true,
+                    },
+                )
+                .unwrap();
+        }
+        let key = "test/width-overflow".to_string();
+        let error = state
+            .add_constraint(
+                key.clone(),
+                Constraint {
+                    requirement: "=1.0.0".to_string(),
+                    path: vec!["consumer/app@0.1.0".to_string(), key],
+                    propagate: true,
+                },
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("10000-coordinate limit"), "{error}");
     }
 }
