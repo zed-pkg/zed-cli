@@ -4,8 +4,7 @@ use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 use zed_cli::binary_archive::{
-    BinaryPackOptions, download_binary_zip, pack_binary_zip, publish_binary_zip,
-    verify_binary_zip,
+    BinaryPackOptions, download_binary_zip, pack_binary_zip, publish_binary_zip, verify_binary_zip,
 };
 use zed_cli::cli::Globals;
 use zed_cli::config::Config;

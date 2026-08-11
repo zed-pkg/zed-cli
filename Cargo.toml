@@ -17,12 +17,16 @@ path = "src/main.rs"
 name = "zed-gitops"
 path = "src/bin/zed-gitops.rs"
 
+[[bin]]
+name = "zed-binary"
+path = "src/bin/zed-binary.rs"
+
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "60a8ab55f8a55eb212a72dcb334c1c118047c7ef" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "5fa652f6c8aaef5228b34b24bb8c5a4a07b415ca" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"

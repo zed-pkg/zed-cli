@@ -127,8 +127,14 @@ impl FileRegistry {
             .join(format!("{version}.json"))
     }
 
-    fn artifact_file(&self, sha256: &str) -> PathBuf {
-        self.root.join("artifacts").join(format!("{sha256}.tar.gz"))
+    fn artifact_file(
+        &self,
+        sha256: &str,
+        format: zed_interfaces::artifact::ArtifactFormat,
+    ) -> PathBuf {
+        self.root
+            .join("artifacts")
+            .join(format!("{sha256}.{}", format.extension()))
     }
 }
 
@@ -149,7 +155,7 @@ impl Registry for FileRegistry {
     }
 
     fn download(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
-        let src = self.artifact_file(&version.sha256);
+        let src = self.artifact_file(&version.sha256, version.format);
         fs::create_dir_all(dest.parent().context("dest has parent")?)?;
         fs::copy(&src, dest)
             .with_context(|| format!("artifact {} missing from file registry", src.display()))?;
@@ -166,7 +172,7 @@ impl Registry for FileRegistry {
         let name = &meta.manifest.package.name;
         let version = &meta.manifest.package.version;
 
-        let dest = self.artifact_file(&meta.sha256);
+        let dest = self.artifact_file(&meta.sha256, meta.format);
         fs::create_dir_all(dest.parent().context("artifacts dir")?)?;
         fs::copy(artifact, &dest)?;
 

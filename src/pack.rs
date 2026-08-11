@@ -24,6 +24,7 @@ pub struct PackagedTarget {
     pub packed: PackResult,
 }
 
+#[derive(Debug)]
 pub struct PackResult {
     pub path: PathBuf,
     pub sha256: String,
