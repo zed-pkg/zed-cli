@@ -1,3 +1,4 @@
+# One-shot certification workflow; removed after the branch passes every gate.
 name: integrate and certify binary CLI
 
 on:
