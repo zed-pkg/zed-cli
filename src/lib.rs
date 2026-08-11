@@ -20,6 +20,7 @@ pub mod interactive;
 pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
+pub(crate) mod materialize;
 #[path = "mise_export.rs"]
 mod mise_export_impl;
 pub mod mise_export {
