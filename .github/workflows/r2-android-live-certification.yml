@@ -107,6 +107,16 @@ jobs:
         shell: bash
         run: bash scripts/ci/r2_prepare_android_fixture.sh
 
+      - name: Expose an exact-run encrypted handoff public key
+        shell: bash
+        env:
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        run: bash scripts/ci/r2_acquire_delegation.sh request
+
       - name: Acquire parent delegation material by encrypted one-run handoff
         shell: bash
         env:
@@ -114,10 +124,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-        run: bash scripts/ci/r2_acquire_delegation.sh
+        run: bash scripts/ci/r2_acquire_delegation.sh wait
 
       - name: Mint a one-hour exact-object R2 credential
         shell: bash
