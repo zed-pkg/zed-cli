@@ -1,5 +1,5 @@
-# One-shot certification workflow; removed after the branch passes every gate.
-name: integrate and certify binary CLI
+# One-shot audit; removed after all interface revision pins are updated.
+name: audit binary interface revision pins
 
 on:
   push:
@@ -7,56 +7,29 @@ on:
       - agent/binary-zip-publish
 
 permissions:
-  contents: write
-
-concurrency:
-  group: integrate-binary-cli-${{ github.ref }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  integrate:
-    if: ${{ !contains(github.event.head_commit.message, '[binary-cli-integrated]') }}
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: agent/binary-zip-publish
-          fetch-depth: 0
-          persist-credentials: true
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          components: rustfmt, clippy
-      - name: Wire binary command and release artifacts
+          persist-credentials: false
+      - name: Report stale interface revision pins
+        shell: bash
         env:
-          INTERFACES_REV: 5fa652f6c8aaef5228b34b24bb8c5a4a07b415ca
-          OLD_INTERFACES_REV: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
+          OLD_REV: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
         run: |
           set -euo pipefail
-          python3 scripts/agent_integrate_binary_cli.py
-          cargo update -p zed-interfaces --precise "$INTERFACES_REV"
-          cargo fmt --all
-      - name: Compile and test all targets
-        run: cargo test --locked --all-targets
-      - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Command help smoke test
-        run: |
-          cargo run --locked --quiet --bin zed-binary -- --help >/dev/null
-          cargo run --locked --quiet --bin zed-binary -- pack --help >/dev/null
-          cargo run --locked --quiet --bin zed-binary -- verify --help >/dev/null
-          cargo run --locked --quiet --bin zed-binary -- publish --help >/dev/null
-          cargo run --locked --quiet --bin zed-binary -- download --help >/dev/null
-      - name: Persist certified non-workflow integration
-        run: |
-          set -euo pipefail
-          # GitHub's workflow token may not create or modify workflow files. Restore
-          # those paths and persist the already-certified Rust, lockfile, and Docker
-          # changes; release workflow edits are applied through the GitHub connector.
-          git restore --source=HEAD --staged --worktree .github/workflows
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.toml Cargo.lock src .github/docker/install-test.Dockerfile
-          git diff --cached --quiet && exit 0
-          git commit -m 'feat: integrate secure binary ZIP workflows [binary-cli-integrated]'
-          git push origin HEAD:agent/binary-zip-publish
+          matches="$(grep -RIl "$OLD_REV" .github/workflows \
+            --exclude=agent-integrate-binary-cli.yml | sort || true)"
+          if [[ -z "$matches" ]]; then
+            echo "STALE_INTERFACE_PIN_FILES=none"
+          else
+            echo "STALE_INTERFACE_PIN_FILES<<EOF"
+            printf '%s\n' "$matches"
+            echo "EOF"
+          fi
