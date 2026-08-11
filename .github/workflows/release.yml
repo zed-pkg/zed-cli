@@ -49,7 +49,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
+          ref: 5fa652f6c8aaef5228b34b24bb8c5a4a07b415ca
           path: zed-interfaces
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -59,31 +59,33 @@ jobs:
       - name: Install pinned cross compiler driver
         if: contains(matrix.target, 'linux')
         run: cargo install cross --locked --version 0.2.5
-      - name: Build locked release binary
+      - name: Build locked release binaries
         working-directory: zed-cli
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ matrix.target }}" == *linux* ]]; then
-            cross build --locked --release --target "${{ matrix.target }}"
+            cross build --locked --release --bins --target "${{ matrix.target }}"
           else
-            cargo build --locked --release --target "${{ matrix.target }}"
+            cargo build --locked --release --bins --target "${{ matrix.target }}"
           fi
-      - name: Package binary and checksum
+      - name: Package binaries and checksum
         working-directory: zed-cli
         shell: bash
         run: |
           set -euo pipefail
-          bin=zed
-          [[ "${{ matrix.target }}" == *windows* ]] && bin=zed.exe
+          bins=(zed zed-binary)
+          if [[ "${{ matrix.target }}" == *windows* ]]; then
+            bins=(zed.exe zed-binary.exe)
+          fi
           dir="target/${{ matrix.target }}/release"
           name="zed-${{ matrix.target }}"
           mkdir -p dist
           if [[ "${{ matrix.target }}" == *windows* ]]; then
-            (cd "$dir" && 7z a "$OLDPWD/dist/$name.zip" "$bin")
+            (cd "$dir" && 7z a "$OLDPWD/dist/$name.zip" "${bins[@]}")
             archive="$name.zip"
           else
-            tar -C "$dir" -czf "dist/$name.tar.gz" "$bin"
+            tar -C "$dir" -czf "dist/$name.tar.gz" "${bins[@]}"
             archive="$name.tar.gz"
           fi
           if command -v sha256sum >/dev/null 2>&1; then
