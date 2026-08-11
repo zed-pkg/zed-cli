@@ -17,6 +17,7 @@ public_der="$RUNNER_TEMP/r2-handoff-public.der"
 ciphertext_file="$RUNNER_TEMP/r2-handoff.bin"
 delegation_file="$RUNNER_TEMP/r2-parent-delegation.json"
 plain_file="$RUNNER_TEMP/r2-handoff-plain.json"
+request_file="$RUNNER_TEMP/r2-handoff-request.json"
 
 write_bound_delegation() {
   jq -cn \
@@ -35,7 +36,7 @@ write_bound_delegation() {
 }
 
 cleanup_transient() {
-  rm -f "$private_key" "$public_der" "$ciphertext_file" "$plain_file"
+  rm -f "$private_key" "$public_der" "$ciphertext_file" "$plain_file" "$request_file"
 }
 
 case "$mode" in
@@ -63,6 +64,19 @@ case "$mode" in
     openssl pkey -in "$private_key" -pubout -outform DER -out "$public_der"
     public_key=$(base64 -w0 <"$public_der")
 
+    jq -cn \
+      --arg schema "zpkg.r2-encrypted-handoff-request/v1" \
+      --arg run "$GITHUB_RUN_ID" \
+      --arg attempt "$GITHUB_RUN_ATTEMPT" \
+      --arg sha "$PR_HEAD_SHA" \
+      --arg repository "$GITHUB_REPOSITORY" \
+      --arg workflow "$GITHUB_WORKFLOW" \
+      --arg job "$GITHUB_JOB" \
+      --arg public_key_base64 "$public_key" \
+      '{schema:$schema,run:$run,attempt:$attempt,sha:$sha,repository:$repository,workflow:$workflow,job:$job,public_key_base64:$public_key_base64}' \
+      >"$request_file"
+    chmod 0644 "$request_file"
+
     # The completed step exposes only this ephemeral public key. The next step
     # retains the private key locally while polling for exact-run ciphertext.
     echo "::notice title=Encrypted R2 handoff requested::run-id=${GITHUB_RUN_ID}; run-attempt=${GITHUB_RUN_ATTEMPT}; head-sha=${PR_HEAD_SHA}; public-key-base64=${public_key}"
@@ -82,7 +96,7 @@ case "$mode" in
     : "${PR_HEAD_REPOSITORY:?}"
     [[ "$GITHUB_EVENT_NAME" == pull_request ]]
     [[ "$PR_HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
-    [[ -s "$private_key" && -s "$public_der" ]]
+    [[ -s "$private_key" && -s "$public_der" && -s "$request_file" ]]
     trap cleanup_transient EXIT
 
     marker="<!-- zed-r2-handoff:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${PR_HEAD_SHA} -->"
