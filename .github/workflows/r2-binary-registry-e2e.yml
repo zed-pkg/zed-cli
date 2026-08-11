@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 concurrency:
   group: r2-binary-registry-e2e-${{ github.event.pull_request.number || github.ref }}
@@ -20,7 +21,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   SERVER_REPOSITORY: zed-pkg/zed-api-server.rs
-  SERVER_SHA: 5d736dcdf390fc8a430add913d911a2309638fbc
+  SERVER_SHA: 75e8203287925bd134ae56828a67753e83ca5b75
   R2_BUCKET: zed-pkg-artifacts
   AWS_DEFAULT_REGION: auto
   AWS_REGION: auto
@@ -30,10 +31,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     environment: r2-release-publication
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
     services:
       postgres:
         image: pgvector/pgvector:0.8.2-pg17-bookworm
@@ -62,22 +59,6 @@ jobs:
           path: registry-server
           persist-credentials: false
 
-      - name: Require the real R2 secret boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in CLOUDFLARE_ACCOUNT_ID AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-            if [[ -z "${!name:-}" ]]; then
-              echo "missing required GitHub environment secret: $name" >&2
-              exit 1
-            fi
-          done
-          [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]]
-          command -v aws >/dev/null
-          aws --version
-          printf 'S3_ENDPOINT_URL=https://%s.r2.cloudflarestorage.com\n' \
-            "$CLOUDFLARE_ACCOUNT_ID" >>"$GITHUB_ENV"
-
       - name: Install the pinned Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
@@ -91,7 +72,7 @@ jobs:
             .
             registry-server
 
-      - name: Build the locked CLI and registry server
+      - name: Build reviewed code before acquiring any credential
         shell: bash
         run: |
           set -euo pipefail
@@ -100,6 +81,310 @@ jobs:
           "$GITHUB_WORKSPACE/target/debug/zed" --help >/dev/null
           "$GITHUB_WORKSPACE/target/debug/zed-binary" --help >/dev/null
           "$GITHUB_WORKSPACE/registry-server/target/debug/zed-api-server" --help >/dev/null
+
+      - name: Create, tag, and deterministically pre-pack the native fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          org="r2-e2e-${GITHUB_RUN_ID}"
+          version="0.0.0-r2.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          package_dir="$RUNNER_TEMP/r2-binary-package"
+          download_dir="$RUNNER_TEMP/r2-binary-download"
+          pack_dir="$RUNNER_TEMP/r2-preflight-pack"
+          pack_dir_2="$RUNNER_TEMP/r2-preflight-pack-second"
+          mkdir -p "$package_dir/bin" "$download_dir" "$pack_dir" "$pack_dir_2"
+          printf 'TEST_ORG=%s\nTEST_VERSION=%s\nPACKAGE_DIR=%s\nDOWNLOAD_DIR=%s\nPACK_DIR=%s\n' \
+            "$org" "$version" "$package_dir" "$download_dir" "$pack_dir" >>"$GITHUB_ENV"
+
+          cat >"$package_dir/main.rs" <<'RS'
+          fn main() {
+              println!("hello from the real Cloudflare R2 binary roundtrip");
+          }
+          RS
+          rustc "$package_dir/main.rs" -o "$package_dir/bin/r2-binary-smoke"
+          test -x "$package_dir/bin/r2-binary-smoke"
+
+          cat >"$package_dir/.zpkg.toml" <<TOML
+          [package]
+          org = "$org"
+          name = "r2-binary-smoke"
+          version = "$version"
+          description = "Ephemeral real-R2 binary publication certification"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/$GITHUB_REPOSITORY"
+
+          [bin]
+          r2-binary-smoke = "bin/r2-binary-smoke"
+          TOML
+          printf 'MIT fixture license\n' >"$package_dir/LICENSE"
+          printf 'target/\n.zed/\n' >"$package_dir/.gitignore"
+
+          git -C "$package_dir" init -q
+          git -C "$package_dir" config user.name "Zed Real R2 E2E"
+          git -C "$package_dir" config user.email "zed-r2-e2e@example.invalid"
+          git -C "$package_dir" add .
+          git -C "$package_dir" commit -qm "real R2 binary fixture $version"
+          git -C "$package_dir" tag "v$version"
+          test -z "$(git -C "$package_dir" status --porcelain)"
+          fixture_commit=$(git -C "$package_dir" rev-parse HEAD)
+
+          cd "$package_dir"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" pack \
+            --target x86_64-unknown-linux-gnu \
+            --os linux \
+            --arch x86_64 \
+            --libc gnu \
+            --vcs-commit "$fixture_commit" \
+            --out "$pack_dir" \
+            --json | tee "$RUNNER_TEMP/r2-preflight.json"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" pack \
+            --target x86_64-unknown-linux-gnu \
+            --os linux \
+            --arch x86_64 \
+            --libc gnu \
+            --vcs-commit "$fixture_commit" \
+            --out "$pack_dir_2" \
+            --json >"$RUNNER_TEMP/r2-preflight-second.json"
+
+          archive=$(jq -r .archive "$RUNNER_TEMP/r2-preflight.json")
+          archive_2=$(jq -r .archive "$RUNNER_TEMP/r2-preflight-second.json")
+          sha=$(jq -r .sha256 "$RUNNER_TEMP/r2-preflight.json")
+          sha_2=$(jq -r .sha256 "$RUNNER_TEMP/r2-preflight-second.json")
+          size=$(jq -r .size "$RUNNER_TEMP/r2-preflight.json")
+          test -f "$archive"
+          test -f "$archive_2"
+          test "$sha" = "$sha_2"
+          cmp "$archive" "$archive_2"
+          test "$(sha256sum "$archive" | awk '{print $1}')" = "$sha"
+          object_key="artifacts/${sha}.zip"
+          printf 'PREFLIGHT_ARCHIVE=%s\nARTIFACT_SHA=%s\nARTIFACT_SIZE=%s\nOBJECT_KEY=%s\n' \
+            "$archive" "$sha" "$size" "$object_key" >>"$GITHUB_ENV"
+
+      - name: Acquire parent delegation material without exposing it to reviewed code
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        run: |
+          set -euo pipefail
+          private_key="$RUNNER_TEMP/r2-handoff-private.pem"
+          public_der="$RUNNER_TEMP/r2-handoff-public.der"
+          ciphertext_file="$RUNNER_TEMP/r2-handoff.bin"
+          delegation_file="$RUNNER_TEMP/r2-parent-delegation.json"
+          trap 'rm -f "$private_key" "$public_der" "$ciphertext_file" "$RUNNER_TEMP/r2-handoff-plain.json"' EXIT
+
+          if [[ -n "${SECRET_ACCOUNT_ID:-}" \
+             && -n "${SECRET_API_TOKEN:-}" \
+             && -n "${SECRET_PARENT_ACCESS_KEY_ID:-}" ]]; then
+            echo "::add-mask::$SECRET_ACCOUNT_ID"
+            echo "::add-mask::$SECRET_API_TOKEN"
+            echo "::add-mask::$SECRET_PARENT_ACCESS_KEY_ID"
+            jq -cn \
+              --arg run "$GITHUB_RUN_ID" \
+              --arg account "$SECRET_ACCOUNT_ID" \
+              --arg api "$SECRET_API_TOKEN" \
+              --arg access "$SECRET_PARENT_ACCESS_KEY_ID" \
+              '{run:$run,account:$account,api:$api,access:$access}' \
+              >"$delegation_file"
+            chmod 0600 "$delegation_file"
+            echo 'R2_CREDENTIAL_SOURCE=actions-environment' >>"$GITHUB_ENV"
+            exit 0
+          fi
+
+          test "$GITHUB_EVENT_NAME" = pull_request
+          test -n "${PR_NUMBER:-}"
+          test "$PR_HEAD_REPOSITORY" = "$GITHUB_REPOSITORY"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+            -out "$private_key" >/dev/null 2>&1
+          chmod 0600 "$private_key"
+          openssl pkey -in "$private_key" -pubout -outform DER -out "$public_der"
+          public_key=$(base64 -w0 <"$public_der")
+          printf 'R2_HANDOFF_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+          printf 'R2_HANDOFF_PUBLIC_KEY_B64=%s\n' "$public_key"
+          echo 'Waiting for an ORESoftware-authored encrypted handoff comment for this exact run.'
+
+          marker="<!-- zed-r2-handoff:${GITHUB_RUN_ID} -->"
+          ciphertext=''
+          for _ in $(seq 1 144); do
+            comments=$(curl --fail --silent --show-error --location \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100")
+            ciphertext=$(jq -r --arg marker "$marker" '
+              [ .[]
+                | select(.user.login == "ORESoftware")
+                | select(.author_association == "OWNER"
+                    or .author_association == "MEMBER"
+                    or .author_association == "COLLABORATOR")
+                | select(.body | startswith($marker))
+                | {
+                    created_at,
+                    cipher: (try (.body
+                      | capture("ciphertext-base64: (?<cipher>[A-Za-z0-9+/=]+)")
+                      | .cipher) catch "")
+                  }
+                | select(.cipher != "")
+              ]
+              | sort_by(.created_at)
+              | last
+              | .cipher // empty
+            ' <<<"$comments")
+            if [[ -n "$ciphertext" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          test -n "$ciphertext"
+          printf '%s' "$ciphertext" | base64 --decode >"$ciphertext_file"
+          openssl pkeyutl -decrypt \
+            -inkey "$private_key" \
+            -in "$ciphertext_file" \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256 \
+            -pkeyopt rsa_mgf1_md:sha256 \
+            >"$RUNNER_TEMP/r2-handoff-plain.json"
+
+          jq -e --arg run "$GITHUB_RUN_ID" '
+            .run == $run
+            and (.account | test("^[0-9a-f]{32}$"))
+            and (.api | type == "string" and length >= 20)
+            and (.access | type == "string" and length >= 16)
+          ' "$RUNNER_TEMP/r2-handoff-plain.json" >/dev/null
+          mv "$RUNNER_TEMP/r2-handoff-plain.json" "$delegation_file"
+          chmod 0600 "$delegation_file"
+          account=$(jq -r .account "$delegation_file")
+          api=$(jq -r .api "$delegation_file")
+          access=$(jq -r .access "$delegation_file")
+          echo "::add-mask::$account"
+          echo "::add-mask::$api"
+          echo "::add-mask::$access"
+          echo 'R2_CREDENTIAL_SOURCE=encrypted-pr-handoff' >>"$GITHUB_ENV"
+
+      - name: Create or confirm the bucket and mint exact-object temporary credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          delegation_file="$RUNNER_TEMP/r2-parent-delegation.json"
+          test -s "$delegation_file"
+          account=$(jq -r .account "$delegation_file")
+          api_token=$(jq -r .api "$delegation_file")
+          parent_access=$(jq -r .access "$delegation_file")
+          echo "::add-mask::$account"
+          echo "::add-mask::$api_token"
+          echo "::add-mask::$parent_access"
+          [[ "$account" =~ ^[0-9a-f]{32}$ ]]
+
+          endpoint="https://${account}.r2.cloudflarestorage.com"
+          list_file="$RUNNER_TEMP/r2-bucket-list.json"
+          list_status=$(curl --silent --show-error --location \
+            --output "$list_file" --write-out '%{http_code}' \
+            -H "Authorization: Bearer $api_token" \
+            -H 'Content-Type: application/json' \
+            "https://api.cloudflare.com/client/v4/accounts/$account/r2/buckets?per_page=1000")
+          if [[ ! "$list_status" =~ ^2 ]] || ! jq -e '.success == true' "$list_file" >/dev/null; then
+            jq -r '.errors[]?.message // empty' "$list_file" >&2 || true
+            echo "Cloudflare R2 bucket listing failed with HTTP $list_status" >&2
+            exit 1
+          fi
+
+          bucket_created=false
+          if ! jq -e --arg bucket "$R2_BUCKET" '
+              any((.result.buckets // .result // [])[]?; .name == $bucket)
+            ' "$list_file" >/dev/null; then
+            create_file="$RUNNER_TEMP/r2-bucket-create.json"
+            create_status=$(curl --silent --show-error --location \
+              --output "$create_file" --write-out '%{http_code}' \
+              --request POST \
+              -H "Authorization: Bearer $api_token" \
+              -H 'Content-Type: application/json' \
+              --data "$(jq -cn --arg name "$R2_BUCKET" '{name:$name}')" \
+              "https://api.cloudflare.com/client/v4/accounts/$account/r2/buckets")
+            if [[ ! "$create_status" =~ ^2 ]] || ! jq -e '.success == true' "$create_file" >/dev/null; then
+              jq -r '.errors[]?.message // empty' "$create_file" >&2 || true
+              echo "Cloudflare R2 bucket creation failed with HTTP $create_status" >&2
+              exit 1
+            fi
+            bucket_created=true
+          fi
+
+          temp_request="$RUNNER_TEMP/r2-temp-request.json"
+          temp_response="$RUNNER_TEMP/r2-temp-response.json"
+          jq -cn \
+            --arg bucket "$R2_BUCKET" \
+            --arg parent "$parent_access" \
+            --arg object "$OBJECT_KEY" \
+            '{
+              bucket:$bucket,
+              parentAccessKeyId:$parent,
+              permission:"object-read-write",
+              ttlSeconds:3600,
+              objects:[$object]
+            }' >"$temp_request"
+          temp_status=$(curl --silent --show-error --location \
+            --output "$temp_response" --write-out '%{http_code}' \
+            --request POST \
+            -H "Authorization: Bearer $api_token" \
+            -H 'Content-Type: application/json' \
+            --data @"$temp_request" \
+            "https://api.cloudflare.com/client/v4/accounts/$account/r2/temp-access-credentials")
+          if [[ ! "$temp_status" =~ ^2 ]] || ! jq -e '
+              .success == true
+              and (.result.accessKeyId | type == "string" and length > 0)
+              and (.result.secretAccessKey | type == "string" and length > 0)
+              and (.result.sessionToken | type == "string" and length > 0)
+            ' "$temp_response" >/dev/null; then
+            jq -r '.errors[]?.message // empty' "$temp_response" >&2 || true
+            echo "Cloudflare R2 temporary credential mint failed with HTTP $temp_status" >&2
+            exit 1
+          fi
+
+          temp_access=$(jq -r .result.accessKeyId "$temp_response")
+          temp_secret=$(jq -r .result.secretAccessKey "$temp_response")
+          temp_session=$(jq -r .result.sessionToken "$temp_response")
+          echo "::add-mask::$temp_access"
+          echo "::add-mask::$temp_secret"
+          echo "::add-mask::$temp_session"
+          printf 'AWS_ACCESS_KEY_ID=%s\nAWS_SECRET_ACCESS_KEY=%s\nAWS_SESSION_TOKEN=%s\nS3_ENDPOINT_URL=%s\n' \
+            "$temp_access" "$temp_secret" "$temp_session" "$endpoint" >>"$GITHUB_ENV"
+
+          jq -cn \
+            --arg bucket "$R2_BUCKET" \
+            --arg object "$OBJECT_KEY" \
+            --argjson created "$bucket_created" \
+            --arg source "$R2_CREDENTIAL_SOURCE" \
+            '{
+              provider:"cloudflare-r2",
+              bucket:$bucket,
+              object:$object,
+              bucket_created:$created,
+              credential_source:$source,
+              delegated_permission:"object-read-write",
+              delegated_ttl_seconds:3600,
+              delegated_scope:"exact-object"
+            }' >"$RUNNER_TEMP/r2-delegation.json"
+          rm -f "$delegation_file" "$temp_request" "$temp_response" "$list_file" \
+            "$RUNNER_TEMP/r2-bucket-create.json"
+
+      - name: Confirm the temporary credential is restricted to the intended object
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v aws >/dev/null
+          aws --version
+          if aws --endpoint-url "$S3_ENDPOINT_URL" s3api list-buckets \
+              >"$RUNNER_TEMP/r2-unexpected-list.json" 2>"$RUNNER_TEMP/r2-list-denied.log"; then
+            echo 'temporary exact-object credential unexpectedly allowed ListBuckets' >&2
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/r2-unexpected-list.json" "$RUNNER_TEMP/r2-list-denied.log"
 
       - name: Start the registry with the production R2 storage adapter
         shell: bash
@@ -128,10 +413,11 @@ jobs:
             fi
             sleep 1
           done
-          cat "$RUNNER_TEMP/zed-api-r2.log"
+          sed -E 's#https://[^[:space:]]+\?[^[:space:]]+#<redacted-url>#g' \
+            "$RUNNER_TEMP/zed-api-r2.log" >&2
           exit 1
 
-      - name: Mint a token and create a unique immutable package identity
+      - name: Mint a registry token and claim the ephemeral organization
         shell: bash
         env:
           DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
@@ -154,54 +440,7 @@ jobs:
           esac
           echo "::add-mask::$token"
           printf 'ZED_PKG_TOKEN=%s\n' "$token" >>"$GITHUB_ENV"
-
-          org="r2-e2e-${GITHUB_RUN_ID}"
-          version="0.0.0-r2.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
-          package_dir="$RUNNER_TEMP/r2-binary-package"
-          download_dir="$RUNNER_TEMP/r2-binary-download"
-          mkdir -p "$package_dir/bin" "$download_dir"
-          printf 'TEST_ORG=%s\nTEST_VERSION=%s\nPACKAGE_DIR=%s\nDOWNLOAD_DIR=%s\n' \
-            "$org" "$version" "$package_dir" "$download_dir" >>"$GITHUB_ENV"
-
-          "$GITHUB_WORKSPACE/target/debug/zed" org claim "$org"
-
-      - name: Compile and tag a native binary fixture
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat >"$PACKAGE_DIR/main.rs" <<'RS'
-          fn main() {
-              println!("hello from the real Cloudflare R2 binary roundtrip");
-          }
-          RS
-          rustc "$PACKAGE_DIR/main.rs" -o "$PACKAGE_DIR/bin/r2-binary-smoke"
-          test -x "$PACKAGE_DIR/bin/r2-binary-smoke"
-
-          cat >"$PACKAGE_DIR/.zpkg.toml" <<TOML
-          [package]
-          org = "$TEST_ORG"
-          name = "r2-binary-smoke"
-          version = "$TEST_VERSION"
-          description = "Ephemeral real-R2 binary publication certification"
-          license = "MIT"
-
-          [package.repository]
-          vcs = "git"
-          url = "https://github.com/$GITHUB_REPOSITORY"
-
-          [bin]
-          r2-binary-smoke = "bin/r2-binary-smoke"
-          TOML
-          printf 'MIT fixture license\n' >"$PACKAGE_DIR/LICENSE"
-          printf 'target/\n.zed/\n' >"$PACKAGE_DIR/.gitignore"
-
-          git -C "$PACKAGE_DIR" init -q
-          git -C "$PACKAGE_DIR" config user.name "Zed Real R2 E2E"
-          git -C "$PACKAGE_DIR" config user.email "zed-r2-e2e@example.invalid"
-          git -C "$PACKAGE_DIR" add .
-          git -C "$PACKAGE_DIR" commit -qm "real R2 binary fixture $TEST_VERSION"
-          git -C "$PACKAGE_DIR" tag "v$TEST_VERSION"
-          test -z "$(git -C "$PACKAGE_DIR" status --porcelain)"
+          "$GITHUB_WORKSPACE/target/debug/zed" org claim "$TEST_ORG"
 
       - name: Publish through the registry into the actual R2 bucket
         shell: bash
@@ -216,21 +455,20 @@ jobs:
             --os linux \
             --arch x86_64 \
             --libc gnu \
+            --out "$PACK_DIR" \
             --json | tee "$RUNNER_TEMP/r2-publish.json"
-          jq -e --arg package "$TEST_ORG/r2-binary-smoke" --arg version "$TEST_VERSION" '
-            .package == $package
-            and .version == $version
-            and .target == "x86_64-unknown-linux-gnu"
-            and .uploaded == true
-            and (.sha256 | test("^[0-9a-f]{64}$"))
-            and .size > 0
-          ' "$RUNNER_TEMP/r2-publish.json" >/dev/null
-
-          sha=$(jq -r .sha256 "$RUNNER_TEMP/r2-publish.json")
-          size=$(jq -r .size "$RUNNER_TEMP/r2-publish.json")
-          key="artifacts/${sha}.zip"
-          printf 'ARTIFACT_SHA=%s\nARTIFACT_SIZE=%s\nOBJECT_KEY=%s\n' \
-            "$sha" "$size" "$key" >>"$GITHUB_ENV"
+          jq -e \
+            --arg package "$TEST_ORG/r2-binary-smoke" \
+            --arg version "$TEST_VERSION" \
+            --arg sha "$ARTIFACT_SHA" \
+            --argjson size "$ARTIFACT_SIZE" '
+              .package == $package
+              and .version == $version
+              and .target == "x86_64-unknown-linux-gnu"
+              and .uploaded == true
+              and .sha256 == $sha
+              and .size == $size
+            ' "$RUNNER_TEMP/r2-publish.json" >/dev/null
 
       - name: Verify R2 HEAD metadata and immutable cache policy
         shell: bash
@@ -240,14 +478,13 @@ jobs:
             --bucket "$R2_BUCKET" \
             --key "$OBJECT_KEY" \
             >"$RUNNER_TEMP/r2-head.json"
-          jq . "$RUNNER_TEMP/r2-head.json"
           jq -e --argjson size "$ARTIFACT_SIZE" '
             .ContentLength == $size
             and .ContentType == "application/zip"
             and .CacheControl == "public, max-age=31536000, immutable"
           ' "$RUNNER_TEMP/r2-head.json" >/dev/null
 
-      - name: Download through both registry and direct R2 APIs
+      - name: Download through registry, direct R2, and a mobile-compatible presigned URL
         shell: bash
         env:
           ZED_PKG_REGISTRY: http://127.0.0.1:8080
@@ -256,6 +493,7 @@ jobs:
           set -euo pipefail
           registry_archive="$DOWNLOAD_DIR/registry.zip"
           direct_archive="$DOWNLOAD_DIR/direct-r2.zip"
+          presigned_archive="$DOWNLOAD_DIR/presigned.zip"
           "$GITHUB_WORKSPACE/target/debug/zed-binary" download \
             "$TEST_ORG/r2-binary-smoke@$TEST_VERSION" \
             --out "$registry_archive" \
@@ -268,11 +506,20 @@ jobs:
             "$direct_archive" \
             >"$RUNNER_TEMP/r2-get.json"
 
+          presigned_url=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3 presign \
+            "s3://$R2_BUCKET/$OBJECT_KEY" --expires-in 300)
+          echo "::add-mask::$presigned_url"
+          curl --fail --silent --show-error --location \
+            --output "$presigned_archive" "$presigned_url"
+
           registry_sha=$(sha256sum "$registry_archive" | awk '{print $1}')
           direct_sha=$(sha256sum "$direct_archive" | awk '{print $1}')
+          presigned_sha=$(sha256sum "$presigned_archive" | awk '{print $1}')
           test "$registry_sha" = "$ARTIFACT_SHA"
           test "$direct_sha" = "$ARTIFACT_SHA"
+          test "$presigned_sha" = "$ARTIFACT_SHA"
           cmp "$registry_archive" "$direct_archive"
+          cmp "$registry_archive" "$presigned_archive"
           "$GITHUB_WORKSPACE/target/debug/zed-binary" verify \
             "$registry_archive" \
             --target x86_64-unknown-linux-gnu \
@@ -281,8 +528,43 @@ jobs:
             "$direct_archive" \
             --target x86_64-unknown-linux-gnu \
             --json | tee "$RUNNER_TEMP/r2-verify-direct.json"
+          "$GITHUB_WORKSPACE/target/debug/zed-binary" verify \
+            "$presigned_archive" \
+            --target x86_64-unknown-linux-gnu \
+            --json | tee "$RUNNER_TEMP/r2-verify-presigned.json"
+          jq -cn \
+            --arg sha "$presigned_sha" \
+            --argjson size "$(stat -c %s "$presigned_archive")" \
+            '{transport:"presigned-get",verified:true,sha256:$sha,size:$size,expires_in_seconds:300}' \
+            >"$RUNNER_TEMP/r2-presigned.json"
 
-      - name: Exercise presigned-download concurrency and payload execution
+      - name: Reject a corrupted download before extraction or execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          corrupted="$DOWNLOAD_DIR/corrupted.zip"
+          cp "$DOWNLOAD_DIR/direct-r2.zip" "$corrupted"
+          python3 - "$corrupted" <<'PY'
+          import pathlib
+          import sys
+
+          path = pathlib.Path(sys.argv[1])
+          data = bytearray(path.read_bytes())
+          index = max(32, len(data) // 2)
+          data[index] ^= 0x01
+          path.write_bytes(data)
+          PY
+          if "$GITHUB_WORKSPACE/target/debug/zed-binary" verify \
+              "$corrupted" --target x86_64-unknown-linux-gnu \
+              >"$RUNNER_TEMP/corrupted-stdout.log" \
+              2>"$RUNNER_TEMP/corrupted-stderr.log"; then
+            echo 'corrupted R2 download unexpectedly verified' >&2
+            exit 1
+          fi
+          rm -f "$corrupted" "$RUNNER_TEMP/corrupted-stdout.log" \
+            "$RUNNER_TEMP/corrupted-stderr.log"
+
+      - name: Exercise concurrent presigned downloads and payload execution
         shell: bash
         env:
           ZED_PKG_REGISTRY: http://127.0.0.1:8080
@@ -335,7 +617,8 @@ jobs:
             --target x86_64-unknown-linux-gnu \
             --os linux \
             --arch x86_64 \
-            --libc gnu 2>&1)
+            --libc gnu \
+            --out "$PACK_DIR" 2>&1)
           printf '%s\n' "$output"
           printf '%s\n' "$output" \
             | grep -Eiq 'already published.*identical|identical binary ZIP|skipping'
@@ -344,39 +627,17 @@ jobs:
           test "$(jq -r .ContentLength <<<"$before")" = "$(jq -r .ContentLength <<<"$after")"
           test "$(jq -r .ETag <<<"$before")" = "$(jq -r .ETag <<<"$after")"
 
-      - name: Retain credential-free R2 certification evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: real-r2-binary-registry-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/r2-publish.json
-            ${{ runner.temp }}/r2-head.json
-            ${{ runner.temp }}/r2-get.json
-            ${{ runner.temp }}/r2-download.json
-            ${{ runner.temp }}/r2-verify-registry.json
-            ${{ runner.temp }}/r2-verify-direct.json
-            ${{ runner.temp }}/zed-api-r2.log
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Delete the ephemeral certification object from R2
+      - name: Produce credential-free certification evidence
         if: always()
         shell: bash
         run: |
           set -u
-          if [[ -n "${OBJECT_KEY:-}" && -n "${S3_ENDPOINT_URL:-}" ]]; then
-            aws --endpoint-url "$S3_ENDPOINT_URL" s3api delete-object \
-              --bucket "$R2_BUCKET" --key "$OBJECT_KEY" >/dev/null
-            for _ in $(seq 1 15); do
-              if ! aws --endpoint-url "$S3_ENDPOINT_URL" s3api head-object \
-                --bucket "$R2_BUCKET" --key "$OBJECT_KEY" >/dev/null 2>&1; then
-                exit 0
-              fi
-              sleep 1
-            done
-            echo "ephemeral R2 object still exists after delete" >&2
-            exit 1
+          if test -f "$RUNNER_TEMP/zed-api-r2.log"; then
+            sed -E \
+              -e 's#https://[^[:space:]]+\?[^[:space:]]+#<redacted-presigned-url>#g' \
+              -e 's/(X-Amz-[A-Za-z-]+=)[^&[:space:]]+/\1<redacted>/g' \
+              "$RUNNER_TEMP/zed-api-r2.log" \
+              >"$RUNNER_TEMP/zed-api-r2-redacted.log"
           fi
 
       - name: Stop the registry
@@ -386,3 +647,57 @@ jobs:
           if test -f "$RUNNER_TEMP/zed-api-r2.pid"; then
             kill "$(cat "$RUNNER_TEMP/zed-api-r2.pid")" 2>/dev/null || true
           fi
+
+      - name: Delete the ephemeral certification object from R2
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          if [[ -n "${OBJECT_KEY:-}" && -n "${S3_ENDPOINT_URL:-}" \
+             && -n "${AWS_SESSION_TOKEN:-}" ]]; then
+            aws --endpoint-url "$S3_ENDPOINT_URL" s3api delete-object \
+              --bucket "$R2_BUCKET" --key "$OBJECT_KEY" >/dev/null
+            for _ in $(seq 1 15); do
+              if ! aws --endpoint-url "$S3_ENDPOINT_URL" s3api head-object \
+                  --bucket "$R2_BUCKET" --key "$OBJECT_KEY" >/dev/null 2>&1; then
+                exit 0
+              fi
+              sleep 1
+            done
+            echo 'ephemeral R2 object still exists after delete' >&2
+            exit 1
+          fi
+
+      - name: Clear delegated credentials before invoking artifact upload code
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/r2-parent-delegation.json" \
+            "$RUNNER_TEMP/r2-handoff-private.pem" \
+            "$RUNNER_TEMP/r2-handoff-public.der" \
+            "$RUNNER_TEMP/r2-handoff.bin" \
+            "$RUNNER_TEMP/r2-temp-request.json" \
+            "$RUNNER_TEMP/r2-temp-response.json"
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nZED_PKG_TOKEN=\n' \
+            >>"$GITHUB_ENV"
+
+      - name: Retain credential-free R2 certification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-r2-binary-registry-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/r2-preflight.json
+            ${{ runner.temp }}/r2-preflight-second.json
+            ${{ runner.temp }}/r2-delegation.json
+            ${{ runner.temp }}/r2-publish.json
+            ${{ runner.temp }}/r2-head.json
+            ${{ runner.temp }}/r2-get.json
+            ${{ runner.temp }}/r2-download.json
+            ${{ runner.temp }}/r2-verify-registry.json
+            ${{ runner.temp }}/r2-verify-direct.json
+            ${{ runner.temp }}/r2-verify-presigned.json
+            ${{ runner.temp }}/r2-presigned.json
+            ${{ runner.temp }}/zed-api-r2-redacted.log
+          if-no-files-found: warn
+          retention-days: 30
