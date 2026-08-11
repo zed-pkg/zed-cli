@@ -58,7 +58,7 @@ case "$mode" in
     [[ "$GITHUB_EVENT_NAME" == pull_request ]]
     [[ "$PR_HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
     trap cleanup_transient ERR INT TERM
-    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+    openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 \
       -out "$private_key" >/dev/null 2>&1
     chmod 0600 "$private_key"
     openssl pkey -in "$private_key" -pubout -outform DER -out "$public_der"
@@ -132,7 +132,7 @@ case "$mode" in
     done
     [[ -n "$ciphertext" ]]
     printf '%s' "$ciphertext" | base64 --decode >"$ciphertext_file"
-    [[ $(stat -c %s "$ciphertext_file") -eq 384 ]]
+    [[ $(stat -c %s "$ciphertext_file") -eq 512 ]]
 
     openssl pkeyutl -decrypt \
       -inkey "$private_key" \
