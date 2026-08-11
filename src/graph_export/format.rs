@@ -1,4 +1,8 @@
 use anyhow::{Result, bail};
+use zed_interfaces::{
+    DependencyGraphExportFormat as ExtendedGraphFormat,
+    DependencyGraphFormat as CanonicalGraphFormat,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RouteKind {
@@ -6,110 +10,82 @@ pub(super) enum RouteKind {
     Extended,
 }
 
+/// CLI routing wrapper around the two contract-owned format families.
+///
+/// The CLI owns only the choice of endpoint. Every representation descriptor
+/// and accepted alias remains defined by `zed-interfaces`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GraphFormat {
-    Json,
-    Yaml,
-    Toml,
-    Dot,
-    Mermaid,
-    Json5,
-    Xml,
-    Csv,
-    MessagePack,
-    Protobuf,
+    Canonical(CanonicalGraphFormat),
+    Extended(ExtendedGraphFormat),
 }
 
 impl GraphFormat {
     pub(super) const fn name(self) -> &'static str {
         match self {
-            Self::Json => "json",
-            Self::Yaml => "yaml",
-            Self::Toml => "toml",
-            Self::Dot => "dot",
-            Self::Mermaid => "mermaid",
-            Self::Json5 => "json5",
-            Self::Xml => "xml",
-            Self::Csv => "csv",
-            Self::MessagePack => "msgpack",
-            Self::Protobuf => "protobuf",
+            Self::Canonical(format) => format.name(),
+            Self::Extended(format) => format.name(),
         }
     }
 
     pub(super) fn parse(value: &str) -> Result<Self> {
-        Ok(match value.trim().to_ascii_lowercase().as_str() {
-            "json" => Self::Json,
-            "yaml" | "yml" => Self::Yaml,
-            "toml" => Self::Toml,
-            "dot" | "graphviz" => Self::Dot,
-            "mermaid" | "mmd" => Self::Mermaid,
-            "json5" => Self::Json5,
-            "xml" => Self::Xml,
-            "csv" => Self::Csv,
-            "msgpack" | "messagepack" | "mpk" => Self::MessagePack,
-            "protobuf" | "proto" | "pb" => Self::Protobuf,
-            _ => bail!(
-                "unsupported dependency graph format `{value}`; expected json, yaml, toml, dot, mermaid, json5, xml, csv, msgpack, or protobuf"
-            ),
-        })
+        let trimmed = value.trim();
+        if let Some(format) = CanonicalGraphFormat::parse_name(trimmed) {
+            return Ok(Self::Canonical(format));
+        }
+        if let Some(format) = ExtendedGraphFormat::parse_name(trimmed) {
+            return Ok(Self::Extended(format));
+        }
+
+        let mut expected = CanonicalGraphFormat::ALL
+            .into_iter()
+            .map(CanonicalGraphFormat::name)
+            .chain(
+                ExtendedGraphFormat::ALL
+                    .into_iter()
+                    .map(ExtendedGraphFormat::name),
+            )
+            .collect::<Vec<_>>();
+        let last = expected
+            .pop()
+            .expect("the interface contract always defines graph formats");
+        let expected = format!("{}, or {last}", expected.join(", "));
+        bail!("unsupported dependency graph format `{value}`; expected {expected}")
     }
 
     pub(super) const fn route_kind(self) -> RouteKind {
         match self {
-            Self::Json | Self::Yaml | Self::Toml | Self::Dot | Self::Mermaid => {
-                RouteKind::Canonical
-            }
-            Self::Json5 | Self::Xml | Self::Csv | Self::MessagePack | Self::Protobuf => {
-                RouteKind::Extended
-            }
+            Self::Canonical(_) => RouteKind::Canonical,
+            Self::Extended(_) => RouteKind::Extended,
         }
     }
 
     pub(super) const fn extension(self) -> &'static str {
         match self {
-            Self::Json => "json",
-            Self::Yaml => "yaml",
-            Self::Toml => "toml",
-            Self::Dot => "dot",
-            Self::Mermaid => "mmd",
-            Self::Json5 => "json5",
-            Self::Xml => "xml",
-            Self::Csv => "csv",
-            Self::MessagePack => "msgpack",
-            Self::Protobuf => "pb",
+            Self::Canonical(format) => format.extension(),
+            Self::Extended(format) => format.extension(),
         }
     }
 
     pub(super) const fn media_type(self) -> &'static str {
         match self {
-            Self::Json => "application/vnd.zpkg.dependency-graph.v1+json",
-            Self::Yaml => "application/vnd.zpkg.dependency-graph.v1+yaml",
-            Self::Toml => "application/vnd.zpkg.dependency-graph.v1+toml",
-            Self::Dot => "text/vnd.graphviz; charset=utf-8",
-            Self::Mermaid => "text/vnd.mermaid; charset=utf-8",
-            Self::Json5 => "application/vnd.zpkg.dependency-graph.v1+json5",
-            Self::Xml => "application/vnd.zpkg.dependency-graph.v1+xml",
-            Self::Csv => "text/csv; charset=utf-8",
-            Self::MessagePack => "application/vnd.zpkg.dependency-graph.v1+msgpack",
-            Self::Protobuf => "application/vnd.zpkg.dependency-graph.v1+protobuf",
+            Self::Canonical(format) => format.media_type(),
+            Self::Extended(format) => format.media_type(),
         }
     }
 
     pub(super) const fn authoritative(self) -> bool {
-        matches!(
-            self,
-            Self::Json
-                | Self::Yaml
-                | Self::Toml
-                | Self::Json5
-                | Self::Xml
-                | Self::MessagePack
-                | Self::Protobuf
-        )
+        match self {
+            Self::Canonical(format) => format.is_authoritative(),
+            Self::Extended(format) => format.is_authoritative(),
+        }
     }
 
     pub(super) const fn binary(self) -> bool {
-        matches!(self, Self::MessagePack | Self::Protobuf)
+        match self {
+            Self::Canonical(_) => false,
+            Self::Extended(format) => format.is_binary(),
+        }
     }
 }
 
@@ -118,18 +94,60 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aliases_map_to_stable_names_and_semantics() {
-        assert_eq!(GraphFormat::parse("YML").unwrap(), GraphFormat::Yaml);
-        assert_eq!(GraphFormat::parse("graphviz").unwrap(), GraphFormat::Dot);
+    fn canonical_descriptors_and_aliases_are_contract_owned() {
+        for shared in CanonicalGraphFormat::ALL {
+            let cli = GraphFormat::Canonical(shared);
+            assert_eq!(GraphFormat::parse(shared.name()).unwrap(), cli);
+            for alias in shared.aliases() {
+                assert_eq!(GraphFormat::parse(alias).unwrap(), cli);
+            }
+            assert_eq!(cli.name(), shared.name());
+            assert_eq!(cli.extension(), shared.extension());
+            assert_eq!(cli.media_type(), shared.media_type());
+            assert_eq!(cli.authoritative(), shared.is_authoritative());
+            assert!(!cli.binary());
+            assert_eq!(cli.route_kind(), RouteKind::Canonical);
+        }
+    }
+
+    #[test]
+    fn extended_descriptors_and_aliases_are_contract_owned() {
+        for shared in ExtendedGraphFormat::ALL {
+            let cli = GraphFormat::Extended(shared);
+            assert_eq!(GraphFormat::parse(shared.name()).unwrap(), cli);
+            for alias in shared.aliases() {
+                assert_eq!(GraphFormat::parse(alias).unwrap(), cli);
+            }
+            assert_eq!(cli.name(), shared.name());
+            assert_eq!(cli.extension(), shared.extension());
+            assert_eq!(cli.media_type(), shared.media_type());
+            assert_eq!(cli.authoritative(), shared.is_authoritative());
+            assert_eq!(cli.binary(), shared.is_binary());
+            assert_eq!(cli.route_kind(), RouteKind::Extended);
+        }
+    }
+
+    #[test]
+    fn cli_parsing_remains_case_insensitive_and_rejects_unknown_formats() {
+        assert_eq!(
+            GraphFormat::parse(" YML ").unwrap(),
+            GraphFormat::Canonical(CanonicalGraphFormat::Yaml)
+        );
+        assert_eq!(
+            GraphFormat::parse("graphviz").unwrap(),
+            GraphFormat::Canonical(CanonicalGraphFormat::Dot)
+        );
         assert_eq!(
             GraphFormat::parse("messagepack").unwrap(),
-            GraphFormat::MessagePack
+            GraphFormat::Extended(ExtendedGraphFormat::MessagePack)
         );
-        assert_eq!(GraphFormat::parse("PB").unwrap(), GraphFormat::Protobuf);
-        assert!(!GraphFormat::Csv.authoritative());
-        assert!(!GraphFormat::Dot.authoritative());
-        assert!(GraphFormat::Xml.authoritative());
-        assert!(GraphFormat::MessagePack.binary());
-        assert!(GraphFormat::parse("pickle").is_err());
+        assert_eq!(
+            GraphFormat::parse("PB").unwrap(),
+            GraphFormat::Extended(ExtendedGraphFormat::Protobuf)
+        );
+        assert_eq!(
+            GraphFormat::parse("pickle").unwrap_err().to_string(),
+            "unsupported dependency graph format `pickle`; expected json, yaml, toml, dot, mermaid, json5, xml, csv, msgpack, or protobuf"
+        );
     }
 }

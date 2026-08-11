@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, Read, Write};
+use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -8,13 +9,12 @@ use reqwest::Url;
 use reqwest::blocking::{Client, Response};
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
 use reqwest::redirect::Policy;
+use zed_interfaces::{DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER, DEPENDENCY_GRAPH_DIGEST_HEADER};
 
 use super::coordinate::PackageCoordinate;
 use super::format::{GraphFormat, RouteKind};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const GRAPH_DIGEST_HEADER: &str = "x-zpkg-graph-digest";
-const GRAPH_AUTHORITATIVE_HEADER: &str = "x-zpkg-graph-authoritative";
 
 pub(super) struct DownloadRequest<'a> {
     pub(super) registry: &'a str,
@@ -46,14 +46,20 @@ pub(super) fn download(options: DownloadRequest<'_>) -> Result<DownloadedGraph> 
     if let Some(token) = options.token.filter(|value| !value.is_empty()) {
         request = request.header(AUTHORIZATION, format!("Bearer {token}"));
     }
-    if let Some(etag) = options.etag.filter(|value| !value.is_empty()) {
+    let conditional_etag = options.etag.filter(|value| !value.is_empty());
+    if let Some(etag) = conditional_etag {
         request = request.header(IF_NONE_MATCH, etag);
     }
 
     let response = request
         .send()
         .context("requesting immutable package dependency graph")?;
-    consume_response(response, options.format, options.max_bytes)
+    consume_response(
+        response,
+        options.format,
+        options.max_bytes,
+        conditional_etag,
+    )
 }
 
 pub(super) fn graph_url(
@@ -62,11 +68,14 @@ pub(super) fn graph_url(
     format: GraphFormat,
 ) -> Result<Url> {
     let normalized = format!("{}/", base.trim_end_matches('/'));
-    let mut url = Url::parse(&normalized)
-        .with_context(|| format!("registry URL `{base}` is not a valid absolute URL"))?;
+    let mut url = Url::parse(&normalized).context("registry URL is not a valid absolute URL")?;
     ensure!(
         matches!(url.scheme(), "http" | "https"),
         "dependency graph downloads require an HTTP(S) registry URL"
+    );
+    ensure!(
+        url.host_str().is_some(),
+        "dependency graph downloads require a registry URL with a host"
     );
     ensure!(
         url.username().is_empty() && url.password().is_none(),
@@ -75,6 +84,10 @@ pub(super) fn graph_url(
     ensure!(
         url.query().is_none() && url.fragment().is_none(),
         "registry URL may not contain a query or fragment"
+    );
+    ensure!(
+        url.scheme() == "https" || registry_host_is_loopback(&url),
+        "dependency graph registry URLs must use HTTPS (HTTP is allowed only on loopback)"
     );
 
     {
@@ -104,44 +117,74 @@ pub(super) fn graph_url(
     Ok(url)
 }
 
+fn registry_host_is_loopback(url: &Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        let host = host
+            .strip_prefix('[')
+            .and_then(|host| host.strip_suffix(']'))
+            .unwrap_or(host);
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    })
+}
+
 fn consume_response(
     response: Response,
     format: GraphFormat,
     max_bytes: u64,
+    conditional_etag: Option<&str>,
 ) -> Result<DownloadedGraph> {
     let status = response.status();
-    let etag = header_value(response.headers(), ETAG.as_str())?;
-    let graph_digest = header_value(response.headers(), GRAPH_DIGEST_HEADER)?;
-    let content_type = header_value(response.headers(), CONTENT_TYPE.as_str())?;
-    let authoritative = match header_value(response.headers(), GRAPH_AUTHORITATIVE_HEADER)? {
-        Some(value) if value.eq_ignore_ascii_case("true") => true,
-        Some(value) if value.eq_ignore_ascii_case("false") => false,
-        Some(value) => {
-            anyhow::bail!("registry returned invalid {GRAPH_AUTHORITATIVE_HEADER} header `{value}`")
-        }
-        None => format.authoritative(),
-    };
+    ensure!(
+        status == reqwest::StatusCode::OK || status == reqwest::StatusCode::NOT_MODIFIED,
+        "dependency graph request failed with HTTP {status}"
+    );
+
+    let etag = require_strong_etag(header_value(response.headers(), ETAG.as_str())?)?;
+    let graph_digest = require_graph_digest(header_value(
+        response.headers(),
+        DEPENDENCY_GRAPH_DIGEST_HEADER,
+    )?)?;
+    let authoritative =
+        match header_value(response.headers(), DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER)? {
+            Some(value) if value.eq_ignore_ascii_case("true") => true,
+            Some(value) if value.eq_ignore_ascii_case("false") => false,
+            Some(_) => {
+                anyhow::bail!(
+                    "registry returned an invalid {DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER} header"
+                )
+            }
+            None => format.authoritative(),
+        };
 
     if status == reqwest::StatusCode::NOT_MODIFIED {
+        let condition =
+            conditional_etag.context("registry returned 304 without an If-None-Match request")?;
+        ensure!(
+            if_none_match_matches(condition, &etag),
+            "registry returned 304 with an ETag that does not match If-None-Match"
+        );
         return Ok(DownloadedGraph {
             body: Vec::new(),
             not_modified: true,
             authoritative,
-            etag,
-            graph_digest,
-            content_type,
+            etag: Some(etag),
+            graph_digest: Some(graph_digest),
+            content_type: None,
         });
     }
-    ensure!(
-        status == reqwest::StatusCode::OK,
-        "dependency graph request failed with HTTP {status}"
-    );
-    if let Some(length) = response
-        .headers()
-        .get(CONTENT_LENGTH)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse::<u64>().ok())
-    {
+    let content_type = require_content_type(
+        header_value(response.headers(), CONTENT_TYPE.as_str())?,
+        format.media_type(),
+    )?;
+    if let Some(value) = response.headers().get(CONTENT_LENGTH) {
+        let length = value
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .context("registry returned an invalid dependency graph Content-Length")?;
         ensure!(
             length <= max_bytes,
             "dependency graph body exceeds the {max_bytes}-byte client limit"
@@ -164,10 +207,69 @@ fn consume_response(
         body,
         not_modified: false,
         authoritative,
-        etag,
-        graph_digest,
-        content_type,
+        etag: Some(etag),
+        graph_digest: Some(graph_digest),
+        content_type: Some(content_type),
     })
+}
+
+/// GET uses weak validator comparison for If-None-Match. A 304 still has to
+/// identify one of the validators sent by this client; accepting an unrelated
+/// ETag would incorrectly bless stale cached graph bytes as current.
+fn if_none_match_matches(condition: &str, etag: &str) -> bool {
+    condition
+        .split(',')
+        .map(str::trim)
+        .any(|candidate| candidate == "*" || weak_etag_opaque(candidate) == weak_etag_opaque(etag))
+}
+
+fn weak_etag_opaque(value: &str) -> &str {
+    let value = value.trim();
+    value.strip_prefix("W/").unwrap_or(value)
+}
+
+fn require_strong_etag(value: Option<String>) -> Result<String> {
+    let value = value.context("registry response is missing a strong dependency graph ETag")?;
+    ensure!(
+        !value.starts_with("W/")
+            && value.len() >= 3
+            && value.starts_with('"')
+            && value.ends_with('"')
+            && !value[1..value.len() - 1].contains('"'),
+        "registry response is missing a valid strong dependency graph ETag"
+    );
+    Ok(value)
+}
+
+fn require_graph_digest(value: Option<String>) -> Result<String> {
+    let value = value.context("registry response is missing the dependency graph digest")?;
+    let valid = value.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    ensure!(
+        valid,
+        "registry response carries an invalid dependency graph digest"
+    );
+    Ok(value)
+}
+
+fn require_content_type(value: Option<String>, expected: &str) -> Result<String> {
+    let value = value.context("registry response is missing dependency graph Content-Type")?;
+    ensure!(
+        bare_content_type(&value).eq_ignore_ascii_case(bare_content_type(expected)),
+        "registry response Content-Type does not match the requested dependency graph format"
+    );
+    Ok(value)
+}
+
+fn bare_content_type(value: &str) -> &str {
+    value
+        .split_once(';')
+        .map_or(value, |(media_type, _)| media_type)
+        .trim()
 }
 
 fn header_value(headers: &reqwest::header::HeaderMap, name: &str) -> Result<Option<String>> {
@@ -259,12 +361,16 @@ mod tests {
         PackageCoordinate::parse("acme/http-kit@2.0.0-beta.1+build.7").unwrap()
     }
 
+    fn graph_format(name: &str) -> GraphFormat {
+        GraphFormat::parse(name).unwrap()
+    }
+
     #[test]
     fn canonical_and_extended_routes_are_distinct_and_preserve_base_prefixes() {
         let canonical = graph_url(
             "https://registry.example/internal/",
             &coordinate(),
-            GraphFormat::Yaml,
+            graph_format("yaml"),
         )
         .unwrap();
         assert_eq!(
@@ -276,7 +382,7 @@ mod tests {
         let binary = graph_url(
             "https://registry.example/internal/",
             &coordinate(),
-            GraphFormat::Protobuf,
+            graph_format("protobuf"),
         )
         .unwrap();
         assert_eq!(
@@ -292,7 +398,7 @@ mod tests {
             graph_url(
                 "https://user:secret@registry.example",
                 &coordinate(),
-                GraphFormat::Json
+                graph_format("json")
             )
             .is_err()
         );
@@ -300,11 +406,75 @@ mod tests {
             graph_url(
                 "https://registry.example?token=secret",
                 &coordinate(),
-                GraphFormat::Json
+                graph_format("json")
             )
             .is_err()
         );
-        assert!(graph_url("file:///tmp/registry", &coordinate(), GraphFormat::Json).is_err());
+        assert!(graph_url("file:///tmp/registry", &coordinate(), graph_format("json")).is_err());
+    }
+
+    #[test]
+    fn registry_base_requires_https_except_for_explicit_loopback_hosts() {
+        assert!(
+            graph_url(
+                "http://registry.example",
+                &coordinate(),
+                graph_format("json")
+            )
+            .is_err()
+        );
+        assert!(graph_url("http://localhost:8080", &coordinate(), graph_format("json")).is_ok());
+        assert!(graph_url("http://127.0.0.1", &coordinate(), graph_format("json")).is_ok());
+        assert!(graph_url("http://[::1]", &coordinate(), graph_format("json")).is_ok());
+        assert!(graph_url("http://127.0.0.2", &coordinate(), graph_format("json")).is_ok());
+        assert!(
+            graph_url(
+                "http://127.0.0.1.example",
+                &coordinate(),
+                graph_format("json")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn response_contract_requires_strong_validators_and_requested_media_type() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            require_strong_etag(Some("\"bytes\"".into())).unwrap(),
+            "\"bytes\""
+        );
+        assert!(require_strong_etag(Some("W/\"bytes\"".into())).is_err());
+        assert!(require_strong_etag(None).is_err());
+        assert_eq!(require_graph_digest(Some(digest.clone())).unwrap(), digest);
+        assert!(require_graph_digest(Some("sha256:abc".into())).is_err());
+        assert_eq!(
+            require_content_type(
+                Some("text/csv; charset=utf-8".into()),
+                "text/csv; charset=utf-8"
+            )
+            .unwrap(),
+            "text/csv; charset=utf-8"
+        );
+        assert!(
+            require_content_type(
+                Some("text/html; charset=utf-8".into()),
+                graph_format("json").media_type()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conditional_validators_use_weak_comparison_but_reject_unrelated_304s() {
+        assert!(if_none_match_matches("\"current\"", "\"current\""));
+        assert!(if_none_match_matches("W/\"current\"", "\"current\""));
+        assert!(if_none_match_matches(
+            "\"old\", W/\"current\"",
+            "\"current\""
+        ));
+        assert!(if_none_match_matches("*", "\"current\""));
+        assert!(!if_none_match_matches("\"other\"", "\"current\""));
     }
 
     #[test]

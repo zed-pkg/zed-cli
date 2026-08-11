@@ -83,7 +83,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_coordinate_parser_accepts_prereleases_and_rejects_requirements() {
+    fn exact_coordinate_parser_accepts_version_scheme_specific_identifiers() {
         let coordinate = PackageCoordinate::parse("acme/http-kit@2.0.0-beta.1+build.7").unwrap();
         assert_eq!(coordinate.org, "acme");
         assert_eq!(coordinate.name, "http-kit");
@@ -93,13 +93,15 @@ mod tests {
         assert!(PackageCoordinate::parse("acme/http-kit@../secret").is_err());
         assert!(PackageCoordinate::parse("acme/nested/name@1.0.0").is_err());
         assert!(PackageCoordinate::parse("Acme/http-kit@1.0.0").is_err());
+        assert!(PackageCoordinate::parse("acme/http-kit@2026.08.11").is_ok());
+        assert!(PackageCoordinate::parse("acme/http-kit@legacy-api").is_ok());
     }
 
     #[test]
     fn suggested_filenames_are_deterministic_and_binary_safe() {
         let coordinate = PackageCoordinate::parse("acme/http-kit@2.0.0-beta.1+build.7").unwrap();
         assert_eq!(
-            coordinate.suggested_filename(GraphFormat::Protobuf),
+            coordinate.suggested_filename(GraphFormat::parse("protobuf").unwrap()),
             "acme_http-kit_2.0.0-beta.1+build.7.dependency-graph.pb"
         );
     }
