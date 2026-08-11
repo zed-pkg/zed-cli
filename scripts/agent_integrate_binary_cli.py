@@ -39,6 +39,17 @@ if "pub mod binary_archive;" not in text:
     )
 lib.write_text(text)
 
+pack = Path("src/pack.rs")
+text = pack.read_text()
+if "#[derive(Debug)]\npub struct PackResult" not in text:
+    text = replace_required(
+        text,
+        "pub struct PackResult {",
+        "#[derive(Debug)]\npub struct PackResult {",
+        "PackResult Debug derive",
+    )
+pack.write_text(text)
+
 registry = Path("src/registry.rs")
 text = registry.read_text()
 old_fn = '''    fn artifact_file(&self, sha256: &str) -> PathBuf {
