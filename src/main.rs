@@ -13,6 +13,7 @@ use zed_cli::environment;
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
+use zed_cli::graph_export;
 use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
@@ -85,6 +86,16 @@ fn main() {
         }
     }
     if let Some(result) = fetch::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = graph_export::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -289,7 +300,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         lock.as_deref(),
                         frozen,
                     )?;
-                    asdf_environment::print_import(&imported, json)
+                    environment::print_import(&imported, json)
                 }
             },
             EnvCmd::Export {
@@ -336,7 +347,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         lock.as_deref(),
                         frozen,
                     )?;
-                    asdf_environment::print_verification(&imported, json)
+                    environment::print_verification(&imported, json)
                 }
             },
         },
