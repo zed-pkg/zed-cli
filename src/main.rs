@@ -300,7 +300,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         lock.as_deref(),
                         frozen,
                     )?;
-                    environment::print_import(&imported, json)
+                    asdf_environment::print_import(&imported, json)
                 }
             },
             EnvCmd::Export {
@@ -347,7 +347,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         lock.as_deref(),
                         frozen,
                     )?;
-                    environment::print_verification(&imported, json)
+                    asdf_environment::print_verification(&imported, json)
                 }
             },
         },
