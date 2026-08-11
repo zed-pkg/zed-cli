@@ -116,9 +116,9 @@ fn consume_response(
     let authoritative = match header_value(response.headers(), GRAPH_AUTHORITATIVE_HEADER)? {
         Some(value) if value.eq_ignore_ascii_case("true") => true,
         Some(value) if value.eq_ignore_ascii_case("false") => false,
-        Some(value) => anyhow::bail!(
-            "registry returned invalid {GRAPH_AUTHORITATIVE_HEADER} header `{value}`"
-        ),
+        Some(value) => {
+            anyhow::bail!("registry returned invalid {GRAPH_AUTHORITATIVE_HEADER} header `{value}`")
+        }
         None => format.authoritative(),
     };
 
@@ -212,10 +212,7 @@ fn write_atomic_file(path: &Path, body: &[u8]) -> Result<String> {
         "dependency graph output path may not be empty"
     );
     match fs::symlink_metadata(path) {
-        Ok(_) => anyhow::bail!(
-            "dependency graph output already exists: {}",
-            path.display()
-        ),
+        Ok(_) => anyhow::bail!("dependency graph output already exists: {}", path.display()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error)
