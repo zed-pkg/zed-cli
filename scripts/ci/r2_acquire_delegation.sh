@@ -48,6 +48,7 @@ request_body=$(printf '%s\n%s\n%s\n' \
   "run-id: ${GITHUB_RUN_ID}" \
   "public-key-base64: ${public_key}")
 curl --fail --silent --show-error --location \
+  --proto '=https' --proto-redir '=https' \
   --request POST \
   -H "Authorization: Bearer $GH_TOKEN" \
   -H 'Accept: application/vnd.github+json' \
@@ -63,6 +64,7 @@ marker="<!-- zed-r2-handoff:${GITHUB_RUN_ID} -->"
 ciphertext=''
 for _ in $(seq 1 180); do
   comments=$(curl --fail --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' \
     -H "Authorization: Bearer $GH_TOKEN" \
     -H 'Accept: application/vnd.github+json' \
     -H 'X-GitHub-Api-Version: 2022-11-28' \

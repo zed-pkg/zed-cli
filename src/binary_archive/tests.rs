@@ -110,4 +110,178 @@ hello = "bin/hello"
             assert!(error.contains("symlink"), "{error}");
         }
     }
+
+    #[test]
+    fn packer_never_clobbers_a_conflicting_output() {
+        let project = fixture_project();
+        let output = tempfile::tempdir().unwrap();
+        let destination = output
+            .path()
+            .join("acme-hello-bin-1.2.3-x86_64-unknown-linux-gnu.zip");
+        fs::write(&destination, b"operator-owned conflicting bytes").unwrap();
+
+        let error = pack_binary_zip(
+            project.path(),
+            &BinaryPackOptions {
+                platform: platform(),
+                includes: Vec::new(),
+                out_dir: Some(output.path().to_path_buf()),
+                vcs_commit: None,
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("refusing to overwrite conflicting"));
+        assert_eq!(
+            fs::read(destination).unwrap(),
+            b"operator-owned conflicting bytes"
+        );
+    }
+
+    #[test]
+    fn qualified_file_registry_roundtrip_keeps_release_and_target_separate() {
+        use crate::registry::{FileRegistry, Registry};
+
+        let project = fixture_project();
+        let output = tempfile::tempdir().unwrap();
+        let registry_root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let packed = pack_binary_zip(
+            project.path(),
+            &BinaryPackOptions {
+                platform: platform(),
+                includes: Vec::new(),
+                out_dir: Some(output.path().to_path_buf()),
+                vcs_commit: Some("0123456789abcdef".to_owned()),
+            },
+        )
+        .unwrap();
+        let cfg = Config {
+            registry: format!("file://{}", registry_root.path().display()),
+            home: home.path().to_path_buf(),
+            token: None,
+            auth_url: "http://127.0.0.1/unused".to_owned(),
+            supabase_url: None,
+            supabase_key: None,
+            interactive: false,
+        };
+
+        publish_binary_zip_with_route(
+            &cfg,
+            &packed,
+            false,
+            BinaryRegistryRoute::Qualified,
+        )
+        .unwrap();
+        let registry = FileRegistry::new(registry_root.path().to_path_buf());
+        assert!(registry.get_version("acme", "hello-bin", "1.2.3").is_err());
+        let qualified = registry
+            .get_binary_artifact(
+                "acme",
+                "hello-bin",
+                "1.2.3",
+                &platform().target,
+                BinaryArchiveFormatV1::Zip,
+            )
+            .unwrap();
+        assert_eq!(qualified.sha256, packed.packed.sha256);
+        let descriptor_sha256 = hex::encode(Sha256::digest(
+            packed.descriptor.canonical_json_bytes().unwrap(),
+        ));
+        assert_eq!(qualified.descriptor_sha256, descriptor_sha256);
+
+        let publish_meta = BinaryArtifactPublishMetaV1 {
+            schema: BINARY_ARTIFACT_PUBLISH_META_SCHEMA_V1.to_owned(),
+            manifest: packed.manifest.clone(),
+            platform: platform(),
+            format: BinaryArchiveFormatV1::Zip,
+            sha256: packed.packed.sha256.clone(),
+            size: packed.packed.size,
+            descriptor_sha256: "f".repeat(64),
+            vcs_tag: packed.manifest.vcs_tag(),
+            vcs_commit: packed
+                .descriptor
+                .source
+                .as_ref()
+                .and_then(|source| source.vcs_commit.clone()),
+            attachments: Vec::new(),
+        };
+        let conflict = registry
+            .publish_binary_artifact(&publish_meta, &packed.packed.path, None)
+            .unwrap_err();
+        assert!(format!("{conflict:#}").contains("immutable"));
+        assert_eq!(
+            registry
+                .get_binary_artifact(
+                    "acme",
+                    "hello-bin",
+                    "1.2.3",
+                    &platform().target,
+                    BinaryArchiveFormatV1::Zip,
+                )
+                .unwrap()
+                .descriptor_sha256,
+            descriptor_sha256
+        );
+
+        let destination = output.path().join("downloaded.zip");
+        let downloaded = download_binary_zip_with_route(
+            &cfg,
+            "acme/hello-bin@1.2.3",
+            &destination,
+            Some(&platform().target),
+            BinaryRegistryRoute::Qualified,
+        )
+        .unwrap();
+        assert_eq!(downloaded.sha256, packed.packed.sha256);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn packer_rejects_a_payload_path_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("tool");
+        fs::write(&source, b"reviewed payload").unwrap();
+        let mut files = BTreeMap::new();
+        let mut portable_paths = BTreeMap::new();
+        insert_source_file(
+            &mut files,
+            &mut portable_paths,
+            "bin/tool",
+            source.clone(),
+            true,
+        )
+        .unwrap();
+
+        fs::rename(&source, root.path().join("original-inode")).unwrap();
+        fs::write(&source, b"replacement payload").unwrap();
+        let archive = root.path().join("snapshot.zip");
+        let error = write_binary_zip(&archive, &files, b"{}").unwrap_err();
+        assert!(format!("{error:#}").contains("changed while being opened"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn promotion_rejects_symlink_destinations_without_touching_the_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let staging = root.path().join("staging.zip");
+        let victim = root.path().join("victim");
+        let destination = root.path().join("artifact.zip");
+        fs::write(&staging, b"verified bytes").unwrap();
+        fs::write(&victim, b"do not touch").unwrap();
+        symlink(&victim, &destination).unwrap();
+        let (sha256, size) = sha256_file(&staging).unwrap();
+
+        let error = promote_verified_noclobber(
+            &staging,
+            &destination,
+            &sha256,
+            size,
+            "test artifact",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("non-symlink"));
+        assert_eq!(fs::read(victim).unwrap(), b"do not touch");
+    }
 }

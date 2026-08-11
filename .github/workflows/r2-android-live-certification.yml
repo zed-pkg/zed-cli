@@ -16,8 +16,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: write
 
 concurrency:
   group: r2-android-live-${{ github.event.pull_request.number || github.ref }}
@@ -38,6 +36,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     environment: r2-release-publication
+    permissions:
+      contents: read
+      # The encrypted fallback posts and reads a same-repository PR issue
+      # comment. No pull-request mutation permission is required.
+      issues: write
     services:
       postgres:
         image: pgvector/pgvector:0.8.2-pg17-bookworm

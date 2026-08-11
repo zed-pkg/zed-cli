@@ -146,6 +146,7 @@ presigned_url=$(aws --endpoint-url "$S3_ENDPOINT_URL" s3 presign \
   "s3://$R2_BUCKET/$OBJECT_KEY" --expires-in 300)
 echo "::add-mask::$presigned_url"
 curl --fail --silent --show-error --location \
+  --proto '=https' --proto-redir '=https' \
   --output "$presigned_archive" "$presigned_url"
 
 for archive in "$registry_archive" "$direct_archive" "$presigned_archive"; do

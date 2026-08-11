@@ -128,6 +128,12 @@ Artifacts are `tar.gz` by default; `zip` is fully supported (both pack
 deterministically and install through the store's magic-byte extraction). The
 registry hosts both on S3/Cloudflare R2.
 
+Native executable bundles use the stricter self-describing ZIP profile described
+in [docs/binary-artifacts.md](docs/binary-artifacts.md). `zed-binary pack` and
+`verify` keep `.zpkg.toml` beside the payload under `pkg/`; publish/download use
+the legacy version route by default or the additive target-qualified route with
+`--artifact-route qualified`.
+
 ## Commands
 
 | Command | What it does |
@@ -147,6 +153,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
+| `zed-binary pack\|verify\|publish\|download` | Build or transport a deterministic, self-describing native ZIP; target-qualified registry identity is opt-in and does not modify SemVer |
 | `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
@@ -595,7 +602,8 @@ Artifacts arrive over the network, so the client treats them as untrusted:
   count are capped (`ZED_PKG_MAX_UNPACKED_BYTES`) against decompression bombs.
 - **Bounded downloads.** Artifact fetches are size-capped
   (`ZED_PKG_MAX_ARTIFACT_BYTES`) and a registry-supplied `download_url` must
-  be https (or loopback/http only when the registry itself is http).
+  be https (or loopback/the same http origin as an explicitly plaintext
+  registry). Authenticated API requests never follow redirects.
 - **No implicit install-time code execution or privilege use.** Native package
   installation, package lifecycle hooks, and builds require independent
   explicit consent. Native specs use fixed argv templates; hooks/builds run in

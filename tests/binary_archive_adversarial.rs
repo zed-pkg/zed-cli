@@ -100,8 +100,7 @@ fn read_entries(path: &Path) -> Vec<Entry> {
 fn write_entries(path: &Path, entries: &[Entry]) {
     let output = fs::File::create(path).expect("create mutated ZIP");
     let mut writer = ZipWriter::new(output);
-    let epoch = zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0)
-        .expect("valid ZIP epoch");
+    let epoch = zip::DateTime::from_date_and_time(1980, 1, 1, 0, 0, 0).expect("valid ZIP epoch");
     for entry in entries {
         let options = SimpleFileOptions::default()
             .compression_method(entry.compression)
@@ -145,12 +144,25 @@ fn payload_entry(entries: &mut [Entry]) -> &mut Entry {
 }
 
 fn assert_rejected(path: &Path, expected: &str) {
-    let error = verify_binary_zip(path, None)
-        .expect_err("adversarial archive must be rejected")
-        .to_string();
+    let error = verify_binary_zip(path, None).expect_err("adversarial archive must be rejected");
+    let error = format!("{error:#}");
     assert!(
-        error.to_ascii_lowercase().contains(&expected.to_ascii_lowercase()),
+        error
+            .to_ascii_lowercase()
+            .contains(&expected.to_ascii_lowercase()),
         "expected error containing `{expected}`, got `{error}`"
+    );
+}
+
+fn assert_rejected_for_any(path: &Path, expected: &[&str]) {
+    let error = verify_binary_zip(path, None).expect_err("adversarial archive must be rejected");
+    let error = format!("{error:#}");
+    let normalized = error.to_ascii_lowercase();
+    assert!(
+        expected
+            .iter()
+            .any(|meaning| normalized.contains(&meaning.to_ascii_lowercase())),
+        "expected an error containing one of {expected:?}, got `{error}`"
     );
 }
 
@@ -179,7 +191,10 @@ fn rejects_unlisted_missing_tampered_and_mode_mismatched_payloads() {
     let tampered = mutate(&fixture, "tampered.zip", |entries| {
         payload_entry(entries).bytes.extend_from_slice(b"tampered");
     });
-    assert_rejected(&tampered, "digest mismatch");
+    assert_rejected_for_any(
+        &tampered,
+        &["digest mismatch", "size mismatch", "expanded byte count"],
+    );
 
     let mode_mismatch = mutate(&fixture, "mode-mismatch.zip", |entries| {
         payload_entry(entries).mode = 0o644;
@@ -190,12 +205,20 @@ fn rejects_unlisted_missing_tampered_and_mode_mismatched_payloads() {
 #[test]
 fn rejects_traversal_noncanonical_and_colliding_paths() {
     let fixture = fixture();
-    let cases = [
-        ("traversal.zip", "pkg/../escape", "escapes"),
-        ("absolute.zip", "/pkg/escape", "escapes"),
-        ("outside-root.zip", "outside.txt", "not beneath"),
-        ("backslash.zip", "pkg\\escape", "backslash"),
-        ("casefold.zip", "pkg/BIN/hello", "collide"),
+    let cases: [(&str, &str, &[&str]); 5] = [
+        (
+            "traversal.zip",
+            "pkg/../escape",
+            &["escapes", "not beneath"],
+        ),
+        (
+            "absolute.zip",
+            "/pkg/escape",
+            &["escapes", "not beneath", "not canonically encoded"],
+        ),
+        ("outside-root.zip", "outside.txt", &["not beneath"]),
+        ("backslash.zip", "pkg\\escape", &["backslash"]),
+        ("casefold.zip", "pkg/BIN/hello", &["collide"]),
     ];
     for (archive_name, entry_name, expected) in cases {
         let archive = mutate(&fixture, archive_name, |entries| {
@@ -206,18 +229,132 @@ fn rejects_traversal_noncanonical_and_colliding_paths() {
                 compression: CompressionMethod::Stored,
             });
         });
-        assert_rejected(&archive, expected);
+        assert_rejected_for_any(&archive, expected);
     }
 
     let duplicate = mutate(&fixture, "duplicate.zip", |entries| {
-        let duplicate = entries
-            .iter()
-            .find(|entry| entry.name == PAYLOAD)
-            .expect("payload")
-            .clone();
-        entries.push(duplicate);
+        entries.push(Entry {
+            name: "pkg/dup/hello".to_owned(),
+            bytes: b"duplicate path payload".to_vec(),
+            mode: 0o755,
+            compression: CompressionMethod::Stored,
+        });
     });
-    assert_rejected(&duplicate, "collide");
+    let mut duplicate_bytes = fs::read(&duplicate).expect("read duplicate fixture");
+    let needle = b"pkg/dup/hello";
+    let replacement = b"pkg/bin/hello";
+    let mut replacements = 0;
+    for offset in 0..=duplicate_bytes.len().saturating_sub(needle.len()) {
+        if &duplicate_bytes[offset..offset + needle.len()] == needle {
+            duplicate_bytes[offset..offset + replacement.len()].copy_from_slice(replacement);
+            replacements += 1;
+        }
+    }
+    assert_eq!(replacements, 2, "patch local and central names");
+    fs::write(&duplicate, duplicate_bytes).expect("write duplicate fixture");
+    assert_rejected_for_any(&duplicate, &["duplicate filename", "collide"]);
+
+    let local_name_mismatch = mutate(&fixture, "local-name-mismatch.zip", |_| {});
+    let mut mismatch_bytes = fs::read(&local_name_mismatch).expect("read local-name fixture");
+    let central_name = b"pkg/bin/hello";
+    let hostile_local_name = b"pkg/../escape";
+    assert_eq!(central_name.len(), hostile_local_name.len());
+    let offset = mismatch_bytes
+        .windows(central_name.len())
+        .position(|window| window == central_name)
+        .expect("local payload filename");
+    mismatch_bytes[offset..offset + hostile_local_name.len()].copy_from_slice(hostile_local_name);
+    fs::write(&local_name_mismatch, mismatch_bytes).expect("write local-name fixture");
+    assert_rejected_for_any(
+        &local_name_mismatch,
+        &["local and central filenames disagree"],
+    );
+}
+
+#[test]
+fn rejects_nonportable_device_unicode_and_directory_payload_paths() {
+    let fixture = fixture();
+    let long_component = "a".repeat(256);
+    let cases: Vec<(&str, &str, &[u8], &[&str])> = vec![
+        (
+            "device.zip",
+            "pkg/share/CON.txt",
+            b"device",
+            &["device name"],
+        ),
+        (
+            "trailing-dot.zip",
+            "pkg/share/name.",
+            b"dot",
+            &["trailing dot or space"],
+        ),
+        (
+            "reserved-char.zip",
+            "pkg/share/name?.txt",
+            b"question",
+            &["reserved character"],
+        ),
+        (
+            "alternate-stream.zip",
+            "pkg/share/name:stream",
+            b"alternate data stream",
+            &["reserved character", "invalid"],
+        ),
+        (
+            "directory-data.zip",
+            "pkg/share/",
+            b"hidden directory data",
+            &["directory", "payload bytes", "unsupported unix file type"],
+        ),
+        (
+            "long-component.zip",
+            &long_component,
+            b"long",
+            &["255-byte"],
+        ),
+    ];
+    for (archive_name, entry_name, bytes, meanings) in cases {
+        let archive = mutate(&fixture, archive_name, |entries| {
+            entries.push(Entry {
+                name: if archive_name == "long-component.zip" {
+                    format!("pkg/{entry_name}")
+                } else {
+                    entry_name.to_owned()
+                },
+                bytes: bytes.to_vec(),
+                mode: 0o644,
+                compression: CompressionMethod::Stored,
+            });
+        });
+        assert_rejected_for_any(&archive, meanings);
+    }
+
+    let unicode_collision = mutate(&fixture, "unicode-casefold.zip", |entries| {
+        for name in ["pkg/share/Ä.txt", "pkg/share/ä.txt"] {
+            entries.push(Entry {
+                name: name.to_owned(),
+                bytes: b"unicode collision".to_vec(),
+                mode: 0o644,
+                compression: CompressionMethod::Stored,
+            });
+        }
+    });
+    assert_rejected(&unicode_collision, "collide");
+
+    let file_directory_collision = mutate(&fixture, "file-directory.zip", |entries| {
+        for name in ["pkg/share", "pkg/share/child"] {
+            entries.push(Entry {
+                name: name.to_owned(),
+                bytes: b"ambiguous hierarchy".to_vec(),
+                mode: 0o644,
+                compression: CompressionMethod::Stored,
+            });
+        }
+    });
+    assert_rejected_for_any(
+        &file_directory_collision,
+        &["nested beneath an existing file", "existing child path"],
+    );
 }
 
 #[test]
@@ -277,6 +414,46 @@ fn patch_zip_headers(path: &Path, mut patch: impl FnMut(&mut [u8], usize, bool))
     fs::write(path, bytes).expect("write patched ZIP");
 }
 
+fn add_unnecessary_zip64_directory(path: &Path) {
+    let bytes = fs::read(path).expect("read ZIP64 fixture");
+    let eocd = bytes
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")
+        .expect("EOCD");
+    assert_eq!(eocd + 22, bytes.len(), "fixture has no ZIP comment");
+    let entries = u16::from_le_bytes(bytes[eocd + 10..eocd + 12].try_into().unwrap()) as u64;
+    let central_size = u32::from_le_bytes(bytes[eocd + 12..eocd + 16].try_into().unwrap()) as u64;
+    let central_offset = u32::from_le_bytes(bytes[eocd + 16..eocd + 20].try_into().unwrap()) as u64;
+
+    let mut zip64 = Vec::with_capacity(56);
+    zip64.extend_from_slice(b"PK\x06\x06");
+    zip64.extend_from_slice(&44_u64.to_le_bytes());
+    zip64.extend_from_slice(&45_u16.to_le_bytes());
+    zip64.extend_from_slice(&45_u16.to_le_bytes());
+    zip64.extend_from_slice(&0_u32.to_le_bytes());
+    zip64.extend_from_slice(&0_u32.to_le_bytes());
+    zip64.extend_from_slice(&entries.to_le_bytes());
+    zip64.extend_from_slice(&entries.to_le_bytes());
+    zip64.extend_from_slice(&central_size.to_le_bytes());
+    zip64.extend_from_slice(&central_offset.to_le_bytes());
+    assert_eq!(zip64.len(), 56);
+
+    let mut locator = Vec::with_capacity(20);
+    locator.extend_from_slice(b"PK\x06\x07");
+    locator.extend_from_slice(&0_u32.to_le_bytes());
+    locator.extend_from_slice(&(eocd as u64).to_le_bytes());
+    locator.extend_from_slice(&1_u32.to_le_bytes());
+    assert_eq!(locator.len(), 20);
+
+    let mut ordinary_eocd = bytes[eocd..].to_vec();
+    ordinary_eocd[8..12].fill(0xff);
+    let mut rewritten = bytes[..eocd].to_vec();
+    rewritten.extend_from_slice(&zip64);
+    rewritten.extend_from_slice(&locator);
+    rewritten.extend_from_slice(&ordinary_eocd);
+    fs::write(path, rewritten).expect("write ZIP64 fixture");
+}
+
 #[test]
 fn rejects_encryption_unsupported_compression_and_ratio_bombs() {
     let fixture = fixture();
@@ -287,14 +464,46 @@ fn rejects_encryption_unsupported_compression_and_ratio_bombs() {
         let flags = u16::from_le_bytes([bytes[flag_offset], bytes[flag_offset + 1]]) | 1;
         bytes[flag_offset..flag_offset + 2].copy_from_slice(&flags.to_le_bytes());
     });
-    assert_rejected(&encrypted, "encrypted");
+    assert_rejected_for_any(&encrypted, &["encrypted", "password required"]);
+
+    let data_descriptor = mutate(&fixture, "data-descriptor.zip", |_| {});
+    patch_zip_headers(&data_descriptor, |bytes, offset, central| {
+        let flag_offset = offset + if central { 8 } else { 6 };
+        let flags = u16::from_le_bytes([bytes[flag_offset], bytes[flag_offset + 1]]) | (1 << 3);
+        bytes[flag_offset..flag_offset + 2].copy_from_slice(&flags.to_le_bytes());
+    });
+    assert_rejected_for_any(
+        &data_descriptor,
+        &["data descriptor", "local and central", "checksum"],
+    );
+
+    let zip64 = mutate(&fixture, "unnecessary-zip64.zip", |_| {});
+    add_unnecessary_zip64_directory(&zip64);
+    assert_rejected(&zip64, "ZIP64 even though ordinary ZIP limits suffice");
 
     let unsupported = mutate(&fixture, "unsupported-compression.zip", |_| {});
     patch_zip_headers(&unsupported, |bytes, offset, central| {
         let method_offset = offset + if central { 10 } else { 8 };
         bytes[method_offset..method_offset + 2].copy_from_slice(&12_u16.to_le_bytes());
     });
-    assert_rejected(&unsupported, "unsupported compression");
+    assert_rejected_for_any(
+        &unsupported,
+        &[
+            "unsupported compression",
+            "compression method not supported",
+        ],
+    );
+
+    let symlink = mutate(&fixture, "symlink.zip", |_| {});
+    patch_zip_headers(&symlink, |bytes, offset, central| {
+        if central {
+            let attributes_offset = offset + 38;
+            let attributes = (0o120777_u32) << 16;
+            bytes[attributes_offset..attributes_offset + 4]
+                .copy_from_slice(&attributes.to_le_bytes());
+        }
+    });
+    assert_rejected_for_any(&symlink, &["symlink", "unsupported Unix file type"]);
 
     let ratio_bomb = mutate(&fixture, "ratio-bomb.zip", |entries| {
         entries.push(Entry {

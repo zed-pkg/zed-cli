@@ -16,7 +16,7 @@ fn collect_explicit_include(
             portable_paths,
             &relative,
             source,
-            entrypoints.contains(&relative) || file_is_executable(&project.join(&relative))?,
+            entrypoints.contains(&relative),
         )?;
         return Ok(());
     }
@@ -43,7 +43,7 @@ fn collect_explicit_include(
             portable_paths,
             &relative,
             entry.path().to_path_buf(),
-            entrypoints.contains(&relative) || file_is_executable(entry.path())?,
+            entrypoints.contains(&relative),
         )?;
     }
     Ok(())

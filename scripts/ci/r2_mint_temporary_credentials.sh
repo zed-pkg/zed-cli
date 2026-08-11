@@ -20,6 +20,7 @@ endpoint="https://${account}.r2.cloudflarestorage.com"
 
 verify_file="$RUNNER_TEMP/r2-token-verify.json"
 verify_status=$(curl --silent --show-error --location \
+  --proto '=https' --proto-redir '=https' \
   --output "$verify_file" --write-out '%{http_code}' \
   -H "Authorization: Bearer $api_token" \
   "https://api.cloudflare.com/client/v4/accounts/$account/tokens/verify")
@@ -31,6 +32,7 @@ fi
 
 list_file="$RUNNER_TEMP/r2-bucket-list.json"
 list_status=$(curl --silent --show-error --location \
+  --proto '=https' --proto-redir '=https' \
   --output "$list_file" --write-out '%{http_code}' \
   -H "Authorization: Bearer $api_token" \
   -H 'Content-Type: application/json' \
@@ -47,6 +49,7 @@ if ! jq -e --arg bucket "$R2_BUCKET" '
   ' "$list_file" >/dev/null; then
   create_file="$RUNNER_TEMP/r2-bucket-create.json"
   create_status=$(curl --silent --show-error --location \
+    --proto '=https' --proto-redir '=https' \
     --output "$create_file" --write-out '%{http_code}' \
     --request POST \
     -H "Authorization: Bearer $api_token" \
@@ -75,6 +78,7 @@ jq -cn \
     objects:[$object]
   }' >"$temp_request"
 temp_status=$(curl --silent --show-error --location \
+  --proto '=https' --proto-redir '=https' \
   --output "$temp_response" --write-out '%{http_code}' \
   --request POST \
   -H "Authorization: Bearer $api_token" \

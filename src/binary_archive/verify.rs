@@ -2,23 +2,33 @@ pub fn verify_binary_zip(
     archive_path: &Path,
     expected_platform: Option<&BinaryPlatformV1>,
 ) -> Result<VerifiedBinaryArtifact> {
-    let metadata = fs::metadata(archive_path)
-        .with_context(|| format!("reading binary ZIP metadata {}", archive_path.display()))?;
-    ensure!(metadata.is_file(), "{} is not a file", archive_path.display());
+    let (mut file, metadata) = open_regular_file(archive_path, "binary ZIP")?;
     ensure!(
         metadata.len() <= max_binary_archive_bytes(),
         "binary ZIP is {} bytes, above the {}-byte limit",
         metadata.len(),
         max_binary_archive_bytes()
     );
-    require_zip_magic(archive_path)?;
-    let (sha256, size) = sha256_file(archive_path)?;
+    require_zip_magic(&mut file, archive_path)?;
+    let (sha256, size) = sha256_open_file(&mut file)?;
     ensure!(
         size == metadata.len(),
         "binary ZIP changed while its outer digest was being computed"
     );
+    let (declared_entry_count, uses_zip64_directory) = declared_zip_entry_count(&mut file)?;
+    ensure!(
+        declared_entry_count <= max_binary_entries(),
+        "binary ZIP declares {declared_entry_count} entries, above the {}-entry limit",
+        max_binary_entries()
+    );
+    let ordinary_zip_limits_suffice = size < u32::MAX as u64
+        && declared_entry_count < u16::MAX as usize;
+    ensure!(
+        !(uses_zip64_directory && ordinary_zip_limits_suffice),
+        "binary ZIP uses ZIP64 even though ordinary ZIP limits suffice"
+    );
 
-    let file = fs::File::open(archive_path)?;
+    file.seek(SeekFrom::Start(0))?;
     let mut archive = zip::ZipArchive::new(file)
         .with_context(|| format!("opening binary ZIP {}", archive_path.display()))?;
     ensure!(
@@ -31,12 +41,19 @@ pub fn verify_binary_zip(
         archive.len(),
         max_binary_entries()
     );
+    ensure!(
+        archive.len() == declared_entry_count,
+        "binary ZIP central directory contains duplicate filenames"
+    );
 
     let mut files = BTreeSet::<String>::new();
     let mut portable_paths = BTreeMap::<String, String>::new();
+    let mut portable_entry_kinds = BTreeMap::<String, bool>::new();
     let mut descriptor_bytes: Option<Vec<u8>> = None;
     let mut package_manifest_bytes: Option<Vec<u8>> = None;
     let mut expanded_total = 0_u64;
+    let mut root_directory_seen = false;
+    let mut header_locations = Vec::with_capacity(archive.len());
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
@@ -50,6 +67,13 @@ pub fn verify_binary_zip(
             entry.name(),
             entry.compression()
         );
+        if ordinary_zip_limits_suffice {
+            ensure!(
+                !zip_extra_contains_field(entry.extra_data().unwrap_or_default(), 0x0001)?,
+                "ZIP entry `{}` uses unnecessary ZIP64 metadata",
+                entry.name()
+            );
+        }
         ensure!(!entry.is_symlink(), "ZIP entry `{}` is a symlink", entry.name());
         ensure!(
             entry.is_file() || entry.is_dir(),
@@ -69,6 +93,11 @@ pub fn verify_binary_zip(
         }
         let raw_name = std::str::from_utf8(entry.name_raw())
             .with_context(|| format!("ZIP entry {index} name is not UTF-8"))?;
+        header_locations.push((
+            entry.header_start(),
+            entry.central_header_start(),
+            entry.name_raw().to_vec(),
+        ));
         ensure!(
             !raw_name.contains('\\'),
             "ZIP entry `{raw_name}` uses a backslash path separator"
@@ -82,6 +111,12 @@ pub fn verify_binary_zip(
                 raw_name == format!("{BINARY_ARCHIVE_ROOT}/"),
                 "ZIP root directory `{raw_name}` is not canonically encoded"
             );
+            ensure!(
+                !root_directory_seen,
+                "binary ZIP contains duplicate `{BINARY_ARCHIVE_ROOT}/` directory entries"
+            );
+            ensure!(entry.size() == 0, "ZIP root directory contains payload bytes");
+            root_directory_seen = true;
             continue;
         }
         let relative = normalized
@@ -93,6 +128,7 @@ pub fn verify_binary_zip(
             .to_owned();
         validate_safe_relative_path("ZIP entry path", &relative)
             .map_err(|error| anyhow::anyhow!(error))?;
+        validate_portable_archive_path("ZIP entry path", &relative)?;
         let canonical_name = if entry.is_dir() {
             format!("{BINARY_ARCHIVE_ROOT}/{relative}/")
         } else {
@@ -108,7 +144,19 @@ pub fn verify_binary_zip(
                 "ZIP entries `{existing}` and `{relative}` collide under portable case rules"
             );
         }
+        let portable = portable_path_key(&relative);
+        validate_no_file_directory_collision(
+            &portable_entry_kinds,
+            &portable,
+            &relative,
+            entry.is_dir(),
+        )?;
+        portable_entry_kinds.insert(portable, entry.is_dir());
         if entry.is_dir() {
+            ensure!(
+                entry.size() == 0,
+                "ZIP directory entry `{raw_name}` contains payload bytes"
+            );
             continue;
         }
         ensure!(
@@ -127,6 +175,12 @@ pub fn verify_binary_zip(
 
         if relative == BINARY_DESCRIPTOR_PATH {
             ensure!(descriptor_bytes.is_none(), "binary ZIP has multiple descriptors");
+            if let Some(mode) = entry.unix_mode() {
+                ensure!(
+                    mode & 0o111 == 0,
+                    "pkg/{BINARY_DESCRIPTOR_PATH} must not be executable"
+                );
+            }
             descriptor_bytes = Some(read_small_entry(
                 &mut entry,
                 MAX_DESCRIPTOR_BYTES,
@@ -153,6 +207,10 @@ pub fn verify_binary_zip(
     descriptor
         .validate()
         .map_err(|error| anyhow::anyhow!(error))?;
+    validate_portable_archive_path("binary descriptor package manifest", &descriptor.package_manifest)?;
+    for file in &descriptor.files {
+        validate_portable_archive_path("binary descriptor payload path", &file.path)?;
+    }
     let canonical_descriptor = descriptor
         .canonical_json_bytes()
         .map_err(|error| anyhow::anyhow!(error))?;
@@ -178,7 +236,6 @@ pub fn verify_binary_zip(
         .validate()
         .map_err(|error| anyhow::anyhow!("invalid pkg/.zpkg.toml: {error}"))?;
     ensure_descriptor_matches_manifest(&descriptor, &manifest)?;
-
     let descriptor_paths = descriptor
         .files
         .iter()
@@ -204,9 +261,15 @@ pub fn verify_binary_zip(
         descriptor.files.len().saturating_add(1) == files.len(),
         "binary descriptor/archive payload counts differ"
     );
+    let expected_expanded_total = descriptor
+        .expanded_size
+        .checked_add(descriptor_bytes.len() as u64)
+        .context("binary descriptor and payload sizes overflow u64")?;
+    ensure!(
+        expanded_total == expected_expanded_total,
+        "binary ZIP expanded byte count differs from its canonical descriptor"
+    );
 
-    let file = fs::File::open(archive_path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
     for expected in &descriptor.files {
         let archive_name = format!("{BINARY_ARCHIVE_ROOT}/{}", expected.path);
         let mut entry = archive
@@ -228,6 +291,26 @@ pub fn verify_binary_zip(
             expected.sha256
         );
     }
+
+    // The archive is intentionally hashed again through the same open file
+    // object after all central-directory and payload reads. This closes the
+    // source-mutation gap where a caller-controlled path could otherwise
+    // change after the outer digest was computed.
+    let mut file = archive.into_inner();
+    validate_matching_zip_headers(
+        &mut file,
+        &header_locations,
+        ordinary_zip_limits_suffice,
+    )?;
+    let (final_sha256, final_size) = sha256_open_file(&mut file)?;
+    ensure!(
+        final_sha256 == sha256 && final_size == size,
+        "binary ZIP changed while it was being verified"
+    );
+    ensure!(
+        file.metadata()?.len() == size,
+        "binary ZIP size changed while it was being verified"
+    );
 
     Ok(VerifiedBinaryArtifact {
         manifest,

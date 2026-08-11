@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -16,12 +16,13 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::binary_artifact::{
-    BINARY_ARCHIVE_ROOT, BINARY_ARTIFACT_SCHEMA_V1, BINARY_DESCRIPTOR_PATH,
-    BINARY_PACKAGE_MANIFEST_PATH, BinaryArchiveFormatV1, BinaryArtifactManifestV1, BinaryFileV1,
+    BINARY_ARCHIVE_ROOT, BINARY_ARTIFACT_PUBLISH_META_SCHEMA_V1, BINARY_ARTIFACT_SCHEMA_V1,
+    BINARY_DESCRIPTOR_PATH, BINARY_PACKAGE_MANIFEST_PATH, BinaryArchiveFormatV1,
+    BinaryArtifactManifestV1, BinaryArtifactMetadataV1, BinaryArtifactPublishMetaV1, BinaryFileV1,
     BinaryPackageIdentityV1, BinaryPlatformV1, BinarySourceProvenanceV1,
     validate_safe_relative_path,
 };
-use zed_interfaces::manifest::Manifest;
+use zed_interfaces::manifest::{Manifest, is_slug};
 use zed_interfaces::paths::{MANIFEST_FILE, PACK_OUT_DIR};
 use zed_interfaces::registry::{PublishMeta, PublishResponse, VersionMetadata};
 
@@ -62,6 +63,19 @@ pub struct VerifiedBinaryArtifact {
     pub file_count: usize,
 }
 
+/// Selects the registry identity used for a binary artifact.
+///
+/// `Legacy` preserves the original one-artifact-per-version route.  It is the
+/// default until a registry explicitly advertises the artifact-qualified API.
+/// `Qualified` keeps release identity and target identity separate and uses
+/// `/versions/{version}/artifacts/{target}/{format}`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BinaryRegistryRoute {
+    #[default]
+    Legacy,
+    Qualified,
+}
+
 #[derive(Debug)]
 struct CollectedFile {
     path: String,
@@ -73,7 +87,10 @@ struct CollectedFile {
 
 #[derive(Debug)]
 enum CollectedSource {
-    File(PathBuf),
+    File {
+        path: PathBuf,
+        metadata: fs::Metadata,
+    },
     Bytes(Vec<u8>),
 }
 

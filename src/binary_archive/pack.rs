@@ -3,6 +3,26 @@ pub fn pack_binary_zip(project: &Path, options: &BinaryPackOptions) -> Result<Bi
         .canonicalize()
         .with_context(|| format!("resolving project root {}", project.display()))?;
     let manifest = read_manifest(&project)?;
+    let packed = pack_binary_zip_with_manifest(&project, &manifest, options)?;
+    ensure!(
+        read_manifest(&project)? == manifest,
+        "{MANIFEST_FILE} changed while the binary ZIP was being packed"
+    );
+    Ok(packed)
+}
+
+/// Pack using the exact manifest instance whose release provenance the caller
+/// already checked. This prevents a concurrent `.zpkg.toml` replacement from
+/// changing package identity between tag verification and archive creation.
+pub fn pack_binary_zip_with_manifest(
+    project: &Path,
+    manifest: &Manifest,
+    options: &BinaryPackOptions,
+) -> Result<BinaryPackResult> {
+    let project = project
+        .canonicalize()
+        .with_context(|| format!("resolving project root {}", project.display()))?;
+    let manifest = manifest.clone();
     manifest
         .validate()
         .map_err(|error| anyhow::anyhow!("invalid {MANIFEST_FILE}: {error}"))?;
@@ -152,27 +172,13 @@ pub fn pack_binary_zip(project: &Path, options: &BinaryPackOptions) -> Result<Bi
         max_binary_archive_bytes()
     );
 
-    if out_path.exists() {
-        let (existing_sha, _) = sha256_file(&out_path)?;
-        if existing_sha == verified.sha256 {
-            return Ok(BinaryPackResult {
-                manifest,
-                descriptor,
-                packed: PackResult {
-                    path: out_path,
-                    sha256: verified.sha256,
-                    size: verified.size,
-                    file_count: verified.file_count,
-                    excluded_count: 0,
-                    format: ArtifactFormat::Zip,
-                },
-            });
-        }
-        fs::remove_file(&out_path)
-            .with_context(|| format!("replacing existing {}", out_path.display()))?;
-    }
-    fs::rename(&temporary_path, &out_path)
-        .with_context(|| format!("promoting verified binary ZIP to {}", out_path.display()))?;
+    promote_verified_noclobber(
+        &temporary_path,
+        &out_path,
+        &verified.sha256,
+        verified.size,
+        "binary ZIP",
+    )?;
 
     Ok(BinaryPackResult {
         manifest,

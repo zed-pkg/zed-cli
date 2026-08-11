@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use zed_cli::binary_archive::{
-    BinaryPackOptions, download_binary_zip, pack_binary_zip, publish_binary_zip, verify_binary_zip,
+    BinaryPackOptions, BinaryRegistryRoute, download_binary_zip_with_route, pack_binary_zip,
+    pack_binary_zip_with_manifest, publish_binary_zip_with_route, verify_binary_zip,
 };
 use zed_cli::cli::Globals;
 use zed_cli::config::Config;
@@ -66,6 +67,15 @@ enum BinaryCommand {
         /// Pack and verify, but do not upload.
         #[arg(long, env = "ZED_PKG_DRY_RUN")]
         dry_run: bool,
+        /// Registry identity route. `legacy` preserves one artifact per version;
+        /// `qualified` addresses this target separately without changing SemVer.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_BINARY_ARTIFACT_ROUTE",
+            default_value = "legacy"
+        )]
+        artifact_route: ArtifactRouteArg,
         /// Skip the clean-worktree requirement.
         #[arg(long, env = "ZED_PKG_ALLOW_DIRTY")]
         allow_dirty: bool,
@@ -86,10 +96,33 @@ enum BinaryCommand {
         /// Require this exact normalized target from .zpkg-binary.json.
         #[arg(long, env = "ZED_PKG_BINARY_TARGET")]
         target: Option<String>,
+        /// Registry identity route. Qualified downloads require --target.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_BINARY_ARTIFACT_ROUTE",
+            default_value = "legacy"
+        )]
+        artifact_route: ArtifactRouteArg,
         /// Emit a stable JSON summary.
         #[arg(long, env = "ZED_PKG_BINARY_JSON")]
         json: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ArtifactRouteArg {
+    Legacy,
+    Qualified,
+}
+
+impl From<ArtifactRouteArg> for BinaryRegistryRoute {
+    fn from(value: ArtifactRouteArg) -> Self {
+        match value {
+            ArtifactRouteArg::Legacy => Self::Legacy,
+            ArtifactRouteArg::Qualified => Self::Qualified,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Args)]
@@ -212,6 +245,7 @@ fn run(cli: BinaryCli) -> Result<()> {
             includes,
             out,
             dry_run,
+            artifact_route,
             allow_dirty,
             skip_vcs_checks,
             json,
@@ -230,25 +264,52 @@ fn run(cli: BinaryCli) -> Result<()> {
                     allow_dirty,
                 )?)
             };
-            let packed = pack_binary_zip(
+            let packed = pack_binary_zip_with_manifest(
                 &cwd,
+                &manifest,
                 &BinaryPackOptions {
                     platform: platform.into_platform(),
                     includes,
                     out_dir: out,
-                    vcs_commit,
+                    vcs_commit: vcs_commit.clone(),
                 },
             )?;
-            let uploaded = publish_binary_zip(&cfg, &packed, dry_run)?.is_some() && !dry_run;
+            ensure!(
+                zed_cli::config::read_manifest(&cwd)? == manifest,
+                ".zpkg.toml changed while the binary ZIP was being packed"
+            );
+            if !skip_vcs_checks {
+                let verified_commit = zed_cli::vcs::verify_publish_provenance(
+                    manifest.package.repository.vcs,
+                    &cwd,
+                    &manifest.vcs_tag(),
+                    allow_dirty,
+                )?;
+                ensure!(
+                    Some(verified_commit) == vcs_commit,
+                    "repository HEAD changed while the binary ZIP was being packed"
+                );
+            }
+            let uploaded =
+                publish_binary_zip_with_route(&cfg, &packed, dry_run, artifact_route.into())?
+                    .is_some()
+                    && !dry_run;
             print_summary(&packed, uploaded, dry_run, json)
         }
         BinaryCommand::Download {
             spec,
             out,
             target,
+            artifact_route,
             json,
         } => {
-            let verified = download_binary_zip(&cfg, &spec, &out, target.as_deref())?;
+            let verified = download_binary_zip_with_route(
+                &cfg,
+                &spec,
+                &out,
+                target.as_deref(),
+                artifact_route.into(),
+            )?;
             if json {
                 println!(
                     "{}",
