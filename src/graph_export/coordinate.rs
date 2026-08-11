@@ -70,9 +70,9 @@ fn validate_version_segment(value: &str) -> Result<()> {
         "package version may not be a dot segment"
     );
     ensure!(
-        !value.chars().any(|character| {
-            character == '/' || character == '\\' || character.is_control()
-        }),
+        !value
+            .chars()
+            .any(|character| { character == '/' || character == '\\' || character.is_control() }),
         "package version contains a path separator or control character"
     );
     Ok(())
