@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   integrate:
+    if: ${{ !contains(github.event.head_commit.message, '[binary-cli-integrated]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -46,13 +47,16 @@ jobs:
           cargo run --locked --quiet --bin zed-binary -- verify --help >/dev/null
           cargo run --locked --quiet --bin zed-binary -- publish --help >/dev/null
           cargo run --locked --quiet --bin zed-binary -- download --help >/dev/null
-      - name: Commit certified integration
+      - name: Persist certified non-workflow integration
         run: |
           set -euo pipefail
-          rm .github/workflows/agent-integrate-binary-cli.yml
-          rm scripts/agent_integrate_binary_cli.py
+          # GitHub's workflow token may not create or modify workflow files. Restore
+          # those paths and persist the already-certified Rust, lockfile, and Docker
+          # changes; release workflow edits are applied through the GitHub connector.
+          git restore --source=HEAD --staged --worktree .github/workflows
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add --all
+          git add Cargo.toml Cargo.lock src .github/docker/install-test.Dockerfile
+          git diff --cached --quiet && exit 0
           git commit -m 'feat: integrate secure binary ZIP workflows [binary-cli-integrated]'
           git push origin HEAD:agent/binary-zip-publish
