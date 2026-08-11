@@ -7,7 +7,8 @@ use clap_complete::{Shell, generate};
 
 use crate::cli_model;
 use crate::{
-    dev, external_subcommands, fetch, git_submodules, global, nix_bundle_write, nix_export_plan,
+    dev, external_subcommands, fetch, git_submodules, global, graph_export, nix_bundle_write,
+    nix_export_plan,
 };
 
 /// Build the complete built-in command tree without external extensions.
@@ -16,7 +17,9 @@ use crate::{
 pub(crate) fn built_in_root_command() -> clap::Command {
     global::augment_root_command(git_submodules::augment_root_command(
         nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
-            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
+            fetch::augment_root_command(graph_export::augment_root_command(
+                dev::augment_root_command(cli_model::command()),
+            )),
         )),
     ))
 }
@@ -71,6 +74,8 @@ mod tests {
             "install",
             "init",
             "fetch",
+            "graph",
+            "package",
             "interop",
             "nix",
             "plan",
@@ -106,6 +111,10 @@ mod tests {
             "--flake-lock",
             "--out",
             "--output",
+            "--format",
+            "--etag",
+            "--max-bytes",
+            "--metadata-json",
             "--python-venv",
             "--isolated-home",
             "--catalog",
@@ -127,6 +136,8 @@ mod tests {
             "install",
             "init",
             "fetch",
+            "graph",
+            "package",
             "interop",
             "nix",
             "plan",
@@ -162,6 +173,10 @@ mod tests {
             "--flake-lock",
             "--out",
             "--output",
+            "--format",
+            "--etag",
+            "--max-bytes",
+            "--metadata-json",
             "--python-venv",
             "--isolated-home",
             "--catalog",
