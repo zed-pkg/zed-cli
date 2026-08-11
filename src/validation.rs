@@ -19,7 +19,7 @@ use zed_interfaces::version::Requirement;
 
 const DESCRIPTOR_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
 const REPORT_VERSION: u32 = 1;
-const INTERFACE_REVISION: &str = "b795c92126202cd1e4bd2365eb58d8cefa2095c3";
+const INTERFACE_REVISION: &str = "4d40ae96f5ce6240356ad4fa5e455d0310b1c97d";
 const TRANSITIVE_LIMIT: &str = "not-verifiable-in-lockfile-v1-without-dependency-edges";
 const MANIFEST_SCHEMA: &str = include_str!("../schemas/zed-interfaces/manifest.json");
 const LOCKFILE_SCHEMA: &str = include_str!("../schemas/zed-interfaces/lockfile.json");

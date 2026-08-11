@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: b795c92126202cd1e4bd2365eb58d8cefa2095c3
+          ref: 4d40ae96f5ce6240356ad4fa5e455d0310b1c97d
           path: zed-interfaces
 
       - name: Install pinned Rust toolchain

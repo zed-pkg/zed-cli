@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZED_INTERFACES_SHA: b795c92126202cd1e4bd2365eb58d8cefa2095c3
+  ZED_INTERFACES_SHA: 4d40ae96f5ce6240356ad4fa5e455d0310b1c97d
 
 jobs:
   bundle:
