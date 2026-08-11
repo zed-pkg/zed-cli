@@ -1,0 +1,166 @@
+name: R2 Android binary live certification
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/r2-android-live-certification.yml
+      - scripts/ci/r2_acquire_delegation.sh
+      - scripts/ci/r2_prepare_android_fixture.sh
+      - scripts/ci/r2_mint_temporary_credentials.sh
+      - scripts/ci/r2_android_roundtrip.sh
+      - src/bin/zed-binary.rs
+      - src/binary_archive/**
+      - Cargo.toml
+      - Cargo.lock
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: r2-android-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SERVER_REPOSITORY: zed-pkg/zed-api-server.rs
+  SERVER_SHA: 67ec3ab4586a00af84594e912173161514af6453
+  R2_BUCKET: zed-pkg-artifacts
+  AWS_DEFAULT_REGION: auto
+  AWS_REGION: auto
+  AWS_EC2_METADATA_DISABLED: "true"
+
+jobs:
+  real-r2-android-roundtrip:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    environment: r2-release-publication
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.2-pg17-bookworm
+        env:
+          POSTGRES_USER: zed
+          POSTGRES_PASSWORD: zed
+          POSTGRES_DB: zed
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U zed -d zed"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out the reviewed zed CLI change
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check out the reviewed registry server
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ env.SERVER_REPOSITORY }}
+          ref: ${{ env.SERVER_SHA }}
+          path: registry-server
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: real-r2-android-live
+          workspaces: |
+            .
+            registry-server
+
+      - name: Validate certification scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/ci/r2_acquire_delegation.sh
+          bash -n scripts/ci/r2_prepare_android_fixture.sh
+          bash -n scripts/ci/r2_mint_temporary_credentials.sh
+          bash -n scripts/ci/r2_android_roundtrip.sh
+
+      - name: Build reviewed code before acquiring any credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --quiet --locked --bins
+          cargo build --quiet --locked --manifest-path registry-server/Cargo.toml
+          target/debug/zed --help >/dev/null
+          target/debug/zed-binary --help >/dev/null
+          registry-server/target/debug/zed-api-server --help >/dev/null
+          registry-server/target/debug/zed-api-server --version \
+            | grep -Eq '^zed-api-server [0-9]+\.[0-9]+\.[0-9]+'
+
+      - name: Build and deterministically pack a real Android ARM64 ELF
+        shell: bash
+        run: bash scripts/ci/r2_prepare_android_fixture.sh
+
+      - name: Acquire parent delegation material by encrypted one-run handoff
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+        run: bash scripts/ci/r2_acquire_delegation.sh
+
+      - name: Mint a one-hour exact-object R2 credential
+        shell: bash
+        run: bash scripts/ci/r2_mint_temporary_credentials.sh
+
+      - name: Publish, download, and verify through actual Cloudflare R2
+        shell: bash
+        env:
+          DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
+        run: bash scripts/ci/r2_android_roundtrip.sh
+
+      - name: Clear all delegated material before artifact upload
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/r2-parent-delegation.json" \
+            "$RUNNER_TEMP/r2-handoff-private.pem" \
+            "$RUNNER_TEMP/r2-handoff-public.der" \
+            "$RUNNER_TEMP/r2-handoff.bin" \
+            "$RUNNER_TEMP/r2-handoff-plain.json" \
+            "$RUNNER_TEMP/r2-temp-request.json" \
+            "$RUNNER_TEMP/r2-temp-response.json" \
+            "$RUNNER_TEMP/r2-token-verify.json" \
+            "$RUNNER_TEMP/r2-bucket-list.json" \
+            "$RUNNER_TEMP/r2-bucket-create.json"
+          printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nZED_PKG_TOKEN=\n' \
+            >>"$GITHUB_ENV"
+
+      - name: Retain credential-free certification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: real-r2-android-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/r2-android-preflight.json
+            ${{ runner.temp }}/r2-android-preflight-second.json
+            ${{ runner.temp }}/r2-android-file.txt
+            ${{ runner.temp }}/r2-android-elf-header.txt
+            ${{ runner.temp }}/r2-android-elf-program.txt
+            ${{ runner.temp }}/r2-delegation.json
+            ${{ runner.temp }}/r2-android-publish.json
+            ${{ runner.temp }}/r2-android-head.json
+            ${{ runner.temp }}/r2-android-get.json
+            ${{ runner.temp }}/r2-android-download.json
+            ${{ runner.temp }}/r2-android-downloaded-file.txt
+            ${{ runner.temp }}/r2-android-downloaded-elf-header.txt
+            ${{ runner.temp }}/r2-android-downloaded-elf-program.txt
+            ${{ runner.temp }}/r2-android-certification.json
+            ${{ runner.temp }}/zed-api-r2-android-redacted.log
+          if-no-files-found: warn
+          retention-days: 30
