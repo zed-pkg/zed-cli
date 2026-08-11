@@ -2,7 +2,7 @@
 
 `manifest.json` and `lockfile.json` are byte-for-byte copies of the generated
 schemas at zed-interfaces commit
-`b795c92126202cd1e4bd2365eb58d8cefa2095c3`, the exact revision pinned in
+`7d31f80dd8a310f218931165a3ad636a2f32b932`, the exact revision pinned in
 `Cargo.toml` and `Cargo.lock`.
 
 `zed validate` uses these files only to close the canonical object shapes and
