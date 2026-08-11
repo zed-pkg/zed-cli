@@ -39,12 +39,7 @@ pub struct PackageGraphArgs {
 
     /// Output path. Text formats default to stdout. Binary formats require a
     /// path or an explicit `-` to acknowledge binary stdout.
-    #[arg(
-        long,
-        short = 'o',
-        env = "ZED_PKG_GRAPH_OUTPUT",
-        value_name = "PATH"
-    )]
+    #[arg(long, short = 'o', env = "ZED_PKG_GRAPH_OUTPUT", value_name = "PATH")]
     pub output: Option<PathBuf>,
 
     /// Send a strong ETag with `If-None-Match`; a 304 leaves output untouched.
