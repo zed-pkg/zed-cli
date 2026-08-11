@@ -113,6 +113,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
