@@ -47,6 +47,11 @@ manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
+expected_interfaces_revision = "4b87e425b04777b0ee413971dc1df805d24f295f"
+expected_interfaces_source = (
+    "git+https://github.com/zed-pkg/zed-interfaces.git?"
+    f"rev={expected_interfaces_revision}#{expected_interfaces_revision}"
+)
 expected_lock_revision = "1db0da00d30fcf2e0762f50eedb1f88458020b52"
 expected_lock_source = (
     "git+https://github.com/zed-pkg/zed-lock.git?"
@@ -59,8 +64,16 @@ if repository.get("url") != "https://github.com/zed-pkg/zed-cli":
 
 cargo_dependencies = cargo.get("dependencies", {})
 native_interfaces = cargo_dependencies.get("zed-interfaces")
-if native_interfaces is None:
-    errors.append("Cargo.toml must retain the native zed-interfaces dependency")
+if not isinstance(native_interfaces, dict):
+    errors.append("Cargo.toml must retain the native zed-interfaces Git dependency")
+else:
+    if native_interfaces.get("git") != "https://github.com/zed-pkg/zed-interfaces.git":
+        errors.append("zed-interfaces Cargo dependency must use the canonical repository")
+    if native_interfaces.get("rev") != expected_interfaces_revision:
+        errors.append("zed-interfaces Cargo dependency must pin the graph response contract")
+
+if expected_interfaces_source not in cargo_lock:
+    errors.append("Cargo.lock must resolve the exact graph response contract revision")
 
 native_lock = cargo_dependencies.get("zed-lock")
 if not isinstance(native_lock, dict):
@@ -130,4 +143,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph validated with canonical zed-lock v0.1.1 ownership, independent crates.io release, and DEN-3167 contention semantics\n'
+printf 'zed-cli package graph validated with the exact zed-interfaces graph response contract, canonical zed-lock v0.1.1 ownership, independent crates.io release, and DEN-3167 contention semantics\n'

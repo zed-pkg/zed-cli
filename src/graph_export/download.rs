@@ -147,17 +147,12 @@ fn consume_response(
         response.headers(),
         DEPENDENCY_GRAPH_DIGEST_HEADER,
     )?)?;
-    let authoritative =
-        match header_value(response.headers(), DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER)? {
-            Some(value) if value.eq_ignore_ascii_case("true") => true,
-            Some(value) if value.eq_ignore_ascii_case("false") => false,
-            Some(_) => {
-                anyhow::bail!(
-                    "registry returned an invalid {DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER} header"
-                )
-            }
-            None => format.authoritative(),
-        };
+    let authoritative = require_authoritative(
+        header_value(response.headers(), DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER)?,
+        format,
+    )?;
+    let content_length =
+        require_content_length(header_value(response.headers(), CONTENT_LENGTH.as_str())?)?;
 
     if status == reqwest::StatusCode::NOT_MODIFIED {
         let condition =
@@ -179,17 +174,10 @@ fn consume_response(
         header_value(response.headers(), CONTENT_TYPE.as_str())?,
         format.media_type(),
     )?;
-    if let Some(value) = response.headers().get(CONTENT_LENGTH) {
-        let length = value
-            .to_str()
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .context("registry returned an invalid dependency graph Content-Length")?;
-        ensure!(
-            length <= max_bytes,
-            "dependency graph body exceeds the {max_bytes}-byte client limit"
-        );
-    }
+    ensure!(
+        content_length <= max_bytes,
+        "dependency graph body exceeds the {max_bytes}-byte client limit"
+    );
 
     let limit = max_bytes
         .checked_add(1)
@@ -203,6 +191,7 @@ fn consume_response(
         body.len() as u64 <= max_bytes,
         "dependency graph body exceeds the {max_bytes}-byte client limit"
     );
+    ensure_content_length_matches(content_length, body.len())?;
     Ok(DownloadedGraph {
         body,
         not_modified: false,
@@ -230,12 +219,17 @@ fn weak_etag_opaque(value: &str) -> &str {
 
 fn require_strong_etag(value: Option<String>) -> Result<String> {
     let value = value.context("registry response is missing a strong dependency graph ETag")?;
+    let opaque = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'));
     ensure!(
         !value.starts_with("W/")
-            && value.len() >= 3
-            && value.starts_with('"')
-            && value.ends_with('"')
-            && !value[1..value.len() - 1].contains('"'),
+            && opaque.is_some_and(|opaque| {
+                !opaque.is_empty()
+                    && opaque
+                        .bytes()
+                        .all(|byte| byte == b'!' || (b'#'..=b'~').contains(&byte))
+            }),
         "registry response is missing a valid strong dependency graph ETag"
     );
     Ok(value)
@@ -254,6 +248,47 @@ fn require_graph_digest(value: Option<String>) -> Result<String> {
         "registry response carries an invalid dependency graph digest"
     );
     Ok(value)
+}
+
+fn require_authoritative(value: Option<String>, format: GraphFormat) -> Result<bool> {
+    let value = value.with_context(|| {
+        format!(
+            "registry response is missing required {DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER} header for requested `{}` format",
+            format.name()
+        )
+    })?;
+    let authoritative = if value.eq_ignore_ascii_case("true") {
+        true
+    } else if value.eq_ignore_ascii_case("false") {
+        false
+    } else {
+        anyhow::bail!(
+            "registry returned an invalid {DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER} header for requested `{}` format; expected `true` or `false`",
+            format.name()
+        );
+    };
+    ensure!(
+        authoritative == format.authoritative(),
+        "registry response {DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER} header does not match requested `{}` format; expected `{}`",
+        format.name(),
+        format.authoritative()
+    );
+    Ok(authoritative)
+}
+
+fn require_content_length(value: Option<String>) -> Result<u64> {
+    value
+        .context("registry response is missing dependency graph Content-Length")?
+        .parse::<u64>()
+        .context("registry returned an invalid dependency graph Content-Length")
+}
+
+fn ensure_content_length_matches(content_length: u64, body_length: usize) -> Result<()> {
+    ensure!(
+        body_length as u64 == content_length,
+        "registry response body length does not match dependency graph Content-Length"
+    );
+    Ok(())
 }
 
 fn require_content_type(value: Option<String>, expected: &str) -> Result<String> {
@@ -445,6 +480,8 @@ mod tests {
             "\"bytes\""
         );
         assert!(require_strong_etag(Some("W/\"bytes\"".into())).is_err());
+        assert!(require_strong_etag(Some("\"has space\"".into())).is_err());
+        assert!(require_strong_etag(Some("\"has\ttab\"".into())).is_err());
         assert!(require_strong_etag(None).is_err());
         assert_eq!(require_graph_digest(Some(digest.clone())).unwrap(), digest);
         assert!(require_graph_digest(Some("sha256:abc".into())).is_err());
@@ -463,6 +500,45 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(require_content_length(Some("42".into())).unwrap(), 42);
+        assert!(require_content_length(Some("-1".into())).is_err());
+        assert!(require_content_length(None).is_err());
+        ensure_content_length_matches(42, 42).unwrap();
+        assert!(ensure_content_length_matches(42, 41).is_err());
+    }
+
+    #[test]
+    fn response_authority_is_required_and_must_match_the_requested_format() {
+        for format in [
+            "json", "yaml", "toml", "json5", "xml", "msgpack", "protobuf",
+        ] {
+            assert!(require_authoritative(Some("true".into()), graph_format(format)).unwrap());
+            let error = require_authoritative(Some("false".into()), graph_format(format))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("does not match"), "{error}");
+            assert!(error.contains(format), "{error}");
+        }
+
+        for format in ["dot", "mermaid", "csv"] {
+            assert!(!require_authoritative(Some("false".into()), graph_format(format)).unwrap());
+            let error = require_authoritative(Some("true".into()), graph_format(format))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("does not match"), "{error}");
+            assert!(error.contains(format), "{error}");
+        }
+
+        let missing = require_authoritative(None, graph_format("json"))
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains(DEPENDENCY_GRAPH_AUTHORITATIVE_HEADER));
+        assert!(missing.contains("requested `json` format"));
+
+        let invalid = require_authoritative(Some("yes".into()), graph_format("json"))
+            .unwrap_err()
+            .to_string();
+        assert!(invalid.contains("expected `true` or `false`"));
     }
 
     #[test]
