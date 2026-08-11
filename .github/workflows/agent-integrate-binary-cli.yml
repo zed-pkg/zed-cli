@@ -14,7 +14,6 @@ concurrency:
 
 jobs:
   integrate:
-    if: ${{ !contains(github.event.head_commit.message, '[binary-cli-integrated]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -26,129 +25,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           components: rustfmt, clippy
-      - name: Wire the binary command and release artifacts
-        shell: bash
+      - name: Wire binary command and release artifacts
         env:
           INTERFACES_REV: 5fa652f6c8aaef5228b34b24bb8c5a4a07b415ca
           OLD_INTERFACES_REV: 60a8ab55f8a55eb212a72dcb334c1c118047c7ef
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          new = os.environ['INTERFACES_REV']
-          old = os.environ['OLD_INTERFACES_REV']
-
-          cargo = Path('Cargo.toml')
-          text = cargo.read_text()
-          text = text.replace(old, new)
-          marker = '[[bin]]\nname = "zed-gitops"\npath = "src/bin/zed-gitops.rs"\n'
-          addition = marker + '\n[[bin]]\nname = "zed-binary"\npath = "src/bin/zed-binary.rs"\n'
-          if 'name = "zed-binary"' not in text:
-              if marker not in text:
-                  raise SystemExit('Cargo.toml binary insertion marker not found')
-              text = text.replace(marker, addition, 1)
-          cargo.write_text(text)
-
-          lib = Path('src/lib.rs')
-          text = lib.read_text()
-          marker = 'pub mod auth;\n'
-          if 'pub mod binary_archive;' not in text:
-              if marker not in text:
-                  raise SystemExit('src/lib.rs insertion marker not found')
-              text = text.replace(marker, marker + 'pub mod binary_archive;\n', 1)
-          lib.write_text(text)
-
-          registry = Path('src/registry.rs')
-          text = registry.read_text()
-          old_fn = '''    fn artifact_file(&self, sha256: &str) -> PathBuf {
-        self.root.join("artifacts").join(format!("{sha256}.tar.gz"))
-    }
-'''
-          new_fn = '''    fn artifact_file(&self, sha256: &str, format: zed_interfaces::artifact::ArtifactFormat) -> PathBuf {
-        self.root
-            .join("artifacts")
-            .join(format!("{sha256}.{}", format.extension()))
-    }
-'''
-          if old_fn in text:
-              text = text.replace(old_fn, new_fn, 1)
-          elif 'fn artifact_file(&self, sha256: &str, format:' not in text:
-              raise SystemExit('src/registry.rs artifact helper marker not found')
-          text = text.replace(
-              'let src = self.artifact_file(&version.sha256);',
-              'let src = self.artifact_file(&version.sha256, version.format);',
-          )
-          text = text.replace(
-              'let dest = self.artifact_file(&meta.sha256);',
-              'let dest = self.artifact_file(&meta.sha256, meta.format);',
-          )
-          registry.write_text(text)
-
-          docker = Path('.github/docker/install-test.Dockerfile')
-          text = docker.read_text()
-          text = text.replace(
-              'RUN cargo build --release --locked --bin zed',
-              'RUN cargo build --release --locked --bins',
-          )
-          copy_line = 'COPY --from=zed-builder --chown=1001:1001 /src/zed-cli/target/release/zed /usr/local/bin/zed\n'
-          binary_copy = 'COPY --from=zed-builder --chown=1001:1001 /src/zed-cli/target/release/zed-binary /usr/local/bin/zed-binary\n'
-          if binary_copy not in text:
-              if copy_line not in text:
-                  raise SystemExit('Dockerfile copy marker not found')
-              text = text.replace(copy_line, copy_line + binary_copy, 1)
-          docker.write_text(text)
-
-          release = Path('.github/workflows/release.yml')
-          text = release.read_text().replace(old, new)
-          text = text.replace(
-              'cross build --locked --release --target "${{ matrix.target }}"',
-              'cross build --locked --release --bins --target "${{ matrix.target }}"',
-          )
-          text = text.replace(
-              'cargo build --locked --release --target "${{ matrix.target }}"',
-              'cargo build --locked --release --bins --target "${{ matrix.target }}"',
-          )
-          old_package = '''          bin=zed
-          [[ "${{ matrix.target }}" == *windows* ]] && bin=zed.exe
-          dir="target/${{ matrix.target }}/release"
-          name="zed-${{ matrix.target }}"
-          mkdir -p dist
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
-            (cd "$dir" && 7z a "$OLDPWD/dist/$name.zip" "$bin")
-            archive="$name.zip"
-          else
-            tar -C "$dir" -czf "dist/$name.tar.gz" "$bin"
-            archive="$name.tar.gz"
-          fi
-'''
-          new_package = '''          bins=(zed zed-binary)
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
-            bins=(zed.exe zed-binary.exe)
-          fi
-          dir="target/${{ matrix.target }}/release"
-          name="zed-${{ matrix.target }}"
-          mkdir -p dist
-          if [[ "${{ matrix.target }}" == *windows* ]]; then
-            (cd "$dir" && 7z a "$OLDPWD/dist/$name.zip" "${bins[@]}")
-            archive="$name.zip"
-          else
-            tar -C "$dir" -czf "dist/$name.tar.gz" "${bins[@]}"
-            archive="$name.tar.gz"
-          fi
-'''
-          if old_package in text:
-              text = text.replace(old_package, new_package, 1)
-          elif 'bins=(zed zed-binary)' not in text:
-              raise SystemExit('release packaging marker not found')
-          release.write_text(text)
-
-          for path in Path('.github/workflows').glob('*.yml'):
-              text = path.read_text()
-              if old in text:
-                  path.write_text(text.replace(old, new))
-          PY
+          python3 scripts/agent_integrate_binary_cli.py
           cargo update -p zed-interfaces --precise "$INTERFACES_REV"
           cargo fmt --all
       - name: Compile and test all targets
@@ -162,11 +45,11 @@ jobs:
           cargo run --locked --quiet --bin zed-binary -- verify --help >/dev/null
           cargo run --locked --quiet --bin zed-binary -- publish --help >/dev/null
           cargo run --locked --quiet --bin zed-binary -- download --help >/dev/null
-      - name: Remove integration workflow and commit
-        shell: bash
+      - name: Commit certified integration
         run: |
           set -euo pipefail
           rm .github/workflows/agent-integrate-binary-cli.yml
+          rm scripts/agent_integrate_binary_cli.py
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add --all
