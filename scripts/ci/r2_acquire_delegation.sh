@@ -43,22 +43,10 @@ chmod 0600 "$private_key"
 openssl pkey -in "$private_key" -pubout -outform DER -out "$public_der"
 public_key=$(base64 -w0 <"$public_der")
 
-request_body=$(printf '%s\n%s\n%s\n' \
-  "<!-- zed-r2-request:${GITHUB_RUN_ID} -->" \
-  "run-id: ${GITHUB_RUN_ID}" \
-  "public-key-base64: ${public_key}")
-curl --fail --silent --show-error --location \
-  --proto '=https' --proto-redir '=https' \
-  --request POST \
-  -H "Authorization: Bearer $GH_TOKEN" \
-  -H 'Accept: application/vnd.github+json' \
-  -H 'X-GitHub-Api-Version: 2022-11-28' \
-  --data "$(jq -cn --arg body "$request_body" '{body:$body}')" \
-  "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-  >"$RUNNER_TEMP/r2-request-comment.json"
-jq -e '.id | type == "number"' "$RUNNER_TEMP/r2-request-comment.json" >/dev/null
-rm -f "$RUNNER_TEMP/r2-request-comment.json"
-echo "Encrypted R2 handoff requested for run $GITHUB_RUN_ID."
+# The annotation carries only the ephemeral public key. The runner retains the
+# private key locally and accepts ciphertext from the exact repository owner.
+echo "::notice title=Encrypted R2 handoff requested::run-id=${GITHUB_RUN_ID}; public-key-base64=${public_key}"
+echo "Encrypted R2 handoff requested for run $GITHUB_RUN_ID; the public key is available in this check's annotations."
 
 marker="<!-- zed-r2-handoff:${GITHUB_RUN_ID} -->"
 ciphertext=''

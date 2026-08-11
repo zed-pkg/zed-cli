@@ -208,6 +208,7 @@ jobs:
           public_key=$(base64 -w0 <"$public_der")
           printf 'R2_HANDOFF_RUN_ID=%s\n' "$GITHUB_RUN_ID"
           printf 'R2_HANDOFF_PUBLIC_KEY_B64=%s\n' "$public_key"
+          echo "::notice title=Encrypted R2 handoff requested::run-id=${GITHUB_RUN_ID}; public-key-base64=${public_key}"
           echo 'Waiting for an ORESoftware-authored encrypted handoff comment for this exact run.'
 
           marker="<!-- zed-r2-handoff:${GITHUB_RUN_ID} -->"
