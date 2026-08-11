@@ -41,6 +41,7 @@ fn git(project: &Path, args: &[&str]) {
 #[test]
 fn git_query_trusts_only_the_canonical_project_path() {
     let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join(".git")).unwrap();
     let canonical = fs::canonicalize(project.path()).unwrap();
     let command = git_ignored_command(project.path()).unwrap();
     let args = command

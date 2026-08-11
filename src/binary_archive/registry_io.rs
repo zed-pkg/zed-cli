@@ -1,6 +1,6 @@
 enum ResolvedBinaryMetadata {
     Legacy(VersionMetadata),
-    Qualified(BinaryArtifactMetadataV1),
+    Qualified(Box<BinaryArtifactMetadataV1>),
 }
 
 impl ResolvedBinaryMetadata {
@@ -370,6 +370,7 @@ fn get_binary_version(
                 target,
                 BinaryArchiveFormatV1::Zip,
             )
+            .map(Box::new)
             .map(ResolvedBinaryMetadata::Qualified),
     }
 }
@@ -386,7 +387,7 @@ fn publish_binary_version(
         BinaryRegistryRoute::Legacy => registry.publish(meta, artifact, token),
         BinaryRegistryRoute::Qualified => {
             let accepted = registry.publish_binary_artifact(qualified_meta, artifact, token)?;
-            let resolved = ResolvedBinaryMetadata::Qualified(accepted);
+            let resolved = ResolvedBinaryMetadata::Qualified(Box::new(accepted));
             validate_resolved_binary_metadata(
                 &resolved,
                 &meta.manifest.package.org,

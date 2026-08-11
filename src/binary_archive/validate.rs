@@ -399,11 +399,10 @@ fn ensure_version_identity(
 ) -> Result<()> {
     ensure!(
         metadata.org == org && metadata.name == name && metadata.version == version,
-        "registry returned binary metadata for {}@{} while {}@{} was requested",
-        format!("{}/{}", metadata.org, metadata.name),
+        "registry returned binary metadata for {}/{}@{} while {org}/{name}@{version} was requested",
+        metadata.org,
+        metadata.name,
         metadata.version,
-        format!("{org}/{name}"),
-        version
     );
     Ok(())
 }

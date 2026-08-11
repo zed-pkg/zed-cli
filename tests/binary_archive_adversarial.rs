@@ -280,19 +280,19 @@ fn rejects_nonportable_device_unicode_and_directory_payload_paths() {
             "device.zip",
             "pkg/share/CON.txt",
             b"device",
-            &["device name"],
+            &["device name", "invalid value"],
         ),
         (
             "trailing-dot.zip",
             "pkg/share/name.",
             b"dot",
-            &["trailing dot or space"],
+            &["trailing dot or space", "invalid value"],
         ),
         (
             "reserved-char.zip",
             "pkg/share/name?.txt",
             b"question",
-            &["reserved character"],
+            &["reserved character", "invalid value"],
         ),
         (
             "alternate-stream.zip",
@@ -310,7 +310,7 @@ fn rejects_nonportable_device_unicode_and_directory_payload_paths() {
             "long-component.zip",
             &long_component,
             b"long",
-            &["255-byte"],
+            &["255-byte", "invalid value"],
         ),
     ];
     for (archive_name, entry_name, bytes, meanings) in cases {

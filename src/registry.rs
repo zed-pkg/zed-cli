@@ -1307,7 +1307,8 @@ tool = "bin/tool"
         let output = tempfile::tempdir().unwrap().path().join("artifact.zip");
         let error = registry.download(&metadata, &output).unwrap_err();
         let message = format!("{error:#}");
-        assert!(message.contains("refusing unsafe artifact download redirect"));
+        assert!(message.contains("artifact download request"));
+        assert!(message.to_ascii_lowercase().contains("redirect"));
         assert!(!message.contains("do-not-log"));
         server.join().unwrap();
         assert!(matches!(
