@@ -17,6 +17,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 concurrency:
   group: r2-android-live-${{ github.event.pull_request.number || github.ref }}
@@ -25,7 +26,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   SERVER_REPOSITORY: zed-pkg/zed-api-server.rs
-  SERVER_SHA: 67ec3ab4586a00af84594e912173161514af6453
+  SERVER_SHA: 30c4b8d9f621d37682bbbab89b84425ac1e1bc3b
   R2_BUCKET: zed-pkg-artifacts
   AWS_DEFAULT_REGION: auto
   AWS_REGION: auto
