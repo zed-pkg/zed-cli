@@ -17,10 +17,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      cli_sha: ${{ steps.tips.outputs.cli_sha }}
       interfaces_sha: ${{ steps.tips.outputs.interfaces_sha }}
       clients_sha: ${{ steps.tips.outputs.clients_sha }}
       lock_sha: ${{ steps.tips.outputs.lock_sha }}
     steps:
+      - name: Checkout zed-cli main tip
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-cli
+          ref: main
+          path: zed-cli
+          persist-credentials: false
       - name: Checkout zed-interfaces main tip
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -47,6 +55,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "cli_sha=$(git -C zed-cli rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "interfaces_sha=$(git -C zed-interfaces rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "clients_sha=$(git -C zed-clients rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "lock_sha=$(git -C zed-lock rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -142,13 +151,15 @@ jobs:
       - run: cargo test --all-targets
 
   cli:
-    name: zed-cli / rust against dependency tip
+    name: zed-cli / current-main rust against dependency tip
     needs: resolve
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ needs.resolve.outputs.cli_sha }}
           path: zed-cli
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
