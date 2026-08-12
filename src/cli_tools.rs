@@ -525,10 +525,12 @@ fn activate_stable_bin(project: &Path, target: &str) -> Result<()> {
         let temporary = tools.join(format!(".bin.staging-{}", uuid::Uuid::new_v4()));
         std::os::unix::fs::symlink(Path::new("v1").join(target).join("bin"), &temporary)?;
         fs::rename(&temporary, &stable)?;
+        Ok(())
     }
     #[cfg(windows)]
-    bail!("built-in project CLI runtime activation is not yet supported on Windows");
-    Ok(())
+    {
+        bail!("built-in project CLI runtime activation is not yet supported on Windows")
+    }
 }
 
 fn public_receipt(receipt: ToolInstallReceipt) -> CliInstallReceipt {

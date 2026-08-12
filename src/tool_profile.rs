@@ -801,6 +801,9 @@ fn active_profile_matches(
     mode: InstallMode,
     prepared: &[PreparedTool<'_>],
 ) -> Result<bool> {
+    #[cfg(windows)]
+    let _ = mode;
+
     let metadata = match fs::symlink_metadata(active) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -972,6 +975,9 @@ fn materialize_executable(
     destination: &Path,
     portable_target: Option<&Path>,
 ) -> Result<()> {
+    #[cfg(windows)]
+    let _ = portable_target;
+
     ensure!(
         fs::symlink_metadata(destination)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
@@ -1333,7 +1339,7 @@ mod tests {
         let destination = root.path().join("hello-copy.cmd");
         fs::write(&source, b"@echo off\r\necho hello\r\n").unwrap();
 
-        materialize_executable(&source, &destination).unwrap();
+        materialize_executable(&source, &destination, None).unwrap();
 
         assert_eq!(fs::read(destination).unwrap(), fs::read(source).unwrap());
     }
