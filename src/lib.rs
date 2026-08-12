@@ -5,6 +5,7 @@ pub mod asdf_environment;
 pub mod auth;
 pub mod cli;
 pub mod cli_model;
+pub mod cli_tools;
 pub mod completion;
 pub mod config;
 mod dart_wiring;

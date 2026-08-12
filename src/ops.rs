@@ -123,7 +123,8 @@ exclude = []
     let gitignore = dir.join(".gitignore");
     let ignore_lines = [
         format!("{MODULES_DIR}/"),
-        ".zed/".to_string(),
+        ".zed/*".to_string(),
+        "!.zed/environment.lock.toml".to_string(),
         format!("{}/", crate::transaction::STAGING_DIR),
     ];
     if gitignore.exists() {

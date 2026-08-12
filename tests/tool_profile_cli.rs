@@ -156,8 +156,41 @@ fn run(project: &Path, home: &Path, args: &[&str]) -> Output {
         .env_remove("ZED_TOOL_TARGET")
         .env_remove("ZED_TOOL_OFFLINE")
         .env_remove("ZED_TOOL_PROFILE")
+        .env_remove("ZED_TOOL_INSTALL_MODE")
         .output()
         .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_mode_owns_the_complete_runtime_below_the_project() {
+    let (_temp, project, home, _sha256) = fixture(&[("hello", "hello")]);
+    let installed = run(
+        &project,
+        &home,
+        &[
+            "--json",
+            "install",
+            "--target",
+            target(),
+            "--offline",
+            "--install-mode",
+            "copy",
+        ],
+    );
+    assert_success(&installed);
+    let receipt: Value = serde_json::from_slice(&installed.stdout).unwrap();
+    let active = project.join(receipt["profile"].as_str().unwrap());
+    let bin = project.join(receipt["bin"].as_str().unwrap());
+    let command = bin.join("hello");
+    let link = fs::read_link(&command).unwrap();
+    assert_eq!(link, Path::new("../roots/hello/bin/hello"));
+    assert!(active.join("roots/hello/bin/hello").is_file());
+
+    fs::remove_dir_all(&home).unwrap();
+    let output = Command::new(&command).output().unwrap();
+    assert_success(&output);
+    assert_eq!(output.stdout, b"hello\n");
 }
 
 fn assert_success(output: &Output) {

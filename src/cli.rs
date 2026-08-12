@@ -185,8 +185,12 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_VALIDATE_JSON")]
         json: bool,
     },
-    /// Create a .zpkg.toml manifest in the current directory
+    /// Create a project directory and .zpkg.toml manifest (current directory by default)
     Init {
+        /// Project directory to create or initialize. Relative paths are
+        /// resolved below the current working directory.
+        #[arg(value_name = "PROJECT", env = "ZED_PKG_INIT_PROJECT")]
+        project: Option<PathBuf>,
         #[arg(long, env = "ZED_PKG_ORG")]
         org: Option<String>,
         #[arg(long, env = "ZED_PKG_NAME")]
@@ -205,6 +209,22 @@ pub enum Cmd {
         /// `zed add` to persist dependencies in an authored project.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
+        /// Install a project-owned CLI runtime. Repeat for multiple tools;
+        /// built-in aliases currently include nodejs and python3.
+        #[arg(long, value_name = "TOOL", env = "ZED_PKG_CLI", action = clap::ArgAction::Append)]
+        cli: Vec<String>,
+        /// Exact CLI runtime target used for cross-platform image builds.
+        #[arg(long, env = "ZED_PKG_CLI_TARGET")]
+        cli_target: Option<String>,
+        /// CLI runtimes default to a self-contained project copy so they can
+        /// cross OCI stages without Zed's global store.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_CLI_INSTALL_MODE",
+            default_value = "copy"
+        )]
+        cli_install_mode: InstallMode,
         /// Install exactly what .zpkg.lock pins; fail on any drift
         #[arg(long, env = "ZED_PKG_FROZEN")]
         frozen: bool,
@@ -653,10 +673,11 @@ pub enum CacheCmd {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::path::Path;
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AuthCmd, Cli, Cmd, EnvCmd};
+    use super::{AuthCmd, Cli, Cmd, EnvCmd, InstallMode};
 
     #[test]
     fn flat_and_nested_auth_spellings_dispatch_identically() {
@@ -742,6 +763,40 @@ mod tests {
                 other => panic!("unexpected command: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn init_accepts_a_project_directory_and_cli_tools_are_repeatable() {
+        let init = Cli::try_parse_from(["zed", "init", "project"]).unwrap();
+        assert!(matches!(
+            init.cmd,
+            Cmd::Init {
+                project: Some(ref path),
+                ..
+            } if path == Path::new("project")
+        ));
+
+        let install = Cli::try_parse_from([
+            "zed",
+            "install",
+            "--cli",
+            "nodejs",
+            "--cli",
+            "python3@3.14",
+            "--cli-target",
+            "x86_64-unknown-linux-gnu",
+        ])
+        .unwrap();
+        assert!(matches!(
+            install.cmd,
+            Cmd::Install {
+                ref cli,
+                cli_target: Some(ref target),
+                cli_install_mode: InstallMode::Copy,
+                ..
+            } if cli == &["nodejs", "python3@3.14"]
+                && target == "x86_64-unknown-linux-gnu"
+        ));
     }
 
     #[test]

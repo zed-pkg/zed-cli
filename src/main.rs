@@ -6,6 +6,7 @@ use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
     AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
 };
+use zed_cli::cli_tools;
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
@@ -211,11 +212,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
     match cli.cmd {
         Cmd::Validate { .. } => unreachable!("validation returned before mutable CLI setup"),
-        Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
+        Cmd::Init { project, org, name } => {
+            let project = project.unwrap_or_else(|| std::path::PathBuf::from("."));
+            let project = if project.is_absolute() {
+                project
+            } else {
+                cwd.join(project)
+            };
+            std::fs::create_dir_all(&project)?;
+            ops::init(&project, org, name, cfg.interactive)
+        }
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
             specs,
+            cli,
+            cli_target,
+            cli_install_mode,
             frozen,
             install_mode,
             adapter,
@@ -227,6 +240,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
+            if !cli.is_empty() {
+                anyhow::ensure!(
+                    specs.is_empty(),
+                    "package operands and --cli tools cannot be mixed in one install; run them as separate deterministic transactions"
+                );
+                let receipt = cli_tools::install(
+                    &cwd,
+                    &cfg.home,
+                    &cli,
+                    cli_target.as_deref(),
+                    frozen,
+                    cli_install_mode,
+                )?;
+                println!("{} CLI tool profile {}", receipt.action, receipt.profile);
+                println!("lock: {}", receipt.lock);
+                println!("lock-sha256: {}", receipt.lock_sha256);
+                println!("target: {}", receipt.target);
+                println!("bin: {}", receipt.bin);
+                for tool in receipt.tools {
+                    println!("tool: {tool}");
+                }
+                return Ok(());
+            }
             let permissions = ops::InstallPermissions {
                 allow_build,
                 allow_native_deps,
