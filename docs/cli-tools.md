@@ -150,8 +150,11 @@ Before activation, Zed requires:
 
 Downloads first enter the content-addressed Zed cache. Raw upstream runtime
 archives are extracted under a separate digest-keyed tool store and copied into
-the staged project profile. A failed download, extraction, validation, or
-profile commit leaves the prior active profile in place.
+the staged project profile. Zed makes at most five download attempts with
+bounded backoff so transient registry or CDN disconnects do not require a
+manual rebuild. Every attempt still has to satisfy the same locked HTTPS,
+compressed-size, and SHA-256 identity. A failed download, extraction,
+validation, or profile commit leaves the prior active profile in place.
 
 Arbitrary catalog plugins, arbitrary URLs on the command line, non-Linux
 runtimes, and automatic floating-version updates are intentionally outside this

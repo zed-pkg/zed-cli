@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
@@ -34,6 +35,7 @@ const STABLE_BIN_PATH: &str = ".zed/tools/bin";
 const CATALOG_BACKEND: &str = "zed-catalog";
 const CATALOG_BACKEND_VERSION: &str = "1";
 const RAW_ARCHIVE_LAYOUT_EXTENSION: &str = "zed-pkg.archive-layout";
+const DOWNLOAD_ATTEMPTS: usize = 5;
 
 const NODE_VERSION: &str = "24.19.0";
 const NODE_X86_64_SHA256: &str = "f625d97cd707df4ff96254916fbc5ff014f09c09effe5a1e0ca8f6d41a8789d4";
@@ -458,8 +460,31 @@ fn download_artifact(store: &Store, tool: &str, locked: &LockedTool) -> Result<(
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
         .build()?;
+    let temporary = retry_download(
+        tool,
+        || download_artifact_once(&client, &parsed, cache, tool, locked),
+        std::thread::sleep,
+    )?;
+    match temporary.persist_noclobber(&destination) {
+        Ok(_) => {}
+        Err(error) if destination.exists() => {
+            verify_download(&destination, tool, locked)?;
+            drop(error.file);
+        }
+        Err(error) => return Err(error.error).context("persisting locked CLI tool artifact"),
+    }
+    Ok(())
+}
+
+fn download_artifact_once(
+    client: &reqwest::blocking::Client,
+    url: &reqwest::Url,
+    cache: &Path,
+    tool: &str,
+    locked: &LockedTool,
+) -> Result<tempfile::NamedTempFile> {
     let mut response = client
-        .get(parsed)
+        .get(url.clone())
         .send()
         .with_context(|| format!("downloading locked CLI tool `{tool}`"))?
         .error_for_status()?;
@@ -481,15 +506,34 @@ fn download_artifact(store: &Store, tool: &str, locked: &LockedTool) -> Result<(
     );
     temporary.as_file().sync_all()?;
     verify_download(temporary.path(), tool, locked)?;
-    match temporary.persist_noclobber(&destination) {
-        Ok(_) => {}
-        Err(error) if destination.exists() => {
-            verify_download(&destination, tool, locked)?;
-            drop(error.file);
+    Ok(temporary)
+}
+
+fn retry_download<T>(
+    tool: &str,
+    mut download: impl FnMut() -> Result<T>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<T> {
+    for attempt in 1..=DOWNLOAD_ATTEMPTS {
+        match download() {
+            Ok(result) => return Ok(result),
+            Err(error) if attempt < DOWNLOAD_ATTEMPTS => {
+                eprintln!(
+                    "warning: download attempt {attempt}/{DOWNLOAD_ATTEMPTS} for CLI tool `{tool}` failed: {error:#}; retrying"
+                );
+                let seconds = u64::try_from(attempt).unwrap_or(u64::MAX).saturating_mul(2);
+                sleep(Duration::from_secs(seconds));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "downloading locked CLI tool `{tool}` failed after {DOWNLOAD_ATTEMPTS} attempts"
+                    )
+                });
+            }
         }
-        Err(error) => return Err(error.error).context("persisting locked CLI tool artifact"),
     }
-    Ok(())
+    unreachable!("a positive fixed attempt count must return from the retry loop")
 }
 
 fn verify_download(path: &Path, tool: &str, locked: &LockedTool) -> Result<()> {
@@ -552,6 +596,48 @@ fn public_receipt(receipt: ToolInstallReceipt) -> CliInstallReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_downloads_retry_with_bounded_backoff() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let result = retry_download(
+            "python3",
+            || {
+                attempts += 1;
+                if attempts < 3 {
+                    bail!("transient disconnect")
+                }
+                Ok("verified artifact")
+            },
+            |delay| delays.push(delay),
+        )
+        .unwrap();
+
+        assert_eq!(result, "verified artifact");
+        assert_eq!(attempts, 3);
+        assert_eq!(delays, [Duration::from_secs(2), Duration::from_secs(4)]);
+    }
+
+    #[test]
+    fn cli_downloads_report_the_terminal_bounded_attempt() {
+        let mut attempts = 0;
+        let error = retry_download::<()>(
+            "python3",
+            || {
+                attempts += 1;
+                bail!("persistent disconnect")
+            },
+            |_| {},
+        )
+        .unwrap_err();
+
+        assert_eq!(attempts, DOWNLOAD_ATTEMPTS);
+        assert!(
+            format!("{error:#}")
+                .contains("downloading locked CLI tool `python3` failed after 5 attempts")
+        );
+    }
 
     #[test]
     fn friendly_names_and_version_channels_normalize_to_exact_catalog_entries() {
