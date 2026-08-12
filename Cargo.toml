@@ -3,7 +3,7 @@ resolver = "3"
 
 [package]
 name = "zed-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "zed: the universal package manager backed by the VCS hosts you already use"
 license = "MIT"
