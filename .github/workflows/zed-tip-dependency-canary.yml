@@ -15,6 +15,7 @@ jobs:
   resolve:
     name: Resolve exact dependency tips
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       interfaces_sha: ${{ steps.tips.outputs.interfaces_sha }}
       clients_sha: ${{ steps.tips.outputs.clients_sha }}
@@ -54,6 +55,7 @@ jobs:
     name: zed-interfaces / ${{ matrix.language }}
     needs: resolve
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +87,7 @@ jobs:
     name: zed-clients / ${{ matrix.language }}
     needs: resolve
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -124,6 +127,7 @@ jobs:
     name: zed-lock / rust
     needs: resolve
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -141,6 +145,7 @@ jobs:
     name: zed-cli / rust against dependency tip
     needs: resolve
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
