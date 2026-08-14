@@ -60,13 +60,16 @@ fn inspect_emits_one_json_document_without_auth_or_recovery_side_effects() {
     );
 
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["schema_version"], "1.0");
+    assert_eq!(report["schema_version"], "1.1");
     assert_eq!(report["cli"]["implementation"], "zed-pkg");
     assert_eq!(report["cli"]["offline"], true);
     assert_eq!(report["cli"]["mutates_project"], false);
     assert_eq!(report["cli"]["loads_credentials"], false);
     assert_eq!(report["summary"]["recovery_pending"], true);
     assert_eq!(report["summary"]["frozen_ready"], false);
+    assert!(report["interop"]["git_submodules"]["detected"].is_boolean());
+    assert!(report["interop"]["mise"]["verified"].is_boolean());
+    assert!(report["interop"]["nix_develop"]["source"].is_null());
     assert!(
         report["diagnostics"]
             .as_array()
@@ -203,6 +206,7 @@ fn inspect_schema_fixture_keeps_v1_required_surface_explicit() {
         "root",
         "cli",
         "package",
+        "interop",
         "summary",
         "diagnostics",
     ] {

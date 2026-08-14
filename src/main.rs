@@ -277,13 +277,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            let sync_git_submodules =
+                git_submodules || submodules::manifest_consumes_gitmodules(&cwd)?;
             let permissions = ops::InstallPermissions {
                 allow_build,
                 allow_native_deps,
                 allow_install_hooks,
                 native_manager,
             };
-            if git_submodules {
+            if sync_git_submodules {
                 // Git synchronization mutates the submodule worktrees and must
                 // share one descriptor lifetime with manifest/lock resolution,
                 // materialization, adapter wiring, and Git-lock finalization.

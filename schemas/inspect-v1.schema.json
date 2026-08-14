@@ -11,6 +11,7 @@
     "workspace_members",
     "adapter_outputs",
     "locked_packages",
+    "interop",
     "summary",
     "diagnostics"
   ],
@@ -85,6 +86,15 @@
         }
       }
     },
+    "interop": {
+      "type": "object",
+      "required": ["git_submodules", "mise", "nix_develop"],
+      "properties": {
+        "git_submodules": { "$ref": "#/$defs/interop_status" },
+        "mise": { "$ref": "#/$defs/interop_status" },
+        "nix_develop": { "$ref": "#/$defs/interop_status" }
+      }
+    },
     "summary": {
       "type": "object",
       "required": ["health", "errors", "warnings", "frozen_ready", "recovery_pending"],
@@ -146,6 +156,18 @@
             }
           }
         }
+      }
+    }
+  },
+  "$defs": {
+    "interop_status": {
+      "type": "object",
+      "required": ["detected", "declared", "verified", "source"],
+      "properties": {
+        "detected": { "type": "boolean" },
+        "declared": { "type": "boolean" },
+        "verified": { "type": "boolean" },
+        "source": { "type": ["string", "null"] }
       }
     }
   }

@@ -19,7 +19,8 @@ use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, store_entry_rel};
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
+const MAX_INSPECTION_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lower")]
@@ -155,8 +156,35 @@ struct InspectReport {
     workspace_members: Vec<String>,
     adapter_outputs: Vec<AdapterOutput>,
     locked_packages: Vec<LockedPackageState>,
+    interop: InteropInspection,
     summary: InspectSummary,
     diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, Serialize)]
+struct InteropInspection {
+    git_submodules: InteropStatus,
+    mise: InteropStatus,
+    nix_develop: InteropStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct InteropStatus {
+    detected: bool,
+    declared: bool,
+    verified: bool,
+    source: Option<String>,
+}
+
+impl InteropStatus {
+    fn absent() -> Self {
+        Self {
+            detected: false,
+            declared: false,
+            verified: false,
+            source: None,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -374,6 +402,12 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
         })
         .unwrap_or_default();
 
+    let interop = InteropInspection {
+        git_submodules: inspect_git_submodules(root, &manifest_path, &mut diagnostics),
+        mise: inspect_mise(root, &mut diagnostics),
+        nix_develop: inspect_nix(root, &mut diagnostics),
+    };
+
     let errors = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
@@ -418,6 +452,7 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
         workspace_members,
         adapter_outputs: adapter_outputs(root),
         locked_packages,
+        interop,
         summary: InspectSummary {
             health,
             errors,
@@ -427,6 +462,234 @@ fn inspect_project(root: &Path) -> Result<InspectReport> {
         },
         diagnostics,
     })
+}
+
+fn inspect_git_submodules(
+    root: &Path,
+    manifest_path: &Path,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> InteropStatus {
+    let (declared, declaration_valid) =
+        match crate::git_submodules::manifest_consumes_gitmodules(root) {
+            Ok(declared) => (declared, true),
+            Err(error) => {
+                diagnostics.push(Diagnostic {
+                    code: "GIT_SUBMODULE_DECLARATION_INVALID",
+                    severity: Severity::Error,
+                    message: "The Git-submodule consumption declaration is invalid.".to_string(),
+                    detail: Some(error.to_string()),
+                    location: location(manifest_path),
+                    actions: Vec::new(),
+                });
+                (false, false)
+            }
+        };
+    let discovered_root = crate::git_submodules::find_root(root);
+    let detected = discovered_root.is_some();
+    let source = discovered_root
+        .as_ref()
+        .map(|project| display(&project.join(".gitmodules")));
+    let mut verified = false;
+
+    if declared && !detected {
+        diagnostics.push(Diagnostic {
+            code: "GIT_SUBMODULES_MISSING",
+            severity: Severity::Error,
+            message: "Git-submodule consumption is declared without .gitmodules.".to_string(),
+            detail: Some(
+                "[interop.git].consume_gitmodules is true, but no .gitmodules file was found in the owning checkout."
+                    .to_string(),
+            ),
+            location: location(manifest_path),
+            actions: Vec::new(),
+        });
+    } else if let Some(project) = discovered_root {
+        match crate::git_submodules::preflight_gitmodules_metadata(&project) {
+            Ok(()) => verified = true,
+            Err(error) => diagnostics.push(Diagnostic {
+                code: "GIT_SUBMODULES_INVALID",
+                severity: Severity::Error,
+                message: "Git-submodule metadata failed static validation.".to_string(),
+                detail: Some(error.to_string()),
+                location: location(&project.join(".gitmodules")),
+                actions: Vec::new(),
+            }),
+        }
+        if !declared {
+            diagnostics.push(Diagnostic {
+                code: "GIT_SUBMODULES_UNDECLARED",
+                severity: Severity::Warning,
+                message: "The checkout contains .gitmodules, but Zed consumption is not declared."
+                    .to_string(),
+                detail: Some(
+                    "Add [interop.git].consume_gitmodules = true to .zpkg.toml before asking Zed to synchronize the checkout."
+                        .to_string(),
+                ),
+                location: location(manifest_path),
+                actions: Vec::new(),
+            });
+        }
+    }
+
+    InteropStatus {
+        detected,
+        declared,
+        verified: verified && declaration_valid,
+        source,
+    }
+}
+
+fn inspect_mise(root: &Path, diagnostics: &mut Vec<Diagnostic>) -> InteropStatus {
+    let present = ["mise.toml", ".mise.toml", ".tool-versions"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    if present.is_empty() {
+        return InteropStatus::absent();
+    }
+
+    let source = present.first().map(|path| display(path));
+    if present.len() > 1 {
+        diagnostics.push(Diagnostic {
+            code: "MISE_CONFIG_AMBIGUOUS",
+            severity: Severity::Error,
+            message: "Multiple project-local mise configurations are present.".to_string(),
+            detail: Some(
+                "Static inspection will not guess which project-local configuration takes precedence."
+                    .to_string(),
+            ),
+            location: location(&present[0]),
+            actions: Vec::new(),
+        });
+        return InteropStatus {
+            detected: true,
+            declared: true,
+            verified: false,
+            source,
+        };
+    }
+
+    let verified = crate::environment::import_mise(root, None, None, true).is_ok();
+    if !verified {
+        diagnostics.push(Diagnostic {
+            code: "MISE_CONFIG_UNVERIFIED",
+            severity: Severity::Warning,
+            message: "The mise configuration does not satisfy frozen verification.".to_string(),
+            detail: Some(
+                "The project-local mise configuration and lock were inspected without changing either file."
+                    .to_string(),
+            ),
+            location: location(&present[0]),
+            actions: Vec::new(),
+        });
+    }
+    InteropStatus {
+        detected: true,
+        declared: true,
+        verified,
+        source,
+    }
+}
+
+fn inspect_nix(root: &Path, diagnostics: &mut Vec<Diagnostic>) -> InteropStatus {
+    let flake = [root.join(".nix/flake.nix"), root.join("flake.nix")]
+        .into_iter()
+        .find(|path| path.exists());
+    let Some(flake) = flake else {
+        return InteropStatus::absent();
+    };
+    let lock = flake.parent().unwrap_or(root).join("flake.lock");
+    let mut verified = false;
+
+    if !is_regular_file(&flake) {
+        diagnostics.push(Diagnostic {
+            code: "NIX_FLAKE_NOT_REGULAR",
+            severity: Severity::Error,
+            message: "The Nix flake is not a regular file.".to_string(),
+            detail: Some("Static inspection refuses indirect or non-regular flakes.".to_string()),
+            location: location(&flake),
+            actions: Vec::new(),
+        });
+    } else if !lock.exists() {
+        diagnostics.push(Diagnostic {
+            code: "NIX_LOCK_MISSING",
+            severity: Severity::Warning,
+            message: "The Nix flake lock is missing.".to_string(),
+            detail: Some(
+                "nix develop cannot be assessed reproducibly without the adjacent flake.lock."
+                    .to_string(),
+            ),
+            location: location(&lock),
+            actions: Vec::new(),
+        });
+    } else if !is_regular_file(&lock) {
+        diagnostics.push(Diagnostic {
+            code: "NIX_LOCK_NOT_REGULAR",
+            severity: Severity::Error,
+            message: "The Nix flake lock is not a regular file.".to_string(),
+            detail: Some(
+                "Static inspection refuses indirect or non-regular flake locks.".to_string(),
+            ),
+            location: location(&lock),
+            actions: Vec::new(),
+        });
+    } else {
+        verified = read_bounded_json(&lock).is_ok_and(|value| {
+            value
+                .get("root")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+                && value
+                    .get("nodes")
+                    .and_then(serde_json::Value::as_object)
+                    .is_some()
+        });
+        if !verified {
+            diagnostics.push(Diagnostic {
+                code: "NIX_LOCK_INVALID",
+                severity: Severity::Error,
+                message: "The Nix flake lock is invalid.".to_string(),
+                detail: Some(
+                    "flake.lock must be bounded JSON with root and nodes entries before nix develop is considered reproducible."
+                        .to_string(),
+                ),
+                location: location(&lock),
+                actions: Vec::new(),
+            });
+        }
+    }
+
+    InteropStatus {
+        detected: true,
+        declared: true,
+        verified,
+        source: Some(display(&flake)),
+    }
+}
+
+fn is_regular_file(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false)
+}
+
+fn read_bounded_json(path: &Path) -> Result<serde_json::Value> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspecting {}", path.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "{} is not a regular file",
+        path.display()
+    );
+    anyhow::ensure!(
+        metadata.len() <= MAX_INSPECTION_FILE_BYTES,
+        "{} exceeds the {}-byte inspection limit",
+        path.display(),
+        MAX_INSPECTION_FILE_BYTES
+    );
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
 fn read_manifest(path: &Path, root: &Path, diagnostics: &mut Vec<Diagnostic>) -> Option<Manifest> {
@@ -705,6 +968,68 @@ url = "https://example.invalid/acme/demo"
         let report = inspect_project(project.path()).unwrap();
         assert!(!report.summary.frozen_ready);
         assert!(report.diagnostics.iter().any(|d| d.code == "LOCK_STALE"));
+    }
+
+    #[test]
+    fn declared_git_submodule_consumption_requires_metadata() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(MANIFEST_FILE),
+            format!("{MANIFEST}\n[interop.git]\nconsume_gitmodules = true\n"),
+        )
+        .unwrap();
+        fs::write(project.path().join(LOCKFILE_FILE), "version = 1\n").unwrap();
+
+        let report = inspect_project(project.path()).unwrap();
+        assert!(report.interop.git_submodules.declared);
+        assert!(!report.interop.git_submodules.detected);
+        assert!(!report.interop.git_submodules.verified);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "GIT_SUBMODULES_MISSING")
+        );
+    }
+
+    #[test]
+    fn multiple_mise_inputs_are_reported_without_running_mise() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join(MANIFEST_FILE), MANIFEST).unwrap();
+        fs::write(project.path().join(LOCKFILE_FILE), "version = 1\n").unwrap();
+        fs::write(project.path().join("mise.toml"), "[tools]\nnode = \"22\"\n").unwrap();
+        fs::write(project.path().join(".tool-versions"), "node 22\n").unwrap();
+
+        let report = inspect_project(project.path()).unwrap();
+        assert!(report.interop.mise.detected);
+        assert!(!report.interop.mise.verified);
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "MISE_CONFIG_AMBIGUOUS")
+        );
+    }
+
+    #[test]
+    fn nix_lock_is_validated_as_bounded_data() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join(MANIFEST_FILE), MANIFEST).unwrap();
+        fs::write(project.path().join(LOCKFILE_FILE), "version = 1\n").unwrap();
+        fs::write(project.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+        fs::write(
+            project.path().join("flake.lock"),
+            r#"{"root":"root","nodes":{"root":{}}}"#,
+        )
+        .unwrap();
+
+        let report = inspect_project(project.path()).unwrap();
+        assert!(report.interop.nix_develop.detected);
+        assert!(report.interop.nix_develop.verified);
+        assert_eq!(
+            report.interop.nix_develop.source.as_deref(),
+            Some(display(&project.path().join("flake.nix")).as_str())
+        );
     }
 
     #[test]
