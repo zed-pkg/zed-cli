@@ -155,6 +155,7 @@ the legacy version route by default or the additive target-qualified route with
 | `zed install --cli <tool> [--cli <tool> ...]` | Resolve exact project-owned CLI runtimes into `.zed/environment.lock.toml` and copy their complete runtime roots below `.zed/tools`; built-ins are `nodejs` and `python3` |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
+| `zed inspect [--workspace PATH] [--json] [--network]` | Read-only manifest, lock, store, Git-submodule, mise, and Nix analysis; `--network` asks the configured Zed registry for CLI and dependency update recommendations |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
 | `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |
@@ -189,6 +190,39 @@ the legacy version route by default or the additive target-qualified route with
 | `zed cache clean` | Drop cached downloads |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
 | `zed completions bash\|zsh` | Generate shell completion from the same Clap model used by the executable |
+
+### Static inspection protocol
+
+`zed inspect --json` is the supported process boundary for VS Code, Eclipse,
+Xcode, Sublime Text, and other tools. Inspection never recovers transactions,
+writes a lock, resolves a package, runs mise or Nix, or executes package code.
+It reports schema-versioned diagnostics and structured `argv` recommendations
+whose mutation, network, code-execution, and confirmation properties are
+explicit.
+
+Add this declaration when Zed is expected to consume the checkout's committed
+`.gitmodules` metadata:
+
+```toml
+[interop.git]
+consume_gitmodules = true
+```
+
+`zed overtake --git-submodules` writes the declaration automatically, and
+later `zed add`/`zed remove` manifest rewrites preserve it. A `.gitmodules`
+file without the declaration is reported as a compatibility warning; a
+declaration with missing, indirect, or ambiguous Git metadata is an error.
+
+Mise analysis reuses the frozen, project-local import contract without loading
+user/global configuration or invoking mise. Nix analysis checks `flake.nix`
+and the adjacent `flake.lock` as data without running `nix develop`.
+
+Pass `--network` only when registry access is wanted. It asks the configured
+Zed registry for the latest `zed-pkg/zed-cli` and direct dependency versions,
+then classifies each recommendation as a major, minor, or patch change.
+
+See [Static inspection and editor interoperability](docs/static-inspection.md)
+for the JSON compatibility and plugin safety contract.
 
 ### Shell completion
 

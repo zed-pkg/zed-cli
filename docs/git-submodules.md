@@ -20,6 +20,18 @@ The equivalent environment setting is:
 ZED_PKG_GIT_SUBMODULES=1 zed install
 ```
 
+Repositories can make that interoperability intent durable in `.zpkg.toml`:
+
+```toml
+[interop.git]
+consume_gitmodules = true
+```
+
+`zed install` then synchronizes submodules without requiring a per-invocation
+flag. `zed inspect --json` reports a `.gitmodules` file without this declaration
+as a cross-tool compatibility warning. The declaration must be a boolean and
+is preserved when dependency commands rewrite the typed manifest.
+
 Boolean values accept `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`.
 An explicit CLI value can disable an inherited environment setting:
 
@@ -73,10 +85,11 @@ Takeover performs these steps:
    superproject `HEAD`;
 5. requires each adopted checkout to match its committed gitlink and have no
    tracked or untracked changes;
-6. adds each adopted package path to `[workspace].members`;
-7. adds an exact direct requirement under `[dependencies]`;
-8. runs the normal Zed solver and transactional installer; and
-9. records immutable Git provenance in `.zpkg.lock`.
+6. records `[interop.git].consume_gitmodules = true` in the root manifest;
+7. adds each adopted package path to `[workspace].members`;
+8. adds an exact direct requirement under `[dependencies]`;
+9. runs the normal Zed solver and transactional installer; and
+10. records immutable Git provenance in `.zpkg.lock`.
 
 This makes takeover incremental in a mixed repository. For example, a project
 may keep a documentation theme or large fixture repository as an ordinary Git
