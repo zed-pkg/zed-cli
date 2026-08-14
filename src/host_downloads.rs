@@ -909,9 +909,24 @@ fn sync_tree_files(root: &Path) -> Result<()> {
             "host download contains a symlink"
         );
         if metadata.is_file() {
-            fs::File::open(entry.path())?.sync_all()?;
+            sync_regular_file(entry.path())?;
         }
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn sync_regular_file(path: &Path) -> Result<()> {
+    fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn sync_regular_file(path: &Path) -> Result<()> {
+    fs::File::open(path)?.sync_all()?;
     Ok(())
 }
 
