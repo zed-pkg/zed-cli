@@ -168,6 +168,29 @@ jobs:
           pip --version
           test ! -e "$e2e_root/home"
 
+      - name: Install Node and Python across independent OCI layers
+        run: |
+          set -euo pipefail
+          context="$(mktemp -d "${RUNNER_TEMP}/zed-cli-layered-runtime.XXXXXX")"
+          install -m 0755 target/debug/zed "$context/zed"
+          docker build \
+            --tag zed-cli-layered-runtime:verify \
+            --file - \
+            "$context" <<'DOCKERFILE'
+          # Match the Ubuntu 24.04 glibc used to build this CI-only debug binary.
+          # Released zed-oci images consume the static musl release archive.
+          FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+          COPY --chmod=0755 zed /usr/local/bin/zed
+          WORKDIR /workspace
+          RUN zed init project --org ci
+          WORKDIR /workspace/project
+          RUN zed install --cli nodejs
+          RUN zed install --cli python3
+          ENV PATH="/workspace/project/.zed/tools/bin:${PATH}"
+          RUN test "$(node --version)" = "v24.19.0" \
+              && test "$(python3 --version)" = "Python 3.14.7"
+          DOCKERFILE
+
       - name: Require a clean checkout
         run: |
           set -euo pipefail

@@ -364,21 +364,7 @@ fn install_locked(
 
     let staging_path = staging.keep();
     let backup = version_root.join(format!(".{target}.backup-{}", Uuid::new_v4()));
-    let had_active = match fs::symlink_metadata(&active) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.is_dir() && !metadata.file_type().is_symlink(),
-                "active tool profile `{}` must be a real directory",
-                portable_display(&active)
-            );
-            fs::rename(&active, &backup).with_context(|| {
-                format!("staging prior tool profile `{}`", portable_display(&active))
-            })?;
-            true
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error).context("inspecting active tool profile"),
-    };
+    let had_active = stage_prior_profile(&active, &backup)?;
 
     if let Err(error) = fs::rename(&staging_path, &active) {
         if had_active {
@@ -414,6 +400,65 @@ fn install_locked(
         profile_relative,
         summaries,
     ))
+}
+
+fn stage_prior_profile(active: &Path, backup: &Path) -> Result<bool> {
+    stage_prior_profile_with(active, backup, |from, to| fs::rename(from, to))
+}
+
+fn stage_prior_profile_with(
+    active: &Path,
+    backup: &Path,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(active) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspecting active tool profile"),
+    };
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "active tool profile `{}` must be a real directory",
+        portable_display(active)
+    );
+
+    match rename(active, backup) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            // Overlay filesystems can expose a directory from a lower image
+            // layer and reject renaming it into the writable upper layer with
+            // EXDEV, even though both paths have the same visible parent.
+            // Copy a rollback generation first, then remove the lower-layer
+            // view. The prepared replacement remains staged until this backup
+            // is complete, and any later activation error restores it.
+            if let Err(copy_error) = copy_runtime_root(active, backup) {
+                let _ = fs::remove_dir_all(backup);
+                return Err(copy_error).context(format!(
+                    "copying prior tool profile `{}` across filesystem layers",
+                    portable_display(active)
+                ));
+            }
+            if let Err(sync_error) = sync_directory(backup) {
+                let _ = fs::remove_dir_all(backup);
+                return Err(sync_error).context(format!(
+                    "synchronizing copied prior tool profile `{}`",
+                    portable_display(backup)
+                ));
+            }
+            if let Err(remove_error) = fs::remove_dir_all(active) {
+                let _ = fs::remove_dir_all(backup);
+                return Err(remove_error).with_context(|| {
+                    format!(
+                        "removing lower-layer tool profile `{}` after verified backup",
+                        portable_display(active)
+                    )
+                });
+            }
+            Ok(true)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("staging prior tool profile `{}`", portable_display(active))),
+    }
 }
 
 fn prepare_tools<'a>(
@@ -1329,6 +1374,35 @@ mod tests {
         for forbidden in ["locator", "url", "token", "credential", "environment"] {
             assert!(!json.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn cross_device_profile_backup_copies_a_lower_layer_before_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join("v1/x86_64-unknown-linux-gnu");
+        let backup = root.path().join("v1/.x86_64-unknown-linux-gnu.backup-test");
+        fs::create_dir_all(active.join("roots/nodejs/bin")).unwrap();
+        fs::write(active.join(PROFILE_STATE_FILE), b"profile-state\n").unwrap();
+        fs::write(active.join("roots/nodejs/bin/node"), b"node-runtime\n").unwrap();
+
+        let staged = stage_prior_profile_with(&active, &backup, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::CrossesDevices,
+                "simulated overlay lower-layer rename",
+            ))
+        })
+        .unwrap();
+
+        assert!(staged);
+        assert!(!active.exists());
+        assert_eq!(
+            fs::read(backup.join(PROFILE_STATE_FILE)).unwrap(),
+            b"profile-state\n"
+        );
+        assert_eq!(
+            fs::read(backup.join("roots/nodejs/bin/node")).unwrap(),
+            b"node-runtime\n"
+        );
     }
 
     #[cfg(windows)]
