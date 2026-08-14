@@ -917,10 +917,7 @@ fn sync_tree_files(root: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn sync_regular_file(path: &Path) -> Result<()> {
-    fs::OpenOptions::new()
-        .write(true)
-        .open(path)?
-        .sync_all()?;
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()?;
     Ok(())
 }
 
