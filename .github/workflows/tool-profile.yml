@@ -177,7 +177,9 @@ jobs:
             --tag zed-cli-layered-runtime:verify \
             --file - \
             "$context" <<'DOCKERFILE'
-          FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
+          # Match the Ubuntu 24.04 glibc used to build this CI-only debug binary.
+          # Released zed-oci images consume the static musl release archive.
+          FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
           COPY --chmod=0755 zed /usr/local/bin/zed
           WORKDIR /workspace
           RUN zed init project --org ci
