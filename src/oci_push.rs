@@ -1037,6 +1037,7 @@ esac
         executable
     }
 
+    #[cfg(unix)]
     fn options<'a>(layout: &'a Path, oras: &'a Path) -> OciPushOptions<'a> {
         OciPushOptions {
             layout,
