@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "zed-cli"
-version = "0.1.0"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "clap",
@@ -2057,7 +2057,7 @@ dependencies = [
 [[package]]
 name = "zed-interfaces"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=60a8ab55f8a55eb212a72dcb334c1c118047c7ef#60a8ab55f8a55eb212a72dcb334c1c118047c7ef"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=8428bc574111fa148e590c8350c7855035ce2046#8428bc574111fa148e590c8350c7855035ce2046"
 dependencies = [
  "hex",
  "schemars",

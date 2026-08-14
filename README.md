@@ -20,7 +20,9 @@ Why it exists:
   and commit are pinned in `.zpkg.lock`.
 - **Container-first.** The documented [copy install ownership contract](docs/install-modes.md)
   materializes independent package, adapter, build-output, and hoisted-bin files
-  for Docker build contexts, OCI layers, and read-only runtimes.
+  for Docker build contexts, OCI layers, and read-only runtimes. First-class
+  [project-owned CLI runtimes](docs/cli-tools.md) make Node.js and Python part
+  of that same auditable workspace instead of an opaque base-image choice.
 
 ## Install
 
@@ -76,6 +78,13 @@ zed find http
 zed install --interactive
 zed r2g --docker --interactive
 zed publish --interactive
+
+# create a new directory and give it project-owned CLI runtimes
+zed init project --org acme
+cd project
+zed install --cli nodejs
+zed install --cli python3
+export PATH="$PWD/.zed/tools/bin:$PATH"
 ```
 
 Every authored package is `<org>/<name>`, declared in a `.zpkg.toml` manifest
@@ -133,10 +142,11 @@ registry hosts both on S3/Cloudflare R2.
 | Command | What it does |
 | --- | --- |
 | `zed validate [--manifest PATH] [--lock PATH] [--require-lock] [--json]` | Validate canonical package metadata offline and without mutation; direct lock coverage is checked, while v1 transitive completeness is explicitly not claimed |
-| `zed init` | Write a `.zpkg.toml` template |
+| `zed init [PROJECT]` | Create the optional project directory and write its `.zpkg.toml` template; `zed init project` infers the package name `project` |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
+| `zed install --cli <tool> [--cli <tool> ...]` | Resolve exact project-owned CLI runtimes into `.zed/environment.lock.toml` and copy their complete runtime roots below `.zed/tools`; built-ins are `nodejs` and `python3` |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
@@ -441,6 +451,9 @@ actual CLI never drift, so it is always authoritative:
 | `--require-lock` (validate) | `ZED_PKG_VALIDATE_REQUIRE_LOCK` | off |
 | `--json` (validate) | `ZED_PKG_VALIDATE_JSON` | off |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
+| `--cli <tool>` (install) | `ZED_PKG_CLI` | none; repeat on the command line for multiple tools |
+| `--cli-target` (install) | `ZED_PKG_CLI_TARGET` | detected GNU/Linux architecture |
+| `--cli-install-mode` (install) | `ZED_PKG_CLI_INSTALL_MODE` | `copy` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
@@ -491,11 +504,44 @@ always removes the local session.
 ## Containers & OCI
 
 Symlinks into `$HOME/.zed-pkg` do not survive a `COPY --from=build` between
-image stages, so use copy mode inside builds and cache-mount the store:
+image stages. Project-owned CLI runtimes therefore default to copy mode: their
+complete runtime roots, command links, and portable environment lock all live
+below the workspace. The published builder image supports an intentionally
+small, readable multi-stage recipe:
 
 ```dockerfile
-FROM rust:1-slim AS build
-RUN cargo install zed-cli --root /usr/local            # or COPY a prebuilt zed
+FROM ghcr.io/zed-pkg/zed-oci:0.2.0 AS zed-builder
+WORKDIR /workspace
+
+RUN zed init project --org example
+WORKDIR /workspace/project
+RUN zed install --cli nodejs
+RUN zed install --cli python3
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=zed-builder /workspace/project/ /app/
+ENV PATH="/app/.zed/tools/bin:${PATH}"
+
+# The copied workspace owns both runtimes; Zed and its store stay behind.
+RUN node --version \
+ && python3 --version \
+ && ! command -v zed \
+ && test ! -e /home/zed/.zed-pkg
+```
+
+`node`/`nodejs`, `npm`, `npx`, and `corepack` come from the locked Node.js
+runtime. `python`/`python3`/`python3.14` and `pip`/`pip3`/`pip3.14` come from
+the locked Python runtime. The built-in catalog currently targets glibc-based
+x86_64 and arm64 Linux, so both the builder and the final image must provide a
+GNU/Linux runtime. See [CLI tools](docs/cli-tools.md) for the lock, target, and
+update contract.
+
+Package dependencies use their existing explicit copy mode and can share the
+same builder stage:
+
+```dockerfile
+FROM ghcr.io/zed-pkg/zed-oci:0.2.0 AS build
 WORKDIR /app
 COPY .zpkg.toml .zpkg.lock ./
 RUN --mount=type=cache,target=/root/.zed-pkg \
@@ -510,6 +556,8 @@ COPY --from=build /app/out /app
 - `--frozen` keeps builds reproducible: exactly the sha256s in `.zpkg.lock`.
 - `--install-mode copy` materializes files so the layer is self-contained;
   the cache mount still deduplicates downloads across builds.
+- `zed install --cli ...` writes a separate portable
+  `.zed/environment.lock.toml` and defaults to project-owned copy mode.
 - Artifacts are pre-pruned at publish time, so images stay small without
   extra cleanup steps.
 

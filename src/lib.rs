@@ -6,6 +6,7 @@ pub mod auth;
 pub mod cli;
 pub mod cli_model;
 pub mod cli_oci;
+pub mod cli_tools;
 pub mod completion;
 pub mod config;
 mod dart_wiring;
@@ -17,12 +18,14 @@ pub mod fetch;
 pub mod flags;
 pub mod git_submodules;
 pub mod global;
+pub mod graph_export;
 pub mod inspect;
 pub mod install_graph;
 pub mod interactive;
 pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
+pub(crate) mod materialize;
 #[path = "mise_export.rs"]
 mod mise_export_impl;
 pub mod mise_export {

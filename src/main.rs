@@ -7,6 +7,7 @@ use zed_cli::cli::{
     AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
     ReleaseCmd, StoreCmd, TaskCmd,
 };
+use zed_cli::cli_tools;
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
@@ -15,6 +16,7 @@ use zed_cli::environment_export_cli::{self, ExportOptions};
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
+use zed_cli::graph_export;
 use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
@@ -99,6 +101,16 @@ fn main() {
         }
     }
     if let Some(result) = fetch::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = graph_export::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -214,11 +226,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
     match cli.cmd {
         Cmd::Validate { .. } => unreachable!("validation returned before mutable CLI setup"),
-        Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
+        Cmd::Init { project, org, name } => {
+            let project = project.unwrap_or_else(|| std::path::PathBuf::from("."));
+            let project = if project.is_absolute() {
+                project
+            } else {
+                cwd.join(project)
+            };
+            std::fs::create_dir_all(&project)?;
+            ops::init(&project, org, name, cfg.interactive)
+        }
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
             specs,
+            cli,
+            cli_target,
+            cli_install_mode,
             frozen,
             install_mode,
             adapter,
@@ -230,6 +254,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
+            if !cli.is_empty() {
+                anyhow::ensure!(
+                    specs.is_empty(),
+                    "package operands and --cli tools cannot be mixed in one install; run them as separate deterministic transactions"
+                );
+                let receipt = cli_tools::install(
+                    &cwd,
+                    &cfg.home,
+                    &cli,
+                    cli_target.as_deref(),
+                    frozen,
+                    cli_install_mode,
+                )?;
+                println!("{} CLI tool profile {}", receipt.action, receipt.profile);
+                println!("lock: {}", receipt.lock);
+                println!("lock-sha256: {}", receipt.lock_sha256);
+                println!("target: {}", receipt.target);
+                println!("bin: {}", receipt.bin);
+                for tool in receipt.tools {
+                    println!("tool: {tool}");
+                }
+                return Ok(());
+            }
             let permissions = ops::InstallPermissions {
                 allow_build,
                 allow_native_deps,

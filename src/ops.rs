@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::io::{BufRead, Read};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -123,7 +123,8 @@ exclude = []
     let gitignore = dir.join(".gitignore");
     let ignore_lines = [
         format!("{MODULES_DIR}/"),
-        ".zed/".to_string(),
+        ".zed/*".to_string(),
+        "!.zed/environment.lock.toml".to_string(),
         format!("{}/", crate::transaction::STAGING_DIR),
     ];
     if gitignore.exists() {
@@ -220,6 +221,22 @@ fn collect_members(root: &Path, globs: &[String]) -> WorkspaceInfo {
     info
 }
 
+/// A dependency on the current package identity is an explicit request to
+/// install and test its published artifact. Linking the workspace member back
+/// into its own dependency directory would silently test source instead and
+/// can create source/destination recursion. Other workspace dependencies,
+/// including ordinary cross-package cycles, keep source-link semantics.
+fn workspace_member_for_dependency<'a>(
+    manifest: &Manifest,
+    workspace: Option<&'a WorkspaceInfo>,
+    key: &str,
+) -> Option<&'a PathBuf> {
+    if key == manifest.full_name() {
+        return None;
+    }
+    workspace?.members.get(key)
+}
+
 fn collect_workspace_links_for_frozen(
     project: &Path,
     manifest: &Manifest,
@@ -239,7 +256,8 @@ fn collect_workspace_links_for_frozen(
     while let Some((raw_key, requirement_text)) = pending.pop_front() {
         let (org, name) = split_key(&raw_key)?;
         let key = format!("{org}/{name}");
-        let Some(member_dir) = workspace.members.get(&key) else {
+        let Some(member_dir) = workspace_member_for_dependency(manifest, Some(workspace), &key)
+        else {
             continue;
         };
         let member_manifest = read_manifest(member_dir).with_context(|| {
@@ -334,34 +352,17 @@ pub(crate) fn legacy_ensure_artifact_for_test(
     ensure_artifact(reg, store, vm)
 }
 
-fn replace_dest(dest: &Path) -> Result<()> {
-    if let Ok(meta) = fs::symlink_metadata(dest) {
-        if meta.file_type().is_dir() {
-            fs::remove_dir_all(dest)?;
-        } else {
-            fs::remove_file(dest)?;
-        }
-    }
-    Ok(())
-}
-
-fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
-    fs::create_dir_all(dest)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let target = dest.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir(&entry.path(), &target)?;
-        } else {
-            fs::copy(entry.path(), &target)?;
-        }
-    }
-    Ok(())
-}
-
 /// Resolve the requested mode once, before any project output is written.
 /// Windows cannot create Zed's Unix store-backed directory links reliably;
 /// report that platform decision and use the portable ownership model.
+fn replace_dest(destination: &Path) -> Result<()> {
+    crate::materialize::replace_destination(destination)
+}
+
+fn copy_dir(source: &Path, destination: &Path) -> Result<()> {
+    crate::materialize::copy_directory(source, destination)
+}
+
 fn effective_install_mode(mode: InstallMode) -> InstallMode {
     #[cfg(unix)]
     {
@@ -382,18 +383,7 @@ fn effective_install_mode(mode: InstallMode) -> InstallMode {
 }
 
 fn link_or_copy(src: &Path, dest: &Path, mode: InstallMode) -> Result<()> {
-    fs::create_dir_all(dest.parent().context("dest has parent")?)?;
-    replace_dest(dest)?;
-    match mode {
-        InstallMode::Symlink => {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(src, dest)?;
-            #[cfg(not(unix))]
-            bail!("symlink install mode was not normalized before materialization");
-        }
-        InstallMode::Copy => copy_dir(src, dest)?,
-    }
-    Ok(())
+    crate::materialize::link_or_copy(src, dest, mode)
 }
 
 /// Pick the language subtree to take from *polyglot* dependencies — a repo
@@ -1063,9 +1053,10 @@ fn validate_frozen_manifest_requirements(
     if !enforce {
         return Ok(());
     }
+    let root_key = manifest.full_name();
     for (key, req_str) in &manifest.dependencies {
         let (org, name) = split_key(key)?;
-        if workspace.is_some_and(|ws| ws.members.contains_key(key)) {
+        if key != &root_key && workspace.is_some_and(|ws| ws.members.contains_key(key)) {
             continue;
         }
         let entry = lock
@@ -1278,8 +1269,8 @@ fn install_locked(
             let key = format!("{org}/{name}");
             // Workspace members short-circuit the registry entirely: link
             // the member's source tree, then keep resolving its deps.
-            if let Some(ws) = &workspace
-                && let Some(member_dir) = ws.members.get(&key)
+            if let Some(member_dir) =
+                workspace_member_for_dependency(&manifest, workspace.as_ref(), &key)
             {
                 let member_manifest = read_manifest(member_dir).with_context(|| {
                     format!(

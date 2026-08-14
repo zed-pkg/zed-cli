@@ -360,6 +360,34 @@ mod tests {
     }
 
     #[test]
+    fn embedded_contract_accepts_project_cli_runtime_flags() {
+        let argv = vec![
+            "zed".to_string(),
+            "install".to_string(),
+            "--cli".to_string(),
+            "nodejs".to_string(),
+            "--cli".to_string(),
+            "python3".to_string(),
+            "--cli-target=x86_64-unknown-linux-gnu".to_string(),
+            "--cli-install-mode=copy".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).expect("embedded contract must parse CLI tools");
+        assert!(parsed.unknown_options.is_empty());
+        assert!(parsed.errors.is_empty());
+        assert_eq!(
+            parsed.flags.get("ZED_PKG_CLI_TARGET").map(String::as_str),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            parsed
+                .flags
+                .get("ZED_PKG_CLI_INSTALL_MODE")
+                .map(String::as_str),
+            Some("copy")
+        );
+    }
+
+    #[test]
     fn explicit_aliases_map_to_the_manifestless_environment_key() {
         for bypass in ["--allow-no-manifest", "--skip-manifest"] {
             let argv = vec![

@@ -34,7 +34,7 @@ use crate::config::{Config, read_manifest, write_manifest};
 use crate::interactive;
 use crate::ops::{build_publish_meta, install};
 use crate::pack;
-use crate::registry::{Registry, registry_for};
+use crate::registry::registry_for;
 use crate::store::human_size;
 
 /// Options for `zed r2g`, mirroring its CLI flags (all also `ZED_PKG_R2G_*`

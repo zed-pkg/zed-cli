@@ -12,10 +12,11 @@ use std::env;
 #[cfg(unix)]
 use std::fs::File;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use zed_interfaces::{
@@ -23,6 +24,7 @@ use zed_interfaces::{
     LockedTool,
 };
 
+use crate::cli::InstallMode;
 use crate::pack::sha256_file;
 use crate::project_lock;
 use crate::store::Store;
@@ -31,6 +33,10 @@ pub const TOOL_PROFILE_SCHEMA_V1: &str = "zed.tool-profile/v1";
 const DEFAULT_LOCK_PATH: &str = ".zed/environment.lock.toml";
 const DEFAULT_PROFILE_PATH: &str = ".zed/tools";
 const PROFILE_STATE_FILE: &str = "profile.json";
+const RAW_ARCHIVE_LAYOUT_EXTENSION: &str = "zed-pkg.archive-layout";
+const RAW_ARCHIVE_LAYOUT: &str = "raw";
+const MAX_RAW_TOOL_ENTRIES: usize = 200_000;
+const MAX_RAW_TOOL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockMode {
@@ -85,6 +91,7 @@ struct ToolProfileState {
     schema: String,
     lock_sha256: String,
     target: String,
+    install_mode: String,
     tools: Vec<ToolProfileTool>,
 }
 
@@ -121,6 +128,7 @@ struct PreparedExecutable {
 #[derive(Debug, Clone)]
 struct PreparedTool<'a> {
     selected: SelectedTool<'a>,
+    install_root: PathBuf,
     executables: Vec<PreparedExecutable>,
 }
 
@@ -227,6 +235,27 @@ pub fn install_offline(
     profile_path: Option<&Path>,
     home: &Path,
 ) -> Result<ToolInstallReceipt> {
+    install_offline_with_mode(
+        root,
+        loaded,
+        target,
+        profile_path,
+        home,
+        InstallMode::Symlink,
+    )
+}
+
+/// Replay an exact cached tool lock using either store-backed links or a
+/// project-owned copy. Copy mode is the OCI/export boundary: the complete
+/// runtime roots and every command link remain below the profile directory.
+pub fn install_offline_with_mode(
+    root: &Path,
+    loaded: &LoadedEnvironmentLock,
+    target: &str,
+    profile_path: Option<&Path>,
+    home: &Path,
+    mode: InstallMode,
+) -> Result<ToolInstallReceipt> {
     let root = root
         .canonicalize()
         .with_context(|| format!("canonicalizing project root `{}`", root.display()))?;
@@ -248,7 +277,15 @@ pub fn install_offline(
     let store = Store::new(home);
 
     project_lock::with_lock(&root, "install frozen environment tool profile", || {
-        install_locked(&root, loaded, target, &profile_relative, &store, &selected)
+        install_locked(
+            &root,
+            loaded,
+            target,
+            &profile_relative,
+            &store,
+            &selected,
+            mode,
+        )
     })
 }
 
@@ -259,12 +296,13 @@ fn install_locked(
     profile_relative: &Path,
     store: &Store,
     selected: &[SelectedTool<'_>],
+    mode: InstallMode,
 ) -> Result<ToolInstallReceipt> {
     let profile_root = ensure_directory_chain(root, profile_relative, "tool profile")?;
     let version_root = ensure_real_directory(&profile_root, "v1", "tool profile version")?;
     let active = version_root.join(target);
-    let prepared = prepare_tools(store, selected)?;
-    let state = profile_state(loaded, target, &prepared);
+    let prepared = prepare_tools(store, selected, mode)?;
+    let state = profile_state(loaded, target, mode, &prepared);
     let mut state_bytes = serde_json::to_vec_pretty(&state)?;
     state_bytes.push(b'\n');
     let summaries = prepared
@@ -272,14 +310,16 @@ fn install_locked(
         .map(|prepared| summary(prepared.selected.name, prepared.selected.locked))
         .collect::<Vec<_>>();
 
-    if active_profile_matches(&active, &state_bytes, &prepared)? {
-        store.record_project(
-            &active,
-            prepared
-                .iter()
-                .map(|tool| tool.selected.locked.artifact.sha256.clone())
-                .collect(),
-        )?;
+    if active_profile_matches(&active, &state_bytes, mode, &prepared)? {
+        if mode == InstallMode::Symlink {
+            store.record_project(
+                &active,
+                prepared
+                    .iter()
+                    .map(|tool| tool.selected.locked.artifact.sha256.clone())
+                    .collect(),
+            )?;
+        }
         return Ok(install_receipt(
             "unchanged",
             loaded,
@@ -296,11 +336,24 @@ fn install_locked(
     let staging_path = staging.path().to_path_buf();
     let staging_bin = staging_path.join("bin");
     fs::create_dir(&staging_bin)?;
+    let staging_roots = staging_path.join("roots");
+    if mode == InstallMode::Copy {
+        fs::create_dir(&staging_roots)?;
+    }
     for tool in &prepared {
+        if mode == InstallMode::Copy {
+            validate_component(tool.selected.name, "tool name")?;
+            copy_runtime_root(&tool.install_root, &staging_roots.join(tool.selected.name))?;
+        }
         for executable in &tool.executables {
+            let copy_target = PathBuf::from("..")
+                .join("roots")
+                .join(tool.selected.name)
+                .join(&executable.source_relative);
             materialize_executable(
                 &executable.source,
                 &staging_bin.join(&executable.profile_name),
+                (mode == InstallMode::Copy).then_some(copy_target.as_path()),
             )?;
         }
     }
@@ -311,21 +364,7 @@ fn install_locked(
 
     let staging_path = staging.keep();
     let backup = version_root.join(format!(".{target}.backup-{}", Uuid::new_v4()));
-    let had_active = match fs::symlink_metadata(&active) {
-        Ok(metadata) => {
-            ensure!(
-                metadata.is_dir() && !metadata.file_type().is_symlink(),
-                "active tool profile `{}` must be a real directory",
-                portable_display(&active)
-            );
-            fs::rename(&active, &backup).with_context(|| {
-                format!("staging prior tool profile `{}`", portable_display(&active))
-            })?;
-            true
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => return Err(error).context("inspecting active tool profile"),
-    };
+    let had_active = stage_prior_profile(&active, &backup)?;
 
     if let Err(error) = fs::rename(&staging_path, &active) {
         if had_active {
@@ -336,16 +375,18 @@ fn install_locked(
     }
     sync_directory(&version_root)?;
 
-    let refs = prepared
-        .iter()
-        .map(|tool| tool.selected.locked.artifact.sha256.clone())
-        .collect::<Vec<_>>();
-    if let Err(error) = store.record_project(&active, refs) {
-        let _ = fs::remove_dir_all(&active);
-        if had_active {
-            let _ = fs::rename(&backup, &active);
+    if mode == InstallMode::Symlink {
+        let refs = prepared
+            .iter()
+            .map(|tool| tool.selected.locked.artifact.sha256.clone())
+            .collect::<Vec<_>>();
+        if let Err(error) = store.record_project(&active, refs) {
+            let _ = fs::remove_dir_all(&active);
+            if had_active {
+                let _ = fs::rename(&backup, &active);
+            }
+            return Err(error).context("recording live tool-profile store references");
         }
-        return Err(error).context("recording live tool-profile store references");
     }
     if had_active {
         fs::remove_dir_all(&backup).context("removing prior tool profile")?;
@@ -361,9 +402,69 @@ fn install_locked(
     ))
 }
 
+fn stage_prior_profile(active: &Path, backup: &Path) -> Result<bool> {
+    stage_prior_profile_with(active, backup, |from, to| fs::rename(from, to))
+}
+
+fn stage_prior_profile_with(
+    active: &Path,
+    backup: &Path,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(active) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspecting active tool profile"),
+    };
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "active tool profile `{}` must be a real directory",
+        portable_display(active)
+    );
+
+    match rename(active, backup) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            // Overlay filesystems can expose a directory from a lower image
+            // layer and reject renaming it into the writable upper layer with
+            // EXDEV, even though both paths have the same visible parent.
+            // Copy a rollback generation first, then remove the lower-layer
+            // view. The prepared replacement remains staged until this backup
+            // is complete, and any later activation error restores it.
+            if let Err(copy_error) = copy_runtime_root(active, backup) {
+                let _ = fs::remove_dir_all(backup);
+                return Err(copy_error).context(format!(
+                    "copying prior tool profile `{}` across filesystem layers",
+                    portable_display(active)
+                ));
+            }
+            if let Err(sync_error) = sync_directory(backup) {
+                let _ = fs::remove_dir_all(backup);
+                return Err(sync_error).context(format!(
+                    "synchronizing copied prior tool profile `{}`",
+                    portable_display(backup)
+                ));
+            }
+            if let Err(remove_error) = fs::remove_dir_all(active) {
+                let _ = fs::remove_dir_all(backup);
+                return Err(remove_error).with_context(|| {
+                    format!(
+                        "removing lower-layer tool profile `{}` after verified backup",
+                        portable_display(active)
+                    )
+                });
+            }
+            Ok(true)
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("staging prior tool profile `{}`", portable_display(active))),
+    }
+}
+
 fn prepare_tools<'a>(
     store: &Store,
     selected: &[SelectedTool<'a>],
+    mode: InstallMode,
 ) -> Result<Vec<PreparedTool<'a>>> {
     let mut ownership = BTreeMap::<String, String>::new();
     let mut prepared = Vec::with_capacity(selected.len());
@@ -409,7 +510,23 @@ fn prepare_tools<'a>(
             "cached artifact size changed while verifying tool `{}`",
             selected.name
         );
-        let package_root = store.add_artifact(&archive, &selected.locked.artifact.sha256)?;
+        let raw_layout = selected
+            .locked
+            .artifact
+            .extensions
+            .get(RAW_ARCHIVE_LAYOUT_EXTENSION)
+            .and_then(serde_json::Value::as_str)
+            == Some(RAW_ARCHIVE_LAYOUT);
+        ensure!(
+            !raw_layout || mode == InstallMode::Copy,
+            "tool `{}` uses an upstream runtime archive and requires --install-mode copy",
+            selected.name
+        );
+        let package_root = if raw_layout {
+            add_raw_tool_artifact(store, &archive, &selected.locked.artifact.sha256)?
+        } else {
+            store.add_artifact(&archive, &selected.locked.artifact.sha256)?
+        };
         let install_root = resolve_directory_beneath(
             &package_root,
             Path::new(&selected.locked.install.root),
@@ -432,10 +549,213 @@ fn prepare_tools<'a>(
         );
         prepared.push(PreparedTool {
             selected: selected.clone(),
+            install_root,
             executables,
         });
     }
     Ok(prepared)
+}
+
+fn add_raw_tool_artifact(store: &Store, archive: &Path, sha256: &str) -> Result<PathBuf> {
+    let version_root = store.home().join("tool-store").join("v1");
+    let entry = version_root.join(sha256);
+    let active = entry.join("root");
+    match fs::symlink_metadata(&active) {
+        Ok(metadata) => {
+            ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "raw tool-store entry `{}` must be a real directory",
+                portable_display(&active)
+            );
+            return Ok(active);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("inspecting raw tool-store entry"),
+    }
+
+    let _store_lock = store.install_lock()?;
+    if active.is_dir() {
+        return Ok(active);
+    }
+    fs::create_dir_all(&version_root)?;
+    let staging = tempfile::Builder::new()
+        .prefix(&format!(".{sha256}.staging-"))
+        .tempdir_in(&version_root)?;
+    let staging_root = staging.path().join("root");
+    fs::create_dir(&staging_root)?;
+    extract_raw_tool_archive(archive, &staging_root)?;
+    sync_directory(&staging_root)?;
+    let staging_path = staging.keep();
+    match fs::rename(&staging_path, &entry) {
+        Ok(()) => {}
+        Err(_) if active.is_dir() => {
+            fs::remove_dir_all(&staging_path)?;
+        }
+        Err(error) => return Err(error).context("activating raw tool-store entry"),
+    }
+    sync_directory(&version_root)?;
+    Ok(active)
+}
+
+fn extract_raw_tool_archive(archive: &Path, destination: &Path) -> Result<()> {
+    let file = fs::File::open(archive)?;
+    let decoder = GzDecoder::new(file);
+    let mut tar = tar::Archive::new(decoder);
+    let mut entries = 0usize;
+    let mut bytes = 0u64;
+    for item in tar.entries()? {
+        let mut item = item?;
+        entries += 1;
+        ensure!(
+            entries <= MAX_RAW_TOOL_ENTRIES,
+            "raw tool archive exceeds {MAX_RAW_TOOL_ENTRIES} entries"
+        );
+        let path = item.path()?.into_owned();
+        let path = safe_archive_path(&path)?;
+        let target = destination.join(&path);
+        let kind = item.header().entry_type();
+        match kind {
+            tar::EntryType::Directory => {
+                fs::create_dir_all(&target).with_context(|| {
+                    format!(
+                        "creating raw tool archive directory `{}`",
+                        portable_display(&path)
+                    )
+                })?;
+            }
+            tar::EntryType::Regular => {
+                let declared = item.header().size()?;
+                bytes = bytes
+                    .checked_add(declared)
+                    .context("raw tool archive size overflow")?;
+                ensure!(
+                    bytes <= MAX_RAW_TOOL_BYTES,
+                    "raw tool archive exceeds {} bytes unpacked",
+                    MAX_RAW_TOOL_BYTES
+                );
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "creating parent for raw tool archive file `{}`",
+                            portable_display(&path)
+                        )
+                    })?;
+                }
+                let mut output = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&target)
+                    .with_context(|| {
+                        format!(
+                            "creating raw tool archive file `{}`; the target filesystem may not preserve the archive's case-sensitive paths",
+                            portable_display(&path)
+                        )
+                    })?;
+                let mut limited = (&mut item).take(declared.saturating_add(1));
+                let copied = std::io::copy(&mut limited, &mut output)?;
+                ensure!(
+                    copied == declared,
+                    "raw tool archive entry `{}` size mismatch",
+                    portable_display(&path)
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = item.header().mode()? & 0o777;
+                    fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+                }
+                output.sync_all()?;
+            }
+            tar::EntryType::Symlink => {
+                let link = item
+                    .link_name()?
+                    .context("raw tool archive symlink has no target")?
+                    .into_owned();
+                validate_relative_symlink(&path, &link)?;
+                if let Some(parent) = target.parent() {
+                    fs::create_dir_all(parent).with_context(|| {
+                        format!(
+                            "creating parent for raw tool archive symlink `{}`",
+                            portable_display(&path)
+                        )
+                    })?;
+                }
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&link, &target).with_context(|| {
+                    format!(
+                        "creating raw tool archive symlink `{}`; the target filesystem may not preserve the archive's case-sensitive paths",
+                        portable_display(&path)
+                    )
+                })?;
+                #[cfg(windows)]
+                bail!(
+                    "raw tool archive symlinks are not yet supported on Windows: `{}`",
+                    portable_display(&path)
+                );
+            }
+            other => bail!(
+                "raw tool archive entry `{}` has unsupported type {other:?}",
+                portable_display(&path)
+            ),
+        }
+    }
+    ensure!(entries > 0, "raw tool archive is empty");
+    Ok(())
+}
+
+fn safe_archive_path(path: &Path) -> Result<PathBuf> {
+    ensure!(
+        !path.as_os_str().is_empty(),
+        "archive entry path cannot be empty"
+    );
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(component) => safe.push(component),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "raw tool archive entry `{}` escapes its extraction root",
+                    portable_display(path)
+                )
+            }
+        }
+    }
+    ensure!(
+        !safe.as_os_str().is_empty(),
+        "archive entry path cannot be empty"
+    );
+    Ok(safe)
+}
+
+fn validate_relative_symlink(entry: &Path, link: &Path) -> Result<()> {
+    ensure!(
+        !link.is_absolute(),
+        "raw tool archive symlink `{}` must be relative",
+        portable_display(entry)
+    );
+    let mut depth = entry.parent().map_or(0isize, |parent| {
+        parent.components().count().try_into().unwrap_or(isize::MAX)
+    });
+    for component in link.components() {
+        match component {
+            Component::Normal(_) => depth += 1,
+            Component::CurDir => {}
+            Component::ParentDir => depth -= 1,
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "raw tool archive symlink `{}` has a non-portable target",
+                    portable_display(entry)
+                )
+            }
+        }
+        ensure!(
+            depth >= 0,
+            "raw tool archive symlink `{}` escapes its extraction root",
+            portable_display(entry)
+        );
+    }
+    Ok(())
 }
 
 fn prepare_locked_executable(
@@ -486,12 +806,18 @@ fn prepare_locked_executable(
 fn profile_state(
     loaded: &LoadedEnvironmentLock,
     target: &str,
+    mode: InstallMode,
     prepared: &[PreparedTool<'_>],
 ) -> ToolProfileState {
     ToolProfileState {
         schema: TOOL_PROFILE_SCHEMA_V1.to_string(),
         lock_sha256: loaded.digest_sha256.clone(),
         target: target.to_string(),
+        install_mode: match mode {
+            InstallMode::Symlink => "symlink",
+            InstallMode::Copy => "copy",
+        }
+        .to_string(),
         tools: prepared
             .iter()
             .map(|tool| ToolProfileTool {
@@ -517,8 +843,12 @@ fn profile_state(
 fn active_profile_matches(
     active: &Path,
     expected_state: &[u8],
+    mode: InstallMode,
     prepared: &[PreparedTool<'_>],
 ) -> Result<bool> {
+    #[cfg(windows)]
+    let _ = mode;
+
     let metadata = match fs::symlink_metadata(active) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -569,10 +899,34 @@ fn active_profile_matches(
         #[cfg(unix)]
         {
             let metadata = fs::symlink_metadata(&destination)?;
-            if !metadata.file_type().is_symlink()
-                || fs::read_link(&destination)? != executable.source
-            {
+            let expected = if mode == InstallMode::Symlink {
+                executable.source.clone()
+            } else {
+                let Some(tool) = prepared.iter().find(|tool| {
+                    tool.executables.iter().any(|item| {
+                        item.profile_name == executable.profile_name
+                            && item.source_relative == executable.source_relative
+                    })
+                }) else {
+                    return Ok(false);
+                };
+                PathBuf::from("..")
+                    .join("roots")
+                    .join(tool.selected.name)
+                    .join(&executable.source_relative)
+            };
+            if !metadata.file_type().is_symlink() || fs::read_link(&destination)? != expected {
                 return Ok(false);
+            }
+            if mode == InstallMode::Copy {
+                let target = match fs::metadata(&destination) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error).context("inspecting copied tool command"),
+                };
+                if !target.is_file() {
+                    return Ok(false);
+                }
             }
         }
         #[cfg(windows)]
@@ -661,7 +1015,14 @@ fn select_exact_target<'a>(
     Ok(selected)
 }
 
-fn materialize_executable(source: &Path, destination: &Path) -> Result<()> {
+fn materialize_executable(
+    source: &Path,
+    destination: &Path,
+    portable_target: Option<&Path>,
+) -> Result<()> {
+    #[cfg(windows)]
+    let _ = portable_target;
+
     ensure!(
         fs::symlink_metadata(destination)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
@@ -670,13 +1031,15 @@ fn materialize_executable(source: &Path, destination: &Path) -> Result<()> {
     );
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(source, destination).with_context(|| {
-            format!(
-                "linking tool executable `{}` -> `{}`",
-                portable_display(destination),
-                portable_display(source)
-            )
-        })?;
+        std::os::unix::fs::symlink(portable_target.unwrap_or(source), destination).with_context(
+            || {
+                format!(
+                    "linking tool executable `{}` -> `{}`",
+                    portable_display(destination),
+                    portable_display(source)
+                )
+            },
+        )?;
     }
     #[cfg(windows)]
     {
@@ -703,6 +1066,75 @@ fn materialize_executable(source: &Path, destination: &Path) -> Result<()> {
                     portable_display(destination)
                 )
             })?;
+    }
+    Ok(())
+}
+
+fn copy_runtime_root(source: &Path, destination: &Path) -> Result<()> {
+    ensure!(
+        fs::symlink_metadata(destination)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound),
+        "portable tool root destination `{}` already exists",
+        portable_display(destination)
+    );
+    fs::create_dir(destination)?;
+    for entry in walkdir::WalkDir::new(source)
+        .follow_links(false)
+        .min_depth(1)
+    {
+        let entry = entry.context("walking authenticated tool runtime root")?;
+        let relative = entry
+            .path()
+            .strip_prefix(source)
+            .context("tool runtime entry escaped its root")?;
+        let target = destination.join(relative);
+        let metadata = fs::symlink_metadata(entry.path())?;
+        if metadata.is_dir() {
+            fs::create_dir(&target)?;
+            fs::set_permissions(&target, metadata.permissions())?;
+        } else if metadata.is_file() {
+            fs::copy(entry.path(), &target)?;
+            fs::set_permissions(&target, metadata.permissions())?;
+        } else if metadata.file_type().is_symlink() {
+            let link = fs::read_link(entry.path())?;
+            ensure!(
+                !link.is_absolute(),
+                "tool runtime symlink `{}` must be relative",
+                portable_display(relative)
+            );
+            let parent = relative.parent().unwrap_or_else(|| Path::new(""));
+            let mut depth = parent.components().count() as isize;
+            for component in link.components() {
+                match component {
+                    Component::Normal(_) => depth += 1,
+                    Component::CurDir => {}
+                    Component::ParentDir => depth -= 1,
+                    Component::RootDir | Component::Prefix(_) => {
+                        bail!(
+                            "tool runtime symlink `{}` has a non-portable target",
+                            portable_display(relative)
+                        )
+                    }
+                }
+                ensure!(
+                    depth >= 0,
+                    "tool runtime symlink `{}` escapes its authenticated root",
+                    portable_display(relative)
+                );
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&link, &target)?;
+            #[cfg(windows)]
+            bail!(
+                "portable tool runtime symlinks are not yet supported on Windows: `{}`",
+                portable_display(relative)
+            );
+        } else {
+            bail!(
+                "tool runtime entry `{}` is not a file, directory, or symlink",
+                portable_display(relative)
+            );
+        }
     }
     Ok(())
 }
@@ -935,12 +1367,42 @@ mod tests {
             schema: TOOL_PROFILE_SCHEMA_V1.to_string(),
             lock_sha256: "a".repeat(64),
             target: "x86_64-linux".to_string(),
+            install_mode: "copy".to_string(),
             tools: Vec::new(),
         };
         let json = serde_json::to_string(&state).unwrap();
         for forbidden in ["locator", "url", "token", "credential", "environment"] {
             assert!(!json.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn cross_device_profile_backup_copies_a_lower_layer_before_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join("v1/x86_64-unknown-linux-gnu");
+        let backup = root.path().join("v1/.x86_64-unknown-linux-gnu.backup-test");
+        fs::create_dir_all(active.join("roots/nodejs/bin")).unwrap();
+        fs::write(active.join(PROFILE_STATE_FILE), b"profile-state\n").unwrap();
+        fs::write(active.join("roots/nodejs/bin/node"), b"node-runtime\n").unwrap();
+
+        let staged = stage_prior_profile_with(&active, &backup, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::CrossesDevices,
+                "simulated overlay lower-layer rename",
+            ))
+        })
+        .unwrap();
+
+        assert!(staged);
+        assert!(!active.exists());
+        assert_eq!(
+            fs::read(backup.join(PROFILE_STATE_FILE)).unwrap(),
+            b"profile-state\n"
+        );
+        assert_eq!(
+            fs::read(backup.join("roots/nodejs/bin/node")).unwrap(),
+            b"node-runtime\n"
+        );
     }
 
     #[cfg(windows)]
@@ -951,7 +1413,7 @@ mod tests {
         let destination = root.path().join("hello-copy.cmd");
         fs::write(&source, b"@echo off\r\necho hello\r\n").unwrap();
 
-        materialize_executable(&source, &destination).unwrap();
+        materialize_executable(&source, &destination, None).unwrap();
 
         assert_eq!(fs::read(destination).unwrap(), fs::read(source).unwrap());
     }

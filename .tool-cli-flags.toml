@@ -72,6 +72,13 @@ type = "string"
 default = ".zed/tools"
 help = "Project-local tool profile root."
 
+[commands.install.flags.install_mode]
+env = "ZED_TOOL_INSTALL_MODE"
+aliases = ["install-mode"]
+type = "string"
+default = "symlink"
+help = "Replay with store-backed symlinks or self-contained project copies."
+
 [commands.install.flags.home]
 env = "ZED_PKG_HOME"
 aliases = ["home"]
