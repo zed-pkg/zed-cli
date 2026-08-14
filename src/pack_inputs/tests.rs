@@ -234,7 +234,7 @@ adapter = "node"
 
 #[cfg(unix)]
 #[test]
-fn polyglot_source_ignore_is_not_mistaken_for_pack_exclusion() {
+fn polyglot_source_ignore_excludes_the_target_local_input() {
     let project = tempfile::tempdir().unwrap();
     git(project.path(), &["init"]);
     fs::create_dir_all(project.path().join("clients/ts")).unwrap();
@@ -250,7 +250,7 @@ fn polyglot_source_ignore_is_not_mistaken_for_pack_exclusion() {
     .unwrap();
     fs::write(project.path().join("clients/ts/private.key"), "private\n").unwrap();
 
-    let error = preflight_git_ignored(
+    let inspected = preflight_git_ignored(
         project.path(),
         &manifest(
             r#"[targets.nodejs]
@@ -259,9 +259,8 @@ adapter = "node"
 "#,
         ),
     )
-    .unwrap_err();
-    let message = format!("{error:#}");
-    assert!(message.contains("clients/ts/private.key"), "{message}");
+    .unwrap();
+    assert_eq!(inspected, 1);
 }
 
 #[cfg(unix)]

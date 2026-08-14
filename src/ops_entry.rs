@@ -16,8 +16,6 @@
 //! each dependency's `pubspec.yaml`. The hook is a no-op for every other
 //! adapter and is shared by normal and manifestless frozen installs.
 
-use std::fs;
-use std::io::ErrorKind;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -70,24 +68,13 @@ struct PublishIgnoreAnalysis {
     conflicts: Vec<PublishIgnoreConflict>,
 }
 
+#[cfg(test)]
 fn parse_zedignore_rules(contents: &str) -> Vec<String> {
-    contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
-        .collect()
+    crate::publish_ignore::parse_rules(contents)
 }
 
 fn read_zedignore_rules(project: &Path) -> Result<Vec<String>> {
-    let path = project.join(IGNORE_FILE);
-    match fs::read_to_string(&path) {
-        Ok(contents) => Ok(parse_zedignore_rules(&contents)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
-        Err(error) => {
-            Err(error).with_context(|| format!("reading package ignore file {}", path.display()))
-        }
-    }
+    crate::publish_ignore::read_rules(project)
 }
 
 fn normalize_publish_ignore_rule(rule: &str) -> Option<(bool, String)> {
@@ -157,19 +144,26 @@ fn analyze_publish_ignore_rules(
     }
 }
 
-fn warn_publish_ignore_sources(project: &Path, manifest: &Manifest) -> Result<()> {
-    let ignore_rules = read_zedignore_rules(project)?;
-    if manifest.publish.exclude.is_empty() || ignore_rules.is_empty() {
-        return Ok(());
+fn warn_publish_ignore_pair(
+    context: Option<&str>,
+    ignore_label: &str,
+    manifest_rules: &[String],
+    ignore_rules: &[String],
+) -> bool {
+    if manifest_rules.is_empty() || ignore_rules.is_empty() {
+        return false;
     }
 
-    let analysis = analyze_publish_ignore_rules(&manifest.publish.exclude, &ignore_rules);
+    let analysis = analyze_publish_ignore_rules(manifest_rules, ignore_rules);
+    let context = context
+        .map(|value| format!("{value}: "))
+        .unwrap_or_default();
     eprintln!(
-        "warning: both .zpkg.toml [publish].exclude ({} rule(s)) and {} ({} rule(s)) are defined; zed-pkg applies their ordered union (manifest first, {} second; {} total rule(s))",
+        "warning: {context}both .zpkg.toml [publish].exclude ({} rule(s)) and {} ({} rule(s)) are defined; zed-pkg applies their ordered union (manifest first, {} second; {} total rule(s))",
         analysis.manifest_rule_count,
-        IGNORE_FILE,
+        ignore_label,
         analysis.ignore_rule_count,
-        IGNORE_FILE,
+        ignore_label,
         analysis.ordered_rules.len()
     );
 
@@ -179,18 +173,64 @@ fn warn_publish_ignore_sources(project: &Path, manifest: &Manifest) -> Result<()
         .take(MAX_REPORTED_PUBLISH_IGNORE_CONFLICTS)
     {
         eprintln!(
-            "warning: conflicting publish-ignore rules for `{}`: .zpkg.toml has `{}` and {} has `{}`; the later {} rule wins for this path family",
+            "warning: {context}conflicting publish-ignore rules for `{}`: .zpkg.toml has `{}` and {} has `{}`; the later {} rule wins for this path family",
             conflict.path_family,
             conflict.manifest_rule,
-            IGNORE_FILE,
+            ignore_label,
             conflict.ignore_rule,
-            IGNORE_FILE
+            ignore_label
         );
     }
     if analysis.conflicts.len() > MAX_REPORTED_PUBLISH_IGNORE_CONFLICTS {
         eprintln!(
-            "warning: ... and {} more publish-ignore conflict(s)",
+            "warning: {context}... and {} more publish-ignore conflict(s)",
             analysis.conflicts.len() - MAX_REPORTED_PUBLISH_IGNORE_CONFLICTS
+        );
+    }
+    true
+}
+
+fn warn_publish_ignore_sources(project: &Path, manifest: &Manifest) -> Result<()> {
+    if !manifest.is_polyglot() {
+        let ignore_rules = read_zedignore_rules(project)?;
+        warn_publish_ignore_pair(None, IGNORE_FILE, &manifest.publish.exclude, &ignore_rules);
+        return Ok(());
+    }
+
+    const MAX_REPORTED_SOURCES: usize = 20;
+    let mut active_sources = 0usize;
+    for (target, section) in &manifest.targets {
+        let derived = manifest.manifest_for_target(target).ok_or_else(|| {
+            anyhow::anyhow!("target `{target}` disappeared during ignore diagnostics")
+        })?;
+        let source = project.join(&section.dir);
+        let ignore_rules = read_zedignore_rules(&source)?;
+        if derived.publish.exclude.is_empty() || ignore_rules.is_empty() {
+            continue;
+        }
+        active_sources += 1;
+        if active_sources > MAX_REPORTED_SOURCES {
+            continue;
+        }
+        let ignore_label = if section.dir == "." {
+            IGNORE_FILE.to_string()
+        } else {
+            Path::new(&section.dir)
+                .join(IGNORE_FILE)
+                .to_string_lossy()
+                .replace('\\', "/")
+        };
+        warn_publish_ignore_pair(
+            Some(&format!("target `{target}`")),
+            &ignore_label,
+            &derived.publish.exclude,
+            &ignore_rules,
+        );
+    }
+    if active_sources > MAX_REPORTED_SOURCES {
+        eprintln!(
+            "warning: ... and {} more polyglot target ignore source(s)",
+            active_sources - MAX_REPORTED_SOURCES
         );
     }
     Ok(())

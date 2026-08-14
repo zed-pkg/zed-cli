@@ -3,9 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use globset::{GlobBuilder, GlobSetBuilder};
-use zed_interfaces::excludes::effective_excludes;
 use zed_interfaces::manifest::Manifest;
-use zed_interfaces::paths::IGNORE_FILE;
 
 /// VCS control data is never part of a package payload. The root-directory
 /// defaults predate Git worktree pointer files and nested submodules, so the
@@ -133,12 +131,16 @@ fn artifact_views(
     canonical_root: &Path,
 ) -> Result<Vec<ArtifactView>> {
     if manifest.is_polyglot() {
-        let excludes =
-            effective_excludes(&manifest.publish.exclude, manifest.publish.include_readme);
-        validate_globs(&excludes)?;
         let mut views = Vec::with_capacity(manifest.targets.len());
         for (target, section) in &manifest.targets {
+            let derived = manifest.manifest_for_target(target).with_context(|| {
+                format!("target `{target}` disappeared during package preflight")
+            })?;
             let source = project.join(&section.dir);
+            let ignore_rules = crate::publish_ignore::read_rules(&source)?;
+            let excludes =
+                crate::publish_ignore::effective_artifact_excludes(&derived, &ignore_rules);
+            validate_globs(&excludes)?;
             let source = fs::canonicalize(&source).with_context(|| {
                 format!(
                     "canonicalizing target `{target}` source root {}",
@@ -146,10 +148,7 @@ fn artifact_views(
                 )
             })?;
             ensure_source_within_root(&source, canonical_root)?;
-            views.push(ArtifactView {
-                source,
-                excludes: excludes.clone(),
-            });
+            views.push(ArtifactView { source, excludes });
         }
         return Ok(views);
     }
@@ -158,22 +157,8 @@ fn artifact_views(
         .with_context(|| format!("canonicalizing package source {}", project.display()))?;
     ensure_source_within_root(&source, canonical_root)?;
 
-    let mut extra = manifest.publish.exclude.clone();
-    let modules_dir = manifest.modules_dir().trim_matches('/').to_string();
-    if !modules_dir.is_empty() {
-        extra.push(format!("{modules_dir}/**"));
-    }
-    extra.push(format!("{}/**", crate::transaction::STAGING_DIR));
-    let ignore_file = project.join(IGNORE_FILE);
-    if ignore_file.is_file() {
-        for line in fs::read_to_string(&ignore_file)?.lines() {
-            let line = line.trim();
-            if !line.is_empty() && !line.starts_with('#') {
-                extra.push(line.to_string());
-            }
-        }
-    }
-    let excludes = effective_excludes(&extra, manifest.publish.include_readme);
+    let ignore_rules = crate::publish_ignore::read_rules(project)?;
+    let excludes = crate::publish_ignore::effective_artifact_excludes(manifest, &ignore_rules);
     validate_globs(&excludes)?;
 
     Ok(vec![ArtifactView { source, excludes }])
