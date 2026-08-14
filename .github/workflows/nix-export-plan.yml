@@ -60,8 +60,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "7d31f80dd8a310f218931165a3ad636a2f32b932"' Cargo.toml
-          grep -F '#7d31f80dd8a310f218931165a3ad636a2f32b932' Cargo.lock
+          grep -F 'rev = "5163b661a2b91120701fe4a65c43586addb70868"' Cargo.toml
+          grep -F '#5163b661a2b91120701fe4a65c43586addb70868' Cargo.lock
 
       - name: Check formatting and warnings
         run: |
