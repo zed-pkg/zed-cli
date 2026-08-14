@@ -50,7 +50,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 7d31f80dd8a310f218931165a3ad636a2f32b932
+          ref: 8428bc574111fa148e590c8350c7855035ce2046
           path: zed-interfaces
 
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
