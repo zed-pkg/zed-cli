@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 const VALID: &str = "tests/fixtures/validate/valid";
 const SUBMODULE: &str = "tests/fixtures/validate/git-submodule";
-const INTERFACE_REVISION: &str = "5163b661a2b91120701fe4a65c43586addb70868";
+const INTERFACE_REVISION: &str = "8428bc574111fa148e590c8350c7855035ce2046";
 
 fn zed() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zed"))
@@ -103,7 +103,17 @@ fn valid_pair_has_deterministic_json_and_never_mutates_project_or_home() {
 
 #[test]
 fn documented_language_aliases_and_legacy_polyglot_marker_validate() {
-    for alias in ["javascript", "typescript", "js", "ts", "go", "polyglot"] {
+    for alias in [
+        "javascript",
+        "typescript",
+        "js",
+        "ts",
+        "astro",
+        "go",
+        "polyglot",
+        "yaml",
+        "yml",
+    ] {
         let project = project(VALID);
         let text = fs::read_to_string(project.path().join(".zpkg.toml"))
             .unwrap()
