@@ -414,12 +414,16 @@ fn patch_zip_headers(path: &Path, mut patch: impl FnMut(&mut [u8], usize, bool))
     fs::write(path, bytes).expect("write patched ZIP");
 }
 
-fn add_unnecessary_zip64_directory(path: &Path) {
-    let bytes = fs::read(path).expect("read ZIP64 fixture");
-    let eocd = bytes
+fn eocd_offset(bytes: &[u8]) -> usize {
+    bytes
         .windows(4)
         .rposition(|window| window == b"PK\x05\x06")
-        .expect("EOCD");
+        .expect("EOCD")
+}
+
+fn add_unnecessary_zip64_directory(path: &Path) {
+    let bytes = fs::read(path).expect("read ZIP64 fixture");
+    let eocd = eocd_offset(&bytes);
     assert_eq!(eocd + 22, bytes.len(), "fixture has no ZIP comment");
     let entries = u16::from_le_bytes(bytes[eocd + 10..eocd + 12].try_into().unwrap()) as u64;
     let central_size = u32::from_le_bytes(bytes[eocd + 12..eocd + 16].try_into().unwrap()) as u64;
@@ -452,6 +456,26 @@ fn add_unnecessary_zip64_directory(path: &Path) {
     rewritten.extend_from_slice(&locator);
     rewritten.extend_from_slice(&ordinary_eocd);
     fs::write(path, rewritten).expect("write ZIP64 fixture");
+}
+
+#[test]
+fn rejects_noncanonical_archive_comments_and_central_directory_gaps() {
+    let fixture = fixture();
+
+    let commented = mutate(&fixture, "archive-comment.zip", |_| {});
+    let mut bytes = fs::read(&commented).expect("read comment fixture");
+    let eocd = eocd_offset(&bytes);
+    bytes[eocd + 20..eocd + 22].copy_from_slice(&4_u16.to_le_bytes());
+    bytes.extend_from_slice(b"note");
+    fs::write(&commented, bytes).expect("write comment fixture");
+    assert_rejected(&commented, "comments are not accepted");
+
+    let gapped = mutate(&fixture, "central-gap.zip", |_| {});
+    let mut bytes = fs::read(&gapped).expect("read gap fixture");
+    let eocd = eocd_offset(&bytes);
+    bytes.splice(eocd..eocd, *b"JUNK");
+    fs::write(&gapped, bytes).expect("write gap fixture");
+    assert_rejected(&gapped, "central directory is not contiguous");
 }
 
 #[test]

@@ -81,6 +81,25 @@ type = "string"
 default = "symlink"
 help = "Install using symlinks or copies."
 
+[flags.cli]
+env = "ZED_PKG_CLI"
+aliases = ["cli"]
+type = "string"
+help = "Install a project-owned CLI runtime; repeat the option for multiple tools."
+
+[flags.cli_target]
+env = "ZED_PKG_CLI_TARGET"
+aliases = ["cli-target"]
+type = "string"
+help = "Exact target triple for project-owned CLI runtimes."
+
+[flags.cli_install_mode]
+env = "ZED_PKG_CLI_INSTALL_MODE"
+aliases = ["cli-install-mode"]
+type = "string"
+default = "copy"
+help = "Materialize CLI runtimes as self-contained project copies."
+
 [flags.adapter]
 env = "ZED_PKG_ADAPTER"
 aliases = ["adapter"]

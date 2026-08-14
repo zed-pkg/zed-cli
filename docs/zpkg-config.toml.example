@@ -1,0 +1,19 @@
+schema = "zpkg.host-layout/v1"
+
+[downloads]
+# Relative paths are resolved from the directory containing this file.
+# A leading ~/ is expanded to the current user's home directory.
+root = "~/.zpkg/downloads"
+
+# Colons are deliberately forbidden because they are not portable to Windows.
+# Allowed delimiter characters are: - _ . +
+segment_delimiter = "--"
+
+# Resolution order and the complete allow-list of source directory names.
+source_precedence = ["zed", "github", "gitlab", "maven", "npm", "cargo"]
+
+# Emit real, immutable project-first and package-first discovery trees in
+# addition to the canonical org-first tree. Files are hard-linked when the
+# filesystem permits it and copied otherwise.
+project_index = true
+package_index = true

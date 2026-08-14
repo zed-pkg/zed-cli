@@ -9,6 +9,7 @@ use zed_cli::binary_archive::{
 };
 use zed_cli::cli::Globals;
 use zed_cli::config::Config;
+use zed_cli::host_downloads::HostDownloadsLayout;
 use zed_interfaces::binary_artifact::BinaryPlatformV1;
 
 #[derive(Debug, Parser)]
@@ -96,6 +97,19 @@ enum BinaryCommand {
         /// Require this exact normalized target from .zpkg-binary.json.
         #[arg(long, env = "ZED_PKG_BINARY_TARGET")]
         target: Option<String>,
+        /// Optional owning project slug. Omit it for an org-owned package.
+        #[arg(long, env = "ZED_PKG_PROJECT")]
+        project: Option<String>,
+        /// Source/registry folder for the verified host copy (zed, github, ...).
+        /// The configured source_precedence list is also the allow-list.
+        #[arg(long, env = "ZED_PKG_BINARY_SOURCE", default_value = "zed")]
+        source: String,
+        /// Override ~/.zpkg/zpkg-config.toml for the host download layout.
+        #[arg(long, env = "ZED_PKG_LAYOUT_CONFIG")]
+        layout_config: Option<PathBuf>,
+        /// Verify and write --out without creating the immutable host download view.
+        #[arg(long, env = "ZED_PKG_BINARY_NO_HOST_VIEW")]
+        no_host_view: bool,
         /// Registry identity route. Qualified downloads require --target.
         #[arg(
             long,
@@ -167,6 +181,8 @@ struct BinarySummary<'a> {
     files: usize,
     uploaded: bool,
     dry_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host_view: Option<String>,
 }
 
 fn main() {
@@ -224,6 +240,7 @@ fn run(cli: BinaryCli) -> Result<()> {
                         files: verified.file_count,
                         uploaded: false,
                         dry_run: false,
+                        host_view: None,
                     })?
                 );
             } else {
@@ -300,6 +317,10 @@ fn run(cli: BinaryCli) -> Result<()> {
             spec,
             out,
             target,
+            project,
+            source,
+            layout_config,
+            no_host_view,
             artifact_route,
             json,
         } => {
@@ -310,6 +331,16 @@ fn run(cli: BinaryCli) -> Result<()> {
                 target.as_deref(),
                 artifact_route.into(),
             )?;
+            let host_view = if no_host_view {
+                None
+            } else {
+                let layout = HostDownloadsLayout::load(layout_config.as_deref())?;
+                Some(
+                    layout
+                        .materialize_binary(&out, &verified, project.as_deref(), &source)?
+                        .canonical_path,
+                )
+            };
             if json {
                 println!(
                     "{}",
@@ -323,6 +354,7 @@ fn run(cli: BinaryCli) -> Result<()> {
                         files: verified.file_count,
                         uploaded: false,
                         dry_run: false,
+                        host_view: host_view.as_ref().map(|path| path.display().to_string()),
                     })?
                 );
             } else {
@@ -335,6 +367,9 @@ fn run(cli: BinaryCli) -> Result<()> {
                     verified.sha256,
                     verified.size
                 );
+                if let Some(path) = &host_view {
+                    println!("  host view {}", path.display());
+                }
             }
             Ok(())
         }
@@ -360,6 +395,7 @@ fn print_summary(
                 files: packed.packed.file_count,
                 uploaded,
                 dry_run,
+                host_view: None,
             })?
         );
     } else {

@@ -4,16 +4,17 @@ on:
   pull_request:
     paths:
       - .github/workflows/r2-binary-registry-e2e.yml
-      - scripts/ci/r2_acquire_delegation.sh
+      - scripts/ci/r2_load_protected_credentials.sh
+      - scripts/ci/r2_load_protected_credentials_test.sh
       - src/bin/zed-binary.rs
       - src/binary_archive/**
+      - src/host_downloads.rs
       - Cargo.toml
       - Cargo.lock
   workflow_dispatch:
 
 permissions:
   contents: read
-  issues: read
 
 concurrency:
   group: r2-binary-registry-e2e-${{ github.event.pull_request.number || github.ref }}
@@ -28,7 +29,39 @@ env:
   AWS_REGION: auto
 
 jobs:
+  binary-package-preflight:
+    if: github.event_name == 'pull_request'
+    name: credential-free-binary-package-preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the reviewed binary package change
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: binary-package-preflight
+
+      - name: Verify archive, host layout, adversarial cases, and CLI compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/r2_load_protected_credentials_test.sh
+          cargo check --quiet --locked --bin zed-binary
+          cargo test --quiet --locked --lib binary_archive
+          cargo test --quiet --locked --lib host_downloads
+          cargo test --quiet --locked --test binary_archive_adversarial
+
   real-r2-roundtrip:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     environment: r2-release-publication
@@ -164,35 +197,17 @@ jobs:
           printf 'PREFLIGHT_ARCHIVE=%s\nARTIFACT_SHA=%s\nARTIFACT_SIZE=%s\nOBJECT_KEY=%s\n' \
             "$archive" "$sha" "$size" "$object_key" >>"$GITHUB_ENV"
 
-      - name: Expose an exact-run encrypted handoff public key
+      - name: Load credentials from the protected publication environment
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
-          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-        run: bash scripts/ci/r2_acquire_delegation.sh request
-
-      - name: Publish the non-secret encrypted handoff request
-        if: env.R2_HANDOFF_REQUIRED == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: r2-handoff-request-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/r2-handoff-request.json
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Acquire parent delegation material without exposing it to reviewed code
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bash scripts/ci/r2_acquire_delegation.sh wait
+        run: bash scripts/ci/r2_load_protected_credentials.sh
 
       - name: Create or confirm the bucket and mint exact-object temporary credentials
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -298,6 +313,7 @@ jobs:
             "$RUNNER_TEMP/r2-bucket-create.json"
 
       - name: Confirm the temporary credential is restricted to the intended object
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -311,6 +327,7 @@ jobs:
           rm -f "$RUNNER_TEMP/r2-unexpected-list.json" "$RUNNER_TEMP/r2-list-denied.log"
 
       - name: Start the registry with the production R2 storage adapter
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
@@ -342,6 +359,7 @@ jobs:
           exit 1
 
       - name: Mint a registry token and claim the ephemeral organization
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
@@ -367,6 +385,7 @@ jobs:
           "$GITHUB_WORKSPACE/target/debug/zed" org claim "$TEST_ORG"
 
       - name: Publish through the registry into the actual R2 bucket
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           ZED_PKG_REGISTRY: http://127.0.0.1:8080
@@ -395,6 +414,7 @@ jobs:
             ' "$RUNNER_TEMP/r2-publish.json" >/dev/null
 
       - name: Verify R2 HEAD metadata and immutable cache policy
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -409,6 +429,7 @@ jobs:
           ' "$RUNNER_TEMP/r2-head.json" >/dev/null
 
       - name: Download through registry, direct R2, and a mobile-compatible presigned URL
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           ZED_PKG_REGISTRY: http://127.0.0.1:8080
@@ -463,6 +484,7 @@ jobs:
             >"$RUNNER_TEMP/r2-presigned.json"
 
       - name: Reject a corrupted download before extraction or execution
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -489,6 +511,7 @@ jobs:
             "$RUNNER_TEMP/corrupted-stderr.log"
 
       - name: Exercise concurrent presigned downloads and payload execution
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           ZED_PKG_REGISTRY: http://127.0.0.1:8080
@@ -528,6 +551,7 @@ jobs:
           test "$output" = 'hello from the real Cloudflare R2 binary roundtrip'
 
       - name: Prove idempotency leaves the exact R2 object unchanged
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           ZED_PKG_REGISTRY: http://127.0.0.1:8080
@@ -597,10 +621,6 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/r2-parent-delegation.json" \
-            "$RUNNER_TEMP/r2-handoff-private.pem" \
-            "$RUNNER_TEMP/r2-handoff-public.der" \
-            "$RUNNER_TEMP/r2-handoff-request.json" \
-            "$RUNNER_TEMP/r2-handoff.bin" \
             "$RUNNER_TEMP/r2-temp-request.json" \
             "$RUNNER_TEMP/r2-temp-response.json"
           printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nZED_PKG_TOKEN=\n' \

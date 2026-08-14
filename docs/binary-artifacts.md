@@ -76,8 +76,62 @@ zed-binary publish \
 
 zed-binary download acme/tool@1.2.3 \
   --target aarch64-linux-android --artifact-route qualified \
-  --out tool-android.zip
+  --source zed --project payments --out tool-android.zip
 ```
+
+## Host download layout
+
+A successful download also creates a verified, immutable host view. The logical
+coordinate keeps the typed colon syntax:
+
+~~~text
+zed:org:acme/zed:project:payments/zed:package:tool/versions/1.2.3/zed/targets/aarch64-linux-android
+~~~
+
+Colons are not used in physical directory names because they are illegal on
+Windows. The default portable path is:
+
+~~~text
+~/.zpkg/downloads/
+  zed-org--acme/
+    zed-project--payments/
+      zed-package--tool/
+        versions/
+          1.2.3/
+            zed/
+              targets/
+                aarch64-linux-android/
+                  artifact.zip
+                  .zpkg-download.json
+                  pkg/
+                    .zpkg.toml
+                    .zpkg-binary.json
+                    bin/tool
+~~~
+
+An org-owned package omits only the project segment. The source segment is
+always a real directory. The default source allow-list and precedence is
+zed, github, gitlab, maven, npm, then cargo; only the source that actually
+supplied a verified copy is created. Different sources may bind different
+immutable bytes for the same version. Binary targets are nested beneath the
+source so Linux, macOS, Windows, and Android copies cannot collide.
+
+The same verified tree is exposed through project-first and package-first
+indexes by default. Files are hard-linked when possible and copied otherwise;
+all index paths carry and revalidate the same .zpkg-download.json binding.
+An existing (org, project?, package, version, source, target) path is accepted
+only when its archive digest, size, descriptor digest, and identity match.
+
+The layout is semi-configurable through ~/.zpkg/zpkg-config.toml; see
+[zpkg-config.toml.example](zpkg-config.toml.example). Configuration may change
+the root, portable typed-segment delimiter, source allow-list/precedence, and
+index emission. Unknown fields, duplicate/unsafe source names, parent traversal,
+symlink config files, colon delimiters, and unsafe path segments fail closed.
+Use --layout-config or ZED_PKG_LAYOUT_CONFIG to select an explicit config, and
+use --source to select the real registry/source directory for this copy. The
+source must appear in the configured source_precedence allow-list. Use
+--no-host-view only when a caller intentionally wants the verified ZIP without
+a discoverable host copy.
 
 Qualified downloads require an exact target. Legacy publication fails if the
 version already contains different bytes and points to the qualified route;
@@ -94,7 +148,15 @@ overwritten.
 
 ## R2 and Android handoff
 
-The R2 certification publishes through the registry, verifies the exact object
+The credential-free pull-request jobs compile the reviewed packer and registry
+paths, run the archive and host-layout adversarial suites, and deterministically
+pack a real Android ARM64 ELF. Live R2 certification is deliberately available
+only from the upstream `main` ref through `workflow_dispatch` and the protected
+`r2-release-publication` environment. Parent credentials are read directly from
+that environment after reviewed code has built; pull-request code cannot request
+or receive them through comments, logs, annotations, or artifacts.
+
+The live R2 certification publishes through the registry, verifies the exact object
 metadata, downloads through the registry, direct S3-compatible API, and a
 five-minute presigned HTTPS URL, and requires all three ZIPs to have the same
 SHA-256. The workflow mints a one-hour credential scoped to the single

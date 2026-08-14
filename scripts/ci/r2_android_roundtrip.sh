@@ -40,9 +40,6 @@ cleanup() {
       "$server_log" >"$RUNNER_TEMP/zed-api-r2-android-redacted.log"
   fi
   rm -f "$RUNNER_TEMP/r2-parent-delegation.json" \
-    "$RUNNER_TEMP/r2-handoff-private.pem" \
-    "$RUNNER_TEMP/r2-handoff-public.der" \
-    "$RUNNER_TEMP/r2-handoff.bin" \
     "$RUNNER_TEMP/r2-temp-request.json" \
     "$RUNNER_TEMP/r2-temp-response.json"
   printf 'AWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\nAWS_SESSION_TOKEN=\nZED_PKG_TOKEN=\n' \

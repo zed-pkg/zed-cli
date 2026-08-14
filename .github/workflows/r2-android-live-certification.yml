@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - .github/workflows/r2-android-live-certification.yml
-      - scripts/ci/r2_acquire_delegation.sh
+      - scripts/ci/r2_load_protected_credentials.sh
+      - scripts/ci/r2_load_protected_credentials_test.sh
       - scripts/ci/r2_prepare_android_fixture.sh
       - scripts/ci/r2_mint_temporary_credentials.sh
       - scripts/ci/r2_android_roundtrip.sh
       - src/bin/zed-binary.rs
       - src/binary_archive/**
+      - src/host_downloads.rs
       - Cargo.toml
       - Cargo.lock
   workflow_dispatch:
@@ -31,16 +33,62 @@ env:
   AWS_EC2_METADATA_DISABLED: "true"
 
 jobs:
+  android-binary-preflight:
+    if: github.event_name == 'pull_request'
+    name: credential-free-android-binary-preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the reviewed Android binary change
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          toolchain: stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          shared-key: android-binary-preflight
+
+      - name: Validate scripts and build the reviewed binary packer
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/ci/r2_load_protected_credentials.sh
+          bash scripts/ci/r2_load_protected_credentials_test.sh
+          bash -n scripts/ci/r2_prepare_android_fixture.sh
+          bash -n scripts/ci/r2_mint_temporary_credentials.sh
+          bash -n scripts/ci/r2_android_roundtrip.sh
+          cargo build --quiet --locked --bin zed-binary
+
+      - name: Build and deterministically pack a real Android ARM64 ELF without credentials
+        shell: bash
+        run: bash scripts/ci/r2_prepare_android_fixture.sh
+
+      - name: Retain credential-free Android preflight evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: android-binary-preflight-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/r2-android-preflight.json
+            ${{ runner.temp }}/r2-android-preflight-second.json
+            ${{ runner.temp }}/r2-android-file.txt
+            ${{ runner.temp }}/r2-android-elf-header.txt
+            ${{ runner.temp }}/r2-android-elf-program.txt
+          if-no-files-found: error
+          retention-days: 30
+
   real-r2-android-roundtrip:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     environment: r2-release-publication
     permissions:
       contents: read
-      # The job reads an owner-authored encrypted handoff comment. Its
-      # ephemeral public key is exposed only as a check annotation.
-      issues: read
     services:
       postgres:
         image: pgvector/pgvector:0.8.2-pg17-bookworm
@@ -86,7 +134,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash -n scripts/ci/r2_acquire_delegation.sh
+          bash -n scripts/ci/r2_load_protected_credentials.sh
           bash -n scripts/ci/r2_prepare_android_fixture.sh
           bash -n scripts/ci/r2_mint_temporary_credentials.sh
           bash -n scripts/ci/r2_android_roundtrip.sh
@@ -107,39 +155,22 @@ jobs:
         shell: bash
         run: bash scripts/ci/r2_prepare_android_fixture.sh
 
-      - name: Expose an exact-run encrypted handoff public key
+      - name: Load credentials from the protected publication environment
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
-          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           SECRET_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           SECRET_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SECRET_PARENT_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-        run: bash scripts/ci/r2_acquire_delegation.sh request
-
-      - name: Publish the non-secret encrypted handoff request
-        if: env.R2_HANDOFF_REQUIRED == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: r2-handoff-request-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/r2-handoff-request.json
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Acquire parent delegation material by encrypted one-run handoff
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: bash scripts/ci/r2_acquire_delegation.sh wait
+        run: bash scripts/ci/r2_load_protected_credentials.sh
 
       - name: Mint a one-hour exact-object R2 credential
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: bash scripts/ci/r2_mint_temporary_credentials.sh
 
       - name: Publish, download, and verify through actual Cloudflare R2
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         env:
           DATABASE_URL: postgres://zed:zed@127.0.0.1:5432/zed
@@ -150,11 +181,6 @@ jobs:
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/r2-parent-delegation.json" \
-            "$RUNNER_TEMP/r2-handoff-private.pem" \
-            "$RUNNER_TEMP/r2-handoff-public.der" \
-            "$RUNNER_TEMP/r2-handoff-request.json" \
-            "$RUNNER_TEMP/r2-handoff.bin" \
-            "$RUNNER_TEMP/r2-handoff-plain.json" \
             "$RUNNER_TEMP/r2-temp-request.json" \
             "$RUNNER_TEMP/r2-temp-response.json" \
             "$RUNNER_TEMP/r2-token-verify.json" \

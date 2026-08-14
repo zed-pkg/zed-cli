@@ -4,6 +4,7 @@ use std::process::{Command, Output};
 
 const VALID: &str = "tests/fixtures/validate/valid";
 const SUBMODULE: &str = "tests/fixtures/validate/git-submodule";
+const INTERFACE_REVISION: &str = "8428bc574111fa148e590c8350c7855035ce2046";
 
 fn zed() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zed"))
@@ -76,6 +77,7 @@ fn valid_pair_has_deterministic_json_and_never_mutates_project_or_home() {
 
     let report: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(report["valid"], true);
+    assert_eq!(report["interface_revision"], INTERFACE_REVISION);
     assert_eq!(report["manifest"]["package"], "acme/validator-fixture");
     assert_eq!(report["lock"]["version"], 1);
     assert_eq!(report["direct_requirements_checked"], 2);
@@ -97,6 +99,52 @@ fn valid_pair_has_deterministic_json_and_never_mutates_project_or_home() {
         "must survive"
     );
     assert!(!project.path().join("home-must-not-be-created").exists());
+}
+
+#[test]
+fn documented_language_aliases_and_legacy_polyglot_marker_validate() {
+    for alias in [
+        "javascript",
+        "typescript",
+        "js",
+        "ts",
+        "astro",
+        "go",
+        "polyglot",
+        "yaml",
+        "yml",
+    ] {
+        let project = project(VALID);
+        let text = fs::read_to_string(project.path().join(".zpkg.toml"))
+            .unwrap()
+            .replacen(
+                "version = \"1.0.0\"",
+                &format!("version = \"1.0.0\"\nlanguage = \"{alias}\""),
+                1,
+            );
+        fs::write(project.path().join(".zpkg.toml"), text).unwrap();
+
+        let output = run(project.path(), &["validate", "--require-lock", "--json"]);
+        assert!(
+            output.status.success(),
+            "alias {alias:?}: {}",
+            stderr(&output)
+        );
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["valid"], true);
+        assert_eq!(report["interface_revision"], INTERFACE_REVISION);
+    }
+
+    let unknown = project(VALID);
+    let text = fs::read_to_string(unknown.path().join(".zpkg.toml"))
+        .unwrap()
+        .replacen(
+            "version = \"1.0.0\"",
+            "version = \"1.0.0\"\nlanguage = \"brainfuck\"",
+            1,
+        );
+    fs::write(unknown.path().join(".zpkg.toml"), text).unwrap();
+    assert_failure_contains(unknown.path(), "unknown language `brainfuck`");
 }
 
 #[test]

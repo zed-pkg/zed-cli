@@ -229,6 +229,11 @@ fn declared_zip_entry_count(file: &mut fs::File) -> Result<(usize, bool)> {
     let total_entries = u16::from_le_bytes([tail[eocd + 10], tail[eocd + 11]]);
     let central_size = u32::from_le_bytes(tail[eocd + 12..eocd + 16].try_into()?);
     let central_offset = u32::from_le_bytes(tail[eocd + 16..eocd + 20].try_into()?);
+    let comment_len = u16::from_le_bytes([tail[eocd + 20], tail[eocd + 21]]);
+    ensure!(
+        comment_len == 0,
+        "binary ZIP archive comments are not accepted in the canonical profile"
+    );
     ensure!(
         disk == 0 && central_disk == 0,
         "multi-disk binary ZIPs are not supported"
@@ -241,11 +246,16 @@ fn declared_zip_entry_count(file: &mut fs::File) -> Result<(usize, bool)> {
         || disk_entries == u16::MAX
         || central_size == u32::MAX
         || central_offset == u32::MAX;
+    let eocd_absolute = tail_start + eocd as u64;
     if !uses_zip64 {
+        ensure!(
+            u64::from(central_offset).checked_add(u64::from(central_size))
+                == Some(eocd_absolute),
+            "binary ZIP central directory is not contiguous with its end record"
+        );
         return Ok((total_entries as usize, false));
     }
 
-    let eocd_absolute = tail_start + eocd as u64;
     ensure!(
         eocd_absolute >= 20,
         "binary ZIP64 archive is missing its locator"
@@ -273,6 +283,10 @@ fn declared_zip_entry_count(file: &mut fs::File) -> Result<(usize, bool)> {
     );
     let record_size = u64::from_le_bytes(zip64[4..12].try_into()?);
     ensure!(record_size >= 44, "binary ZIP64 end record is truncated");
+    ensure!(
+        record_size == 44,
+        "binary ZIP64 end record contains noncanonical extensible data"
+    );
     ensure!(
         zip64_offset
             .checked_add(12)
@@ -303,6 +317,10 @@ fn declared_zip_entry_count(file: &mut fs::File) -> Result<(usize, bool)> {
             && (central_offset == u32::MAX
                 || u64::from(central_offset) == zip64_central_offset),
         "binary ZIP and ZIP64 central-directory locations disagree"
+    );
+    ensure!(
+        zip64_central_offset.checked_add(zip64_central_size) == Some(zip64_offset),
+        "binary ZIP64 central directory is not contiguous with its end record"
     );
     Ok((
         usize::try_from(total_entries)

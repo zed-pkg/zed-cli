@@ -3,8 +3,16 @@ name: frozen offline tool profiles
 on:
   pull_request:
     paths:
+      - .cli-flags.toml
       - .tool-cli-flags.toml
+      - Cargo.lock
+      - Cargo.toml
+      - docs/cli-tools.md
       - docs/tool-profile.md
+      - src/cli.rs
+      - src/cli_tools.rs
+      - src/flags.rs
+      - src/main.rs
       - src/tool_profile.rs
       - src/bin/zed-tool.rs
       - src/lib.rs
@@ -13,8 +21,16 @@ on:
   push:
     branches: [main]
     paths:
+      - .cli-flags.toml
       - .tool-cli-flags.toml
+      - Cargo.lock
+      - Cargo.toml
+      - docs/cli-tools.md
       - docs/tool-profile.md
+      - src/cli.rs
+      - src/cli_tools.rs
+      - src/flags.rs
+      - src/main.rs
       - src/tool_profile.rs
       - src/bin/zed-tool.rs
       - src/lib.rs
@@ -78,6 +94,7 @@ jobs:
               'ZED_TOOL_TARGET',
               'ZED_TOOL_OFFLINE',
               'ZED_TOOL_PROFILE',
+              'ZED_TOOL_INSTALL_MODE',
               'ZED_PKG_HOME',
           }
           assert observed == expected, (observed, expected)
@@ -108,3 +125,75 @@ jobs:
           git diff --exit-code
           git status --porcelain=v1 --untracked-files=all | tee /tmp/tool-profile-status.txt
           test ! -s /tmp/tool-profile-status.txt
+
+  project-cli-runtimes:
+    name: project CLI runtimes / GNU Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Build locked Zed binary
+        run: cargo build --locked --bin zed
+
+      - name: Install Node and Python in separate transactions
+        run: |
+          set -euo pipefail
+          zed_path="$PWD/target/debug/zed"
+          e2e_root="$(mktemp -d "${RUNNER_TEMP}/zed-cli-runtimes.XXXXXX")"
+          "$zed_path" --home "$e2e_root/home" init "$e2e_root/workspace/project" --org ci
+          cd "$e2e_root/workspace/project"
+          "$zed_path" --home "$e2e_root/home" install --cli nodejs
+          "$zed_path" --home "$e2e_root/home" install --cli python3
+
+          mv "$e2e_root/home" "$e2e_root/home.removed"
+          export PATH="$PWD/.zed/tools/bin:$PATH"
+          test "$(node --version)" = "v24.19.0"
+          test "$(nodejs --version)" = "v24.19.0"
+          npm --version
+          npx --version
+          test "$(python3 --version)" = "Python 3.14.7"
+          test "$(python --version)" = "Python 3.14.7"
+          pip3 --version
+          pip --version
+          test ! -e "$e2e_root/home"
+
+      - name: Install Node and Python across independent OCI layers
+        run: |
+          set -euo pipefail
+          context="$(mktemp -d "${RUNNER_TEMP}/zed-cli-layered-runtime.XXXXXX")"
+          install -m 0755 target/debug/zed "$context/zed"
+          docker build \
+            --tag zed-cli-layered-runtime:verify \
+            --file - \
+            "$context" <<'DOCKERFILE'
+          # Match the Ubuntu 24.04 glibc used to build this CI-only debug binary.
+          # Released zed-oci images consume the static musl release archive.
+          FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+          COPY --chmod=0755 zed /usr/local/bin/zed
+          WORKDIR /workspace
+          RUN zed init project --org ci
+          WORKDIR /workspace/project
+          RUN zed install --cli nodejs
+          RUN zed install --cli python3
+          ENV PATH="/workspace/project/.zed/tools/bin:${PATH}"
+          RUN test "$(node --version)" = "v24.19.0" \
+              && test "$(python3 --version)" = "Python 3.14.7"
+          DOCKERFILE
+
+      - name: Require a clean checkout
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git status --porcelain=v1 --untracked-files=all | tee /tmp/project-cli-runtime-status.txt
+          test ! -s /tmp/project-cli-runtime-status.txt
