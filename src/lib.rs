@@ -3,6 +3,7 @@
 
 pub mod asdf_environment;
 pub mod auth;
+pub mod binary_archive;
 pub mod cli;
 pub mod cli_model;
 pub mod cli_oci;
@@ -19,6 +20,7 @@ pub mod flags;
 pub mod git_submodules;
 pub mod global;
 pub mod graph_export;
+pub mod host_downloads;
 pub mod inspect;
 pub mod install_graph;
 pub mod interactive;

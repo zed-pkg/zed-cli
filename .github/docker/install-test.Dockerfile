@@ -4,7 +4,7 @@ WORKDIR /src
 COPY zed-interfaces ./zed-interfaces
 COPY zed-cli ./zed-cli
 WORKDIR /src/zed-cli
-RUN cargo build --release --locked --bin zed
+RUN cargo build --release --locked --bins
 
 FROM node:22-bookworm-slim
 
@@ -19,6 +19,7 @@ RUN groupadd --gid 1001 zed-test \
     && chown 1001:1001 /work
 
 COPY --from=zed-builder --chown=1001:1001 /src/zed-cli/target/release/zed /usr/local/bin/zed
+COPY --from=zed-builder --chown=1001:1001 /src/zed-cli/target/release/zed-binary /usr/local/bin/zed-binary
 ENV HOME=/home/zed-test
 USER 1001:1001
 WORKDIR /work

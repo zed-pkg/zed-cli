@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "zed-gitops"
 path = "src/bin/zed-gitops.rs"
 
+[[bin]]
+name = "zed-binary"
+path = "src/bin/zed-binary.rs"
+
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"
