@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io::BufRead;
+#[cfg(windows)]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
