@@ -43,5 +43,6 @@ tempfile = "3"
 toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
+fs2 = "0.4.3"
 flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "2946224fb3a1bd84c0e39146b24f5f1ca8d69862" }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

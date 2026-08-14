@@ -1,0 +1,143 @@
+name: agent native-registry current-main dependency union
+
+on:
+  push:
+    branches:
+      - recovery/native-registry-http-candidate
+    paths:
+      - .github/workflows/agent-native-registry-current-main-sync.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-native-registry-current-main-dependency-union
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Check out exact semantic-union branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: recovery/native-registry-http-candidate
+          fetch-depth: 0
+
+      - name: Install pinned Rust toolchain action
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Advance interface, lock, and immutable workflow pins
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          old_interfaces = 'b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40'
+          new_interfaces = '5394b2e7b070354ee79a4c6ac79c26d6264970cd'
+          old_lock = 'a0dc78d385bc3ab553d3027b427f5f1428239c9c'
+          new_lock = '1db0da00d30fcf2e0762f50eedb1f88458020b52'
+
+          cargo = Path('Cargo.toml')
+          text = cargo.read_text(encoding='utf-8')
+          old_interface_block = (
+              '# Native registry hosts and release-channel routing are pinned to the reviewed merge contract.\n'
+              f'zed-interfaces = {{ git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "{old_interfaces}" }}'
+          )
+          new_interface_block = (
+              '# Native registry hosts and release-channel routing use the merged current interface contract.\n'
+              f'zed-interfaces = {{ git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "{new_interfaces}" }}'
+          )
+          if text.count(old_interface_block) != 1:
+              raise SystemExit('expected one native-registry interface dependency block')
+          text = text.replace(old_interface_block, new_interface_block, 1)
+
+          old_lock_line = (
+              f'zed-lock = {{ git = "https://github.com/zed-pkg/zed-lock.git", rev = "{old_lock}" }}'
+          )
+          new_lock_block = (
+              '# Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.\n'
+              f'zed-lock = {{ git = "https://github.com/zed-pkg/zed-lock.git", rev = "{new_lock}" }}'
+          )
+          if text.count(old_lock_line) != 1:
+              raise SystemExit('expected one pre-DEN-3167 zed-lock dependency line')
+          cargo.write_text(text.replace(old_lock_line, new_lock_block, 1), encoding='utf-8')
+
+          workflows = (
+              Path('.github/workflows/frozen-lock-integrity.yml'),
+              Path('.github/workflows/nix-bundle-write.yml'),
+              Path('.github/workflows/nix-export-bundle.yml'),
+          )
+          for path in workflows:
+              value = path.read_text(encoding='utf-8')
+              if value.count(old_interfaces) != 1:
+                  raise SystemExit(f'expected one stale interface pin in {path}')
+              path.write_text(value.replace(old_interfaces, new_interfaces, 1), encoding='utf-8')
+          PY
+
+          # Two git dependency revisions change together in this semantic union.
+          # Regenerate the complete graph once instead of asking two package-
+          # scoped updates to operate on an already stale intermediate lock.
+          rm Cargo.lock
+          cargo generate-lockfile
+          cargo metadata --locked --no-deps >/dev/null
+
+          grep -F 'rev = "5394b2e7b070354ee79a4c6ac79c26d6264970cd"' Cargo.toml
+          grep -F '#5394b2e7b070354ee79a4c6ac79c26d6264970cd' Cargo.lock
+          grep -F 'rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52"' Cargo.toml
+          grep -F '#1db0da00d30fcf2e0762f50eedb1f88458020b52' Cargo.lock
+          for workflow in \
+            .github/workflows/frozen-lock-integrity.yml \
+            .github/workflows/nix-bundle-write.yml \
+            .github/workflows/nix-export-bundle.yml; do
+            grep -F '5394b2e7b070354ee79a4c6ac79c26d6264970cd' "$workflow"
+            ! grep -q 'b3093e7b0d7d71bf2bfd45b261ca8b7ca1317d40' "$workflow"
+          done
+
+      - name: Verify the semantic union and complete Rust contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked native_host_client::tests -- --test-threads=1
+          cargo test --locked --test native_registry_adversarial -- --test-threads=1
+          cargo test --locked pack::tests::whole_repository_target_uses_the_canonical_package_identity -- --exact
+          cargo test --locked release::tests::polyglot_plan_is_deterministic_and_includes_native_routes -- --exact
+          cargo test --locked project_lock -- --test-threads=1
+          cargo test --locked store::tests -- --test-threads=1
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Commit only dependency and immutable-provenance repairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/agent-native-registry-current-main-sync.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add \
+            Cargo.toml \
+            Cargo.lock \
+            .github/workflows/frozen-lock-integrity.yml \
+            .github/workflows/nix-bundle-write.yml \
+            .github/workflows/nix-export-bundle.yml
+          git diff --cached --check
+          git diff --cached --name-only | LC_ALL=C sort > /tmp/changed-files
+          cat > /tmp/expected-files <<'EOF'
+          .github/workflows/agent-native-registry-current-main-sync.yml
+          .github/workflows/frozen-lock-integrity.yml
+          .github/workflows/nix-bundle-write.yml
+          .github/workflows/nix-export-bundle.yml
+          Cargo.lock
+          Cargo.toml
+          EOF
+          sed -i 's/^          //' /tmp/expected-files
+          LC_ALL=C sort -o /tmp/expected-files /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/changed-files
+          git commit -m 'merge: align native-registry union with current dependency contracts'
+          git push origin HEAD:recovery/native-registry-http-candidate
