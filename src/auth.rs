@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
-use fs2::FileExt as _;
 use reqwest::StatusCode;
 use reqwest::blocking::{Client, Response};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use zed_lock::{LockClass, LockManager, LockRequest};
 
 use crate::cli::AuthProvider;
 use crate::config::Config;
@@ -827,8 +827,13 @@ fn with_locked_store<T>(
 ) -> Result<T> {
     secure_create_dir(&auth_dir(home))?;
     let lock_path = auth_dir(home).join(".lock");
-    let lock = secure_open(&lock_path, false)?;
-    lock.lock_exclusive()
+    let _lock = LockManager::global()
+        .acquire_blocking(
+            LockRequest::exclusive(&lock_path)
+                .operation("auth session store")
+                .class(LockClass::Custom(5))
+                .queue_same_process(),
+        )
         .with_context(|| format!("locking {}", lock_path.display()))?;
     let mut store = load_store(home)?;
     let result = operation(&mut store);

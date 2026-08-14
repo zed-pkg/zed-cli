@@ -4,13 +4,15 @@ use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
-    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
+    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
+    ReleaseCmd, StoreCmd, TaskCmd,
 };
 use zed_cli::cli_tools;
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
 use zed_cli::environment;
+use zed_cli::environment_export_cli::{self, ExportOptions};
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
@@ -18,7 +20,9 @@ use zed_cli::graph_export;
 use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
+use zed_cli::nix_environment_export::ExportManager;
 use zed_cli::nix_export_plan;
+use zed_cli::oci_command;
 use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
@@ -47,6 +51,16 @@ fn main() {
         argument == OsStr::new("global") || argument == OsStr::new("--global")
     });
     if global_requested && let Some(result) = global::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = oci_command::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -340,30 +354,58 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
             EnvCmd::Export {
-                manager: EnvironmentManagerArg::Mise,
+                manager,
                 plan,
                 output,
+                receipt,
                 check,
                 write,
                 json,
-            } => {
-                if check && write {
-                    anyhow::bail!("the arguments '--check' and '--write' cannot be used together");
+            } => match manager {
+                EnvironmentExportManagerArg::Mise => {
+                    if check && write {
+                        anyhow::bail!(
+                            "the arguments '--check' and '--write' cannot be used together"
+                        );
+                    }
+                    if receipt.is_some() {
+                        anyhow::bail!("--receipt is supported only for Devbox and Flox export");
+                    }
+                    let Some(plan) = plan else {
+                        anyhow::bail!("mise export requires --plan PATH");
+                    };
+                    let output = output.unwrap_or_else(|| std::path::PathBuf::from(".mise.toml"));
+                    let mode = if check {
+                        MiseExportMode::Check
+                    } else if write {
+                        MiseExportMode::Write
+                    } else {
+                        MiseExportMode::Print
+                    };
+                    let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
+                    mise_export::print_export(&exported, json)
                 }
-                let mode = if check {
-                    MiseExportMode::Check
-                } else if write {
-                    MiseExportMode::Write
-                } else {
-                    MiseExportMode::Print
-                };
-                let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
-                mise_export::print_export(&exported, json)
-            }
-            EnvCmd::Export {
-                manager: EnvironmentManagerArg::Asdf,
-                ..
-            } => anyhow::bail!("asdf export is not implemented; use `zed env export mise`"),
+                EnvironmentExportManagerArg::Devbox | EnvironmentExportManagerArg::Flox => {
+                    if check || write {
+                        anyhow::bail!("--check and --write are supported only for mise export");
+                    }
+                    let manager = match manager {
+                        EnvironmentExportManagerArg::Devbox => ExportManager::Devbox,
+                        EnvironmentExportManagerArg::Flox => ExportManager::Flox,
+                        EnvironmentExportManagerArg::Mise => unreachable!(),
+                    };
+                    environment_export_cli::execute(
+                        &cwd,
+                        manager,
+                        ExportOptions {
+                            plan,
+                            output,
+                            receipt,
+                            json,
+                        },
+                    )
+                }
+            },
             EnvCmd::Verify {
                 manager,
                 config,
@@ -438,8 +480,25 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Find { query } => ops::find(&cfg, &query),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
         Cmd::Release { cmd } => match cmd {
-            ReleaseCmd::Plan { json } => release::plan(&cwd, json),
+            ReleaseCmd::Plan {
+                json,
+                channel,
+                iteration,
+            } => release::plan(&cwd, json, channel.map(Into::into), iteration),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
+            ReleaseCmd::Publish {
+                channel,
+                iteration,
+                dry_run,
+                target,
+            } => release::publish(
+                &cwd,
+                channel.map(Into::into),
+                iteration,
+                dry_run,
+                target.as_deref(),
+            ),
+            ReleaseCmd::Versions { target } => release::versions(&cwd, target.as_deref()),
         },
         Cmd::Publish {
             dry_run,
@@ -451,6 +510,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Yank { spec, undo } => ops::yank(&cfg, &spec, undo),
         Cmd::R2g {
+            registry_mode,
             docker,
             image,
             runtime,
@@ -460,6 +520,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             &cwd,
             &cfg,
             &R2gOptions {
+                registry_mode,
                 docker,
                 image,
                 runtime,

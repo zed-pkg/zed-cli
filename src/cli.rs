@@ -145,6 +145,17 @@ impl ContainerRuntime {
     }
 }
 
+/// Registry boundary exercised by `zed r2g`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum R2gRegistryMode {
+    /// Publish only to a private file:// registry under the r2g workspace.
+    Isolated,
+    /// Publish to the configured HTTP(S) registry and install it back through
+    /// the ordinary client path. This permanently claims that package version
+    /// unless the server itself is an intentionally disposable instance.
+    Server,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CompletionShell {
     Bash,
@@ -162,10 +173,20 @@ impl From<CompletionShell> for clap_complete::Shell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvironmentManagerArg {
-    /// Import, verify, or export project-local mise configuration.
+    /// Import or verify project-local mise configuration.
     Mise,
     /// Import or verify project-local asdf configuration and Zed-owned provenance.
     Asdf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EnvironmentExportManagerArg {
+    /// Export deterministic mise TOML from a schema-v2 plan.
+    Mise,
+    /// Export deterministic Devbox JSON and a Zed-owned receipt.
+    Devbox,
+    /// Export deterministic Flox manifest TOML and a Zed-owned receipt.
+    Flox,
 }
 
 #[derive(Debug, Subcommand)]
@@ -383,12 +404,22 @@ pub enum Cmd {
         undo: bool,
     },
     /// Roundtrip-test this package the way a consumer would install it:
-    /// pack it, publish it to a throwaway file:// registry, install it into a
-    /// mock consumer project under your home dir, and run `publish.smoke_test`
-    /// — optionally inside a fresh OCI container. Named after r2g
+    /// pack it, publish it to a private file:// registry by default (or the
+    /// explicitly configured HTTP(S) registry in server mode), install it into
+    /// a mock consumer project, and run `publish.smoke_test` — optionally
+    /// inside a fresh OCI container. Named after r2g
     /// (github.com/oresoftware/r2g); `zed test-local` is a compatibility alias.
     #[command(name = "r2g", alias = "test-local")]
     R2g {
+        /// Registry boundary to exercise. `isolated` is the safe default.
+        /// `server` publishes permanently to the configured HTTP(S) registry.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_R2G_REGISTRY_MODE",
+            default_value = "isolated"
+        )]
+        registry_mode: R2gRegistryMode,
         /// Run the install + smoke test inside a throwaway OCI container, so
         /// the artifact is exercised in a clean, host-independent environment
         /// (fresh $HOME, distro libraries, no host toolchain leaking in)
@@ -407,8 +438,8 @@ pub enum Cmd {
         #[arg(long = "r2g-root", env = "ZED_PKG_R2G_ROOT")]
         root: Option<PathBuf>,
         /// Delete the throwaway workspace after a successful run instead of
-        /// leaving it in your home dir for inspection (a failed run always
-        /// leaves it behind)
+        /// leaving it in your home dir for inspection. In server mode this
+        /// does not delete or yank the version persisted by the registry.
         #[arg(long, env = "ZED_PKG_R2G_CLEAN")]
         clean: bool,
     },
@@ -502,20 +533,23 @@ pub enum EnvCmd {
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
     },
-    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.
+    /// Export a schema-v2 EnvironmentPlan to deterministic manager configuration.
     Export {
         #[arg(value_enum)]
-        manager: EnvironmentManagerArg,
-        /// Project-local schema-v2 EnvironmentPlan (.toml or .json).
+        manager: EnvironmentExportManagerArg,
+        /// Project-local schema-v2 EnvironmentPlan. Devbox/Flox default to `.zed/environment-plan.json`; mise requires this flag.
         #[arg(long, env = "ZED_PKG_ENV_PLAN")]
-        plan: PathBuf,
-        /// Project-local mise output path.
-        #[arg(long, env = "ZED_PKG_ENV_OUTPUT", default_value = ".mise.toml")]
-        output: PathBuf,
-        /// Verify that the output already equals the deterministic projection.
+        plan: Option<PathBuf>,
+        /// Project-local manager output path. Defaults are manager-specific.
+        #[arg(long, env = "ZED_PKG_ENV_OUTPUT")]
+        output: Option<PathBuf>,
+        /// Zed-owned deterministic receipt path for Devbox/Flox export.
+        #[arg(long, env = "ZED_PKG_ENV_RECEIPT")]
+        receipt: Option<PathBuf>,
+        /// Verify that the mise output already equals the deterministic projection.
         #[arg(long, env = "ZED_PKG_ENV_CHECK")]
         check: bool,
-        /// Transactionally create/update a Zed-owned manager view.
+        /// Transactionally create/update a Zed-owned mise view.
         #[arg(long, env = "ZED_PKG_ENV_WRITE")]
         write: bool,
         /// Emit a machine-readable export result.
@@ -539,6 +573,34 @@ pub enum EnvCmd {
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
     },
+}
+
+/// Release track. How this becomes a version string is the destination
+/// registry's business — npm wants `1.4.0-rc.1` plus a dist-tag, PyPI wants
+/// `1.4.0rc1`, Maven wants `1.4.0-RC1` — so the channel is named here and
+/// resolved per host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ChannelArg {
+    Stable,
+    Rc,
+    Beta,
+    Alpha,
+    Nightly,
+    Snapshot,
+}
+
+impl From<ChannelArg> for zed_interfaces::native_host::ReleaseChannel {
+    fn from(value: ChannelArg) -> Self {
+        use zed_interfaces::native_host::ReleaseChannel as C;
+        match value {
+            ChannelArg::Stable => C::Stable,
+            ChannelArg::Rc => C::Rc,
+            ChannelArg::Beta => C::Beta,
+            ChannelArg::Alpha => C::Alpha,
+            ChannelArg::Nightly => C::Nightly,
+            ChannelArg::Snapshot => C::Snapshot,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -586,9 +648,35 @@ pub enum ReleaseCmd {
         /// Emit machine-readable JSON rather than the human summary
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
+        /// Release track to resolve every native route against
+        #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
+        channel: Option<ChannelArg>,
+        /// Candidate number within a pre-release channel (rc.1, rc.2, ...)
+        #[arg(long, default_value_t = 1, env = "ZED_PKG_RELEASE_ITERATION")]
+        iteration: u32,
     },
     /// Run fixed, credential-free native package preflight adapters
     Preflight,
+    /// Upload every native route to its ecosystem registry over that
+    /// registry's own HTTP API
+    Publish {
+        #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
+        channel: Option<ChannelArg>,
+        #[arg(long, default_value_t = 1, env = "ZED_PKG_RELEASE_ITERATION")]
+        iteration: u32,
+        /// Print the exact requests, with credentials redacted, and send none
+        #[arg(long, env = "ZED_PKG_DRY_RUN")]
+        dry_run: bool,
+        /// Restrict to one target from `[targets.*]`
+        #[arg(long, env = "ZED_PKG_TARGET")]
+        target: Option<String>,
+    },
+    /// List the versions each native route's registry already serves
+    Versions {
+        /// Restrict to one target from `[targets.*]`
+        #[arg(long, env = "ZED_PKG_TARGET")]
+        target: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -677,7 +765,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AuthCmd, Cli, Cmd, EnvCmd, InstallMode};
+    use super::{AuthCmd, Cli, Cmd, EnvCmd, InstallMode, R2gRegistryMode};
 
     #[test]
     fn flat_and_nested_auth_spellings_dispatch_identically() {
@@ -857,21 +945,23 @@ mod tests {
     }
 
     #[test]
-    fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
-        let cli = Cli::try_parse_from([
-            "zed",
-            "env",
-            "export",
-            "mise",
-            "--plan",
-            "zed-env.toml",
-            "--output",
-            ".mise.toml",
-            "--check",
-            "--json",
-        ])
-        .unwrap();
-        assert!(matches!(cli.cmd, Cmd::Env { .. }));
+    fn environment_export_is_typed_and_preserves_manager_boundaries() {
+        for manager in ["mise", "devbox", "flox"] {
+            let mut args = vec!["zed", "env", "export", manager, "--json"];
+            if manager == "mise" {
+                args.extend([
+                    "--plan",
+                    "zed-env.toml",
+                    "--output",
+                    ".mise.toml",
+                    "--check",
+                ]);
+            } else {
+                args.extend(["--receipt", ".zed/receipt.json"]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Env { .. }));
+        }
 
         assert!(matches!(
             Cli::try_parse_from([
@@ -974,6 +1064,27 @@ mod tests {
             let cli = Cli::try_parse_from(["zed", "completions", shell]).unwrap();
             assert!(matches!(cli.cmd, Cmd::Completions { .. }));
         }
+    }
+
+    #[test]
+    fn r2g_registry_mode_is_typed_and_safe_by_default() {
+        let default = Cli::try_parse_from(["zed", "r2g"]).unwrap();
+        assert!(matches!(
+            default.cmd,
+            Cmd::R2g {
+                registry_mode: R2gRegistryMode::Isolated,
+                ..
+            }
+        ));
+
+        let server = Cli::try_parse_from(["zed", "r2g", "--registry-mode", "server"]).unwrap();
+        assert!(matches!(
+            server.cmd,
+            Cmd::R2g {
+                registry_mode: R2gRegistryMode::Server,
+                ..
+            }
+        ));
     }
 
     /// The flags-2-env convention (github.com/flags-2-env/flags-2-env):

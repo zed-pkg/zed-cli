@@ -381,6 +381,9 @@ fn validate_source(source: &str) -> Result<()> {
                 "frozen file registry sources may not embed credentials, query strings, or fragments"
             );
         }
+        if url.host_str().is_some() {
+            bail!("frozen file registry source is not a local absolute path");
+        }
         let path = url.to_file_path().map_err(|_| {
             anyhow::anyhow!("frozen file registry source is not a local absolute path")
         })?;

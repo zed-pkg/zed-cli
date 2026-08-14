@@ -160,10 +160,15 @@ pub fn build_specs(project: &Path, manifest: &Manifest) -> Vec<NativePreflightSp
                     ("composer", vec!["validate", "--strict", "--no-interaction"])
                 }
                 NativeRegistry::GoModules => ("go", vec!["list", "./..."]),
-                // The remaining registries are still represented in release
-                // plans, but do not yet have a safe local packaging command.
-                // Omitting a preflight spec is preferable to inventing a
-                // command that could execute the wrong ecosystem hooks.
+                // Every other route is reached over the registry's HTTP API
+                // (`native_host_client`), not through a package-manager
+                // binary. Preflight here means "run this ecosystem's own
+                // packaging command", so a host with no adapter simply has no
+                // spec — skipping is correct, and inventing a command would be
+                // worse than doing nothing.
+                //
+                // These routes are still planned, validated, and published;
+                // `zed release plan --json` lists them.
                 _ => return None,
             };
             Some(NativePreflightSpec {

@@ -14,9 +14,11 @@ pub const DO_NOT_WRITE_NEW_MANIFEST_ENV: &str = "ZED_PKG_DO_NOT_WRITE_NEW_MANIFE
 pub const LEGACY_ALLOW_NO_MANIFEST_ENV: &str = "ZED_PKG_ALLOW_NO_MANIFEST";
 
 /// Build the exact typed command model used by every public parser and help or
-/// completion surface.
+/// completion surface. `inspect` is an early-dispatched read-only command so it
+/// is attached here explicitly instead of passing through the credential-aware
+/// [`Cli`] startup path.
 pub fn command() -> Command {
-    Cli::command()
+    Cli::command().subcommand(crate::inspect::command())
 }
 
 /// Parse the process arguments through the exact command model used by help
@@ -29,10 +31,25 @@ pub fn parse() -> Cli {
 /// Apply environment compatibility before flags2env and Clap read process
 /// configuration, and report deprecated command-line spellings.
 ///
+/// `zed inspect` is intercepted before even this compatibility layer. That
+/// guarantees inspection does not publish terminal environment state, load
+/// registry/auth configuration, read saved credentials, or run transaction
+/// recovery before producing its JSON report.
+///
 /// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` is canonical. The old environment key
 /// remains the embedded compatibility key for this migration window so older
 /// scripts continue to work without changing the typed `Cmd::Install` shape.
 pub fn prepare_environment(args: &[OsString]) {
+    if let Some(result) = crate::inspect::dispatch(args) {
+        match result {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     crate::terminal_context::publish_process_environment();
 
     let canonical = std::env::var_os(DO_NOT_WRITE_NEW_MANIFEST_ENV);
@@ -131,6 +148,24 @@ mod tests {
         assert!(help.contains("--do-not-write-new-manifest"));
         assert!(help.contains("--allow-no-manifest"));
         assert!(help.contains("--skip-manifest"));
+    }
+
+    #[test]
+    fn root_command_exposes_read_only_inspect_help() {
+        let root = command();
+        let inspect = root.find_subcommand("inspect").expect("inspect command");
+        assert!(inspect.get_about().is_some());
+    }
+
+    #[test]
+    fn a_global_option_value_named_inspect_is_not_early_dispatched() {
+        let args = vec![
+            OsString::from("zed"),
+            OsString::from("--token"),
+            OsString::from("inspect"),
+            OsString::from("--help"),
+        ];
+        assert!(crate::inspect::dispatch(&args).is_none());
     }
 
     #[test]

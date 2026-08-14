@@ -152,15 +152,19 @@ registry hosts both on S3/Cloudflare R2.
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
 | `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |
+| `zed env export devbox [--plan PATH] [--output devbox.json] [--receipt PATH] [--json]` | Deterministically generate Devbox JSON and a Zed-owned receipt without invoking Devbox |
+| `zed env export flox [--plan PATH] [--output .flox/env/manifest.toml] [--receipt PATH] [--json]` | Deterministically generate Flox manifest TOML and a Zed-owned receipt without invoking Flox |
 | `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |
 | `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |
 | `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
-| `zed release plan [--json]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
+| `zed release plan [--json] [--channel <track>]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed release publish [--channel <track>] [--dry-run]` | Upload each native route to its ecosystem registry over that registry's own HTTP API |
+| `zed release versions [--target <name>]` | List the versions each native route's registry already serves |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
-| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact: install it into a mock consumer under `~/.zed-pkg/r2g` and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
+| `zed r2g` (`zed test-local`) | Roundtrip-test your artifact through a private file registry by default, or through the configured Rust HTTP registry with explicit `--registry-mode server`; then install it into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
@@ -219,6 +223,15 @@ Tag-resolved packages can add a native `tag_format`. Go modules below a
 subdirectory must use the module-directory prefix, such as
 `tag_format = "clients/go/v{version}"`, while the coordinated Zed release can
 continue using the repository tag `v{version}`.
+
+`zed release publish` and `zed release versions` talk to each ecosystem
+registry over its own HTTP API rather than through that language's package
+manager, so a polyglot repository can publish to Hex, Hackage, or CPAN from a
+runner that has no Elixir, GHC, or Perl installed. `--channel rc` resolves the
+release-candidate track each host actually uses — an npm dist-tag, a PEP 440
+suffix on PyPI, a separate candidate endpoint on Hackage — rather than assuming
+one spelling works everywhere. `--dry-run` prints the exact requests, with
+credentials redacted, and sends nothing.
 
 `zed release plan --json` emits one coordinated release set containing the
 Zed artifacts, canonical native packages, and forge mirrors. It does not read
@@ -461,6 +474,7 @@ actual CLI never drift, so it is always authoritative:
 | `--name` (init) | `ZED_PKG_NAME` | directory name |
 | `--check` (self-update) | `ZED_PKG_UPDATE_CHECK` | off |
 | `--force` (self-update) | `ZED_PKG_UPDATE_FORCE` | off |
+| `--registry-mode` (r2g) | `ZED_PKG_R2G_REGISTRY_MODE` | `isolated`; `server` intentionally persists the package version on the configured HTTP(S) registry |
 | `--docker` (r2g) | `ZED_PKG_R2G_DOCKER` | off |
 | `--image` (r2g) | `ZED_PKG_R2G_IMAGE` | `debian:stable-slim` |
 | `--runtime` (r2g) | `ZED_PKG_R2G_RUNTIME` | auto (docker, then podman) |
@@ -468,7 +482,7 @@ actual CLI never drift, so it is always authoritative:
 | `--clean` (r2g) | `ZED_PKG_R2G_CLEAN` | off |
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
-air-gapped mirrors, and `zed r2g` all use it.
+air-gapped mirrors, and the default `zed r2g` mode all use it.
 
 ## Authentication
 
@@ -559,7 +573,8 @@ consumer would:
 
 1. **Pack** — builds the exact pruned, deterministic tarball `zed publish`
    would upload.
-2. **Publish** — to a throwaway `file://` registry.
+2. **Publish** — to a private throwaway `file://` registry by default, or to
+   the configured HTTP(S) server only with `--registry-mode server`.
 3. **Install** — into a mock consumer project (`zed-local/consumer`) with its
    own throwaway store, so the tarball actually roundtrips through
    extraction — no reaching back into your source tree.
@@ -573,10 +588,27 @@ are left behind for inspection (pass `--clean`, or set `--r2g-root` to
 relocate them). `zed test-local` is a backwards-compatible alias.
 
 ```sh
-zed r2g                       # roundtrip on the host
+zed r2g                       # safe, hermetic roundtrip on the host
 zed r2g --docker              # ...inside a fresh debian:stable-slim container
 zed r2g --docker --image node:22-slim   # pick an image with the runtime you need
+
+# Certify a disposable Rust registry reached through a port-forward. Publishing
+# is persistent from the registry's point of view: an identical retry reuses
+# the immutable version, while changed bytes require a new version or a reset.
+zed --registry http://127.0.0.1:48080 --token "$ZED_PKG_TOKEN" \
+  r2g --registry-mode server --clean
 ```
+
+Server mode is deliberately loud and explicit. It uses the ordinary HTTP
+registry client for both upload and consumer install, including the configured
+credential. The package version remains published after `--clean`; cleanup
+only removes the local mock consumer and store. A byte-identical repeated run
+reuses the immutable version. If the package bytes change without a version
+bump, r2g fails before upload; publish a new version or reset the disposable
+registry metadata and process-memory artifact store together. This is the mode
+used to certify the bounded Rust process-memory backend on the AWS and Hetzner
+Kubernetes deployment paths; the ordinary pre-publish developer loop remains
+hermetic.
 
 With `--docker`, r2g installs in copy mode (self-contained, zero symlinks —
 the same guarantee `--install-mode copy` gives OCI builds), bind-mounts the

@@ -15,13 +15,13 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
 use globset::Glob;
 use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::manifest::{Manifest, is_slug};
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 use zed_interfaces::registry::VersionMetadata;
 use zed_interfaces::version::{self, Requirement};
+use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::config::{Config, read_manifest};
 use crate::pack::sha256_file;
@@ -187,36 +187,28 @@ impl FetchPool {
     }
 }
 
-/// A process lock for one content hash. `lock_exclusive` blocks in the kernel;
-/// it does not wake up periodically to retry. The file descriptor owns the
-/// lock, so process exit or panic releases it automatically.
+/// A process lock for one content hash. `zed-lock` issues one blocking native
+/// request; it does not wake periodically to retry. The returned guard owns the
+/// descriptor/handle, so process exit or panic releases it automatically.
 struct ArtifactProcessLock {
-    file: fs::File,
+    _guard: LockGuard,
 }
 
 impl ArtifactProcessLock {
     fn acquire(home: &Path, sha256: &str) -> Result<Self> {
         require_sha256(sha256)?;
         let path = home.join("locks").join(format!("artifact-{sha256}.lock"));
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("opening artifact lock {}", path.display()))?;
-        FileExt::lock_exclusive(&file)
+        let guard = LockManager::global()
+            .acquire_blocking(
+                LockRequest::exclusive(&path)
+                    .operation(format!("artifact preparation {sha256}"))
+                    // This outer download/publication guard remains held while
+                    // Store::add_artifact acquires its rank-30 extraction lock.
+                    .class(LockClass::Custom(25))
+                    .queue_same_process(),
+            )
             .with_context(|| format!("waiting for artifact lock {}", path.display()))?;
-        Ok(Self { file })
-    }
-}
-
-impl Drop for ArtifactProcessLock {
-    fn drop(&mut self) {
-        let _ = FileExt::unlock(&self.file);
+        Ok(Self { _guard: guard })
     }
 }
 
