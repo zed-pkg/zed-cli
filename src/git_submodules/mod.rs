@@ -85,7 +85,7 @@ pub(crate) fn manifest_gitmodules_consumption(project: &Path) -> Result<Option<b
 }
 
 fn manifest_gitmodules_consumption_from_file(manifest: &Path) -> Result<Option<bool>> {
-    let metadata = fs::symlink_metadata(&manifest)
+    let metadata = fs::symlink_metadata(manifest)
         .with_context(|| format!("inspecting {}", manifest.display()))?;
     if !metadata.file_type().is_file() {
         bail!(
@@ -101,8 +101,7 @@ fn manifest_gitmodules_consumption_from_file(manifest: &Path) -> Result<Option<b
         );
     }
     let document: toml::Value = toml::from_str(
-        &fs::read_to_string(&manifest)
-            .with_context(|| format!("reading {}", manifest.display()))?,
+        &fs::read_to_string(manifest).with_context(|| format!("reading {}", manifest.display()))?,
     )
     .with_context(|| format!("parsing {}", manifest.display()))?;
     let value = document
