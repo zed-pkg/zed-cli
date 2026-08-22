@@ -1,6 +1,6 @@
 schema_version = 1
 procedure_version = 1
-repository = "zed-pkg/zed-cli"
+repository = "zed-pkg/zed-cli-oci-runtime"
 
 [policy]
 claim_classes = ["typechecked-specification", "randomized-exploration", "bounded-exhaustive-verification", "implementation-replay", "differential-replay", "unbounded-proof"]
