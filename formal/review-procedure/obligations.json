@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "zed-pkg/zed-cli",
-  "procedure": "docs/FORMAL_REVIEW_PROCEDURE.md",
+  "procedure": "formal/PROCEDURE.md",
   "obligations": [
     {
       "id": "ZED_FROZEN",
