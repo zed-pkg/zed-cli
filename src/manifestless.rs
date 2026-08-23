@@ -95,6 +95,7 @@ pub fn install(
         allow_native_deps,
         allow_install_hooks,
         native_manager: native_manager.map(str::to_owned),
+        local_registry: crate::local_registry::LocalRegistryMode::from_env()?,
     };
 
     if selection.has_manifest {

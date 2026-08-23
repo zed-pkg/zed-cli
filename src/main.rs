@@ -17,6 +17,7 @@ use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
 use zed_cli::graph_export;
+use zed_cli::local_cli;
 use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
@@ -253,6 +254,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             allow_no_manifest,
             allow_ecosystem_mismatch,
+            local_registry,
         } => {
             if !cli.is_empty() {
                 anyhow::ensure!(
@@ -284,6 +286,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 allow_native_deps,
                 allow_install_hooks,
                 native_manager,
+                local_registry,
             };
             if sync_git_submodules {
                 // Git synchronization mutates the submodule worktrees and must
@@ -332,6 +335,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
+        Cmd::Local { cmd } => local_cli::dispatch(&cwd, &cfg, cmd),
         Cmd::Env { cmd } => match cmd {
             EnvCmd::Import {
                 manager,

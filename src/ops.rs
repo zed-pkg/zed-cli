@@ -22,6 +22,7 @@ use zed_interfaces::version::{self, Requirement};
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::interactive;
+use crate::local_registry::{self, LocalIndex, LocalRegistryMode};
 use crate::native::{self, NativeInstallOutcome, NativeRequirement};
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
@@ -239,14 +240,27 @@ fn workspace_member_for_dependency<'a>(
     workspace?.members.get(key)
 }
 
-fn collect_workspace_links_for_frozen(
+/// Reconstruct every dependency that is materialized from live source rather
+/// than from an immutable registry artifact.
+///
+/// Two kinds qualify, in this order of authority. A **workspace member** is
+/// declared by the root manifest of the tree being installed, so it is part of
+/// the project. A **local registration** is machine-global state created by
+/// `zed local register`; it is consulted only when `local` is `Some`, which
+/// the caller decides from [`LocalRegistryMode`] and the frozen policy.
+///
+/// Source links are transitive: linking a package means its own dependencies
+/// are read from that checkout's manifest, not from the lockfile.
+fn collect_source_links_for_frozen(
     project: &Path,
     manifest: &Manifest,
     workspace: Option<&WorkspaceInfo>,
+    local: Option<&LocalIndex>,
 ) -> Result<BTreeMap<String, PathBuf>> {
-    let Some(workspace) = workspace else {
+    if workspace.is_none() && local.is_none() {
         return Ok(BTreeMap::new());
-    };
+    }
+    let project_root = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
 
     let mut links = BTreeMap::new();
     let mut pending: VecDeque<(String, String)> = manifest
@@ -258,31 +272,99 @@ fn collect_workspace_links_for_frozen(
     while let Some((raw_key, requirement_text)) = pending.pop_front() {
         let (org, name) = split_key(&raw_key)?;
         let key = format!("{org}/{name}");
-        let Some(member_dir) = workspace_member_for_dependency(manifest, Some(workspace), &key)
-        else {
+        let requirement = Requirement::parse(&requirement_text);
+
+        if let Some(member_dir) = workspace_member_for_dependency(manifest, workspace, &key) {
+            let member_manifest = read_manifest(member_dir).with_context(|| {
+                format!(
+                    "reading workspace member `{key}` from {}",
+                    member_dir.display()
+                )
+            })?;
+            if !requirement.matches(&member_manifest.package.version) {
+                bail!(
+                    "workspace member {key}@{} does not satisfy `{requirement_text}`",
+                    member_manifest.package.version
+                );
+            }
+            if member_dir == project || links.contains_key(&key) {
+                continue;
+            }
+            links.insert(key, member_dir.clone());
+            pending.extend(member_manifest.dependencies);
+            continue;
+        }
+
+        let Some(index) = local else {
             continue;
         };
-        let member_manifest = read_manifest(member_dir).with_context(|| {
-            format!(
-                "reading workspace member `{key}` from {}",
-                member_dir.display()
-            )
-        })?;
-        let requirement = Requirement::parse(&requirement_text);
-        if !requirement.matches(&member_manifest.package.version) {
-            bail!(
-                "workspace member {key}@{} does not satisfy `{requirement_text}`",
-                member_manifest.package.version
-            );
-        }
-        if member_dir == project || links.contains_key(&key) {
+        // A dependency on this project's own identity is a request for the
+        // published artifact, exactly as it is for workspace members.
+        if key == manifest.full_name() || links.contains_key(&key) {
             continue;
         }
-        links.insert(key, member_dir.clone());
-        pending.extend(member_manifest.dependencies);
+        let (selection, skipped) = local_registry::select(index, &key, &requirement)?;
+        warn_about_unusable_local_entries(&key, &skipped);
+        let Some(selection) = selection else {
+            continue;
+        };
+        if source_link_overlaps_project(&project_root, &selection.dir) {
+            eprintln!(
+                "warning: ignoring the local registration of {key} at {} because it overlaps \
+                 the project being installed into",
+                selection.dir.display()
+            );
+            continue;
+        }
+        println!(
+            "local {key}@{} -> {}",
+            selection.manifest.package.version,
+            selection.dir.display()
+        );
+        links.insert(key, selection.dir.clone());
+        pending.extend(selection.manifest.dependencies.clone());
     }
 
     Ok(links)
+}
+
+/// A registration that no longer resolves is reported once, where it would
+/// otherwise have been used, and then ignored. Silence would let a renamed or
+/// deleted checkout quietly send the install back to the network.
+fn warn_about_unusable_local_entries(
+    key: &str,
+    skipped: &[(local_registry::LocalEntry, local_registry::EntryHealth)],
+) {
+    for (entry, health) in skipped {
+        eprintln!(
+            "warning: local registration of {key} at {} is unusable: {}",
+            entry.path,
+            health.label()
+        );
+    }
+}
+
+/// A source link must not overlap the project being installed into, in either
+/// direction. Linking the project itself, an ancestor of it, or a directory
+/// beneath it would put `zed_modules/<org>/<name>` inside its own link target;
+/// materialization rejects that too, but catching it here names the
+/// registration that caused it.
+fn source_link_overlaps_project(project_root: &Path, source: &Path) -> bool {
+    source.starts_with(project_root) || project_root.starts_with(source)
+}
+
+/// Load the local project index when this install is allowed to use it.
+fn local_index_for(
+    cfg: &Config,
+    mode: LocalRegistryMode,
+    frozen: bool,
+) -> Result<Option<LocalIndex>> {
+    if !mode.enabled() || !mode.applies_to_frozen(frozen) {
+        return Ok(None);
+    }
+    local_registry::load(cfg)
+        .context("reading the local project registry")
+        .map(Some)
 }
 
 // ---------------------------------------------------------------------------
@@ -293,16 +375,22 @@ pub struct InstallOutcome {
     pub installed: Vec<(String, String)>,
 }
 
-/// Independent trust decisions for package-authored lifecycle behavior.
+/// Independent trust decisions for one install: which package-authored
+/// lifecycle code may run, and which sources dependencies may come from.
 /// Existing library callers that use [`install`] retain the historical
 /// build-only opt-in while the CLI uses [`install_with_permissions`] to pass
-/// native-dependency and install-hook consent explicitly.
+/// native-dependency, install-hook, and dependency-source policy explicitly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InstallPermissions {
     pub allow_build: bool,
     pub allow_native_deps: bool,
     pub allow_install_hooks: bool,
     pub native_manager: Option<String>,
+    /// How much authority machine-local `zed local` registrations have over
+    /// dependency resolution. Defaults to [`LocalRegistryMode::Auto`], which
+    /// consults registered checkouts for ordinary installs and leaves frozen
+    /// replays reading only the lockfile.
+    pub local_registry: LocalRegistryMode,
 }
 
 #[derive(Debug, Clone)]
@@ -1046,10 +1134,14 @@ fn install_with_frozen_policy(
     )
 }
 
+/// A frozen install checks that every manifest requirement is pinned by the
+/// lockfile — except the ones satisfied from live source, which by definition
+/// have no immutable pin. `source_links` carries exactly those: workspace
+/// members and, when the mode allows it, local registrations.
 fn validate_frozen_manifest_requirements(
     manifest: &Manifest,
     lock: &Lockfile,
-    workspace: Option<&WorkspaceInfo>,
+    source_links: &BTreeMap<String, PathBuf>,
     enforce: bool,
 ) -> Result<()> {
     if !enforce {
@@ -1058,7 +1150,7 @@ fn validate_frozen_manifest_requirements(
     let root_key = manifest.full_name();
     for (key, req_str) in &manifest.dependencies {
         let (org, name) = split_key(key)?;
-        if key != &root_key && workspace.is_some_and(|ws| ws.members.contains_key(key)) {
+        if key != &root_key && source_links.contains_key(key) {
             continue;
         }
         let entry = lock
@@ -1215,6 +1307,9 @@ fn install_locked(
     let lock_path = project.join(LOCKFILE_FILE);
 
     let workspace = find_workspace(project);
+    let local_mode = permissions.local_registry;
+    let local_index = local_index_for(cfg, local_mode, frozen)?;
+    let project_root = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
 
@@ -1222,14 +1317,20 @@ fn install_locked(
         let text = fs::read_to_string(&lock_path)
             .with_context(|| format!("--frozen requires {LOCKFILE_FILE}"))?;
         let lock = Lockfile::parse(&text)?;
+        // Source links are reconstructed first: they decide which manifest
+        // requirements are exempt from needing a lockfile pin.
+        workspace_links = collect_source_links_for_frozen(
+            project,
+            &manifest,
+            workspace.as_ref(),
+            local_index.as_ref(),
+        )?;
         validate_frozen_manifest_requirements(
             &manifest,
             &lock,
-            workspace.as_ref(),
+            &workspace_links,
             validate_manifest_requirements,
         )?;
-        workspace_links =
-            collect_workspace_links_for_frozen(project, &manifest, workspace.as_ref())?;
         for locked in &lock.packages {
             if !is_slug(&locked.org) || !is_slug(&locked.name) {
                 bail!(
@@ -1297,6 +1398,59 @@ fn install_locked(
                 continue;
             }
             let req = Requirement::parse(&req_str);
+            // A registered local checkout satisfies the dependency without a
+            // network round trip, and is materialized through the same
+            // source-link path as a workspace member so `--install-mode=symlink`
+            // points straight at the developer's tree.
+            // Once a key is pinned to a registry artifact, a later edge for
+            // the same package must not silently switch it to a source link;
+            // fall through so the version-conflict check below sees it.
+            if let Some(index) = local_index.as_ref()
+                && key != manifest.full_name()
+                && !resolved.contains_key(&key)
+            {
+                let (selection, skipped) = local_registry::select(index, &key, &req)?;
+                warn_about_unusable_local_entries(&key, &skipped);
+                let usable = selection.filter(|selection| {
+                    if source_link_overlaps_project(&project_root, &selection.dir) {
+                        eprintln!(
+                            "warning: ignoring the local registration of {key} at {} because \
+                             it overlaps the project being installed into",
+                            selection.dir.display()
+                        );
+                        return false;
+                    }
+                    true
+                });
+                if let Some(selection) = usable {
+                    if !workspace_links.contains_key(&key) {
+                        println!(
+                            "local {key}@{} -> {}",
+                            selection.manifest.package.version,
+                            selection.dir.display()
+                        );
+                        workspace_links.insert(key.clone(), selection.dir.clone());
+                        for (sub_key, sub_req) in selection.manifest.dependencies.clone() {
+                            let (sub_org, sub_name) = split_key(&sub_key)?;
+                            queue.push_back((sub_org, sub_name, sub_req));
+                        }
+                    }
+                    continue;
+                }
+                if !index.candidates_for(&key).is_empty() {
+                    eprintln!(
+                        "note: {key} is registered locally but no registration satisfies \
+                         `{req_str}`; falling back to {}",
+                        cfg.registry
+                    );
+                }
+                if local_mode.requires_local() {
+                    bail!(
+                        "--local-registry=only: no registered local project satisfies {key} \
+                         `{req_str}`; register one with `zed local register <path>`"
+                    );
+                }
+            }
             if let Some(existing) = resolved.get(&key) {
                 if req.matches(&existing.version) {
                     continue;
@@ -1615,7 +1769,10 @@ fn install_locked(
         shas.push(vm.sha256.clone());
     }
     for (key, member_dir) in &workspace_links {
-        interactive::confirm(cfg.interactive, &format!("link workspace package {key}"))?;
+        interactive::confirm(
+            cfg.interactive,
+            &format!("link {key} from source at {}", member_dir.display()),
+        )?;
         let member_manifest = workspace_manifests
             .get(key)
             .with_context(|| format!("workspace package `{key}` has no parsed manifest"))?;
@@ -1836,10 +1993,14 @@ pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
     // still uninstall and later restore its exact materialized graph.
     let manifest = read_manifest(project).ok();
     let workspace = find_workspace(project);
+    let local_index = local_index_for(cfg, LocalRegistryMode::from_env()?, false)?;
     let workspace_links = match manifest.as_ref() {
-        Some(manifest) => {
-            collect_workspace_links_for_frozen(project, manifest, workspace.as_ref())?
-        }
+        Some(manifest) => collect_source_links_for_frozen(
+            project,
+            manifest,
+            workspace.as_ref(),
+            local_index.as_ref(),
+        )?,
         None => BTreeMap::new(),
     };
     let total_materialized = lock.packages.len() + workspace_links.len();
@@ -2199,6 +2360,7 @@ fn install_build_dependencies(
             .manager
             .clone()
             .or_else(|| permissions.native_manager.clone()),
+        local_registry: permissions.local_registry,
     };
     install_locked(
         &deps_dir,
@@ -2593,6 +2755,7 @@ pub fn build_cmd(
         allow_native_deps,
         allow_install_hooks,
         native_manager: native_manager.map(str::to_owned),
+        local_registry: LocalRegistryMode::from_env()?,
     };
     let mut packages = Vec::new();
     let mut native_requirements = vec![NativeRequirement::new(
@@ -3660,7 +3823,8 @@ url = "https://example.invalid/ws-cli"
 
         let manifest = read_manifest(&app).unwrap();
         let workspace = find_workspace(&app).unwrap();
-        let links = collect_workspace_links_for_frozen(&app, &manifest, Some(&workspace)).unwrap();
+        let links =
+            collect_source_links_for_frozen(&app, &manifest, Some(&workspace), None).unwrap();
         assert_eq!(
             links.keys().cloned().collect::<Vec<_>>(),
             vec![
@@ -3677,7 +3841,7 @@ url = "https://example.invalid/ws-cli"
             .replace("\"^1\"", "\"^2\"");
         fs::write(app.join(MANIFEST_FILE), incompatible).unwrap();
         let manifest = read_manifest(&app).unwrap();
-        let error = collect_workspace_links_for_frozen(&app, &manifest, Some(&workspace))
+        let error = collect_source_links_for_frozen(&app, &manifest, Some(&workspace), None)
             .unwrap_err()
             .to_string();
         assert!(error.contains("ws-utils@1.1.0"), "{error}");

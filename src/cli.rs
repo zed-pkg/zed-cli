@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::local_registry::LocalRegistryMode;
+
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
 #[derive(Debug, Parser)]
@@ -301,6 +303,17 @@ pub enum Cmd {
         /// mismatch is almost always a mistake worth failing on
         #[arg(long, env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH")]
         allow_ecosystem_mismatch: bool,
+        /// How much authority `zed local` registrations have over resolution:
+        /// `off` uses the remote registry only, `auto` lets registered local
+        /// checkouts satisfy ordinary installs, `prefer` extends that to
+        /// `--frozen`, and `only` refuses to reach the network at all
+        #[arg(
+            long = "local-registry",
+            value_enum,
+            env = "ZED_PKG_LOCAL_REGISTRY",
+            default_value = "auto"
+        )]
+        local_registry: LocalRegistryMode,
     },
     /// Remove installed dependency trees while retaining .zpkg.toml and
     /// .zpkg.lock so `zed install --frozen` can restore them exactly.
@@ -310,6 +323,12 @@ pub enum Cmd {
         /// packages currently pinned by the lockfile.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
+    },
+    /// Register local project directories so installs can resolve them from
+    /// this filesystem instead of the remote registry.
+    Local {
+        #[command(subcommand)]
+        cmd: LocalCmd,
     },
     /// Import or verify project-local developer-environment configuration.
     Env {
@@ -756,6 +775,92 @@ pub enum StoreCmd {
 pub enum CacheCmd {
     /// Delete all cached artifact downloads
     Clean,
+}
+
+/// The shared, machine-wide registry of local project checkouts.
+///
+/// Entries are identified by canonical filesystem path, not by package name
+/// alone, so several checkouts of one package can be registered at once and
+/// selected explicitly.
+#[derive(Debug, Subcommand)]
+pub enum LocalCmd {
+    /// Register (or refresh) a project directory containing .zpkg.toml
+    Register {
+        /// Project directory. Defaults to the current directory.
+        #[arg(value_name = "PATH", env = "ZED_PKG_LOCAL_REGISTER_PATH")]
+        path: Option<PathBuf>,
+        /// Break ties between checkouts of the same package; higher wins
+        #[arg(long, env = "ZED_PKG_LOCAL_REGISTER_PRIORITY")]
+        priority: Option<i64>,
+        /// Register without making the entry selectable yet
+        #[arg(long, env = "ZED_PKG_LOCAL_REGISTER_DISABLED")]
+        disabled: bool,
+    },
+    /// Forget a registration, by path, `org/name`, or entry id
+    Unregister {
+        #[arg(value_name = "SELECTOR", env = "ZED_PKG_LOCAL_UNREGISTER_SELECTOR")]
+        selector: String,
+        /// Allow a selector that matches several registrations
+        #[arg(long, env = "ZED_PKG_LOCAL_UNREGISTER_ALL")]
+        all: bool,
+    },
+    /// Show every registration and whether it still resolves
+    List {
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_LOCAL_LIST_JSON")]
+        json: bool,
+    },
+    /// Make a registration selectable again
+    Enable {
+        #[arg(value_name = "SELECTOR", env = "ZED_PKG_LOCAL_ENABLE_SELECTOR")]
+        selector: String,
+        /// Allow a selector that matches several registrations
+        #[arg(long, env = "ZED_PKG_LOCAL_ENABLE_ALL")]
+        all: bool,
+    },
+    /// Keep a registration but stop selecting it
+    Disable {
+        #[arg(value_name = "SELECTOR", env = "ZED_PKG_LOCAL_DISABLE_SELECTOR")]
+        selector: String,
+        /// Allow a selector that matches several registrations
+        #[arg(long, env = "ZED_PKG_LOCAL_DISABLE_ALL")]
+        all: bool,
+    },
+    /// Drop registrations whose directory, manifest, or identity broke
+    Prune {
+        /// Report what would be dropped without writing the index
+        #[arg(long, env = "ZED_PKG_LOCAL_PRUNE_DRY_RUN")]
+        dry_run: bool,
+    },
+    /// Discover and register every project beneath a directory
+    Scan {
+        /// Directory to walk. Defaults to the current directory.
+        #[arg(value_name = "PATH", env = "ZED_PKG_LOCAL_SCAN_PATH")]
+        path: Option<PathBuf>,
+        /// How deep to descend below the root
+        #[arg(long, env = "ZED_PKG_LOCAL_SCAN_MAX_DEPTH", default_value_t = 6)]
+        max_depth: usize,
+        /// Priority applied to every registration this scan creates
+        #[arg(long, env = "ZED_PKG_LOCAL_SCAN_PRIORITY")]
+        priority: Option<i64>,
+        /// List discovered projects without writing the index
+        #[arg(long, env = "ZED_PKG_LOCAL_SCAN_DRY_RUN")]
+        dry_run: bool,
+    },
+    /// Show which local project would satisfy a dependency
+    Resolve {
+        /// Package to resolve, as `org/name`
+        #[arg(value_name = "PACKAGE")]
+        package: String,
+        /// Version requirement to satisfy
+        #[arg(long, env = "ZED_PKG_LOCAL_RESOLVE_REQUIRE", default_value = "*")]
+        require: String,
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_LOCAL_RESOLVE_JSON")]
+        json: bool,
+    },
+    /// Print the path of the shared index file
+    Path,
 }
 
 #[cfg(test)]
