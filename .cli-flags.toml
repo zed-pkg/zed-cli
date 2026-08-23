@@ -67,6 +67,25 @@ type = "bool"
 default = "false"
 help = "Confirm each mutating lifecycle step in a real terminal."
 
+[flags.local_path_map]
+env = "ZED_PKG_LOCAL_REGISTRY_PATH_MAP"
+aliases = ["local-path-map"]
+type = "string"
+help = "host=container path rewrites for local registry entries, comma separated."
+
+[flags.local_link_policy]
+env = "ZED_PKG_LOCAL_LINK_POLICY"
+aliases = ["local-link-policy"]
+type = "string"
+help = "How a local checkout reaches zed_modules/: auto, symlink, or copy."
+
+[flags.local_ephemeral]
+env = "ZED_PKG_LOCAL_REGISTRY_EPHEMERAL"
+aliases = ["local-ephemeral"]
+type = "bool"
+default = "false"
+help = "Copy every local checkout because its media will not outlive this process."
+
 [flags.frozen]
 env = "ZED_PKG_FROZEN"
 aliases = ["frozen"]
@@ -395,6 +414,12 @@ type = "bool"
 default = "false"
 help = "Record the registration without making it selectable."
 
+[commands.local.commands.register.flags.local_register_link]
+env = "ZED_PKG_LOCAL_REGISTER_LINK"
+aliases = ["link"]
+type = "string"
+help = "Materialization preference for this checkout: auto, symlink, or copy."
+
 [commands.local.commands.unregister]
 help = "Forget a registration by path, org/name, or entry id."
 
@@ -487,6 +512,16 @@ help = "Emit deterministic machine-readable local registry output."
 
 [commands.local.commands.path]
 help = "Print the path of the shared local registry index."
+
+[commands.local.commands.doctor]
+help = "Explain the index location, container detection, path mapping, and every registration's volume."
+
+[commands.local.commands.doctor.flags.local_doctor_json]
+env = "ZED_PKG_LOCAL_DOCTOR_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable local registry output."
 
 [commands.env]
 help = "Import, verify, and export project-local developer environments."
