@@ -9,6 +9,7 @@ use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{MANIFEST_FILE, ZED_HOME_DIR_NAME};
 
 use crate::cli::Globals;
+use crate::local_registry::LocalPortability;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -19,6 +20,10 @@ pub struct Config {
     pub supabase_url: Option<String>,
     pub supabase_key: Option<String>,
     pub interactive: bool,
+    /// This machine's filesystem view for the local project registry: path
+    /// rewrites across a container boundary, and how registered checkouts are
+    /// materialized.
+    pub local: LocalPortability,
 }
 
 impl Config {
@@ -65,6 +70,12 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             interactive: globals.interactive,
+            local: Default::default(),
+            local: LocalPortability {
+                path_map: globals.local_path_map.clone(),
+                link_policy: globals.local_link_policy.map(Into::into),
+                ephemeral: globals.local_ephemeral,
+            },
         })
     }
 
@@ -473,6 +484,7 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         };
 
         with_install_prefetch(&cfg, || {
@@ -578,6 +590,7 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         };
         assert_eq!(
             explicit.resolve_token().unwrap().as_deref(),
@@ -601,6 +614,7 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         };
         assert_eq!(unknown_registry.resolve_token().unwrap(), None);
     }
@@ -617,6 +631,7 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         };
         // A corrupt file must degrade to "no saved token", not a panic/err.
         assert_eq!(cfg.resolve_token().unwrap(), None);

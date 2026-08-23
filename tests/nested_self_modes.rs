@@ -144,6 +144,7 @@ fn test_config(root: &Path, registry: &Path) -> Config {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        local: Default::default(),
     }
 }
 
