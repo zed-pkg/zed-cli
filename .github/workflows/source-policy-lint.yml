@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   source-policy:
     uses: ores-otel/.github/.github/workflows/source-policy-lint.yml@34a36017bfa4da0a820f4a82f8d206958296ebbb
