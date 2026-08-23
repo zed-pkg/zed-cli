@@ -85,6 +85,22 @@ Requirements satisfied from live source have no immutable pin, so they are
 exempt from the frozen "must be in `.zpkg.lock`" check — exactly as workspace
 members already are.
 
+## Where resolution happens
+
+Two components have to agree about where a package comes from, and both consult
+the registrations.
+
+The **dependency solver** runs first and is where the network would be
+contacted, so it is where `only` is enforced and where the "no registration
+satisfies this" fall-through is reported. A key satisfied locally is treated
+exactly like a workspace member: recorded from live source, never fetched, and
+never prefetched. The **installer** then materializes what the solver decided,
+consulting the index again to find the directory to link.
+
+Both use the same rule — highest priority, then highest version, ties are
+errors — so a package cannot be solved from one checkout and linked from
+another.
+
 ## Precedence against workspace members
 
 Workspace members win. They are declared by the root manifest of the tree being
