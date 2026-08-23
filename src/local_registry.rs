@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail, ensure};
@@ -208,6 +208,18 @@ pub struct LocalEntry {
     /// Unix epoch seconds at registration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registered_at: Option<u64>,
+    /// Where this checkout lives, recorded at registration. Drives the
+    /// unavailable-versus-missing distinction and the link decision.
+    #[serde(default)]
+    pub volume: VolumeInfo,
+    /// This entry's preference for how it reaches `zed_modules/`. A process
+    /// wide `--local-link-policy` overrides it.
+    #[serde(default)]
+    pub link_policy: LinkPolicy,
+    /// Set when a path map rewrote this entry on load: the form the index
+    /// actually holds, so a save maps it back and a report can show both.
+    #[serde(skip)]
+    pub stored_path: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -323,6 +335,613 @@ impl LocalIndex {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// portability: volumes, containers, and how a checkout reaches zed_modules/
+//
+// A registered path routinely lives somewhere less permanent than `$HOME`: an
+// external or virtual disk that is mounted today and gone tomorrow, a
+// container bind mount where the same bytes have a different absolute path on
+// each side, or a build mount that exists for one `RUN` step and is absent
+// from the resulting image. Three mechanisms cover those, and all three are
+// pure filesystem logic — nothing here opens a socket:
+//
+// 1. [`PathMap`] rewrites a registered path between host and container views,
+//    so one index file can be shared through the very bind mount it describes.
+// 2. [`VolumeKind`] records where an entry lives, so a lookup can say
+//    "temporarily unavailable" instead of "deleted" when a disk is unplugged.
+// 3. [`LinkPolicy`] refuses to leave a symlink pointing at media that will not
+//    be there later: removable disks and build mounts are copied, never
+//    linked, so the installed tree survives the mount going away.
+
+/// `host=container` path rewrites, separated by `,` (or `;`).
+pub const PATH_MAP_ENV: &str = "ZED_PKG_LOCAL_REGISTRY_PATH_MAP";
+/// Force a link policy (`auto`, `symlink`, `copy`).
+pub const LINK_POLICY_ENV: &str = "ZED_PKG_LOCAL_LINK_POLICY";
+/// Treat every registration as living on media that will not outlive this
+/// process, so nothing is symlinked. Container image builds set this.
+pub const EPHEMERAL_ENV: &str = "ZED_PKG_LOCAL_REGISTRY_EPHEMERAL";
+
+/// Where a registered checkout physically lives.
+///
+/// Advisory metadata: it steers link policy and produces a good diagnostic, and
+/// a wrong guess degrades to the conservative choice (copy) rather than to a
+/// wrong install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum VolumeKind {
+    /// An ordinary internal disk: present whenever the machine is.
+    Fixed,
+    /// A removable or virtual disk (USB, external SSD, mounted disk image,
+    /// `/Volumes/*` on macOS, `/media|/mnt/*` on Linux). May vanish.
+    Removable,
+    /// A network filesystem (NFS, SMB, sshfs, 9p). May become unreachable.
+    Network,
+    /// A container bind mount or volume: the same bytes are reachable under a
+    /// different path on the host, and may not exist in a later image layer.
+    ContainerMount,
+    /// Could not be determined.
+    #[default]
+    Unknown,
+}
+
+impl VolumeKind {
+    /// Media that may disappear between this install and the next process that
+    /// walks `zed_modules/`. A symlink into such media is a latent breakage.
+    pub fn is_ephemeral(self) -> bool {
+        matches!(self, Self::Removable | Self::Network | Self::ContainerMount)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Removable => "removable",
+            Self::Network => "network",
+            Self::ContainerMount => "container-mount",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Recorded provenance of the volume an entry lives on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumeInfo {
+    #[serde(default)]
+    pub kind: VolumeKind,
+    /// Longest mount point that is a prefix of the entry path, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mount_point: Option<String>,
+    /// Filesystem type reported by the mount table, when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fs_type: Option<String>,
+}
+
+/// Are we executing inside a container? Used only to pick better defaults and
+/// to explain a lookup; never to change what a path means.
+pub fn in_container() -> bool {
+    if std::env::var_os("ZED_PKG_IN_CONTAINER").is_some() {
+        return true;
+    }
+    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+        return true;
+    }
+    fs::read_to_string("/proc/1/cgroup").is_ok_and(|cgroups| {
+        cgroups.lines().any(|line| {
+            line.contains("docker") || line.contains("containerd") || line.contains("kubepods")
+        })
+    })
+}
+
+#[derive(Debug, Clone)]
+struct MountEntry {
+    mount_point: PathBuf,
+    fs_type: String,
+    source: String,
+}
+
+/// `/proc/self/mountinfo` is the only table parsed: it is present on Linux
+/// (including every container runtime that matters here) and its shape is
+/// stable. Elsewhere this returns nothing and the prefix heuristics below take
+/// over.
+fn read_mount_table() -> Vec<MountEntry> {
+    let Ok(text) = fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            // id parent maj:min root mountpoint opts [tags] - fstype source sopts
+            let (before, after) = line.split_once(" - ")?;
+            let mount_point = before.split_whitespace().nth(4)?;
+            let mut tail = after.split_whitespace();
+            let fs_type = tail.next()?.to_string();
+            let source = tail.next().unwrap_or_default().to_string();
+            Some(MountEntry {
+                mount_point: PathBuf::from(unescape_mount_field(mount_point)),
+                fs_type,
+                source: unescape_mount_field(&source),
+            })
+        })
+        .collect()
+}
+
+/// mountinfo escapes space, tab, newline and backslash as three octal digits.
+fn unescape_mount_field(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            out.push(ch);
+            continue;
+        }
+        let digits: String = (0..3)
+            .filter_map(|_| chars.next_if(|c| ('0'..='7').contains(c)))
+            .collect();
+        match u32::from_str_radix(&digits, 8).ok().filter(|_| digits.len() == 3) {
+            Some(code) => out.push(char::from_u32(code).unwrap_or('\\')),
+            None => {
+                out.push('\\');
+                out.push_str(&digits);
+            }
+        }
+    }
+    out
+}
+
+fn longest_mount_prefix(mounts: &[MountEntry], path: &Path) -> Option<MountEntry> {
+    mounts
+        .iter()
+        .filter(|mount| path.starts_with(&mount.mount_point))
+        .max_by_key(|mount| mount.mount_point.as_os_str().len())
+        .cloned()
+}
+
+fn kind_for_mount(mount_point: &Path, fs_type: &str, source: &str) -> VolumeKind {
+    const NETWORK_FS: &[&str] = &[
+        "nfs", "nfs4", "cifs", "smbfs", "smb3", "afs", "fuse.sshfs", "fuse.rclone", "afpfs",
+        "webdav", "fuse.davfs",
+    ];
+    // virtiofs/9p are how Docker Desktop, Lima, and Colima surface host
+    // directories into the VM; grpcfuse is Docker Desktop's osxfs successor.
+    // A path on one of those is host storage seen across a container boundary.
+    const CONTAINER_HOST_FS: &[&str] = &["virtiofs", "9p", "fuse.grpcfuse", "grpcfuse", "osxfs"];
+
+    let lowered = fs_type.to_ascii_lowercase();
+    if CONTAINER_HOST_FS.contains(&lowered.as_str()) {
+        return VolumeKind::ContainerMount;
+    }
+    if NETWORK_FS.contains(&lowered.as_str()) {
+        return VolumeKind::Network;
+    }
+    if lowered == "overlay" || lowered == "tmpfs" || lowered == "ramfs" {
+        // An overlay at `/` is the container's own root filesystem, fixed for
+        // the life of the container. A tmpfs anywhere, and an overlay mounted
+        // below the root, are scratch space.
+        return if lowered == "overlay" && mount_point == Path::new("/") {
+            if in_container() {
+                VolumeKind::Fixed
+            } else {
+                VolumeKind::Unknown
+            }
+        } else {
+            VolumeKind::ContainerMount
+        };
+    }
+    // A bind mount from the host has an ordinary filesystem type but a mount
+    // point the runtime created, so inside a container any non-root mount that
+    // is not system plumbing is treated as one.
+    if in_container()
+        && mount_point != Path::new("/")
+        && !is_system_mount_point(mount_point)
+        && !source.starts_with("udev")
+    {
+        return VolumeKind::ContainerMount;
+    }
+    match kind_for_prefix(mount_point) {
+        VolumeKind::Unknown => VolumeKind::Fixed,
+        other => other,
+    }
+}
+
+fn is_system_mount_point(mount_point: &Path) -> bool {
+    const SYSTEM_PREFIXES: &[&str] = &[
+        "/proc",
+        "/sys",
+        "/dev",
+        "/run",
+        "/etc/hosts",
+        "/etc/hostname",
+        "/etc/resolv.conf",
+    ];
+    SYSTEM_PREFIXES
+        .iter()
+        .any(|prefix| mount_point.starts_with(prefix))
+}
+
+/// Classify from well-known layout alone. Deliberately biased toward
+/// `Removable`: mistaking a fixed disk for a removable one costs one copy,
+/// while the opposite mistake costs a broken project.
+fn kind_for_prefix(path: &Path) -> VolumeKind {
+    const REMOVABLE_PREFIXES: &[&str] = &["/Volumes", "/media", "/mnt", "/run/media", "/vol"];
+    for prefix in REMOVABLE_PREFIXES {
+        if path.starts_with(prefix) && path != Path::new(prefix) {
+            return VolumeKind::Removable;
+        }
+    }
+    if path.starts_with("/System/Volumes/Data")
+        || path.starts_with("/home")
+        || path.starts_with("/Users")
+        || path.starts_with("/root")
+    {
+        return VolumeKind::Fixed;
+    }
+    VolumeKind::Unknown
+}
+
+/// The volume root for a path under a conventional mount directory:
+/// `/Volumes/<label>`, `/media/<label>`, `/mnt/<label>`,
+/// `/run/media/<user>/<label>`.
+///
+/// This is how a machine with no readable mount table (macOS, and anything
+/// without procfs) still knows which directory answers "is the disk plugged
+/// in?". Without it every ejected disk would look like a deleted checkout.
+fn prefix_mount_point(path: &Path) -> Option<PathBuf> {
+    const ROOTS: &[(&str, usize)] = &[
+        ("/Volumes", 1),
+        ("/media", 1),
+        ("/mnt", 1),
+        ("/run/media", 2),
+        ("/vol", 1),
+    ];
+    for (root, depth) in ROOTS {
+        let root = Path::new(root);
+        let Ok(rest) = path.strip_prefix(root) else {
+            continue;
+        };
+        let mut mount = root.to_path_buf();
+        let mut taken = 0;
+        for component in rest.components() {
+            if taken == *depth {
+                break;
+            }
+            if let Component::Normal(part) = component {
+                mount.push(part);
+                taken += 1;
+            }
+        }
+        if taken == *depth {
+            return Some(mount);
+        }
+    }
+    None
+}
+
+/// Record where `path` lives, for later availability and link decisions.
+pub fn classify_volume(path: &Path) -> VolumeInfo {
+    let mounts = read_mount_table();
+    if let Some(mount) = longest_mount_prefix(&mounts, path) {
+        return VolumeInfo {
+            kind: kind_for_mount(&mount.mount_point, &mount.fs_type, &mount.source),
+            mount_point: Some(mount.mount_point.display().to_string()),
+            fs_type: Some(mount.fs_type),
+        };
+    }
+    VolumeInfo {
+        kind: kind_for_prefix(path),
+        mount_point: prefix_mount_point(path).map(|mount| mount.display().to_string()),
+        fs_type: None,
+    }
+}
+
+/// Is the volume an entry was registered on currently mounted?
+///
+/// This asks about the *volume*, never about the entry path. The distinction is
+/// the point: a checkout that was deleted is a stale registration to clean up,
+/// while a checkout on a disk that is merely unplugged is still real and will
+/// be back. Blurring the two would make `zed local prune` quietly forget every
+/// project on an external drive that happened not to be attached that
+/// afternoon.
+pub fn volume_is_present(volume: &VolumeInfo) -> bool {
+    let Some(mount_point) = volume.mount_point.as_deref().map(Path::new) else {
+        // Nothing recorded to check; the entry path itself decides.
+        return true;
+    };
+    if !mount_point.exists() {
+        return false;
+    }
+    // Linux leaves the mount directory behind after an unmount, so an existing
+    // directory is not proof. A directory sharing a device with its parent is
+    // no longer a mount point.
+    if volume.kind.is_ephemeral() && !is_mount_point(mount_point) {
+        return false;
+    }
+    true
+}
+
+/// Is `path` the root of a mounted filesystem? An unknown answer is reported
+/// as `true`, so an unreadable device id can never manufacture a false
+/// "unavailable".
+fn is_mount_point(path: &Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return true;
+    };
+    match (device_id_of(path), device_id_of(parent)) {
+        (Some(here), Some(above)) => here != above,
+        _ => true,
+    }
+}
+
+#[cfg(unix)]
+fn device_id_of(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt as _;
+    fs::metadata(path).ok().map(|meta| meta.dev())
+}
+
+#[cfg(not(unix))]
+fn device_id_of(_path: &Path) -> Option<u64> {
+    None
+}
+
+// ---------------------------------------------------------------------------
+// path mapping
+
+/// An ordered set of `from -> to` absolute path rewrites.
+///
+/// The canonical use is a bind mount: `-v /Users/me/codes:/work` makes
+/// `ZED_PKG_LOCAL_REGISTRY_PATH_MAP=/Users/me/codes=/work` translate every
+/// host-registered entry into the container's view. The same map read backwards
+/// lets a `zed local register` performed *inside* the container write a
+/// host-shaped path, so one shared index stays meaningful on both sides.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PathMap {
+    rules: Vec<(PathBuf, PathBuf)>,
+}
+
+impl PathMap {
+    pub fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
+    /// The configured rules, host side first, for reporting.
+    pub fn rules(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.rules
+            .iter()
+            .map(|(from, to)| (from.display().to_string(), to.display().to_string()))
+    }
+
+    /// Parse `from=to` rules separated by `,` or `;`.
+    ///
+    /// Both sides must be absolute; a relative side is a configuration error
+    /// rather than something to ignore, because it would make lookups depend on
+    /// the current directory.
+    pub fn parse(raw: &str) -> Result<Self> {
+        let mut rules = Vec::new();
+        for chunk in raw.split([',', ';']) {
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
+                continue;
+            }
+            let (from, to) = chunk
+                .split_once('=')
+                .with_context(|| format!("invalid path map rule `{chunk}` (expected `from=to`)"))?;
+            let from = PathBuf::from(from.trim());
+            let to = PathBuf::from(to.trim());
+            ensure!(
+                from.is_absolute() && to.is_absolute(),
+                "path map rule `{chunk}` must use absolute paths on both sides"
+            );
+            // Canonicalize whichever side exists on *this* machine. A mount is
+            // routinely described with a path that is itself reached through a
+            // symlink (`/tmp` on macOS is `/private/tmp`), and a rule stated in
+            // those terms must still match the canonical paths the index holds.
+            rules.push((canonical_or_lexical(&from), canonical_or_lexical(&to)));
+        }
+        // Longest source prefix wins, so a nested rule refines a broader one
+        // regardless of the order they were written in.
+        rules.sort_by_key(|(from, _)| std::cmp::Reverse(from.as_os_str().len()));
+        Ok(Self { rules })
+    }
+
+    pub fn from_env() -> Result<Self> {
+        match std::env::var(PATH_MAP_ENV) {
+            Ok(raw) if !raw.trim().is_empty() => Self::parse(&raw),
+            _ => Ok(Self::default()),
+        }
+    }
+
+    /// Rewrite a stored (host-side) path into this process's view.
+    pub fn to_local(&self, path: &Path) -> PathBuf {
+        self.apply(path, false)
+    }
+
+    /// Rewrite a path from this process's view back into the stored form, so a
+    /// container-side registration lands in an index the host can also read.
+    pub fn to_stored(&self, path: &Path) -> PathBuf {
+        self.apply(path, true)
+    }
+
+    fn apply(&self, path: &Path, reverse: bool) -> PathBuf {
+        for (from, to) in &self.rules {
+            let (from, to) = if reverse { (to, from) } else { (from, to) };
+            if let Ok(rest) = path.strip_prefix(from) {
+                return if rest.as_os_str().is_empty() {
+                    to.clone()
+                } else {
+                    to.join(rest)
+                };
+            }
+        }
+        path.to_path_buf()
+    }
+}
+
+/// Canonicalize a path if it exists here, otherwise normalize it lexically.
+/// The far side of a host/container mapping legitimately does not exist on this
+/// machine, so a failure to canonicalize is expected, not an error.
+fn canonical_or_lexical(path: &Path) -> PathBuf {
+    fs::canonicalize(path).unwrap_or_else(|_| normalize_lexically(path))
+}
+
+/// Resolve `.` and `..` without touching the filesystem.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// link policy
+
+/// How a registered checkout should reach `zed_modules/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkPolicy {
+    /// Symlink from stable media, copy from ephemeral media.
+    #[default]
+    Auto,
+    /// Always symlink; the caller accepts a dangling link if the media leaves.
+    Symlink,
+    /// Always copy. This is what a container image build needs: the layer must
+    /// not depend on a mount that only existed during the build.
+    Copy,
+}
+
+impl LinkPolicy {
+    pub fn parse(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Ok(Self::Auto),
+            "symlink" | "link" => Ok(Self::Symlink),
+            "copy" => Ok(Self::Copy),
+            other => bail!("invalid local link policy `{other}` (expected auto, symlink, or copy)"),
+        }
+    }
+
+    pub fn from_env() -> Result<Self> {
+        match std::env::var(LINK_POLICY_ENV) {
+            Ok(raw) => Self::parse(&raw),
+            Err(_) => Ok(Self::Auto),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Symlink => "symlink",
+            Self::Copy => "copy",
+        }
+    }
+
+    /// Decide whether a checkout may be symlinked.
+    ///
+    /// `project_on_same_volume` describes the *consumer*: when the project tree
+    /// itself lives on the same volume as the checkout, a link between them
+    /// survives exactly as long as anything else on that volume, so there is
+    /// nothing to protect against and linking stays allowed.
+    pub fn resolve(
+        self,
+        source: VolumeKind,
+        project_on_same_volume: bool,
+        ephemeral_override: bool,
+    ) -> LinkDecision {
+        match self {
+            Self::Symlink => LinkDecision::Symlink,
+            Self::Copy => LinkDecision::Copy,
+            Self::Auto => {
+                if ephemeral_override {
+                    LinkDecision::Copy
+                } else if source.is_ephemeral() && !project_on_same_volume {
+                    LinkDecision::Copy
+                } else {
+                    LinkDecision::Symlink
+                }
+            }
+        }
+    }
+}
+
+/// The resolved materialization choice for one registered checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkDecision {
+    Symlink,
+    Copy,
+}
+
+/// This machine's view of the filesystem, as far as the local registry is
+/// concerned. Grouped into one struct so [`Config`] gains one field rather than
+/// four, and so a caller with no opinion can pass [`Default::default`].
+#[derive(Debug, Clone, Default)]
+pub struct LocalPortability {
+    /// Unparsed `from=to` rules; `None` falls back to [`PATH_MAP_ENV`].
+    pub path_map: Option<String>,
+    /// `None` falls back to [`LINK_POLICY_ENV`].
+    pub link_policy: Option<LinkPolicy>,
+    /// Copy every registered checkout regardless of the volume it is on.
+    pub ephemeral: bool,
+}
+
+impl LocalPortability {
+    pub fn resolved_path_map(&self) -> Result<PathMap> {
+        match &self.path_map {
+            Some(raw) if !raw.trim().is_empty() => PathMap::parse(raw),
+            Some(_) => Ok(PathMap::default()),
+            None => PathMap::from_env(),
+        }
+    }
+
+    pub fn resolved_link_policy(&self) -> Result<LinkPolicy> {
+        match self.link_policy {
+            Some(policy) => Ok(policy),
+            None => LinkPolicy::from_env(),
+        }
+    }
+
+    pub fn resolved_ephemeral(&self) -> bool {
+        self.ephemeral
+            || std::env::var(EPHEMERAL_ENV)
+                .ok()
+                .is_some_and(|value| truthy(&value))
+    }
+}
+
+fn truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// How one selected checkout should be materialized for `project`.
+pub fn link_decision(cfg: &Config, entry: &LocalEntry, project: &Path) -> Result<LinkDecision> {
+    let process_policy = cfg.local.resolved_link_policy()?;
+    // An explicit process-wide policy is an operator decision for this run and
+    // wins over the preference recorded when the checkout was registered.
+    let policy = match process_policy {
+        LinkPolicy::Auto => entry.link_policy,
+        explicit => explicit,
+    };
+    let same_volume = device_id_of(project)
+        .zip(device_id_of(&entry.path_buf()))
+        .map(|(here, there)| here == there)
+        .unwrap_or(false);
+    Ok(policy.resolve(
+        entry.volume.kind,
+        same_volume,
+        cfg.local.resolved_ephemeral(),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // paths and locking
 
@@ -431,7 +1050,48 @@ pub fn load(cfg: &Config) -> Result<LocalIndex> {
     index
         .validate()
         .with_context(|| format!("validating local registry index {}", path.display()))?;
+    // Translate host paths into this process's view *once*, here, so every
+    // consumer downstream — health, selection, materialization — works in the
+    // only coordinate system it can actually open.
+    apply_path_map(&mut index, &cfg.local.resolved_path_map()?);
     Ok(index)
+}
+
+/// Rewrite entry paths into the local view, remembering the stored form.
+fn apply_path_map(index: &mut LocalIndex, map: &PathMap) {
+    if map.is_empty() {
+        return;
+    }
+    for entry in &mut index.entries {
+        let stored = entry.path.clone();
+        let local = map.to_local(Path::new(&stored));
+        let Some(local) = local.to_str() else {
+            continue;
+        };
+        if local != stored {
+            entry.stored_path = Some(stored);
+            entry.path = local.to_string();
+        }
+    }
+}
+
+/// The inverse: put stored (host) paths back before the index is written, so a
+/// registration made inside a container stays readable on the host.
+fn unapply_path_map(index: &LocalIndex, map: &PathMap) -> LocalIndex {
+    let mut out = index.clone();
+    for entry in &mut out.entries {
+        if let Some(stored) = entry.stored_path.take() {
+            entry.path = stored;
+            continue;
+        }
+        if map.is_empty() {
+            continue;
+        }
+        if let Some(stored) = map.to_stored(Path::new(&entry.path)).to_str() {
+            entry.path = stored.to_string();
+        }
+    }
+    out
 }
 
 /// Write the index atomically: staged beside the final path, then renamed.
@@ -439,7 +1099,11 @@ fn save(cfg: &Config, index: &LocalIndex) -> Result<()> {
     let path = index_path(cfg)?;
     let parent = index_parent(cfg)?;
     secure_create_dir(&parent)?;
-    let text = format!("{}\n", serde_json::to_string_pretty(index)?);
+    let mut stored = unapply_path_map(index, &cfg.local.resolved_path_map()?);
+    // Sort in the *stored* coordinate system so the file has one canonical
+    // order no matter which side of a bind mount wrote it last.
+    stored.normalize();
+    let text = format!("{}\n", serde_json::to_string_pretty(&stored)?);
     ensure!(
         text.len() as u64 <= MAX_INDEX_BYTES,
         "refusing to write a {} byte local registry index",
@@ -560,6 +1224,10 @@ pub enum EntryHealth {
     Ok { version: String, drifted: bool },
     /// Deliberately shelved with `zed local disable`.
     Disabled,
+    /// The volume this checkout lives on is not mounted right now. Distinct
+    /// from `MissingPath`: an unplugged disk is not a broken registration, and
+    /// `zed local prune` must not forget it.
+    VolumeUnavailable { mount_point: Option<String> },
     /// The directory is gone.
     MissingPath,
     /// The directory exists but is no longer a Zed project.
@@ -586,6 +1254,10 @@ impl EntryHealth {
                 drifted: true,
             } => format!("ok ({version}, manifest changed since registration)"),
             Self::Disabled => "disabled".to_string(),
+            Self::VolumeUnavailable { mount_point } => match mount_point {
+                Some(mount) => format!("unavailable: {mount} is not mounted"),
+                None => "unavailable: the volume is not reachable".to_string(),
+            },
             Self::MissingPath => "stale: directory is gone".to_string(),
             Self::MissingManifest => format!("stale: no {MANIFEST_FILE}"),
             Self::InvalidManifest(reason) => format!("stale: invalid manifest ({reason})"),
@@ -602,6 +1274,17 @@ pub fn health(entry: &LocalEntry) -> (EntryHealth, Option<Manifest>) {
         return (EntryHealth::Disabled, None);
     }
     let dir = entry.path_buf();
+    // Ask about the volume before asking about the directory. If the disk is
+    // not mounted, "the directory is gone" would be a true statement and a
+    // misleading diagnosis.
+    if !volume_is_present(&entry.volume) {
+        return (
+            EntryHealth::VolumeUnavailable {
+                mount_point: entry.volume.mount_point.clone(),
+            },
+            None,
+        );
+    }
     if !dir.is_dir() {
         return (EntryHealth::MissingPath, None);
     }
@@ -763,6 +1446,7 @@ pub fn register(
     raw_path: &Path,
     priority: Option<i64>,
     enabled: bool,
+    link_policy: Option<LinkPolicy>,
 ) -> Result<(RegisterAction, LocalEntry)> {
     let dir = canonical_project_dir(raw_path)?;
     let (manifest, manifest_sha256) = validate_registrable(cfg, &dir)?;
@@ -789,6 +1473,13 @@ pub fn register(
             registered_at: existing
                 .and_then(|position| index.entries[position].registered_at)
                 .or(now),
+            volume: classify_volume(&dir),
+            link_policy: link_policy.unwrap_or_else(|| {
+                existing
+                    .map(|position| index.entries[position].link_policy)
+                    .unwrap_or_default()
+            }),
+            stored_path: None,
         };
         match existing {
             Some(position) => {
@@ -949,7 +1640,11 @@ pub fn prune(cfg: &Config, dry_run: bool) -> Result<Vec<EntryStatus>> {
     let removable = |entry: &LocalEntry| -> Option<EntryHealth> {
         let (state, _) = health(entry);
         match state {
-            EntryHealth::Ok { .. } | EntryHealth::Disabled => None,
+            // Shelved is not broken, and unplugged is not deleted: neither is
+            // evidence that the registration was a mistake.
+            EntryHealth::Ok { .. }
+            | EntryHealth::Disabled
+            | EntryHealth::VolumeUnavailable { .. } => None,
             other => Some(other),
         }
     };
@@ -1058,7 +1753,7 @@ pub fn scan(
         return Ok(hits);
     }
     for hit in &mut hits {
-        let (action, _) = register(cfg, &hit.dir, priority, true)?;
+        let (action, _) = register(cfg, &hit.dir, priority, true, None)?;
         hit.action = Some(action);
     }
     Ok(hits)
@@ -1077,6 +1772,7 @@ mod tests {
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         }
     }
 
@@ -1361,4 +2057,403 @@ mod tests {
         assert!(names.contains(&"acme/member"));
         assert!(!names.contains(&"acme/copy"));
     }
+
+    // -- portability: volumes, path maps, link policy ----------------------
+
+    #[test]
+    fn well_known_prefixes_classify_removable_media() {
+        assert_eq!(
+            kind_for_prefix(Path::new("/Volumes/Backup/x")),
+            VolumeKind::Removable
+        );
+        assert_eq!(
+            kind_for_prefix(Path::new("/media/usb/x")),
+            VolumeKind::Removable
+        );
+        assert_eq!(
+            kind_for_prefix(Path::new("/mnt/data/x")),
+            VolumeKind::Removable
+        );
+        assert_eq!(
+            kind_for_prefix(Path::new("/Users/me/codes")),
+            VolumeKind::Fixed
+        );
+        assert_eq!(kind_for_prefix(Path::new("/opt/x")), VolumeKind::Unknown);
+        assert_eq!(
+            kind_for_prefix(Path::new("/Volumes")),
+            VolumeKind::Unknown,
+            "the container of mount points is not itself removable media"
+        );
+    }
+
+    #[test]
+    fn docker_desktop_host_filesystems_are_container_mounts() {
+        for fs_type in ["virtiofs", "fuse.grpcfuse", "9p"] {
+            assert_eq!(
+                kind_for_mount(Path::new("/work"), fs_type, "host"),
+                VolumeKind::ContainerMount,
+                "{fs_type}"
+            );
+        }
+        assert_eq!(
+            kind_for_mount(Path::new("/net"), "nfs4", "server:/export"),
+            VolumeKind::Network
+        );
+    }
+
+    #[test]
+    fn only_ephemeral_volume_kinds_force_a_copy() {
+        for kind in [VolumeKind::Fixed, VolumeKind::Unknown] {
+            assert!(!kind.is_ephemeral(), "{kind:?}");
+        }
+        for kind in [
+            VolumeKind::Removable,
+            VolumeKind::Network,
+            VolumeKind::ContainerMount,
+        ] {
+            assert!(kind.is_ephemeral(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn mountinfo_fields_are_unescaped() {
+        assert_eq!(unescape_mount_field(r"/mnt/my\040disk"), "/mnt/my disk");
+        assert_eq!(unescape_mount_field("/mnt/plain"), "/mnt/plain");
+        assert_eq!(unescape_mount_field(r"/mnt/back\slash"), r"/mnt/back\slash");
+    }
+
+    #[test]
+    fn the_longest_mount_prefix_wins() {
+        let mounts = vec![
+            MountEntry {
+                mount_point: PathBuf::from("/"),
+                fs_type: "ext4".into(),
+                source: "/dev/sda1".into(),
+            },
+            MountEntry {
+                mount_point: PathBuf::from("/mnt/data"),
+                fs_type: "exfat".into(),
+                source: "/dev/sdb1".into(),
+            },
+        ];
+        let chosen = longest_mount_prefix(&mounts, Path::new("/mnt/data/codes/kit")).unwrap();
+        assert_eq!(chosen.mount_point, PathBuf::from("/mnt/data"));
+    }
+
+    #[test]
+    fn a_conventional_mount_root_is_recovered_without_a_mount_table() {
+        assert_eq!(
+            prefix_mount_point(Path::new("/Volumes/Backup/codes/kit")),
+            Some(PathBuf::from("/Volumes/Backup"))
+        );
+        assert_eq!(
+            prefix_mount_point(Path::new("/run/media/alex/usb/kit")),
+            Some(PathBuf::from("/run/media/alex/usb"))
+        );
+        assert_eq!(
+            prefix_mount_point(Path::new("/Volumes")),
+            None,
+            "the container of mount points names no single volume"
+        );
+        assert_eq!(prefix_mount_point(Path::new("/Users/me/codes")), None);
+    }
+
+    #[test]
+    fn an_ejected_disk_is_unavailable_while_a_present_volume_is_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let mount = temp.path().join("mount");
+        fs::create_dir_all(&mount).unwrap();
+
+        // The disk is gone: its mount point does not exist at all.
+        assert!(!volume_is_present(&VolumeInfo {
+            kind: VolumeKind::Removable,
+            mount_point: Some(temp.path().join("absent").display().to_string()),
+            fs_type: None,
+        }));
+        // The mount point exists but nothing is mounted on it — what Linux
+        // leaves behind after an unmount.
+        assert!(!volume_is_present(&VolumeInfo {
+            kind: VolumeKind::Removable,
+            mount_point: Some(mount.display().to_string()),
+            fs_type: None,
+        }));
+        // A fixed volume is never second-guessed this way: an ordinary
+        // directory on the system disk is not a mount point either.
+        assert!(volume_is_present(&VolumeInfo {
+            kind: VolumeKind::Fixed,
+            mount_point: Some(mount.display().to_string()),
+            fs_type: None,
+        }));
+        assert!(volume_is_present(&VolumeInfo::default()));
+    }
+
+    #[test]
+    fn an_unmounted_volume_reports_unavailable_rather_than_a_missing_directory() {
+        let entry = LocalEntry {
+            org: "acme".into(),
+            name: "widget".into(),
+            version: "1.0.0".into(),
+            path: "/Volumes/Scratch/widget".into(),
+            priority: 0,
+            enabled: true,
+            manifest_sha256: None,
+            registered_at: None,
+            volume: VolumeInfo {
+                kind: VolumeKind::Removable,
+                mount_point: Some("/Volumes/Scratch-does-not-exist".into()),
+                fs_type: None,
+            },
+            link_policy: LinkPolicy::Auto,
+            stored_path: None,
+        };
+        let (state, manifest) = health(&entry);
+        assert!(
+            matches!(state, EntryHealth::VolumeUnavailable { .. }),
+            "{state:?}"
+        );
+        assert!(manifest.is_none());
+        assert!(state.label().contains("not mounted"), "{}", state.label());
+    }
+
+    #[test]
+    fn path_map_rewrites_both_directions_with_longest_prefix_wins() {
+        let map = PathMap::parse("/host/codes=/work,/host/codes/vendor=/vendor").unwrap();
+        assert_eq!(
+            map.to_local(Path::new("/host/codes/kit")),
+            PathBuf::from("/work/kit")
+        );
+        assert_eq!(
+            map.to_local(Path::new("/host/codes/vendor/kit")),
+            PathBuf::from("/vendor/kit"),
+            "the more specific rule wins regardless of declaration order"
+        );
+        assert_eq!(
+            map.to_stored(Path::new("/work/kit")),
+            PathBuf::from("/host/codes/kit")
+        );
+        assert_eq!(
+            map.to_local(Path::new("/elsewhere/kit")),
+            PathBuf::from("/elsewhere/kit"),
+            "unmapped paths pass through untouched"
+        );
+        assert_eq!(
+            map.to_local(Path::new("/host/codes")),
+            PathBuf::from("/work"),
+            "the prefix itself maps, not only its children"
+        );
+    }
+
+    #[test]
+    fn path_map_rules_canonicalize_the_side_that_exists_here() {
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        let linked = temp.path().join("linked");
+        fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+
+        let map = PathMap::parse(&format!("/host/src={}", linked.display())).unwrap();
+        let canonical = fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            map.to_local(Path::new("/host/src/kit")),
+            canonical.join("kit"),
+            "a rule written through a symlink still lands on the canonical path"
+        );
+        assert_eq!(
+            map.to_stored(&canonical.join("kit")),
+            PathBuf::from("/host/src/kit")
+        );
+    }
+
+    #[test]
+    fn path_map_rejects_relative_rules() {
+        assert!(PathMap::parse("codes=/work").is_err());
+        assert!(PathMap::parse("/codes=work").is_err());
+        assert!(PathMap::parse("nonsense").is_err());
+        assert!(PathMap::parse("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_host_shaped_index_is_read_and_written_through_the_path_map() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let container_root = root.join("work");
+        let project = write_project(&container_root, "acme", "widget", "1.0.0");
+        let mut cfg = config_for(&root.join("home"));
+        cfg.local.path_map = Some(format!("/host/codes={}", container_root.display()));
+
+        let (_, entry) = register(&cfg, &project, None, true, None).unwrap();
+        assert_eq!(
+            entry.path,
+            project.display().to_string(),
+            "the caller sees the path it can actually open"
+        );
+
+        // What landed on disk is the host spelling, so the host can read it.
+        let raw = fs::read_to_string(index_path(&cfg).unwrap()).unwrap();
+        assert!(raw.contains("/host/codes/"), "{raw}");
+        assert!(!raw.contains(&container_root.display().to_string()), "{raw}");
+
+        // Reading it back maps it into this process's view again.
+        let index = load(&cfg).unwrap();
+        assert_eq!(index.entries[0].path, project.display().to_string());
+        assert!(
+            index.entries[0]
+                .stored_path
+                .as_deref()
+                .is_some_and(|stored| stored.starts_with("/host/codes/"))
+        );
+        assert!(health(&index.entries[0]).0.is_selectable());
+    }
+
+    #[test]
+    fn a_host_shaped_index_without_a_map_simply_does_not_resolve_here() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let container_root = root.join("work");
+        let project = write_project(&container_root, "acme", "widget", "1.0.0");
+
+        let mut mapped = config_for(&root.join("home"));
+        mapped.local.path_map = Some(format!("/host/codes={}", container_root.display()));
+        register(&mapped, &project, None, true, None).unwrap();
+
+        // Same index, same home, no mapping configured.
+        let unmapped = config_for(&root.join("home"));
+        let index = load(&unmapped).unwrap();
+        assert!(index.entries[0].path.starts_with("/host/codes/"));
+        assert!(
+            !health(&index.entries[0]).0.is_selectable(),
+            "an unmapped host path must not silently resolve to something else"
+        );
+    }
+
+    #[test]
+    fn auto_policy_symlinks_from_fixed_media_and_copies_from_ephemeral_media() {
+        for kind in [VolumeKind::Fixed, VolumeKind::Unknown] {
+            assert_eq!(
+                LinkPolicy::Auto.resolve(kind, false, false),
+                LinkDecision::Symlink,
+                "{kind:?}"
+            );
+        }
+        for kind in [
+            VolumeKind::Removable,
+            VolumeKind::Network,
+            VolumeKind::ContainerMount,
+        ] {
+            assert_eq!(
+                LinkPolicy::Auto.resolve(kind, false, false),
+                LinkDecision::Copy,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_project_on_the_same_removable_disk_may_still_be_symlinked() {
+        assert_eq!(
+            LinkPolicy::Auto.resolve(VolumeKind::Removable, true, false),
+            LinkDecision::Symlink,
+            "nothing outlives the disk either way, so the link costs nothing"
+        );
+    }
+
+    #[test]
+    fn the_ephemeral_override_forces_copies_for_container_builds() {
+        assert_eq!(
+            LinkPolicy::Auto.resolve(VolumeKind::Fixed, true, true),
+            LinkDecision::Copy,
+            "a build layer must not point at a mount that ends with the step"
+        );
+        assert_eq!(
+            LinkPolicy::Symlink.resolve(VolumeKind::Removable, false, true),
+            LinkDecision::Symlink,
+            "an explicit symlink policy stays an explicit operator decision"
+        );
+    }
+
+    #[test]
+    fn link_policy_parsing_round_trips_and_rejects_nonsense() {
+        for (raw, expected) in [
+            ("auto", LinkPolicy::Auto),
+            ("", LinkPolicy::Auto),
+            ("symlink", LinkPolicy::Symlink),
+            ("link", LinkPolicy::Symlink),
+            ("COPY", LinkPolicy::Copy),
+        ] {
+            assert_eq!(LinkPolicy::parse(raw).unwrap(), expected, "{raw}");
+        }
+        assert!(LinkPolicy::parse("hardlink").is_err());
+    }
+
+    #[test]
+    fn a_process_wide_link_policy_overrides_the_per_entry_preference() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let project = write_project(&root, "acme", "widget", "1.0.0");
+        let mut cfg = config_for(&root.join("home"));
+
+        let (_, entry) = register(&cfg, &project, None, true, Some(LinkPolicy::Symlink)).unwrap();
+        assert_eq!(
+            link_decision(&cfg, &entry, &root).unwrap(),
+            LinkDecision::Symlink
+        );
+
+        cfg.local.link_policy = Some(LinkPolicy::Copy);
+        assert_eq!(
+            link_decision(&cfg, &entry, &root).unwrap(),
+            LinkDecision::Copy
+        );
+    }
+
+    #[test]
+    fn a_registration_records_the_volume_it_lives_on() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let project = write_project(&root, "acme", "widget", "1.0.0");
+        let cfg = config_for(&root.join("home"));
+        let (_, entry) = register(&cfg, &project, None, true, None).unwrap();
+        // The kind depends on where the test runner's temp directory lives, so
+        // assert the invariant that matters: something was recorded, and it
+        // round-trips through the index unchanged.
+        let reloaded = load(&cfg).unwrap();
+        assert_eq!(reloaded.entries[0].volume, entry.volume);
+        assert_eq!(reloaded.entries[0].link_policy, LinkPolicy::Auto);
+    }
+
+    #[test]
+    fn prune_keeps_an_unplugged_volume_but_drops_a_deleted_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        let present = write_project(&root, "acme", "here", "1.0.0");
+        let gone = write_project(&root, "acme", "gone", "1.0.0");
+        let cfg = config_for(&root.join("home"));
+        register(&cfg, &present, None, true, None).unwrap();
+        register(&cfg, &gone, None, true, None).unwrap();
+
+        // Rewrite one entry to look like it lives on a disk that is no longer
+        // attached, and delete the other outright.
+        let mut index = load(&cfg).unwrap();
+        for entry in &mut index.entries {
+            if entry.name == "here" {
+                entry.volume = VolumeInfo {
+                    kind: VolumeKind::Removable,
+                    mount_point: Some(root.join("not-mounted").display().to_string()),
+                    fs_type: None,
+                };
+            }
+        }
+        save(&cfg, &index).unwrap();
+        fs::remove_dir_all(&gone).unwrap();
+
+        let dropped = prune(&cfg, false).unwrap();
+        let dropped_names: Vec<&str> = dropped
+            .iter()
+            .map(|status| status.entry.name.as_str())
+            .collect();
+        assert_eq!(dropped_names, ["gone"]);
+        let remaining = load(&cfg).unwrap();
+        assert_eq!(remaining.entries.len(), 1);
+        assert_eq!(remaining.entries[0].name, "here");
+    }
+
 }

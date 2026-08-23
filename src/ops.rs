@@ -22,7 +22,7 @@ use zed_interfaces::version::{self, Requirement};
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::interactive;
-use crate::local_registry::{self, LocalIndex, LocalRegistryMode};
+use crate::local_registry::{self, LinkDecision, LocalIndex, LocalRegistryMode};
 use crate::native::{self, NativeInstallOutcome, NativeRequirement};
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
@@ -252,10 +252,12 @@ fn workspace_member_for_dependency<'a>(
 /// Source links are transitive: linking a package means its own dependencies
 /// are read from that checkout's manifest, not from the lockfile.
 fn collect_source_links_for_frozen(
+    cfg: &Config,
     project: &Path,
     manifest: &Manifest,
     workspace: Option<&WorkspaceInfo>,
     local: Option<&LocalIndex>,
+    copy_only: &mut BTreeSet<String>,
 ) -> Result<BTreeMap<String, PathBuf>> {
     if workspace.is_none() && local.is_none() {
         return Ok(BTreeMap::new());
@@ -316,11 +318,7 @@ fn collect_source_links_for_frozen(
             );
             continue;
         }
-        println!(
-            "local {key}@{} -> {}",
-            selection.manifest.package.version,
-            selection.dir.display()
-        );
+        note_local_selection(cfg, project, &key, &selection, copy_only)?;
         links.insert(key, selection.dir.clone());
         pending.extend(selection.manifest.dependencies.clone());
     }
@@ -342,6 +340,44 @@ fn warn_about_unusable_local_entries(
             health.label()
         );
     }
+}
+
+/// Announce one locally resolved dependency and decide how it must be
+/// materialized.
+///
+/// A checkout on media that can go away — an external disk, a network share, a
+/// container bind mount, a build-time mount — is copied even in symlink mode.
+/// A symlink into such media is a project that breaks the moment the mount
+/// does, and the breakage surfaces far away from the install that caused it.
+fn note_local_selection(
+    cfg: &Config,
+    project: &Path,
+    key: &str,
+    selection: &local_registry::LocalSelection,
+    copy_only: &mut BTreeSet<String>,
+) -> Result<()> {
+    let decision = local_registry::link_decision(cfg, &selection.entry, project)?;
+    if decision == LinkDecision::Copy {
+        copy_only.insert(key.to_string());
+    }
+    let how = match decision {
+        LinkDecision::Copy => "copied",
+        LinkDecision::Symlink => "linked",
+    };
+    let volume = selection.entry.volume.kind;
+    let where_from = if volume == local_registry::VolumeKind::Fixed
+        || volume == local_registry::VolumeKind::Unknown
+    {
+        String::new()
+    } else {
+        format!(" [{}]", volume.as_str())
+    };
+    println!(
+        "local {key}@{} -> {} ({how}){where_from}",
+        selection.manifest.package.version,
+        selection.dir.display()
+    );
+    Ok(())
 }
 
 /// A source link must not overlap the project being installed into, in either
@@ -1311,6 +1347,9 @@ fn install_locked(
     let local_index = local_index_for(cfg, local_mode, frozen)?;
     let project_root = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
+    // Source links whose media cannot be trusted to outlive the install, so
+    // they are copied even when the run asked for symlinks.
+    let mut copy_only_links: BTreeSet<String> = BTreeSet::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
 
     if frozen {
@@ -1320,10 +1359,12 @@ fn install_locked(
         // Source links are reconstructed first: they decide which manifest
         // requirements are exempt from needing a lockfile pin.
         workspace_links = collect_source_links_for_frozen(
+            cfg,
             project,
             &manifest,
             workspace.as_ref(),
             local_index.as_ref(),
+            &mut copy_only_links,
         )?;
         validate_frozen_manifest_requirements(
             &manifest,
@@ -1424,11 +1465,13 @@ fn install_locked(
                 });
                 if let Some(selection) = usable {
                     if !workspace_links.contains_key(&key) {
-                        println!(
-                            "local {key}@{} -> {}",
-                            selection.manifest.package.version,
-                            selection.dir.display()
-                        );
+                        note_local_selection(
+                            cfg,
+                            project,
+                            &key,
+                            &selection,
+                            &mut copy_only_links,
+                        )?;
                         workspace_links.insert(key.clone(), selection.dir.clone());
                         for (sub_key, sub_req) in selection.manifest.dependencies.clone() {
                             let (sub_org, sub_name) = split_key(&sub_key)?;
@@ -1793,9 +1836,16 @@ fn install_locked(
             permissions,
             resolved_target.as_deref(),
         )?;
+        // A source tree on media that may go away is copied even in symlink
+        // mode; see `note_local_selection`.
+        let source_mode = if copy_only_links.contains(key) {
+            InstallMode::Copy
+        } else {
+            mode
+        };
         let (prepared_source, workspace_mode) = match temporary.as_ref() {
             Some(prepared) => (&prepared.path, InstallMode::Copy),
-            None => (member_dir, mode),
+            None => (member_dir, source_mode),
         };
         let link_source = match member_manifest.target_subdir(resolved_target.as_deref()) {
             Ok(Some(subdir)) => {
@@ -1996,10 +2046,12 @@ pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
     let local_index = local_index_for(cfg, LocalRegistryMode::from_env()?, false)?;
     let workspace_links = match manifest.as_ref() {
         Some(manifest) => collect_source_links_for_frozen(
+            cfg,
             project,
             manifest,
             workspace.as_ref(),
             local_index.as_ref(),
+            &mut BTreeSet::new(),
         )?,
         None => BTreeMap::new(),
     };
@@ -3597,6 +3649,21 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// A `Config` for the pure-function tests here: nothing in them touches the
+    /// registry, the store, or the local index, so every field is inert.
+    fn config_for_test() -> Config {
+        Config {
+            registry: "file:///unused".to_string(),
+            home: PathBuf::from("/nonexistent-zed-home"),
+            token: None,
+            auth_url: "file:///unused".to_string(),
+            supabase_url: None,
+            supabase_key: None,
+            interactive: false,
+            local: Default::default(),
+        }
+    }
+
     #[test]
     fn parse_age_units_and_default() {
         assert_eq!(parse_age("90d").unwrap(), Duration::from_secs(90 * 86_400));
@@ -3824,7 +3891,15 @@ url = "https://example.invalid/ws-cli"
         let manifest = read_manifest(&app).unwrap();
         let workspace = find_workspace(&app).unwrap();
         let links =
-            collect_source_links_for_frozen(&app, &manifest, Some(&workspace), None).unwrap();
+            collect_source_links_for_frozen(
+                &config_for_test(),
+                &app,
+                &manifest,
+                Some(&workspace),
+                None,
+                &mut BTreeSet::new(),
+            )
+            .unwrap();
         assert_eq!(
             links.keys().cloned().collect::<Vec<_>>(),
             vec![
@@ -3841,7 +3916,14 @@ url = "https://example.invalid/ws-cli"
             .replace("\"^1\"", "\"^2\"");
         fs::write(app.join(MANIFEST_FILE), incompatible).unwrap();
         let manifest = read_manifest(&app).unwrap();
-        let error = collect_source_links_for_frozen(&app, &manifest, Some(&workspace), None)
+        let error = collect_source_links_for_frozen(
+            &config_for_test(),
+            &app,
+            &manifest,
+            Some(&workspace),
+            None,
+            &mut BTreeSet::new(),
+        )
             .unwrap_err()
             .to_string();
         assert!(error.contains("ws-utils@1.1.0"), "{error}");
