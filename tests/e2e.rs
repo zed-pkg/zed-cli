@@ -109,6 +109,7 @@ fn test_config(tmp: &Path, registry_dir: &Path) -> Config {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        local: Default::default(),
     }
 }
 
@@ -902,6 +903,7 @@ fn concurrent_installs_share_the_store_safely() {
                 supabase_url: None,
                 supabase_key: None,
                 interactive: false,
+                local: Default::default(),
             };
             ops::install(
                 &consumer,

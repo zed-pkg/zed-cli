@@ -14,7 +14,7 @@ use zed_interfaces::version::Requirement;
 use crate::cli::LocalCmd;
 use crate::config::Config;
 use crate::local_registry::{
-    self, EntryStatus, LocalEntry, RegisterAction, Selector, parse_selector,
+    self, EntryStatus, LinkPolicy, LocalEntry, RegisterAction, Selector, parse_selector,
 };
 
 /// Machine-readable shape of one registration. Kept separate from the on-disk
@@ -30,6 +30,19 @@ struct EntryReport {
     enabled: bool,
     health: String,
     selectable: bool,
+    /// Which kind of volume the checkout lives on, as recorded at
+    /// registration: `fixed`, `removable`, `network`, `container-mount`.
+    volume: String,
+    /// The volume root, when one is known — the directory whose presence
+    /// answers "is this disk still attached?".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mount_point: Option<String>,
+    /// This entry's own materialization preference.
+    link_policy: String,
+    /// The path as the index literally holds it, when a path map rewrote it
+    /// for this process. Absent when the two are the same.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stored_path: Option<String>,
 }
 
 impl EntryReport {
@@ -43,8 +56,30 @@ impl EntryReport {
             enabled: status.entry.enabled,
             health: status.health.label(),
             selectable: status.health.is_selectable(),
+            volume: status.entry.volume.kind.as_str().to_string(),
+            mount_point: status.entry.volume.mount_point.clone(),
+            link_policy: status.entry.link_policy.as_str().to_string(),
+            stored_path: status.entry.stored_path.clone(),
         }
     }
+}
+
+/// What `zed local doctor` reports: this machine's whole view, as data, so a
+/// test can assert on it without parsing prose.
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    index: String,
+    in_container: bool,
+    link_policy: String,
+    ephemeral: bool,
+    path_map: Vec<PathMapRule>,
+    entries: Vec<EntryReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct PathMapRule {
+    from: String,
+    to: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,17 +110,27 @@ pub fn dispatch(cwd: &Path, cfg: &Config, cmd: LocalCmd) -> Result<()> {
             path,
             priority,
             disabled,
+            link,
         } => {
             let target = resolve_path(cwd, path);
-            let (action, entry) = local_registry::register(cfg, &target, priority, !disabled)?;
+            let (action, entry) =
+                local_registry::register(cfg, &target, priority, !disabled, link.map(Into::into))?;
             let verb = match action {
                 RegisterAction::Added => "registered",
                 RegisterAction::Updated => "refreshed",
             };
             println!("{verb} {}@{} -> {}", entry.key(), entry.version, entry.path);
             println!("id: {}", entry.id());
+            println!("volume: {}", entry.volume.kind.as_str());
             if !entry.enabled {
                 println!("note: entry is disabled and will not be selected");
+            }
+            if entry.volume.kind.is_ephemeral() && entry.link_policy == LinkPolicy::Auto {
+                println!(
+                    "note: {} media can go away, so installs copy this checkout instead of \
+                     symlinking it (override with --local-link-policy symlink)",
+                    entry.volume.kind.as_str()
+                );
             }
             Ok(())
         }
@@ -215,7 +260,72 @@ pub fn dispatch(cwd: &Path, cfg: &Config, cmd: LocalCmd) -> Result<()> {
             println!("{}", local_registry::index_path(cfg)?.display());
             Ok(())
         }
+        LocalCmd::Doctor { json } => doctor(cfg, json),
     }
+}
+
+/// Everything that determines whether a registration is usable *here*: where
+/// the index is, whether this process is inside a container, how paths are
+/// translated across that boundary, and what each entry's volume looks like
+/// right now. One command to answer "why did my install go to the network?".
+fn doctor(cfg: &Config, json: bool) -> Result<()> {
+    let map = cfg.local.resolved_path_map()?;
+    let report = DoctorReport {
+        index: local_registry::index_path(cfg)?.display().to_string(),
+        in_container: local_registry::in_container(),
+        link_policy: cfg.local.resolved_link_policy()?.as_str().to_string(),
+        ephemeral: cfg.local.resolved_ephemeral(),
+        path_map: map
+            .rules()
+            .map(|(from, to)| PathMapRule { from, to })
+            .collect(),
+        entries: local_registry::status(cfg)?
+            .iter()
+            .map(EntryReport::new)
+            .collect(),
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!("index          {}", report.index);
+    println!(
+        "container      {}",
+        if report.in_container { "yes" } else { "no" }
+    );
+    println!("link policy    {}", report.link_policy);
+    println!(
+        "ephemeral      {}",
+        if report.ephemeral {
+            "yes (every checkout is copied)"
+        } else {
+            "no"
+        }
+    );
+    if report.path_map.is_empty() {
+        println!("path map       (none)");
+    } else {
+        for rule in &report.path_map {
+            println!("path map       {} -> {}", rule.from, rule.to);
+        }
+    }
+    println!("entries        {}", report.entries.len());
+    for entry in &report.entries {
+        println!(
+            "  {:<9} {}  {}  [{}]",
+            if entry.selectable { "ok" } else { "unusable" },
+            entry.package,
+            entry.path,
+            entry.volume
+        );
+        if let Some(stored) = &entry.stored_path {
+            println!("            stored as {stored}");
+        }
+        if !entry.selectable {
+            println!("            {}", entry.health);
+        }
+    }
+    Ok(())
 }
 
 fn set_enabled(cfg: &Config, selector: &str, enabled: bool, all: bool) -> Result<()> {

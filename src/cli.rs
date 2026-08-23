@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::local_registry::LocalRegistryMode;
+use crate::local_registry::{LinkPolicy, LocalRegistryMode};
 
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
@@ -77,6 +77,65 @@ pub struct Globals {
         action = clap::ArgAction::Set
     )]
     pub git_submodules: bool,
+
+    /// `host=container` path rewrites applied to local registry entries,
+    /// separated by commas. With `-v /Users/me/codes:/work`, pass
+    /// `--local-path-map /Users/me/codes=/work` so one shared index serves both
+    /// the host and the containers it runs.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_LOCAL_REGISTRY_PATH_MAP",
+        value_name = "FROM=TO[,FROM=TO]"
+    )]
+    pub local_path_map: Option<String>,
+
+    /// How a registered local checkout reaches zed_modules/. `auto` symlinks
+    /// from stable media and copies from removable or container mounts.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_LOCAL_LINK_POLICY",
+        value_enum,
+        value_name = "POLICY"
+    )]
+    pub local_link_policy: Option<LocalLinkPolicy>,
+
+    /// Treat every local checkout as living on media that will not outlive this
+    /// process, so nothing is symlinked. Container image builds set this.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_LOCAL_REGISTRY_EPHEMERAL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
+    pub local_ephemeral: bool,
+}
+
+/// CLI spelling of [`crate::local_registry::LinkPolicy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LocalLinkPolicy {
+    /// Symlink from stable media, copy from removable or container mounts
+    Auto,
+    /// Always symlink
+    Symlink,
+    /// Always copy; what a container image build needs
+    Copy,
+}
+
+impl From<LocalLinkPolicy> for LinkPolicy {
+    fn from(value: LocalLinkPolicy) -> Self {
+        match value {
+            LocalLinkPolicy::Auto => LinkPolicy::Auto,
+            LocalLinkPolicy::Symlink => LinkPolicy::Symlink,
+            LocalLinkPolicy::Copy => LinkPolicy::Copy,
+        }
+    }
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -795,6 +854,11 @@ pub enum LocalCmd {
         /// Register without making the entry selectable yet
         #[arg(long, env = "ZED_PKG_LOCAL_REGISTER_DISABLED")]
         disabled: bool,
+        /// How this checkout should reach zed_modules/. Defaults to `auto`,
+        /// which copies from removable and container media so the installed
+        /// tree survives the volume going away.
+        #[arg(long, value_enum, env = "ZED_PKG_LOCAL_REGISTER_LINK")]
+        link: Option<LocalLinkPolicy>,
     },
     /// Forget a registration, by path, `org/name`, or entry id
     Unregister {
@@ -861,6 +925,13 @@ pub enum LocalCmd {
     },
     /// Print the path of the shared index file
     Path,
+    /// Explain this machine's view: index location, container detection, path
+    /// mapping, link policy, and every registration's volume and status
+    Doctor {
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_LOCAL_DOCTOR_JSON")]
+        json: bool,
+    },
 }
 
 #[cfg(test)]
