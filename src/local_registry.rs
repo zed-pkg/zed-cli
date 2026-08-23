@@ -651,7 +651,7 @@ pub fn classify_volume(path: &Path) -> VolumeInfo {
 /// be back. Blurring the two would make `zed local prune` quietly forget every
 /// project on an external drive that happened not to be attached that
 /// afternoon.
-pub fn volume_is_present(volume: &VolumeInfo) -> bool {
+pub fn volume_is_present(volume: &VolumeInfo, checkout: Option<&Path>) -> bool {
     let Some(mount_point) = volume.mount_point.as_deref().map(Path::new) else {
         // Nothing recorded to check; the entry path itself decides.
         return true;
@@ -661,8 +661,13 @@ pub fn volume_is_present(volume: &VolumeInfo) -> bool {
     }
     // Linux leaves the mount directory behind after an unmount, so an existing
     // directory is not proof. A directory sharing a device with its parent is
-    // no longer a mount point.
-    if volume.kind.is_ephemeral() && !is_mount_point(mount_point) {
+    // no longer a mount point — but that heuristic only gets to *contradict*
+    // readable files. A checkout still readable under the mount point is the
+    // stronger evidence, and a leftover mount directory is empty.
+    if volume.kind.is_ephemeral()
+        && !is_mount_point(mount_point)
+        && !checkout.is_some_and(Path::is_dir)
+    {
         return false;
     }
     true
@@ -870,9 +875,10 @@ impl LinkPolicy {
             Self::Symlink => LinkDecision::Symlink,
             Self::Copy => LinkDecision::Copy,
             Self::Auto => {
-                if ephemeral_override {
-                    LinkDecision::Copy
-                } else if source.is_ephemeral() && !project_on_same_volume {
+                // Copy when the checkout can disappear out from under the
+                // consumer: either the caller declared it ephemeral, or it
+                // lives on media the project itself does not share.
+                if ephemeral_override || (source.is_ephemeral() && !project_on_same_volume) {
                     LinkDecision::Copy
                 } else {
                     LinkDecision::Symlink
@@ -942,15 +948,34 @@ pub fn link_decision(cfg: &Config, entry: &LocalEntry, project: &Path) -> Result
         LinkPolicy::Auto => entry.link_policy,
         explicit => explicit,
     };
-    let same_volume = device_id_of(project)
-        .zip(device_id_of(&entry.path_buf()))
-        .map(|(here, there)| here == there)
-        .unwrap_or(false);
+    let same_volume = project_shares_volume(project, entry);
     Ok(policy.resolve(
         entry.volume.kind,
         same_volume,
         cfg.local.resolved_ephemeral(),
     ))
+}
+
+/// Does the consuming project live on the same volume as the checkout?
+///
+/// Compared by recorded volume identity rather than by device number. Two
+/// bind mounts of one filesystem share a device id while having completely
+/// different lifetimes — that is exactly the case a container mount presents —
+/// so the mount point is the honest answer to "will these disappear together?".
+/// Device ids remain the fallback when neither side has a mount point to
+/// compare.
+fn project_shares_volume(project: &Path, entry: &LocalEntry) -> bool {
+    let project_volume = classify_volume(project);
+    match (
+        project_volume.mount_point.as_deref(),
+        entry.volume.mount_point.as_deref(),
+    ) {
+        (Some(here), Some(there)) => here == there && project_volume.kind == entry.volume.kind,
+        _ => device_id_of(project)
+            .zip(device_id_of(&entry.path_buf()))
+            .map(|(here, there)| here == there)
+            .unwrap_or(false),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,7 +1313,7 @@ pub fn health(entry: &LocalEntry) -> (EntryHealth, Option<Manifest>) {
     // Ask about the volume before asking about the directory. If the disk is
     // not mounted, "the directory is gone" would be a true statement and a
     // misleading diagnosis.
-    if !volume_is_present(&entry.volume) {
+    if !volume_is_present(&entry.volume, Some(&dir)) {
         return (
             EntryHealth::VolumeUnavailable {
                 mount_point: entry.volume.mount_point.clone(),
@@ -1339,6 +1364,15 @@ pub struct EntryStatus {
 // ---------------------------------------------------------------------------
 // selection
 
+/// One registration that was passed over, and why.
+pub type SkippedEntry = (LocalEntry, EntryHealth);
+
+/// The outcome of one resolution attempt: the project that was selected, if
+/// any, together with every registration that was passed over because it no
+/// longer resolves. Callers report the skips where they matter — during an
+/// install — rather than on every command.
+pub type LocalSelectionOutcome = (Option<LocalSelection>, Vec<SkippedEntry>);
+
 /// A local project chosen to satisfy one dependency.
 #[derive(Debug, Clone)]
 pub struct LocalSelection {
@@ -1361,7 +1395,23 @@ pub fn select(
     index: &LocalIndex,
     key: &str,
     requirement: &Requirement,
-) -> Result<(Option<LocalSelection>, Vec<(LocalEntry, EntryHealth)>)> {
+) -> Result<LocalSelectionOutcome> {
+    select_with(index, key, |manifest| {
+        requirement.matches(&manifest.package.version)
+    })
+}
+
+/// [`select`] against an arbitrary acceptance rule.
+///
+/// The dependency solver accumulates several constraints on one package before
+/// it picks anything, and interprets them under the *package's own* version
+/// scheme. It therefore needs to judge a candidate from its whole manifest
+/// rather than from one parsed requirement.
+pub fn select_with(
+    index: &LocalIndex,
+    key: &str,
+    accept: impl Fn(&Manifest) -> bool,
+) -> Result<LocalSelectionOutcome> {
     let mut skipped = Vec::new();
     let mut matching: Vec<LocalSelection> = Vec::new();
 
@@ -1371,7 +1421,7 @@ pub fn select(
             skipped.push((entry.clone(), state));
             continue;
         };
-        if !requirement.matches(&manifest.package.version) {
+        if !accept(&manifest) {
             continue;
         }
         matching.push(LocalSelection {
@@ -1835,12 +1885,12 @@ mod tests {
         let first = write_project(temp.path(), "acme", "widget", "1.0.0");
         let second = write_project(temp.path(), "acme", "widget", "2.0.0");
 
-        let (action, _) = register(&cfg, &first, None, true).unwrap();
+        let (action, _) = register(&cfg, &first, None, true, None).unwrap();
         assert_eq!(action, RegisterAction::Added);
-        let (action, _) = register(&cfg, &second, None, true).unwrap();
+        let (action, _) = register(&cfg, &second, None, true, None).unwrap();
         assert_eq!(action, RegisterAction::Added);
         // Re-registering the same path refreshes rather than duplicating.
-        let (action, _) = register(&cfg, &first, None, true).unwrap();
+        let (action, _) = register(&cfg, &first, None, true, None).unwrap();
         assert_eq!(action, RegisterAction::Updated);
 
         let index = load(&cfg).unwrap();
@@ -1855,8 +1905,8 @@ mod tests {
         let cfg = config_for(&home);
         let old = write_project(temp.path(), "acme", "widget", "1.0.0");
         let new = write_project(temp.path(), "acme", "widget", "1.5.0");
-        register(&cfg, &old, None, true).unwrap();
-        register(&cfg, &new, None, true).unwrap();
+        register(&cfg, &old, None, true, None).unwrap();
+        register(&cfg, &new, None, true, None).unwrap();
 
         let index = load(&cfg).unwrap();
         let (selected, skipped) = select(&index, "acme/widget", &Requirement::parse("^1")).unwrap();
@@ -1864,7 +1914,7 @@ mod tests {
         assert_eq!(selected.unwrap().dir, fs::canonicalize(&new).unwrap());
 
         // Priority outranks a newer version.
-        register(&cfg, &old, Some(10), true).unwrap();
+        register(&cfg, &old, Some(10), true, None).unwrap();
         let index = load(&cfg).unwrap();
         let (selected, _) = select(&index, "acme/widget", &Requirement::parse("^1")).unwrap();
         assert_eq!(selected.unwrap().dir, fs::canonicalize(&old).unwrap());
@@ -1885,7 +1935,7 @@ mod tests {
                  [package.repository]\nvcs = \"git\"\nurl = \"https://localhost/acme/widget\"\n",
             )
             .unwrap();
-            register(&cfg, dir, None, true).unwrap();
+            register(&cfg, dir, None, true, None).unwrap();
         }
         let index = load(&cfg).unwrap();
         let error = select(&index, "acme/widget", &Requirement::parse("^1"))
@@ -1900,7 +1950,7 @@ mod tests {
         let home = temp.path().join("home");
         let cfg = config_for(&home);
         let project = write_project(temp.path(), "acme", "widget", "1.0.0");
-        register(&cfg, &project, None, true).unwrap();
+        register(&cfg, &project, None, true, None).unwrap();
         let index = load(&cfg).unwrap();
         let (selected, skipped) = select(&index, "acme/widget", &Requirement::parse("^2")).unwrap();
         assert!(selected.is_none());
@@ -1913,7 +1963,7 @@ mod tests {
         let home = temp.path().join("home");
         let cfg = config_for(&home);
         let project = write_project(temp.path(), "acme", "widget", "1.0.0");
-        register(&cfg, &project, None, true).unwrap();
+        register(&cfg, &project, None, true, None).unwrap();
         let selector = parse_selector(project.to_str().unwrap()).unwrap();
         set_enabled(&cfg, &selector, false, false).unwrap();
 
@@ -1937,8 +1987,8 @@ mod tests {
         let cfg = config_for(&home);
         let broken = write_project(temp.path(), "acme", "gone", "1.0.0");
         let shelved = write_project(temp.path(), "acme", "shelved", "1.0.0");
-        register(&cfg, &broken, None, true).unwrap();
-        register(&cfg, &shelved, None, true).unwrap();
+        register(&cfg, &broken, None, true, None).unwrap();
+        register(&cfg, &shelved, None, true, None).unwrap();
         let selector = parse_selector(shelved.to_str().unwrap()).unwrap();
         set_enabled(&cfg, &selector, false, false).unwrap();
         fs::remove_dir_all(&broken).unwrap();
@@ -1965,7 +2015,7 @@ mod tests {
              [package.repository]\nvcs = \"git\"\nurl = \"https://localhost/acme/widget\"\n",
         )
         .unwrap();
-        let error = register(&cfg, &inside, None, true)
+        let error = register(&cfg, &inside, None, true, None)
             .expect_err("registering inside the store must fail closed");
         assert!(format!("{error:#}").contains("Zed home directory"));
     }
@@ -1981,7 +2031,7 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(real.join(MANIFEST_FILE), fake.join(MANIFEST_FILE)).unwrap();
-            let error = register(&cfg, &fake, None, true)
+            let error = register(&cfg, &fake, None, true, None)
                 .expect_err("a symlinked manifest must fail closed");
             assert!(format!("{error:#}").contains("non-symlink"));
         }
@@ -1995,7 +2045,7 @@ mod tests {
         let home = temp.path().join("home");
         let cfg = config_for(&home);
         let project = write_project(temp.path(), "acme", "widget", "1.0.0");
-        register(&cfg, &project, None, true).unwrap();
+        register(&cfg, &project, None, true, None).unwrap();
         fs::write(
             project.join(MANIFEST_FILE),
             "[package]\norg = \"acme\"\nname = \"other\"\nversion = \"1.0.0\"\n\n\
@@ -2015,8 +2065,8 @@ mod tests {
         let cfg = config_for(&home);
         let first = write_project(temp.path(), "acme", "beta", "1.0.0");
         let second = write_project(temp.path(), "acme", "alpha", "1.0.0");
-        register(&cfg, &first, None, true).unwrap();
-        register(&cfg, &second, None, true).unwrap();
+        register(&cfg, &first, None, true, None).unwrap();
+        register(&cfg, &second, None, true, None).unwrap();
 
         let path = index_path(&cfg).unwrap();
         let first_bytes = fs::read(&path).unwrap();
@@ -2176,26 +2226,49 @@ mod tests {
         fs::create_dir_all(&mount).unwrap();
 
         // The disk is gone: its mount point does not exist at all.
-        assert!(!volume_is_present(&VolumeInfo {
-            kind: VolumeKind::Removable,
-            mount_point: Some(temp.path().join("absent").display().to_string()),
-            fs_type: None,
-        }));
+        assert!(!volume_is_present(
+            &VolumeInfo {
+                kind: VolumeKind::Removable,
+                mount_point: Some(temp.path().join("absent").display().to_string()),
+                fs_type: None,
+            },
+            None
+        ));
         // The mount point exists but nothing is mounted on it — what Linux
-        // leaves behind after an unmount.
-        assert!(!volume_is_present(&VolumeInfo {
-            kind: VolumeKind::Removable,
-            mount_point: Some(mount.display().to_string()),
-            fs_type: None,
-        }));
+        // leaves behind after an unmount. The leftover directory is empty, so
+        // there is no readable checkout to contradict the verdict.
+        let missing_checkout = mount.join("widget");
+        assert!(!volume_is_present(
+            &VolumeInfo {
+                kind: VolumeKind::Removable,
+                mount_point: Some(mount.display().to_string()),
+                fs_type: None,
+            },
+            Some(&missing_checkout)
+        ));
+        // Readable files under that same directory settle it the other way:
+        // whatever the device numbers say, the checkout is here.
+        let present_checkout = mount.join("present");
+        fs::create_dir_all(&present_checkout).unwrap();
+        assert!(volume_is_present(
+            &VolumeInfo {
+                kind: VolumeKind::Removable,
+                mount_point: Some(mount.display().to_string()),
+                fs_type: None,
+            },
+            Some(&present_checkout)
+        ));
         // A fixed volume is never second-guessed this way: an ordinary
         // directory on the system disk is not a mount point either.
-        assert!(volume_is_present(&VolumeInfo {
-            kind: VolumeKind::Fixed,
-            mount_point: Some(mount.display().to_string()),
-            fs_type: None,
-        }));
-        assert!(volume_is_present(&VolumeInfo::default()));
+        assert!(volume_is_present(
+            &VolumeInfo {
+                kind: VolumeKind::Fixed,
+                mount_point: Some(mount.display().to_string()),
+                fs_type: None,
+            },
+            None
+        ));
+        assert!(volume_is_present(&VolumeInfo::default(), None));
     }
 
     #[test]

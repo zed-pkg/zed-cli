@@ -329,10 +329,7 @@ fn collect_source_links_for_frozen(
 /// A registration that no longer resolves is reported once, where it would
 /// otherwise have been used, and then ignored. Silence would let a renamed or
 /// deleted checkout quietly send the install back to the network.
-fn warn_about_unusable_local_entries(
-    key: &str,
-    skipped: &[(local_registry::LocalEntry, local_registry::EntryHealth)],
-) {
+fn warn_about_unusable_local_entries(key: &str, skipped: &[local_registry::SkippedEntry]) {
     for (entry, health) in skipped {
         eprintln!(
             "warning: local registration of {key} at {} is unusable: {}",
@@ -1474,13 +1471,9 @@ fn install_locked(
                     }
                     continue;
                 }
-                if !index.candidates_for(&key).is_empty() {
-                    eprintln!(
-                        "note: {key} is registered locally but no registration satisfies \
-                         `{req_str}`; falling back to {}",
-                        cfg.registry
-                    );
-                }
+                // The solver already reported the fall-through where it
+                // matters — before any registry request — so saying it again
+                // here would only duplicate stderr.
                 if local_mode.requires_local() {
                     bail!(
                         "--local-registry=only: no registered local project satisfies {key} \
@@ -3943,12 +3936,27 @@ url = "https://localhost/consumer/app"
         .unwrap();
         let empty_lock = Lockfile::default();
 
-        let enforced = validate_frozen_manifest_requirements(&manifest, &empty_lock, None, true)
-            .unwrap_err()
-            .to_string();
+        let no_source_links = BTreeMap::new();
+
+        let enforced =
+            validate_frozen_manifest_requirements(&manifest, &empty_lock, &no_source_links, true)
+                .unwrap_err()
+                .to_string();
         assert!(enforced.contains("acme/http-kit"));
         assert!(
-            validate_frozen_manifest_requirements(&manifest, &empty_lock, None, false,).is_ok()
+            validate_frozen_manifest_requirements(&manifest, &empty_lock, &no_source_links, false)
+                .is_ok()
+        );
+
+        // A requirement satisfied from live source — a workspace member or a
+        // local registration — has no artifact to pin, so it is exempt.
+        let source_links = BTreeMap::from([(
+            "acme/http-kit".to_string(),
+            PathBuf::from("/checkouts/http-kit"),
+        )]);
+        assert!(
+            validate_frozen_manifest_requirements(&manifest, &empty_lock, &source_links, true)
+                .is_ok()
         );
     }
 

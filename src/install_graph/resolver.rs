@@ -5,15 +5,29 @@ use super::*;
 /// Solve the complete active constraint set before the transactional installer
 /// mutates project output. Candidate manifests are still loaded through the
 /// bounded worker pool and the shared per-artifact process locks.
-pub(crate) fn prepare(project: &Path, cfg: &Config) -> Result<PreparedInstall> {
+pub(crate) fn prepare(
+    project: &Path,
+    cfg: &Config,
+    local_mode: LocalRegistryMode,
+) -> Result<PreparedInstall> {
     let concurrency = install_concurrency();
     let registry = registry_for(&cfg.registry)?;
     let manifest = read_manifest(project)?;
+    // Solving is where the network would be contacted, so the local registry
+    // has to be visible here and not only to the materializer downstream.
+    let local = local_index_for_solving(cfg, local_mode)?;
     let prepared = if manifest.dependencies.is_empty() {
         PreparedInstall::default()
     } else {
         run_with_pool(cfg, concurrency, |pool| {
-            solve_install(project, &manifest, registry.as_ref(), pool)
+            solve_install(
+                project,
+                &manifest,
+                registry.as_ref(),
+                pool,
+                local.as_ref(),
+                local_mode,
+            )
         })?
     };
     report_prefetch(prepared.report, concurrency);
@@ -24,14 +38,37 @@ pub(crate) fn prepare(project: &Path, cfg: &Config) -> Result<PreparedInstall> {
 /// same complete graph returned to the normal installer facade. Frozen replay
 /// remains lock-authoritative and never re-solves or rewrites the graph.
 pub fn prefetch(project: &Path, cfg: &Config, frozen: bool) -> Result<PrefetchReport> {
+    prefetch_with_mode(project, cfg, frozen, LocalRegistryMode::from_env()?)
+}
+
+/// [`prefetch`] with the dependency-source policy passed explicitly, for
+/// callers that already hold one instead of inheriting it from the process
+/// environment.
+pub(crate) fn prefetch_with_mode(
+    project: &Path,
+    cfg: &Config,
+    frozen: bool,
+    local_mode: LocalRegistryMode,
+) -> Result<PrefetchReport> {
     if !frozen {
-        return prepare(project, cfg).map(|prepared| prepared.report);
+        return prepare(project, cfg, local_mode).map(|prepared| prepared.report);
     }
 
+    // Frozen replay is lock-authoritative: the lockfile never pins a live
+    // source link, so there is nothing here for the local registry to answer.
     let concurrency = install_concurrency();
     let report = prefetch_locked(project, cfg, concurrency)?;
     report_prefetch(report, concurrency);
     Ok(report)
+}
+
+fn local_index_for_solving(cfg: &Config, mode: LocalRegistryMode) -> Result<Option<LocalIndex>> {
+    if !mode.enabled() {
+        return Ok(None);
+    }
+    crate::local_registry::load(cfg)
+        .context("reading the local project registry")
+        .map(Some)
 }
 
 fn report_prefetch(report: PrefetchReport, concurrency: usize) {

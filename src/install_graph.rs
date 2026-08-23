@@ -24,6 +24,7 @@ use zed_interfaces::version::{self, Requirement};
 use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::config::{Config, read_manifest};
+use crate::local_registry::{LocalIndex, LocalRegistryMode};
 use crate::pack::sha256_file;
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, require_sha256};
@@ -223,4 +224,4 @@ mod tests;
 pub(crate) use artifact::ensure_artifact;
 use artifact::worker_loop;
 pub use resolver::prefetch;
-pub(crate) use resolver::prepare;
+pub(crate) use resolver::{prefetch_with_mode, prepare};
