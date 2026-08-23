@@ -70,7 +70,6 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             interactive: globals.interactive,
-            local: Default::default(),
             local: LocalPortability {
                 path_map: globals.local_path_map.clone(),
                 link_policy: globals.local_link_policy.map(Into::into),
@@ -291,7 +290,11 @@ pub(crate) fn with_manifest_override<T>(
     let prefetch_cfg = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().clone());
     let result = match prefetch_cfg {
         Some(cfg) => {
-            let prepared = crate::install_graph::prepare(&project, &cfg)?;
+            let prepared = crate::install_graph::prepare(
+                &project,
+                &cfg,
+                crate::local_registry::LocalRegistryMode::from_env()?,
+            )?;
             with_resolved_requirements(&project, prepared.exact_requirements(), operation)
         }
         None => operation(),
@@ -511,6 +514,9 @@ url = "https://localhost/manifestless/consumer"
             supabase_key: None,
             interactive: false,
             git_submodules: false,
+            local_path_map: None,
+            local_link_policy: None,
+            local_ephemeral: false,
         };
         let cfg = Config::from_globals(&globals).unwrap();
 

@@ -1,5 +1,6 @@
 use super::artifact::{split_key, validate_version_identity};
 use super::*;
+use crate::local_registry::{self, LocalIndex};
 use zed_interfaces::registry::PackageMetadata;
 use zed_interfaces::version::VersionScheme;
 
@@ -471,6 +472,73 @@ fn requirement_matches(scheme: VersionScheme, requirement: &str, published: &str
 struct GraphSolver<'a, S> {
     source: &'a mut S,
     workspace: &'a SolverWorkspace,
+    /// Machine-local project registrations, when this install may use them.
+    /// They are resolved lazily — only for keys the solver actually reaches —
+    /// so an ambiguous or broken registration for an unrelated package never
+    /// affects this graph.
+    local: Option<&'a LocalIndex>,
+    /// How much authority those registrations have. The solver is where the
+    /// network would first be contacted, so `only` has to be enforced here.
+    local_mode: LocalRegistryMode,
+    /// Keys whose local-registry situation has already been reported, so a
+    /// backtracking search cannot repeat the same diagnostic.
+    warned: BTreeSet<String>,
+}
+
+impl<S> GraphSolver<'_, S> {
+    /// The local project that satisfies every accumulated constraint on `key`,
+    /// expressed in the same shape as a workspace member: both are live source
+    /// the solver must not try to download.
+    ///
+    /// A registration that satisfies nothing returns `None` and the key falls
+    /// through to the registry, matching the installer's own rule.
+    fn local_member(
+        &mut self,
+        key: &str,
+        constraints: &[Constraint],
+    ) -> Result<Option<WorkspaceMember>> {
+        let Some(index) = self.local else {
+            return Ok(None);
+        };
+        let (selection, skipped) = local_registry::select_with(index, key, |manifest| {
+            constraints.iter().all(|constraint| {
+                requirement_matches(
+                    manifest.package.version_scheme,
+                    &constraint.requirement,
+                    &manifest.package.version,
+                )
+            })
+        })?;
+        let first_report = self.warned.insert(key.to_string());
+        if first_report {
+            for (entry, health) in &skipped {
+                eprintln!(
+                    "warning: local registration of {key} at {} is unusable: {}",
+                    entry.path,
+                    health.label()
+                );
+            }
+        }
+        if selection.is_none() {
+            if first_report && !index.candidates_for(key).is_empty() {
+                eprintln!(
+                    "note: {key} is registered locally but no registration satisfies \
+                     the requirements on it; falling back to the configured registry"
+                );
+            }
+            if self.local_mode.requires_local() {
+                bail!(
+                    "--local-registry=only: no registered local project satisfies {key}; \
+                     register one with `zed local register <path>`"
+                );
+            }
+        }
+        Ok(selection.map(|selection| WorkspaceMember {
+            version: selection.manifest.package.version.clone(),
+            scheme: selection.manifest.package.version_scheme,
+            dependencies: selection.manifest.dependencies.clone(),
+        }))
+    }
 }
 
 impl<S: SolveSource> GraphSolver<'_, S> {
@@ -498,6 +566,13 @@ impl<S: SolveSource> GraphSolver<'_, S> {
                 }));
             }
             state.workspace.insert(key, member.clone());
+            return self.solve(state);
+        }
+
+        // Workspace members outrank registrations: they are declared by the
+        // tree being installed, while a registration is machine-global state.
+        if let Some(member) = self.local_member(&key, &constraints)? {
+            state.workspace.insert(key, member);
             return self.solve(state);
         }
 
@@ -556,6 +631,13 @@ impl<S: SolveSource> GraphSolver<'_, S> {
                 || self.workspace.members.contains_key(key)
                 || constraint_depth(constraints) != frontier_depth
             {
+                continue;
+            }
+            // Prefetching a key the local registry will satisfy would contact
+            // the registry for a package this install never downloads — and in
+            // `only` mode reaching the registry at all is the error.
+            let constraints = constraints.clone();
+            if self.local_member(key, &constraints)?.is_some() {
                 continue;
             }
 
@@ -701,6 +783,8 @@ pub(super) fn solve_install(
     manifest: &Manifest,
     registry: &dyn Registry,
     pool: &FetchPool,
+    local: Option<&LocalIndex>,
+    local_mode: LocalRegistryMode,
 ) -> Result<PreparedInstall> {
     if manifest.dependencies.is_empty() {
         return Ok(PreparedInstall::default());
@@ -732,6 +816,9 @@ pub(super) fn solve_install(
     let outcome = GraphSolver {
         source: &mut source,
         workspace: &workspace,
+        local,
+        local_mode,
+        warned: BTreeSet::new(),
     }
     .solve(state)?;
 
@@ -876,6 +963,9 @@ mod tests {
         let outcome = GraphSolver {
             source,
             workspace: &workspace,
+            local: None,
+            local_mode: LocalRegistryMode::Off,
+            warned: BTreeSet::new(),
         }
         .solve(state)?;
         match outcome {

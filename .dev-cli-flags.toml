@@ -55,6 +55,25 @@ type = "bool"
 default = "false"
 help = "Confirm each mutating lifecycle step in a real terminal."
 
+[flags.local_path_map]
+env = "ZED_PKG_LOCAL_REGISTRY_PATH_MAP"
+aliases = ["local-path-map"]
+type = "string"
+help = "host=container path rewrites for local registry entries, comma separated."
+
+[flags.local_link_policy]
+env = "ZED_PKG_LOCAL_LINK_POLICY"
+aliases = ["local-link-policy"]
+type = "string"
+help = "How a local checkout reaches zed_modules/: auto, symlink, or copy."
+
+[flags.local_ephemeral]
+env = "ZED_PKG_LOCAL_REGISTRY_EPHEMERAL"
+aliases = ["local-ephemeral"]
+type = "bool"
+default = "false"
+help = "Copy every local checkout because its media will not outlive this process."
+
 [flags.git_submodules]
 env = "ZED_PKG_GIT_SUBMODULES"
 aliases = ["git-submodules"]
