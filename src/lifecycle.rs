@@ -10,9 +10,9 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
 #[cfg(windows)]
 use std::process::Stdio;
+use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -475,8 +475,9 @@ fn command_for_file(path: &Path) -> Result<Command> {
             Ok(command)
         }
         "" => {
-            let input = fs::File::open(path)
-                .with_context(|| format!("opening extensionless lifecycle hook {}", path.display()))?;
+            let input = fs::File::open(path).with_context(|| {
+                format!("opening extensionless lifecycle hook {}", path.display())
+            })?;
             let mut command = Command::new("cmd");
             command.args(["/D", "/Q"]);
             command.stdin(Stdio::from(input));
@@ -695,10 +696,7 @@ mod tests {
             windows_native_path(drive),
             PathBuf::from(r"C:\work tree\.zpkg\pre-build.sh")
         );
-        assert_eq!(
-            windows_posix_path(drive),
-            "C:/work tree/.zpkg/pre-build.sh"
-        );
+        assert_eq!(windows_posix_path(drive), "C:/work tree/.zpkg/pre-build.sh");
 
         let unc = Path::new(r"\\?\UNC\server\share\.zpkg\pre-build.cmd");
         assert_eq!(
