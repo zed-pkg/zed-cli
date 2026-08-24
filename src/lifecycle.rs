@@ -11,6 +11,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+#[cfg(windows)]
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -438,8 +440,16 @@ fn command_for_file(path: &Path) -> Result<Command> {
 
 #[cfg(windows)]
 fn command_for_file(path: &Path) -> Result<Command> {
-    let extension = path.extension().and_then(OsStr::to_str).unwrap_or_default();
-    let mut command = match extension.to_ascii_lowercase().as_str() {
+    use std::os::windows::process::CommandExt;
+
+    let extension = path
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let native_path = windows_native_path(path);
+
+    match extension.as_str() {
         "ps1" => {
             let mut command = Command::new("powershell");
             command.args([
@@ -449,17 +459,53 @@ fn command_for_file(path: &Path) -> Result<Command> {
                 "Bypass",
                 "-File",
             ]);
-            command
+            command.arg(native_path);
+            Ok(command)
         }
-        "sh" | "bash" => Command::new("sh"),
-        _ => {
+        "sh" | "bash" => {
+            let mut command = Command::new(if extension == "bash" { "bash" } else { "sh" });
+            command.arg(windows_posix_path(&native_path));
+            Ok(command)
+        }
+        "cmd" | "bat" => {
             let mut command = Command::new("cmd");
-            command.arg("/C");
-            command
+            command.args(["/D", "/C"]);
+            command.raw_arg("\"%ZED_INTERNAL_HOOK_FILE%\"");
+            command.env("ZED_INTERNAL_HOOK_FILE", native_path);
+            Ok(command)
         }
-    };
-    command.arg(path);
-    Ok(command)
+        "" => {
+            let input = fs::File::open(path)
+                .with_context(|| format!("opening extensionless lifecycle hook {}", path.display()))?;
+            let mut command = Command::new("cmd");
+            command.args(["/D", "/Q"]);
+            command.stdin(Stdio::from(input));
+            Ok(command)
+        }
+        other => bail!(
+            "unsupported Windows lifecycle hook extension `{other}` for {}",
+            path.display()
+        ),
+    }
+}
+
+#[cfg(windows)]
+fn windows_native_path(path: &Path) -> PathBuf {
+    let rendered = path.as_os_str().to_string_lossy();
+    if let Some(rest) = rendered.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = rendered.strip_prefix(r"\\?\") {
+        return PathBuf::from(rest);
+    }
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+fn windows_posix_path(path: &Path) -> String {
+    windows_native_path(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn command_for_text(shell: Option<&str>, text: &str) -> Result<Command> {
@@ -505,6 +551,11 @@ fn configure_environment(
     depth: usize,
     stack: &str,
 ) {
+    #[cfg(windows)]
+    let environment_root = windows_native_path(root);
+    #[cfg(not(windows))]
+    let environment_root = root.to_path_buf();
+
     command
         .current_dir(root)
         .env("ZED_LIFECYCLE_PHASE", phase.as_str())
@@ -512,9 +563,9 @@ fn configure_environment(
         .env("ZED_LIFECYCLE_HOOK_TOTAL", total.to_string())
         .env("ZED_LIFECYCLE_DEPTH", depth.to_string())
         .env("ZED_LIFECYCLE_SOURCE", source)
-        .env("ZED_PROJECT_ROOT", root)
-        .env("ZED_PKG_ROOT", root)
-        .env("ZED_PACKAGE_MANIFEST", root.join(MANIFEST_FILE))
+        .env("ZED_PROJECT_ROOT", &environment_root)
+        .env("ZED_PKG_ROOT", &environment_root)
+        .env("ZED_PACKAGE_MANIFEST", environment_root.join(MANIFEST_FILE))
         .env(STACK_ENV, stack);
 }
 
@@ -630,13 +681,30 @@ mod tests {
         let output = project.path().join("phase.txt");
         write(
             &project.path().join(".zpkg/post-pack.sh"),
-            &format!(
-                "printf '%s' \"$ZED_LIFECYCLE_PHASE\" > {}\n",
-                output.display()
-            ),
+            "printf '%s' \"$ZED_LIFECYCLE_PHASE\" > phase.txt\n",
         );
         run_phase(project.path(), LifecyclePhase::PostPack).unwrap();
         assert_eq!(fs::read_to_string(output).unwrap(), "post-pack");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_paths_strip_verbatim_prefixes() {
+        let drive = Path::new(r"\\?\C:\work tree\.zpkg\pre-build.sh");
+        assert_eq!(
+            windows_native_path(drive),
+            PathBuf::from(r"C:\work tree\.zpkg\pre-build.sh")
+        );
+        assert_eq!(
+            windows_posix_path(drive),
+            "C:/work tree/.zpkg/pre-build.sh"
+        );
+
+        let unc = Path::new(r"\\?\UNC\server\share\.zpkg\pre-build.cmd");
+        assert_eq!(
+            windows_native_path(unc),
+            PathBuf::from(r"\\server\share\.zpkg\pre-build.cmd")
+        );
     }
 
     #[test]
