@@ -73,3 +73,5 @@ Every hook runs from the canonical project root with:
 - `ZED_PACKAGE_MANIFEST`
 
 A failing pre-hook prevents the operation. A post-hook runs only after a successful operation; if it fails, Zed returns an error even though the operation has completed. Recursive invocation of the same phase is skipped. Set `ZED_SKIP_LIFECYCLE=1` for an explicit emergency bypass.
+
+Project lifecycle hooks are trusted code from the checked-out root repository. CI should execute them only from reviewed commits and should not expose write-scoped secrets to untrusted pull requests. `ZED_SKIP_LIFECYCLE` bypasses only these root-project phases; it does not weaken dependency install-hook consent or native-dependency permission checks.
