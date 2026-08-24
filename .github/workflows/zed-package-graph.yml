@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 8428bc574111fa148e590c8350c7855035ce2046
+          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
           path: zed-interfaces
           persist-credentials: false
       - name: Check out canonical clients package
