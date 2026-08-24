@@ -86,6 +86,17 @@ pub struct ToolInstallReceipt {
     pub tools: Vec<ToolLockSummary>,
 }
 
+/// A project-local executable profile that is safe to add to one child
+/// process environment. Verification binds the stable path to the canonical
+/// environment lock and to the complete copy-mode profile state; it never
+/// mutates the parent process or global PATH.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolProfileActivation {
+    pub bin: PathBuf,
+    pub target: String,
+    pub lock_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ToolProfileState {
     schema: String,
@@ -150,6 +161,177 @@ pub fn default_zed_home() -> Result<PathBuf> {
     } else {
         Ok(env::current_dir()?.join(configured))
     }
+}
+
+/// Verify the stable project-local tool profile used by `zed develop`.
+///
+/// A missing stable link means no native tool profile is active. Once the
+/// link exists, every malformed or stale condition fails closed: the link
+/// must name one real generation, the portable lock must validate, the
+/// generation state must be the exact deterministic state for that lock and
+/// target, and every command link must still resolve inside its copied root.
+pub fn verified_active_profile(
+    root: &Path,
+    lock_path: Option<&Path>,
+    profile_path: Option<&Path>,
+) -> Result<Option<ToolProfileActivation>> {
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("canonicalizing project root `{}`", root.display()))?;
+    let profile_relative = portable_relative_path(
+        profile_path.unwrap_or_else(|| Path::new(DEFAULT_PROFILE_PATH)),
+        "tool profile",
+        false,
+    )?;
+    let stable_bin = root.join(&profile_relative).join("bin");
+    let stable_metadata = match fs::symlink_metadata(&stable_bin) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("inspecting stable tool profile bin"),
+    };
+    ensure!(
+        stable_metadata.file_type().is_symlink(),
+        "stable tool profile bin `{}` must be a Zed-owned relative symlink",
+        portable_display(&stable_bin)
+    );
+
+    let profile_root = walk_real_components(&root, &profile_relative, "tool profile")?;
+    ensure!(profile_root.is_dir(), "tool profile must be a directory");
+    let stable_target = fs::read_link(&stable_bin).context("reading stable tool profile link")?;
+    let target = stable_profile_target(&stable_target)?;
+    let active_relative = Path::new("v1").join(&target);
+    let active = walk_real_components(&profile_root, &active_relative, "active tool profile")?;
+    ensure!(active.is_dir(), "active tool profile must be a directory");
+    let active_bin = walk_real_components(&active, Path::new("bin"), "tool profile bin")?;
+    ensure!(active_bin.is_dir(), "tool profile bin must be a directory");
+    ensure!(
+        stable_bin
+            .canonicalize()
+            .context("canonicalizing stable tool profile bin")?
+            == active_bin,
+        "stable tool profile bin does not resolve to its declared target"
+    );
+
+    let state_path = existing_regular_project_file(
+        &active,
+        Path::new(PROFILE_STATE_FILE),
+        "tool profile state",
+    )?;
+    let state_bytes = fs::read(&state_path).context("reading tool profile state")?;
+    let state: ToolProfileState =
+        serde_json::from_slice(&state_bytes).context("parsing tool profile state")?;
+    ensure!(
+        state.schema == TOOL_PROFILE_SCHEMA_V1,
+        "unsupported tool profile state schema `{}`",
+        state.schema
+    );
+    ensure!(
+        state.target == target,
+        "tool profile state target does not match the stable activation target"
+    );
+    ensure!(
+        state.install_mode == "copy",
+        "zed develop activates only project-owned copy-mode tool profiles"
+    );
+
+    let loaded = load_environment_lock(&root, lock_path, LockMode::Portable, None)
+        .context("verifying active tool profile environment lock")?;
+    ensure!(
+        state.lock_sha256 == loaded.digest_sha256,
+        "active tool profile state does not match the current environment lock"
+    );
+    let selected = select_exact_target(&loaded.lock, &target)?;
+    ensure!(
+        !selected.is_empty(),
+        "active tool profile environment lock contains no tools"
+    );
+    let prepared = prepare_active_copy_tools(&active, &selected)?;
+    let expected_state = profile_state(&loaded, &target, InstallMode::Copy, &prepared);
+    let mut expected_state_bytes = serde_json::to_vec_pretty(&expected_state)?;
+    expected_state_bytes.push(b'\n');
+    ensure!(
+        state_bytes == expected_state_bytes,
+        "active tool profile state has drifted from the current environment lock"
+    );
+    ensure!(
+        active_profile_matches(&active, &expected_state_bytes, InstallMode::Copy, &prepared)?,
+        "active tool profile contents have drifted from the current environment lock"
+    );
+
+    Ok(Some(ToolProfileActivation {
+        bin: stable_bin,
+        target,
+        lock_sha256: loaded.digest_sha256,
+    }))
+}
+
+fn stable_profile_target(link: &Path) -> Result<String> {
+    ensure!(
+        !link.is_absolute(),
+        "stable tool profile link must be relative"
+    );
+    let mut components = link.components();
+    ensure!(
+        matches!(components.next(), Some(Component::Normal(value)) if value == "v1"),
+        "stable tool profile link must have shape v1/<target>/bin"
+    );
+    let Some(Component::Normal(target)) = components.next() else {
+        bail!("stable tool profile link must have shape v1/<target>/bin");
+    };
+    let target = target
+        .to_str()
+        .context("stable tool profile target is not valid UTF-8")?
+        .to_string();
+    validate_component(&target, "target")?;
+    ensure!(
+        matches!(components.next(), Some(Component::Normal(value)) if value == "bin")
+            && components.next().is_none(),
+        "stable tool profile link must have shape v1/<target>/bin"
+    );
+    Ok(target)
+}
+
+fn prepare_active_copy_tools<'a>(
+    active: &Path,
+    selected: &[SelectedTool<'a>],
+) -> Result<Vec<PreparedTool<'a>>> {
+    let roots = resolve_directory_beneath(active, Path::new("roots"), "tool profile roots")?;
+    let mut ownership = BTreeMap::new();
+    let mut prepared = Vec::with_capacity(selected.len());
+    for selected_tool in selected {
+        validate_component(selected_tool.name, "tool name")?;
+        let root = resolve_directory_beneath(
+            &roots,
+            Path::new(selected_tool.name),
+            &format!("tool `{}` copied root", selected_tool.name),
+        )?;
+        let install_root = resolve_directory_beneath(
+            &root,
+            Path::new(&selected_tool.locked.install.root),
+            &format!("tool `{}` install root", selected_tool.name),
+        )?;
+        let mut executables = Vec::new();
+        for executable in &selected_tool.locked.install.executables {
+            prepare_locked_executable(
+                selected_tool.name,
+                executable,
+                &install_root,
+                &mut ownership,
+                &mut executables,
+            )?;
+        }
+        ensure!(
+            !executables.is_empty(),
+            "tool `{}` exposes no locked executables",
+            selected_tool.name
+        );
+        prepared.push(PreparedTool {
+            selected: selected_tool.clone(),
+            install_root,
+            executables,
+        });
+    }
+    Ok(prepared)
 }
 
 pub fn load_environment_lock(
@@ -1340,8 +1522,111 @@ fn portable_display(path: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    pub(crate) fn active_profile_fixture() -> tempfile::TempDir {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        use zed_interfaces::{
+            LockedArtifact, LockedArtifactFormat, LockedInstall, LockedPlatform, LockedSource,
+            LockedSourceKind,
+        };
+
+        const TARGET: &str = "x86_64-unknown-linux-gnu";
+        let root = tempfile::tempdir().unwrap();
+        let active = root.path().join(".zed/tools/v1").join(TARGET);
+        let copied = active.join("roots/hello/bin/hello");
+        fs::create_dir_all(copied.parent().unwrap()).unwrap();
+        fs::write(&copied, b"#!/bin/sh\nprintf 'hello\\n'\n").unwrap();
+        fs::set_permissions(&copied, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::create_dir_all(active.join("bin")).unwrap();
+        symlink(
+            Path::new("../roots/hello/bin/hello"),
+            active.join("bin/hello"),
+        )
+        .unwrap();
+
+        let lock = EnvironmentLock {
+            plan_digest_sha256: "a".repeat(64),
+            tools: BTreeMap::from([(
+                "hello".to_string(),
+                vec![LockedTool {
+                    requirement: "1".to_string(),
+                    resolved: "1.0.0".to_string(),
+                    backend: "http".to_string(),
+                    backend_version: Some("1.0.0".to_string()),
+                    backend_options_digest_sha256: None,
+                    source: LockedSource {
+                        kind: LockedSourceKind::Http,
+                        locator: "https://example.invalid/hello-1.0.0.tar.gz".to_string(),
+                        revision: None,
+                        tree_sha256: None,
+                        immutable: false,
+                        portable: false,
+                        extensions: BTreeMap::new(),
+                    },
+                    artifact: LockedArtifact {
+                        sha256: "b".repeat(64),
+                        size: 42,
+                        format: LockedArtifactFormat::TarGz,
+                        mirrors: Vec::new(),
+                        signatures: Vec::new(),
+                        extensions: BTreeMap::new(),
+                    },
+                    platform: LockedPlatform {
+                        target: TARGET.to_string(),
+                        os: Some("linux".to_string()),
+                        arch: Some("x86_64".to_string()),
+                        libc: Some("gnu".to_string()),
+                        abi: None,
+                    },
+                    install: LockedInstall {
+                        root: ".".to_string(),
+                        bin_dirs: vec!["bin".to_string()],
+                        executables: vec![LockedExecutable {
+                            name: "hello".to_string(),
+                            path: "bin/hello".to_string(),
+                            aliases: Vec::new(),
+                        }],
+                        layout_digest_sha256: None,
+                        extensions: BTreeMap::new(),
+                    },
+                    extensions: BTreeMap::new(),
+                }],
+            )]),
+            ..EnvironmentLock::default()
+        };
+        let lock_path = root.path().join(DEFAULT_LOCK_PATH);
+        fs::write(&lock_path, lock.to_toml_string().unwrap()).unwrap();
+        let state = ToolProfileState {
+            schema: TOOL_PROFILE_SCHEMA_V1.to_string(),
+            lock_sha256: lock.normalized_digest_sha256().unwrap(),
+            target: TARGET.to_string(),
+            install_mode: "copy".to_string(),
+            tools: vec![ToolProfileTool {
+                name: "hello".to_string(),
+                requirement: "1".to_string(),
+                resolved: "1.0.0".to_string(),
+                backend: "http".to_string(),
+                artifact_sha256: "b".repeat(64),
+                install_root: ".".to_string(),
+                executables: vec![ToolProfileExecutable {
+                    name: "hello".to_string(),
+                    source: "bin/hello".to_string(),
+                }],
+            }],
+        };
+        let mut state_bytes = serde_json::to_vec_pretty(&state).unwrap();
+        state_bytes.push(b'\n');
+        fs::write(active.join(PROFILE_STATE_FILE), state_bytes).unwrap();
+        symlink(
+            Path::new("v1").join(TARGET).join("bin"),
+            root.path().join(".zed/tools/bin"),
+        )
+        .unwrap();
+        root
+    }
 
     #[test]
     fn target_and_profile_paths_are_strict() {
@@ -1374,6 +1659,66 @@ mod tests {
         for forbidden in ["locator", "url", "token", "credential", "environment"] {
             assert!(!json.contains(forbidden));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_activation_binds_stable_bin_to_lock_and_profile() {
+        let root = active_profile_fixture();
+        let activation = verified_active_profile(root.path(), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            activation.bin,
+            root.path().canonicalize().unwrap().join(".zed/tools/bin")
+        );
+        assert_eq!(activation.target, "x86_64-unknown-linux-gnu");
+        assert_eq!(activation.lock_sha256.len(), 64);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_activation_rejects_state_lock_drift() {
+        let root = active_profile_fixture();
+        let state_path = root
+            .path()
+            .join(".zed/tools/v1/x86_64-unknown-linux-gnu/profile.json");
+        let mut state: ToolProfileState =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        state.lock_sha256 = "c".repeat(64);
+        let mut bytes = serde_json::to_vec_pretty(&state).unwrap();
+        bytes.push(b'\n');
+        fs::write(state_path, bytes).unwrap();
+
+        let error = verified_active_profile(root.path(), None, None).unwrap_err();
+        assert!(error.to_string().contains("current environment lock"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_activation_rejects_stable_and_command_link_escape() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = active_profile_fixture();
+        let stable = root.path().join(".zed/tools/bin");
+        fs::remove_file(&stable).unwrap();
+        symlink(Path::new("../outside"), &stable).unwrap();
+        let stable_error = verified_active_profile(root.path(), None, None).unwrap_err();
+        assert!(stable_error.to_string().contains("shape v1/<target>/bin"));
+
+        fs::remove_file(&stable).unwrap();
+        symlink(Path::new("v1/x86_64-unknown-linux-gnu/bin"), &stable).unwrap();
+        let command = root
+            .path()
+            .join(".zed/tools/v1/x86_64-unknown-linux-gnu/bin/hello");
+        fs::remove_file(&command).unwrap();
+        let outside = root.path().join("outside");
+        fs::write(&outside, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(Path::new("../../../../../outside"), command).unwrap();
+
+        let command_error = verified_active_profile(root.path(), None, None).unwrap_err();
+        assert!(command_error.to_string().contains("contents have drifted"));
     }
 
     #[test]
