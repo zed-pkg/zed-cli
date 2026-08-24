@@ -23,6 +23,20 @@ The full phase vocabulary also reserves `pre-test` and `post-test` for test-comm
 
 On Unix, executable hooks run directly; non-executable shell files run with `sh`. PowerShell and command files use their native interpreters. Zed rejects convention files that resolve outside the project root.
 
+## Operation mapping
+
+The lifecycle facade applies the same phase boundaries to equivalent dependency operations:
+
+| Zed operation | Before | After |
+| --- | --- | --- |
+| `add`, `install` | `pre-install` | `post-install` |
+| `build` | `pre-build` | `post-build` |
+| `pack` | `pre-pack` | `post-pack` |
+| `publish` | `pre-publish` | `post-publish` |
+| `remove`, `uninstall` | `pre-uninstall` | `post-uninstall` |
+
+`pre-test` and `post-test` are recognized configuration phases but remain reserved until the CLI exposes its dedicated test operation. This keeps manifests forward-compatible without silently attaching test hooks to an unrelated command.
+
 ## `.zpkg.toml` additions and overrides
 
 Explicit commands complement convention files by default:
