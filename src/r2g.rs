@@ -221,12 +221,14 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         build_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),
         hooks: Default::default(),
+        lifecycle: Default::default(),
         build: None,
         overrides: Default::default(),
         bin: BTreeMap::new(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     };
     interactive::confirm(
