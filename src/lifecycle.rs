@@ -226,7 +226,10 @@ pub fn run_phase(project: &Path, phase: LifecyclePhase) -> Result<LifecycleRepor
     } else {
         format!("{existing_stack},{}", phase.as_str())
     };
-    let depth = stack.split(',').filter(|item| !item.trim().is_empty()).count();
+    let depth = stack
+        .split(',')
+        .filter(|item| !item.trim().is_empty())
+        .count();
 
     for (index, hook) in hooks.iter().enumerate() {
         let label = hook.label(phase);
@@ -595,7 +598,10 @@ mod tests {
         let output = project.path().join("phase.txt");
         write(
             &project.path().join(".zpkg/post-pack.sh"),
-            &format!("printf '%s' \"$ZED_LIFECYCLE_PHASE\" > {}\n", output.display()),
+            &format!(
+                "printf '%s' \"$ZED_LIFECYCLE_PHASE\" > {}\n",
+                output.display()
+            ),
         );
         run_phase(project.path(), LifecyclePhase::PostPack).unwrap();
         assert_eq!(fs::read_to_string(output).unwrap(), "post-pack");
