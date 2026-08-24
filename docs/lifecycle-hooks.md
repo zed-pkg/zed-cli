@@ -21,7 +21,7 @@ A phase can be a file in either `.zed/` or `.zpkg/`. The `hooks/` subdirectory a
 
 The full phase vocabulary also reserves `pre-test` and `post-test` for test-command integration. When more than one convention file exists, Zed runs `.zed`, `.zed/hooks`, `.zpkg`, then `.zpkg/hooks`; within each directory it checks the extensionless name, `.sh`, `.bash`, `.ps1`, `.cmd`, and `.bat`.
 
-On Unix, executable hooks run directly; non-executable shell files run with `sh`. PowerShell and command files use their native interpreters. Zed rejects convention files that resolve outside the project root.
+On Unix, executable hooks run directly; non-executable shell files run with `sh`. PowerShell and command files use their native interpreters. Zed rejects symbolic-link hooks and convention files that resolve outside the project root.
 
 ## Operation mapping
 
@@ -83,7 +83,7 @@ Every hook runs from the canonical project root with:
 - `ZED_LIFECYCLE_HOOK_INDEX` and `ZED_LIFECYCLE_HOOK_TOTAL`
 - `ZED_LIFECYCLE_SOURCE`
 - `ZED_LIFECYCLE_DEPTH` and `ZED_LIFECYCLE_STACK`
-- `ZED_PROJECT_ROOT`
+- `ZED_PROJECT_ROOT` and its package-oriented alias `ZED_PKG_ROOT`
 - `ZED_PACKAGE_MANIFEST`
 
 A failing pre-hook prevents the operation. A post-hook runs only after a successful operation; if it fails, Zed returns an error even though the operation has completed. Recursive invocation of the same phase is skipped. Set `ZED_SKIP_LIFECYCLE=1` for an explicit emergency bypass.

@@ -20,6 +20,20 @@ const SKIP_ENV: &str = "ZED_SKIP_LIFECYCLE";
 const STACK_ENV: &str = "ZED_LIFECYCLE_STACK";
 const CONVENTION_ROOTS: [&str; 4] = [".zed", ".zed/hooks", ".zpkg", ".zpkg/hooks"];
 const CONVENTION_SUFFIXES: [&str; 6] = ["", ".sh", ".bash", ".ps1", ".cmd", ".bat"];
+const LIFECYCLE_PHASE_NAMES: [&str; 12] = [
+    "pre-install",
+    "post-install",
+    "pre-build",
+    "post-build",
+    "pre-test",
+    "post-test",
+    "pre-pack",
+    "post-pack",
+    "pre-publish",
+    "post-publish",
+    "pre-uninstall",
+    "post-uninstall",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LifecyclePhase {
@@ -319,6 +333,14 @@ fn read_config(project: &Path, phase: LifecyclePhase) -> Result<Option<HookConfi
         .with_context(|| format!("reading lifecycle configuration from {}", path.display()))?;
     let document: ManifestLifecycle = toml::from_str(&contents)
         .with_context(|| format!("parsing lifecycle configuration in {}", path.display()))?;
+    for configured_phase in document.lifecycle.keys() {
+        ensure!(
+            LIFECYCLE_PHASE_NAMES.contains(&configured_phase.as_str()),
+            "unknown lifecycle phase `{configured_phase}` in {}; expected one of {}",
+            path.display(),
+            LIFECYCLE_PHASE_NAMES.join(", ")
+        );
+    }
     Ok(document
         .lifecycle
         .get(phase.as_str())
@@ -337,11 +359,20 @@ fn discover_conventions(project: &Path, phase: LifecyclePhase) -> Result<Vec<Hoo
         for suffix in CONVENTION_SUFFIXES {
             let relative = Path::new(directory).join(format!("{}{suffix}", phase.as_str()));
             let candidate = project.join(&relative);
-            if !candidate.exists() {
-                continue;
-            }
-            let metadata = fs::metadata(&candidate)
-                .with_context(|| format!("reading lifecycle hook {}", candidate.display()))?;
+            let metadata = match fs::symlink_metadata(&candidate) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("reading lifecycle hook {}", candidate.display())
+                    });
+                }
+            };
+            ensure!(
+                !metadata.file_type().is_symlink(),
+                "lifecycle hook {} must not be a symbolic link",
+                candidate.display()
+            );
             ensure!(
                 metadata.is_file(),
                 "lifecycle hook {} is not a regular file",
@@ -482,6 +513,7 @@ fn configure_environment(
         .env("ZED_LIFECYCLE_DEPTH", depth.to_string())
         .env("ZED_LIFECYCLE_SOURCE", source)
         .env("ZED_PROJECT_ROOT", root)
+        .env("ZED_PKG_ROOT", root)
         .env("ZED_PACKAGE_MANIFEST", root.join(MANIFEST_FILE))
         .env(STACK_ENV, stack);
 }
@@ -605,5 +637,35 @@ mod tests {
         );
         run_phase(project.path(), LifecyclePhase::PostPack).unwrap();
         assert_eq!(fs::read_to_string(output).unwrap(), "post-pack");
+    }
+
+    #[test]
+    fn misspelled_lifecycle_phase_is_rejected() {
+        let project = tempfile::tempdir().unwrap();
+        write(
+            &project.path().join(MANIFEST_FILE),
+            "[lifecycle.pre-buid]\ncommand = \"must-not-run\"\n",
+        );
+        let error = resolve_hooks(project.path(), LifecyclePhase::PreBuild).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown lifecycle phase `pre-buid`")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_hook_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempfile::tempdir().unwrap();
+        let target = project.path().join("real-pre-build");
+        write(&target, "exit 0\n");
+        fs::create_dir_all(project.path().join(".zpkg")).unwrap();
+        symlink(&target, project.path().join(".zpkg/pre-build")).unwrap();
+
+        let error = resolve_hooks(project.path(), LifecyclePhase::PreBuild).unwrap_err();
+        assert!(error.to_string().contains("must not be a symbolic link"));
     }
 }
