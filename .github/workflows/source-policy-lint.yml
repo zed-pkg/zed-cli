@@ -10,8 +10,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: source-policy-lint-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   source-policy:
-    uses: ores-otel/.github/.github/workflows/source-policy-lint.yml@835e7da595f38ba43fb7abfbbc80c48dff3c9e87
+    uses: ores-otel/.github/.github/workflows/source-policy-lint.yml@a9f82646e72c698ca7f99773c6b4d96395bb9020
     permissions:
       contents: read
