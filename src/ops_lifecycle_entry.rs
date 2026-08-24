@@ -22,7 +22,8 @@ pub use core::{
 };
 
 pub(crate) use core::{
-    detect_adapter, detect_native_manifest_target, detect_structure_target, detect_target,
+    GitLockFinalizeError, detect_adapter, detect_native_manifest_target, detect_structure_target,
+    detect_target,
 };
 
 #[cfg(test)]
