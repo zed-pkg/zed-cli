@@ -2169,6 +2169,7 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
         workspace: None,
         overrides: Default::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     }
 }
