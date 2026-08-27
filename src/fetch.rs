@@ -12,7 +12,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use flags2env::BundledFlags2Env;
 use serde::Serialize;
@@ -25,8 +25,8 @@ use zed_interfaces::registry::VersionMetadata;
 
 use crate::cli::Globals;
 use crate::config::Config;
-use crate::registry::{Registry, registry_for};
-use crate::store::{Store, require_sha256};
+use crate::registry::{registry_for, Registry};
+use crate::store::{require_sha256, Store};
 
 const FETCH_CONTRACT: &str = include_str!("../.fetch-cli-flags.toml");
 const FETCH_SCHEMA: &str = "zed.fetch/v1";
@@ -367,6 +367,30 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
     }
 }
 
+/// Frozen `file:` sources are local only when they have no host, an empty
+/// host, or the URL-parser domain `localhost`. The parser lowercases domain
+/// hosts, matching `Url::to_file_path()`. IPv4/IPv6 (including loopback)
+/// and any other name are non-local: Windows `to_file_path()` would otherwise
+/// turn them into UNC paths.
+fn file_url_authority_is_local(url: &reqwest::Url) -> bool {
+    match url.host_str() {
+        None | Some("") | Some("localhost") => true,
+        Some(_) => false,
+    }
+}
+
+fn file_path_is_unc(path: &Path) -> bool {
+    path.components().next().is_some_and(|component| {
+        matches!(
+            component,
+            Component::Prefix(prefix) if matches!(
+                prefix.kind(),
+                std::path::Prefix::UNC(_, _) | std::path::Prefix::VerbatimUNC(_, _)
+            )
+        )
+    })
+}
+
 fn validate_source(source: &str) -> Result<()> {
     if source.starts_with("file://") {
         let url = reqwest::Url::parse(source).map_err(|_| {
@@ -381,13 +405,13 @@ fn validate_source(source: &str) -> Result<()> {
                 "frozen file registry sources may not embed credentials, query strings, or fragments"
             );
         }
-        if url.host_str().is_some() {
+        if !file_url_authority_is_local(&url) {
             bail!("frozen file registry source is not a local absolute path");
         }
         let path = url.to_file_path().map_err(|_| {
             anyhow::anyhow!("frozen file registry source is not a local absolute path")
         })?;
-        if !path.is_absolute() {
+        if !path.is_absolute() || file_path_is_unc(&path) {
             bail!("frozen file registry source is not a local absolute path");
         }
         return Ok(());
@@ -913,6 +937,102 @@ mod tests {
         })
     }
 
+    fn assert_source_rejected_without_echo(source: &str, markers: &[&str]) {
+        let error = super::validate_source(source).expect_err("source must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("not a local absolute path")
+                || message.contains("may not embed")
+                || message.contains("invalid file registry source")
+                || message.contains("unsupported registry source scheme"),
+            "unexpected diagnostic: {message}"
+        );
+        assert!(
+            !message.contains(source),
+            "untrusted source was echoed: {message}"
+        );
+        for marker in markers {
+            assert!(
+                !message.contains(*marker),
+                "secret marker `{marker}` was echoed: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_local_file_registry_authority_fails_closed_without_source_echo() {
+        assert_source_rejected_without_echo(
+            "file://remote-registry/secret-source",
+            &["remote-registry", "secret-source"],
+        );
+        assert_source_rejected_without_echo(
+            "file://remote-registry.invalid/private/path",
+            &["remote-registry.invalid", "private/path"],
+        );
+    }
+
+    #[test]
+    fn file_authority_localhost_policy_is_exact_and_cross_platform() {
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file:///tmp/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file://localhost/tmp/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file:///C:/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file://LocalHost/tmp/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file://LOCALHOST/tmp/zed-registry").unwrap()
+        ));
+        for source in [
+            "file://remote-registry/secret-source",
+            "file://127.0.0.1/tmp/zed-registry",
+            "file://[::1]/tmp/zed-registry",
+            "file://[fe80::1]/tmp/zed-registry",
+        ] {
+            let url = reqwest::Url::parse(source).unwrap();
+            assert!(
+                !super::file_url_authority_is_local(&url),
+                "authority must be non-local before to_file_path: {source}"
+            );
+            assert_source_rejected_without_echo(source, &["secret-source", "zed-registry"]);
+        }
+        super::validate_source("file:///tmp/zed-registry").unwrap();
+        super::validate_source("file://localhost/tmp/zed-registry").unwrap();
+    }
+
+    #[test]
+    fn file_source_query_fragment_and_userinfo_are_rejected_without_echo() {
+        assert_source_rejected_without_echo(
+            "file:///tmp/zed-registry?token=super-secret-query-value",
+            &["super-secret-query-value"],
+        );
+        assert_source_rejected_without_echo(
+            "file:///tmp/zed-registry#super-secret-fragment",
+            &["super-secret-fragment"],
+        );
+        assert_source_rejected_without_echo(
+            "file://user:super-secret-password@localhost/tmp/zed-registry",
+            &["super-secret-password"],
+        );
+    }
+
+    #[test]
+    fn weakened_windows_unc_acceptance_is_rejected_by_the_authority_classifier() {
+        let remote = reqwest::Url::parse("file://remote-registry/secret-source").unwrap();
+        assert!(remote.host_str().is_some());
+        assert!(!super::file_url_authority_is_local(&remote));
+        let weakened_accepts_any_host_on_windows = remote.host_str().is_none();
+        assert!(
+            !weakened_accepts_any_host_on_windows,
+            "suite must keep rejecting remote file authorities"
+        );
+    }
+
     #[test]
     fn frozen_fetch_is_deterministic_source_redacted_and_project_read_only() {
         let project = tempfile::tempdir().unwrap();
@@ -966,13 +1086,11 @@ mod tests {
             !home.exists(),
             "fetch must not use the ambient global store"
         );
-        assert!(
-            first
-                .join("packages")
-                .join(&locked.sha256)
-                .join("pkg/lib/value.txt")
-                .is_file()
-        );
+        assert!(first
+            .join("packages")
+            .join(&locked.sha256)
+            .join("pkg/lib/value.txt")
+            .is_file());
 
         let index_text = fs::read_to_string(first.join("metadata/index.json")).unwrap();
         assert!(!index_text.contains(&registry.path().to_string_lossy().to_string()));
@@ -1154,16 +1272,12 @@ mod tests {
             .get_subcommands()
             .find(|subcommand| subcommand.get_name() == "fetch")
             .expect("fetch command must be visible");
-        assert!(
-            fetch
-                .get_arguments()
-                .any(|argument| argument.get_long() == Some("frozen"))
-        );
-        assert!(
-            fetch
-                .get_arguments()
-                .any(|argument| argument.get_long() == Some("output"))
-        );
+        assert!(fetch
+            .get_arguments()
+            .any(|argument| argument.get_long() == Some("frozen")));
+        assert!(fetch
+            .get_arguments()
+            .any(|argument| argument.get_long() == Some("output")));
     }
 
     #[test]
