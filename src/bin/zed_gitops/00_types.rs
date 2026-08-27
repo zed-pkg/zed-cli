@@ -8,12 +8,15 @@ use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use walkdir::WalkDir;
 
 const API_VERSION: &str = "oresoftware.dev/v1alpha1";
 const KIND: &str = "GitOpsApplication";
 const SCHEMA_REFERENCE: &str = "../application.schema.json";
 const CLUSTER_REPOSITORY: &str = "github.com/oresoftware/k8s-cluster";
-#[cfg(test)]
+const GITLINK_CONTRACT_API_VERSION: &str = "zed.dev/gitops/v1alpha1";
+const GITLINK_CONTRACT_KIND: &str = "GitlinkContract";
+const DEFAULT_SCHEMA: &str = "catalog/gitops/gitlink-contract.v1alpha1.json";
 const DEFAULT_CATALOG: &str = "catalog/gitops/apps";
 
 #[derive(Debug, Parser)]
@@ -40,14 +43,22 @@ struct ValidateArgs {
     root: PathBuf,
 
     /// Repository-relative directory containing GitOpsApplication JSON records.
-    #[arg(long, default_value = "catalog/gitops/apps")]
+    #[arg(long, default_value = DEFAULT_CATALOG)]
     catalog: PathBuf,
+
+    /// Versioned gitlink contract owned by the target repository.
+    #[arg(long, value_name = "PATH")]
+    schema: Option<PathBuf>,
+
+    /// Compare gitlinks against this already-fetched local ref.
+    #[arg(long, value_name = "REF")]
+    changed_from: Option<String>,
 
     /// Output suitable for humans, automation, or code-scanning annotation.
     #[arg(long, value_enum, default_value_t = OutputFormat::Human)]
     format: OutputFormat,
 
-    /// Reject unknown fields in every catalog object.
+    /// Reject unknown fields in catalog and gitlink-contract objects.
     #[arg(long)]
     strict: bool,
 
@@ -125,6 +136,34 @@ struct Migration {
     static_application: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct GitlinkContract {
+    #[serde(rename = "$schema")]
+    #[allow(dead_code)]
+    schema: Option<String>,
+    #[serde(rename = "apiVersion")]
+    api_version: String,
+    kind: String,
+    spec: GitlinkContractSpec,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitlinkContractSpec {
+    #[serde(default, rename = "approvedAppPathPrefixes")]
+    approved_app_path_prefixes: Vec<String>,
+    #[serde(default, rename = "forbiddenPathSuffixes")]
+    forbidden_path_suffixes: Vec<String>,
+    #[serde(default, rename = "allowedGitlinks")]
+    allowed_gitlinks: Vec<AllowedGitlink>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AllowedGitlink {
+    path: String,
+    #[serde(default)]
+    repository: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 struct ConfiguredSubmodule {
     path: String,
@@ -167,8 +206,14 @@ impl Diagnostic {
 struct Report {
     valid: bool,
     records: usize,
+    gitlinks: usize,
     errors: usize,
     warnings: usize,
     offline: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changed_from: Option<String>,
+    changed_gitlinks: Vec<String>,
     diagnostics: Vec<Diagnostic>,
 }
