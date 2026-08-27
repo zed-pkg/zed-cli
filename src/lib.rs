@@ -12,6 +12,7 @@ pub mod completion;
 pub mod config;
 mod dart_wiring;
 pub mod dev;
+pub mod env_map;
 pub mod environment;
 pub mod environment_export_cli;
 pub mod external_subcommands;
