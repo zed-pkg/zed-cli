@@ -178,49 +178,52 @@ fn find_workspace(project: &Path) -> Option<WorkspaceInfo> {
 }
 
 fn collect_members(root: &Path, globs: &[String]) -> WorkspaceInfo {
-    let mut info = WorkspaceInfo {
-        root: root.to_path_buf(),
-        members: BTreeMap::new(),
-    };
-    for pattern in globs {
+    let members = globs.iter().flat_map(|pattern| {
         // Member globs are directory patterns like `packages/*`; expand one
         // path segment at a time so we never walk unrelated trees.
-        let mut candidates = vec![root.to_path_buf()];
-        for segment in pattern.split('/') {
-            let mut next = Vec::new();
-            for base in &candidates {
-                if segment.contains('*') {
-                    let Ok(glob) = globset::Glob::new(segment) else {
-                        continue;
-                    };
-                    let matcher = glob.compile_matcher();
-                    if let Ok(entries) = fs::read_dir(base) {
-                        for entry in entries.flatten() {
-                            let name = entry.file_name();
-                            if entry.path().is_dir()
-                                && matcher.is_match(Path::new(&name))
-                                && !name.to_string_lossy().starts_with('.')
-                            {
-                                next.push(entry.path());
-                            }
-                        }
-                    }
-                } else {
-                    let candidate = base.join(segment);
-                    if candidate.is_dir() {
-                        next.push(candidate);
-                    }
-                }
-            }
-            candidates = next;
-        }
-        for member_dir in candidates {
-            if let Ok(member) = read_manifest(&member_dir) {
-                info.members.insert(member.full_name(), member_dir);
-            }
-        }
+        pattern
+            .split('/')
+            .fold(vec![root.to_path_buf()], expand_glob_segment)
+            .into_iter()
+            .filter_map(|member_dir| {
+                read_manifest(&member_dir)
+                    .ok()
+                    .map(|member| (member.full_name(), member_dir))
+            })
+    });
+    WorkspaceInfo {
+        root: root.to_path_buf(),
+        members: members.collect(),
     }
-    info
+}
+
+fn expand_glob_segment(candidates: Vec<PathBuf>, segment: &str) -> Vec<PathBuf> {
+    candidates
+        .into_iter()
+        .flat_map(|base| {
+            if segment.contains('*') {
+                let Ok(glob) = globset::Glob::new(segment) else {
+                    return Vec::new();
+                };
+                let matcher = glob.compile_matcher();
+                fs::read_dir(&base)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .filter(|entry| {
+                        let name = entry.file_name();
+                        entry.path().is_dir()
+                            && matcher.is_match(Path::new(&name))
+                            && !name.to_string_lossy().starts_with('.')
+                    })
+                    .map(|entry| entry.path())
+                    .collect()
+            } else {
+                let candidate = base.join(segment);
+                candidate.is_dir().then_some(candidate).into_iter().collect()
+            }
+        })
+        .collect()
 }
 
 /// A dependency on the current package identity is an explicit request to
