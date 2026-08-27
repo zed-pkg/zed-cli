@@ -1001,8 +1001,12 @@ mod tests {
             );
             assert_source_rejected_without_echo(source, &["secret-source", "zed-registry"]);
         }
-        super::validate_source("file:///tmp/zed-registry").unwrap();
-        super::validate_source("file://localhost/tmp/zed-registry").unwrap();
+        let local_registry = tempfile::tempdir().unwrap();
+        let local_url = reqwest::Url::from_directory_path(local_registry.path()).unwrap();
+        super::validate_source(local_url.as_str()).unwrap();
+        let mut localhost_url = local_url;
+        localhost_url.set_host(Some("localhost")).unwrap();
+        super::validate_source(localhost_url.as_str()).unwrap();
     }
 
     #[test]
