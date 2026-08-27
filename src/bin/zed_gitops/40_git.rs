@@ -34,14 +34,16 @@ fn configured_submodules(root: &Path) -> Result<Vec<ConfiguredSubmodule>> {
             output,
         );
     }
+    submodules_from_config_stdout(&output.stdout)
+}
 
+fn submodules_from_config_stdout(stdout: &[u8]) -> Result<Vec<ConfiguredSubmodule>> {
     let mut builders = BTreeMap::<String, SubmoduleBuilder>::new();
-    for raw in output.stdout.split(|byte| *byte == 0) {
+    for raw in stdout.split(|byte| *byte == 0) {
         if raw.is_empty() {
             continue;
         }
-        let record =
-            std::str::from_utf8(raw).context(".gitmodules contains non-UTF-8 data")?;
+        let record = std::str::from_utf8(raw).context(".gitmodules contains non-UTF-8 data")?;
         let (key, value) = record
             .split_once('\n')
             .or_else(|| record.split_once(' '))
@@ -82,6 +84,194 @@ fn configured_submodules(root: &Path) -> Result<Vec<ConfiguredSubmodule>> {
     }
     modules.sort_by(|left, right| left.path.cmp(&right.path));
     Ok(modules)
+}
+
+fn resolve_local_rev(root: &Path, rev: &str) -> Result<String> {
+    if rev.is_empty() || rev.starts_with('-') || rev.contains('\0') || rev.contains('\n') {
+        bail!("invalid --changed-from ref `{rev}`");
+    }
+    let spec = format!("{rev}^{{commit}}");
+    let output = git_output(root, &["rev-parse", "--verify", "--quiet", &spec])?;
+    if !output.status.success() {
+        bail!(
+            "--changed-from `{rev}` is not a local commit; fetch it first or omit --changed-from for a full offline tree validation"
+        );
+    }
+    let sha = String::from_utf8(output.stdout)
+        .context("--changed-from resolved to non-UTF-8 data")?
+        .trim()
+        .to_string();
+    if !is_exact_sha1(&sha) {
+        bail!("--changed-from `{rev}` did not resolve to a commit");
+    }
+    Ok(sha)
+}
+
+fn configured_submodules_at(root: &Path, rev: &str) -> Result<Vec<ConfiguredSubmodule>> {
+    let blob = format!("{rev}:.gitmodules");
+    let output = git_output(
+        root,
+        &[
+            "config",
+            "--null",
+            "--blob",
+            &blob,
+            "--get-regexp",
+            r"^submodule\..*\.(path|url)$",
+        ],
+    )?;
+    if !output.status.success() {
+        if output.status.code() == Some(1) || output.status.code() == Some(128) {
+            return Ok(Vec::new());
+        }
+        return git_failure(
+            root,
+            &[
+                "config",
+                "--null",
+                "--blob",
+                &blob,
+                "--get-regexp",
+                r"^submodule\..*\.(path|url)$",
+            ],
+            output,
+        );
+    }
+    submodules_from_config_stdout(&output.stdout)
+}
+
+fn tree_gitlinks(root: &Path, rev: &str) -> Result<BTreeMap<String, String>> {
+    let output = checked_git(root, &["ls-tree", "-r", "-z", "--full-tree", rev])?;
+    let mut gitlinks = BTreeMap::new();
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let line = std::str::from_utf8(raw).context("git ls-tree output is not UTF-8")?;
+        let Some((metadata, path)) = line.split_once('\t') else {
+            continue;
+        };
+        let mut fields = metadata.split_whitespace();
+        let mode = fields.next().unwrap_or_default();
+        let kind = fields.next().unwrap_or_default();
+        let object = fields.next().unwrap_or_default();
+        if mode != "160000" || kind != "commit" {
+            continue;
+        }
+        if !is_exact_sha1(object) {
+            bail!("gitlink `{path}` at `{rev}` has unsupported object identity `{object}`");
+        }
+        if gitlinks
+            .insert(path.to_string(), object.to_string())
+            .is_some()
+        {
+            bail!("duplicate gitlink path `{path}` at `{rev}`");
+        }
+    }
+    Ok(gitlinks)
+}
+
+fn changed_gitlink_paths(
+    root: &Path,
+    rev: &str,
+    current_modules: &BTreeMap<String, ConfiguredSubmodule>,
+    current_gitlinks: &BTreeMap<String, String>,
+) -> Result<BTreeSet<String>> {
+    let sha = resolve_local_rev(root, rev)?;
+    let previous_gitlinks = tree_gitlinks(root, &sha)?;
+    let previous_modules = configured_submodules_at(root, &sha)?
+        .into_iter()
+        .map(|module| (module.path.clone(), module))
+        .collect::<BTreeMap<_, _>>();
+    let mut changed = BTreeSet::new();
+    for (path, object) in current_gitlinks {
+        match previous_gitlinks.get(path) {
+            Some(previous) if previous == object => {}
+            _ => {
+                changed.insert(path.clone());
+            }
+        }
+    }
+    for path in previous_gitlinks.keys() {
+        if !current_gitlinks.contains_key(path) {
+            changed.insert(path.clone());
+        }
+    }
+    for (path, module) in current_modules {
+        match previous_modules.get(path) {
+            Some(previous)
+                if normalize_repository_url(&previous.url)
+                    == normalize_repository_url(&module.url) => {}
+            _ => {
+                changed.insert(path.clone());
+            }
+        }
+    }
+    for path in previous_modules.keys() {
+        if !current_modules.contains_key(path) {
+            changed.insert(path.clone());
+        }
+    }
+    Ok(changed)
+}
+
+fn untracked_git_directories(
+    root: &Path,
+    prefixes: &[String],
+    modules: &BTreeMap<String, ConfiguredSubmodule>,
+    gitlinks: &BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let mut found = BTreeSet::new();
+    for prefix in prefixes {
+        let normalized = prefix.trim_end_matches('/');
+        if validate_relative_path(normalized).is_err() {
+            continue;
+        }
+        let base = root.join(normalized);
+        if !base.exists() {
+            continue;
+        }
+        let walker = WalkDir::new(&base)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.file_name() == ".git" {
+                    return false;
+                }
+                let Ok(relative) = entry.path().strip_prefix(root) else {
+                    return false;
+                };
+                let relative = relative
+                    .to_str()
+                    .map(|value| value.replace('\\', "/"))
+                    .unwrap_or_default();
+                relative.is_empty()
+                    || (!modules.contains_key(&relative) && !gitlinks.contains_key(&relative))
+            });
+        for entry in walker {
+            let entry = entry.with_context(|| {
+                format!("walking untracked Git directories under {}", base.display())
+            })?;
+            if !entry.file_type().is_dir() {
+                continue;
+            }
+            let git_marker = entry.path().join(".git");
+            if fs::symlink_metadata(&git_marker).is_err() {
+                continue;
+            }
+            let Ok(relative) = entry.path().strip_prefix(root) else {
+                continue;
+            };
+            let relative = relative
+                .to_str()
+                .map(|value| value.replace('\\', "/"))
+                .unwrap_or_default();
+            if !relative.is_empty() {
+                found.insert(relative);
+            }
+        }
+    }
+    Ok(found.into_iter().collect())
 }
 
 fn indexed_gitlinks(root: &Path) -> Result<BTreeMap<String, String>> {

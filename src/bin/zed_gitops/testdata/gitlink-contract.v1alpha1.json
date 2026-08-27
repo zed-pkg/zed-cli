@@ -1,0 +1,20 @@
+{
+  "$schema": "./gitlink-contract.schema.json",
+  "apiVersion": "zed.dev/gitops/v1alpha1",
+  "kind": "GitlinkContract",
+  "spec": {
+    "approvedAppPathPrefixes": [
+      "remote/deployments/",
+      "apps/"
+    ],
+    "forbiddenPathSuffixes": [
+      "-infra"
+    ],
+    "allowedGitlinks": [
+      {
+        "path": "remote/deployments/fabrication-server-rs",
+        "repository": "git@github.com:daedalus-fab/fabrication-server.rs.git"
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zed-pkg/zed-cli/blob/main/src/bin/zed_gitops/testdata/gitlink-contract.schema.json",
+  "title": "GitlinkContract",
+  "description": "Versioned, repository-owned allow-list for application gitlinks. Kubernetes and Argo CD policy does not belong here; load that from the target catalog separately.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "spec"],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "apiVersion": {
+      "const": "zed.dev/gitops/v1alpha1"
+    },
+    "kind": {
+      "const": "GitlinkContract"
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvedAppPathPrefixes"],
+      "properties": {
+        "approvedAppPathPrefixes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "forbiddenPathSuffixes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "allowedGitlinks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "repository": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
