@@ -1,0 +1,58 @@
+name: DEN-3097 one-shot native URL fixture repair
+
+on:
+  push:
+    branches:
+      - agent/den-3097-reject-nonlocal-file-authority
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3097-one-shot-portability
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the review branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/den-3097-reject-nonlocal-file-authority
+          persist-credentials: true
+          fetch-depth: 1
+      - name: Replace the platform-specific fixture exactly once
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/fetch.rs')
+          text = path.read_text()
+          old = '''        super::validate_source("file:///tmp/zed-registry").unwrap();
+                  super::validate_source("file://localhost/tmp/zed-registry").unwrap();
+          '''
+          new = '''        let local_registry = tempfile::tempdir().unwrap();
+                  let local_url = reqwest::Url::from_directory_path(local_registry.path()).unwrap();
+                  super::validate_source(local_url.as_str()).unwrap();
+                  let mut localhost_url = local_url;
+                  localhost_url.set_host(Some("localhost")).unwrap();
+                  super::validate_source(localhost_url.as_str()).unwrap();
+          '''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected exactly one fixture block, found {text.count(old)}')
+          path.write_text(text.replace(old, new))
+          PY
+          git diff --check
+          git add src/fetch.rs
+          if git diff --cached --quiet; then
+            echo 'Expected fixture correction was not produced.' >&2
+            exit 1
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test(DEN-3097): use native absolute file URLs'
+          git push origin HEAD:agent/den-3097-reject-nonlocal-file-authority
