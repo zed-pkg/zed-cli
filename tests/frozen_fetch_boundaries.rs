@@ -139,23 +139,66 @@ fn file_registry_query_secret_is_rejected_without_echo_or_output() {
     assert!(!home.exists());
 }
 
-#[test]
-fn non_local_file_registry_authority_fails_closed_without_source_echo() {
+fn assert_file_source_fails_closed_without_echo(source: &str, secret_markers: &[&str]) {
     let root = TempDir::new().unwrap();
     let project = root.path().join("project");
     let outputs = root.path().join("outputs");
     let home = root.path().join("fetch-home-must-remain-absent");
     fs::create_dir(&project).unwrap();
     fs::create_dir(&outputs).unwrap();
-    let source = "file://remote-registry.invalid/private/path";
     write_lock(&project, Some(source.to_string()));
     let output = outputs.join("bundle");
 
     let result = fetch(&project, &home, &output);
     assert!(!result.status.success());
     let message = stderr(&result);
-    assert!(message.contains("not a local absolute path"));
-    assert!(!message.contains(source));
+    assert!(
+        message.contains("not a local absolute path") || message.contains("may not embed"),
+        "unexpected diagnostic: {message}"
+    );
+    assert!(!message.contains(source), "source echoed: {message}");
+    for marker in secret_markers {
+        assert!(
+            !message.contains(marker),
+            "secret marker `{marker}` echoed: {message}"
+        );
+    }
     assert!(!output.exists());
     assert!(!home.exists());
+}
+
+#[test]
+fn non_local_file_registry_authority_fails_closed_without_source_echo() {
+    assert_file_source_fails_closed_without_echo(
+        "file://remote-registry.invalid/private/path",
+        &["remote-registry.invalid", "private/path"],
+    );
+    assert_file_source_fails_closed_without_echo(
+        "file://remote-registry/secret-source",
+        &["remote-registry", "secret-source"],
+    );
+}
+
+#[test]
+fn ipv6_and_loopback_file_authorities_fail_closed_without_source_echo() {
+    assert_file_source_fails_closed_without_echo(
+        "file://127.0.0.1/secret-source",
+        &["127.0.0.1", "secret-source"],
+    );
+    assert_file_source_fails_closed_without_echo(
+        "file://[::1]/secret-source",
+        &["::1", "secret-source"],
+    );
+    assert_file_source_fails_closed_without_echo(
+        "file://[fe80::1]/secret-source",
+        &["fe80::1", "secret-source"],
+    );
+}
+
+#[test]
+fn percent_encoded_remote_file_authority_fails_closed_without_source_echo() {
+    assert_file_source_fails_closed_without_echo(
+        "file://remote%2Dregistry/secret-source",
+        &["remote-registry", "remote%2Dregistry", "secret-source"],
+    );
 }
