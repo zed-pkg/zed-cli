@@ -12,7 +12,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use flags2env::BundledFlags2Env;
 use serde::Serialize;
@@ -25,8 +25,8 @@ use zed_interfaces::registry::VersionMetadata;
 
 use crate::cli::Globals;
 use crate::config::Config;
-use crate::registry::{registry_for, Registry};
-use crate::store::{require_sha256, Store};
+use crate::registry::{Registry, registry_for};
+use crate::store::{Store, require_sha256};
 
 const FETCH_CONTRACT: &str = include_str!("../.fetch-cli-flags.toml");
 const FETCH_SCHEMA: &str = "zed.fetch/v1";
@@ -1086,11 +1086,13 @@ mod tests {
             !home.exists(),
             "fetch must not use the ambient global store"
         );
-        assert!(first
-            .join("packages")
-            .join(&locked.sha256)
-            .join("pkg/lib/value.txt")
-            .is_file());
+        assert!(
+            first
+                .join("packages")
+                .join(&locked.sha256)
+                .join("pkg/lib/value.txt")
+                .is_file()
+        );
 
         let index_text = fs::read_to_string(first.join("metadata/index.json")).unwrap();
         assert!(!index_text.contains(&registry.path().to_string_lossy().to_string()));
@@ -1272,12 +1274,16 @@ mod tests {
             .get_subcommands()
             .find(|subcommand| subcommand.get_name() == "fetch")
             .expect("fetch command must be visible");
-        assert!(fetch
-            .get_arguments()
-            .any(|argument| argument.get_long() == Some("frozen")));
-        assert!(fetch
-            .get_arguments()
-            .any(|argument| argument.get_long() == Some("output")));
+        assert!(
+            fetch
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("frozen"))
+        );
+        assert!(
+            fetch
+                .get_arguments()
+                .any(|argument| argument.get_long() == Some("output"))
+        );
     }
 
     #[test]
