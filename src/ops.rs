@@ -24,6 +24,7 @@ use crate::native::{self, NativeInstallOutcome, NativeRequirement};
 use crate::pack::{self, PackResult};
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, human_size, require_sha256};
+use crate::tools;
 use crate::transaction::ProjectTransaction;
 use crate::vcs::verify_publish_provenance;
 
@@ -1089,12 +1090,16 @@ fn write_resolved_lockfile(
     lock_path: &Path,
     frozen: bool,
     resolved: &BTreeMap<String, VersionMetadata>,
+    tools: &BTreeMap<String, VersionMetadata>,
     registry: &str,
 ) -> Result<()> {
     if frozen {
         return Ok(());
     }
     let mut lock = Lockfile::default();
+    for vm in tools.values() {
+        lock.upsert_tool(locked_from_metadata(vm, registry));
+    }
     for vm in resolved.values() {
         lock.upsert(LockedPackage {
             org: vm.org.clone(),
@@ -1126,11 +1131,27 @@ version = 1
         &lock_path,
         true,
         &BTreeMap::new(),
+        &BTreeMap::new(),
         "file:///temporary-registry-mirror",
     )
     .unwrap();
 
     assert_eq!(fs::read(&lock_path).unwrap(), original);
+}
+
+/// One resolved registry answer as an immutable lockfile entry.
+fn locked_from_metadata(vm: &VersionMetadata, registry: &str) -> LockedPackage {
+    LockedPackage {
+        org: vm.org.clone(),
+        name: vm.name.clone(),
+        version: vm.version.clone(),
+        sha256: vm.sha256.clone(),
+        size: vm.size,
+        format: vm.format,
+        vcs_tag: vm.vcs_tag.clone(),
+        vcs_commit: vm.vcs_commit.clone(),
+        source: registry.to_string(),
+    }
 }
 
 fn locked_version_metadata(locked: &LockedPackage) -> VersionMetadata {
@@ -1224,6 +1245,10 @@ fn install_locked(
     let workspace = find_workspace(project);
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
+    // Declared command-line tools are resolved to an exact version and pinned,
+    // but never materialized here: they live once per version in the central
+    // tool store, not once per project. See `crate::tools` and zed-docs 36.
+    let mut resolved_tools: BTreeMap<String, VersionMetadata> = BTreeMap::new();
 
     if frozen {
         let text = fs::read_to_string(&lock_path)
@@ -1235,6 +1260,9 @@ fn install_locked(
             workspace.as_ref(),
             validate_manifest_requirements,
         )?;
+        if validate_manifest_requirements {
+            tools::validate_frozen_pins(&manifest, &lock)?;
+        }
         workspace_links =
             collect_workspace_links_for_frozen(project, &manifest, workspace.as_ref())?;
         for locked in &lock.packages {
@@ -1354,6 +1382,10 @@ fn install_locked(
                 queue.push_back((sub_org, sub_name, sub_req));
             }
         }
+        // Only the root project's tools are resolved. A dependency's tools are
+        // its authors' business: they never reach a consumer's lockfile, the
+        // way a dependency's `devDependencies` never reach a consumer's tree.
+        resolved_tools = tools::resolve_pins(&manifest, reg.as_ref())?;
     }
 
     // Resolve and validate every package's install metadata before touching the
@@ -1794,7 +1826,13 @@ fn install_locked(
         )
     };
     interactive::confirm(cfg.interactive, &transaction_summary)?;
-    write_resolved_lockfile(&lock_path, frozen, &resolved, &cfg.registry)?;
+    write_resolved_lockfile(
+        &lock_path,
+        frozen,
+        &resolved,
+        &resolved_tools,
+        &cfg.registry,
+    )?;
     store.record_project(project, shas)?;
     transaction.commit()?;
 
@@ -1822,6 +1860,12 @@ fn install_locked(
             InstallMode::Copy => "copied for container-safe layers",
         }
     );
+    // Declared tools are reported, never installed as a side effect: the whole
+    // reason to declare one instead of depending on it is that the project
+    // does not want a copy.
+    if let Some(summary) = tools::install_summary(cfg, project) {
+        println!("{summary}");
+    }
     Ok(InstallOutcome { installed })
 }
 
@@ -2167,6 +2211,7 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
         },
         dependencies: build_dependencies,
         build_dependencies: BTreeMap::new(),
+        tool_dependencies: BTreeMap::new(),
         native_dependencies: NativeDependencies::new(),
         hooks: InstallHooksSection::default(),
         publish: PublishSection::default(),
@@ -2765,10 +2810,20 @@ fn project_modules_dir(project: &Path) -> String {
 /// `<install.dir>/.bin`, default `zed_modules/.bin`) or any command, with that
 /// directory prepended to PATH — npx-style, without polluting the OS PATH
 /// (zed-docs issue #7). Returns the child's exit code.
-pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
+pub fn run(project: &Path, cfg: &Config, command: &str, args: &[String]) -> Result<i32> {
     let modules_dir = project_modules_dir(project);
     let bin_dir = project.join(&modules_dir).join(BIN_DIR);
     let candidate = bin_dir.join(command);
+    // A declared tool resolves to its pinned version in the central store.
+    // Dependencies materialized in the project win, because those are what
+    // this project actually links against; the tool store is the fallback and
+    // still beats whatever the ambient PATH happens to hold, so a pinned tool
+    // is never silently replaced by the machine's own copy.
+    let pinned_tool = if candidate.exists() {
+        None
+    } else {
+        tools::locate(cfg, project, command)
+    };
     let mut paths: Vec<PathBuf> = vec![bin_dir.clone()];
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
@@ -2778,6 +2833,8 @@ pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
     // a normal PATH lookup (with .bin still prepended for the child's tools).
     let program: &Path = if candidate.exists() {
         &candidate
+    } else if let Some(pinned) = &pinned_tool {
+        pinned
     } else {
         Path::new(command)
     };
@@ -2797,9 +2854,20 @@ pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
                         .collect()
                 })
                 .unwrap_or_default();
+            let declared: Vec<String> = tools::declared(cfg, project)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|pin| format!("{} [{}]", pin.key, pin.status()))
+                .collect();
+            if !declared.is_empty() {
+                eprintln!(
+                    "declared tools: {} — `zed tools sync` provisions the pinned versions",
+                    declared.join(", ")
+                );
+            }
             bail!(
                 "failed to run `{command}` — not a hoisted bin in {modules_dir}/{BIN_DIR}/ \
-                 (available: {}) nor on PATH; packages expose binaries via their [bin] table",
+                 (available: {}), not a declared tool, nor on PATH; packages expose binaries via their [bin] table",
                 if available.is_empty() {
                     "none".to_string()
                 } else {

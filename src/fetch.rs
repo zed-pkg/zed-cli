@@ -863,6 +863,7 @@ mod tests {
             version: Lockfile::CURRENT_VERSION,
             packages,
             native_dependencies: Vec::new(),
+            tools: Vec::new(),
             nix_adapters: Vec::new(),
         };
         let bytes = lock.to_toml_string().unwrap().into_bytes();
@@ -878,6 +879,7 @@ mod tests {
             version: Lockfile::CURRENT_VERSION,
             packages,
             native_dependencies: Vec::new(),
+            tools: Vec::new(),
             nix_adapters: Vec::new(),
         };
         let bytes = toml::to_string(&lock).unwrap().into_bytes();

@@ -31,6 +31,7 @@ fn write_lock(project: &Path, source: Option<String>) {
         version: Lockfile::CURRENT_VERSION,
         packages,
         native_dependencies: Vec::new(),
+        tools: Vec::new(),
         nix_adapters: Vec::new(),
     };
     fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();

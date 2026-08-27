@@ -504,6 +504,7 @@ fn generated_manifest(
         workspace: None,
         dependencies,
         build_dependencies: BTreeMap::new(),
+        tool_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),
         hooks: Default::default(),
         build: None,

@@ -145,6 +145,13 @@ aliases = ["allow-ecosystem-mismatch"]
 type = "bool"
 default = "false"
 help = "Install packages whose ecosystem this project does not have."
+
+[flags.tools]
+env = "ZED_PKG_TOOLS"
+aliases = ["tools"]
+type = "string"
+default = "auto"
+help = "Declared [tool-dependencies] policy after install: auto, skip, or require."
 [flags.force]
 env = "ZED_PKG_FORCE"
 aliases = ["force"]
@@ -456,6 +463,18 @@ help = "Generate Bash or Zsh completion from the typed CLI model."
 
 [commands.build]
 help = "Run dependency build hooks."
+
+[commands.tools]
+help = "Inspect and provision the project's declared [tool-dependencies]."
+
+[commands.tools.commands.list]
+help = "Show every declared tool, its pin, and whether the central tool store has it."
+
+[commands.tools.commands.sync]
+help = "Provision the pinned versions this project needs into the central tool store."
+
+[commands.tools.commands.which]
+help = "Print the absolute path `zed run <command>` would execute for a declared tool."
 
 [commands.run]
 help = "Run a dependency executable."

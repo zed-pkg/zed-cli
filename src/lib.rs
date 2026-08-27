@@ -127,6 +127,7 @@ pub mod task_cli;
 pub mod task_runtime;
 pub mod terminal_context;
 pub mod tool_profile;
+pub mod tools;
 pub mod transaction;
 pub mod update;
 pub mod validation;

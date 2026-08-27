@@ -14,3 +14,13 @@ subsystem.
 
 When the zed-interfaces pin changes, replace both files from that exact commit
 and run the validator schema-pin test before committing the dependency update.
+
+## Ahead of the pin: tool dependencies
+
+`manifest.json` carries `tool-dependencies` and `lockfile.json` carries `tool`
+ahead of the pinned revision, matching the types added for zed-docs 36. Both
+additions are shaped exactly as the generator emits them (`build-dependencies`
+and `package` are the models). Replace both files wholesale from the generator
+at the next zed-interfaces pin bump; until then, closing the canonical shapes
+against them is what keeps `zed validate` from rejecting a manifest the Rust
+types accept.

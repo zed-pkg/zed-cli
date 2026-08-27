@@ -1305,10 +1305,10 @@ fn bins_are_hoisted_and_runnable() {
 
     let hoisted = consumer.join(MODULES_DIR).join(".bin").join("hello");
     assert!(hoisted.exists(), "hoisted bin link missing");
-    let code = ops::run(&consumer, "hello", &[]).unwrap();
+    let code = ops::run(&consumer, &cfg, "hello", &[]).unwrap();
     assert_eq!(code, 0, "zed run should propagate a zero exit");
 
-    let missing = ops::run(&consumer, "nope", &[]).unwrap_err();
+    let missing = ops::run(&consumer, &cfg, "nope", &[]).unwrap_err();
     assert!(missing.to_string().contains("available: hello"));
 }
 
@@ -2530,7 +2530,7 @@ fn hoisted_bins_are_container_safe_in_copy_mode() {
             .is_symlink(),
         "copy mode must materialize a real bin file, not a symlink"
     );
-    assert_eq!(ops::run(&consumer, "ctool", &[]).unwrap(), 0);
+    assert_eq!(ops::run(&consumer, &cfg, "ctool", &[]).unwrap(), 0);
 }
 
 #[test]
@@ -2944,7 +2944,7 @@ dir = ".vendor/.zed"
         "bins should hoist into the relocated tree"
     );
     assert_eq!(
-        ops::run(&consumer, "reloctool", &[]).unwrap(),
+        ops::run(&consumer, &cfg, "reloctool", &[]).unwrap(),
         0,
         "zed run must find bins under [install].dir"
     );

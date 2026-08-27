@@ -159,6 +159,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact through a private file registry by default, or through the configured Rust HTTP registry with explicit `--registry-mode server`; then install it into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
+| `zed tools list\|sync\|which` | Inspect, provision, and locate the project's declared `[tool-dependencies]` — CLI tools pinned by this project but stored centrally, one copy per version, instead of once inside every project (`zed install --tools auto\|skip\|require` chooses when they are fetched) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
 | `zed yank <org>/<name>@<version> [--undo]` | Hide a version from fresh resolution (existing lockfiles keep working) |
 | `zed login` / `zed signin` | Sign in (`zed auth login` / `zed auth signin` are identical) |

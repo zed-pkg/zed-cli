@@ -24,6 +24,13 @@
         "$ref": "#/$defs/LockedPackage"
       }
     },
+    "tool": {
+      "description": "Exact pins for `[tool-dependencies]` — command-line tools this project\ndeclares but never materializes into its own tree. They are kept in\ntheir own array rather than mixed into `package` so that every existing\nconsumer of `packages` (materialization, adapter wiring, `node_modules`\nlinking, OCI layering) keeps seeing exactly the set it is supposed to\nplace in the project, and a tool pin can never be linked in by accident.\nThe entry shape is identical, because the identity requirement is\nidentical: one immutable artifact, addressed by sha256.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LockedPackage"
+      }
+    },
     "version": {
       "description": "On-disk lockfile contract version. Version 1 is the only format this\ncrate currently reads or writes.",
       "type": "integer",

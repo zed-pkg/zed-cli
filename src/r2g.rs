@@ -219,6 +219,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         },
         dependencies,
         build_dependencies: BTreeMap::new(),
+        tool_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),
         hooks: Default::default(),
         build: None,

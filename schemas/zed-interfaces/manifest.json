@@ -83,6 +83,13 @@
         "$ref": "#/$defs/TargetSection"
       }
     },
+    "tool-dependencies": {
+      "description": "Command-line tools this package needs **while it is being worked on** —\nlinters, formatters, codegen CLIs, test runners. They are declared here\nso the required version is pinned, reviewable, and reproducible, but\nthey are deliberately *not* materialized into the project tree and not\ninherited by consumers of this package.\n\nThis is the npm `devDependencies`-for-a-CLI case without npm's cost: a\ntool a hundred projects share is one central, version-keyed copy under\n`<ZED_PKG_HOME>/global/profiles/<org>/<name>/<version>`, not a hundred\ncopies under a hundred `node_modules`. See zed-docs 36. Canonical TOML\nkey is `[tool-dependencies]`; the snake_case spelling is accepted on\nread.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "workspace": {
       "description": "Monorepo workspace declaration (zed-docs issue #7); only meaningful in\na workspace root manifest. When present, `zed install` at this root\nresolves every member against one store and writes one `.zpkg.lock`;\nmember→member dependencies link by path instead of going through the\nregistry.",
       "anyOf": [

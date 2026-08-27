@@ -292,6 +292,29 @@ impl Store {
         self.save_refs(&refs)
     }
 
+    /// Move a project's recorded references from one path to another.
+    ///
+    /// zed installs its own profile trees (`zed global install`, and the
+    /// central tool store behind `[tool-dependencies]`) into a staging
+    /// directory and promotes them with a rename, because the version-keyed
+    /// destination is only known once the lockfile exists. The install records
+    /// its references under the staging path, which stops existing at the
+    /// rename — so without this, the very next `prune`/`gc` would treat the
+    /// promoted profile as a deleted project and delete the store entries its
+    /// symlinks point into, leaving a profile of dangling links.
+    ///
+    /// A `from` path with no recorded references is not an error: an install
+    /// that resolved entirely from already-linked packages records nothing.
+    pub fn relocate_project(&self, from: &Path, to: &Path) -> Result<()> {
+        let mut refs = self.load_refs();
+        let Some(sha256s) = refs.projects.remove(&from.to_string_lossy().to_string()) else {
+            return Ok(());
+        };
+        refs.projects
+            .insert(to.to_string_lossy().to_string(), sha256s);
+        self.save_refs(&refs)
+    }
+
     /// Drop refs to deleted projects, then delete unreferenced store
     /// entries and cached artifacts. Returns (entries_removed, bytes_freed).
     pub fn prune(&self) -> Result<(usize, u64)> {
@@ -973,6 +996,50 @@ mod tests {
             !entry.exists(),
             "entry pinned only by a dead project is pruned"
         );
+    }
+
+    #[test]
+    fn promoting_a_staged_profile_keeps_its_store_entries_alive() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path());
+        let sha = "f".repeat(64);
+        let entry = seed_entry(&store, &sha, 7_200);
+
+        // What `zed global install` and tool provisioning do: resolve into a
+        // staging directory, then promote it with a rename.
+        let profiles = home.path().join("global").join("profiles");
+        let staging = profiles.join("staging-1");
+        let promoted = profiles.join("9.12.0");
+        fs::create_dir_all(&staging).unwrap();
+        store.record_project(&staging, vec![sha.clone()]).unwrap();
+        fs::rename(&staging, &promoted).unwrap();
+        store.relocate_project(&staging, &promoted).unwrap();
+
+        let report = store.gc(Duration::from_secs(3_600), false).unwrap();
+        assert_eq!(report.entries_removed, 0);
+        assert!(
+            entry.exists(),
+            "a promoted profile still references its store entries"
+        );
+
+        // And the converse: without the relocation the staging path is a dead
+        // project, which is exactly the bug this guards.
+        store.record_project(&staging, vec![sha.clone()]).unwrap();
+        store.relocate_project(&promoted, &staging).unwrap();
+        fs::remove_dir_all(&promoted).unwrap();
+        let report = store.gc(Duration::from_secs(3_600), false).unwrap();
+        assert_eq!(report.entries_removed, 1);
+        assert!(!entry.exists());
+    }
+
+    #[test]
+    fn relocating_an_unrecorded_project_is_a_no_op() {
+        let home = tempfile::tempdir().unwrap();
+        let store = Store::new(home.path());
+        store
+            .relocate_project(&home.path().join("never"), &home.path().join("promoted"))
+            .unwrap();
+        assert!(store.load_refs().projects.is_empty());
     }
 
     #[test]

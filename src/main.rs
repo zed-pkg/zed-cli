@@ -5,6 +5,7 @@ use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
     AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
+    ToolsCmd,
 };
 use zed_cli::completion;
 use zed_cli::config::Config;
@@ -24,6 +25,7 @@ use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
 use zed_cli::store::Store;
 use zed_cli::task_cli::{self, TaskAction};
+use zed_cli::tools;
 use zed_cli::update;
 use zed_cli::validation;
 
@@ -226,6 +228,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             allow_no_manifest,
             allow_ecosystem_mismatch,
+            tools: tools_policy,
         } => {
             let permissions = ops::InstallPermissions {
                 allow_build,
@@ -233,13 +236,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 allow_install_hooks,
                 native_manager,
             };
-            if git_submodules {
+            // Where the declared tools of the project that was just installed
+            // are read from afterwards. With submodule synchronization the
+            // install is rooted at the superproject, not the cwd.
+            let tool_project = if git_submodules {
+                submodules::find_root(&cwd).unwrap_or_else(|| cwd.clone())
+            } else {
+                cwd.clone()
+            };
+            let installed = if git_submodules {
                 // Git synchronization mutates the submodule worktrees and must
                 // share one descriptor lifetime with manifest/lock resolution,
                 // materialization, adapter wiring, and Git-lock finalization.
                 // Resolve the superproject first so nested invocations and root
                 // invocations converge on one checkout-local ownership path.
-                let project = submodules::find_root(&cwd).unwrap_or_else(|| cwd.clone());
+                let project = tool_project.clone();
                 let operation = if frozen {
                     "synchronize Git submodules and restore frozen Zed dependency graph"
                 } else {
@@ -277,7 +288,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     allow_ecosystem_mismatch,
                 )
                 .map(|_| ())
-            }
+            };
+            installed?;
+            // Declared tools are handled once the install itself is committed:
+            // resolution pinned them, and this is where the pinned versions
+            // reach the central store and the project's shims are refreshed.
+            // Nothing here writes a tool's package tree into the project.
+            tools::after_install(&cfg, &tool_project, tools_policy, install_mode, allow_build)
         }
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
         Cmd::Env { cmd } => match cmd {
@@ -391,10 +408,37 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_install_hooks,
             native_manager.as_deref(),
         ),
-        Cmd::Run { command, args } => match ops::run(&cwd, &command, &args) {
-            Ok(code) => std::process::exit(code),
-            Err(error) => Err(error),
-        },
+        Cmd::Run { command, args } => {
+            // A pin this machine has never fetched is provisioned here rather
+            // than reported: `zed run` after a fresh clone should work, and a
+            // declared tool is exactly the thing whose bytes the project chose
+            // not to carry. Failure is not fatal — the command may well be a
+            // hoisted bin or already on PATH.
+            if let Err(error) = tools::ensure_available(&cfg, &cwd, &command) {
+                eprintln!("warning: could not provision declared tools: {error:#}");
+            }
+            match ops::run(&cwd, &cfg, &command, &args) {
+                Ok(code) => std::process::exit(code),
+                Err(error) => Err(error),
+            }
+        }
+        Cmd::Tools { command } => {
+            let result = match command.unwrap_or(ToolsCmd::List) {
+                ToolsCmd::List => tools::print_list(&cfg, &cwd),
+                ToolsCmd::Sync {
+                    install_mode,
+                    allow_build,
+                } => tools::sync(&cfg, &cwd, install_mode, allow_build).map(|provisioned| {
+                    println!("{provisioned} tool(s) newly provisioned in the central tool store");
+                    0
+                }),
+                ToolsCmd::Which { command } => tools::print_which(&cfg, &cwd, &command),
+            };
+            match result {
+                Ok(code) => std::process::exit(code),
+                Err(error) => Err(error),
+            }
+        }
         Cmd::Gc {
             older_than,
             dry_run,

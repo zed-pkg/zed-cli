@@ -118,6 +118,29 @@ pub enum InstallMode {
     Copy,
 }
 
+/// What `zed install` does about the project's declared `[tool-dependencies]`.
+///
+/// Provisioning a tool never puts a package tree in the project — it writes
+/// one version-keyed copy into the central tool store that every project
+/// pinning that version shares. The policy exists because "reach the network
+/// during install" is a question a laptop and a CI job answer differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+pub enum ToolsPolicy {
+    /// Provision missing pinned tools into the central tool store; report, but
+    /// do not fail on, one that could not be provisioned. The project's own
+    /// dependencies are committed by then, so an unreachable linter must not
+    /// invalidate an otherwise complete install
+    #[default]
+    Auto,
+    /// Resolve and pin declared tools in the lockfile without fetching them.
+    /// `zed tools sync` provisions them later
+    Skip,
+    /// Provision missing pinned tools and fail if any could not be
+    /// provisioned — for CI, where a silently missing linter means the job is
+    /// reporting success it did not earn
+    Require,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AuthProvider {
     /// Use Supabase when its project URL and publishable key are configured,
@@ -179,6 +202,37 @@ pub enum EnvironmentManagerArg {
     Mise,
     /// Import or verify project-local asdf configuration and Zed-owned provenance.
     Asdf,
+}
+
+/// `zed tools` actions. Listing is the default because the common question
+/// about a declared tool is "what does this project want, and do I have it?".
+#[derive(Debug, Subcommand)]
+pub enum ToolsCmd {
+    /// Show every declared tool, its pin, and whether the central tool store
+    /// already has that version
+    List,
+    /// Provision the pinned versions this project needs into the central tool
+    /// store. Versions already present cost nothing and are left alone; PATH
+    /// is never modified
+    Sync {
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_INSTALL_MODE",
+            default_value = "symlink"
+        )]
+        install_mode: InstallMode,
+        /// Run package-declared build hooks. Source-distributed CLIs generally
+        /// need this once so their declared [bin] output exists
+        #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
+        allow_build: bool,
+    },
+    /// Print the absolute path `zed run <command>` would execute for a
+    /// declared tool
+    Which {
+        /// Command name exposed by one of the declared tools
+        command: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -273,6 +327,13 @@ pub enum Cmd {
         /// mismatch is almost always a mistake worth failing on
         #[arg(long, env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH")]
         allow_ecosystem_mismatch: bool,
+        /// What to do about `[tool-dependencies]` once the install itself is
+        /// committed: provision the pinned versions into the central tool
+        /// store (`auto`), leave them pinned but unfetched (`skip`), or
+        /// provision and fail if any could not be (`require`). Declared tools
+        /// are never materialized into the project tree under any policy
+        #[arg(long, value_enum, env = "ZED_PKG_TOOLS", default_value = "auto")]
+        tools: ToolsPolicy,
     },
     /// Remove installed dependency trees while retaining .zpkg.toml and
     /// .zpkg.lock so `zed install --frozen` can restore them exactly.
@@ -331,6 +392,13 @@ pub enum Cmd {
         /// Arguments passed through to the command
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
+    },
+    /// Inspect and provision the project's declared `[tool-dependencies]` —
+    /// command-line tools pinned by this project but stored centrally, one
+    /// copy per version, instead of once inside every project
+    Tools {
+        #[command(subcommand)]
+        command: Option<ToolsCmd>,
     },
     /// Garbage-collect the store, build cache, and downloads by last use,
     /// LRU-style (zed-docs issue #7); store entries still referenced by a
@@ -738,7 +806,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AuthCmd, Cli, Cmd, EnvCmd, R2gRegistryMode};
+    use super::{AuthCmd, Cli, Cmd, EnvCmd, R2gRegistryMode, ToolsPolicy};
 
     #[test]
     fn flat_and_nested_auth_spellings_dispatch_identically() {
@@ -824,6 +892,32 @@ mod tests {
                 other => panic!("unexpected command: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn the_install_tools_policy_defaults_to_auto_and_is_selectable() {
+        let default = Cli::try_parse_from(["zed", "install"]).unwrap();
+        match default.cmd {
+            Cmd::Install { tools, .. } => assert_eq!(tools, ToolsPolicy::Auto),
+            other => panic!("unexpected command: {other:?}"),
+        }
+        for (flag, expected) in [
+            ("skip", ToolsPolicy::Skip),
+            ("require", ToolsPolicy::Require),
+            ("auto", ToolsPolicy::Auto),
+        ] {
+            let cli = Cli::try_parse_from(["zed", "install", "--tools", flag]).unwrap();
+            match cli.cmd {
+                Cmd::Install { tools, .. } => assert_eq!(tools, expected, "{flag}"),
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+        // `--tools` selects a policy for declared tools; `zed tools` is the
+        // separate subcommand that inspects them. One must not shadow the other.
+        assert!(matches!(
+            Cli::try_parse_from(["zed", "tools", "list"]).unwrap().cmd,
+            Cmd::Tools { .. }
+        ));
     }
 
     #[test]

@@ -175,11 +175,25 @@ fn global_install_restore_and_uninstall_are_hermetic_and_lock_exact() {
     assert!(install.status.success(), "{}", stderr(&install));
 
     let zed_home = home.join("zed-home");
-    let profile = zed_home
+    // Profiles are keyed by resolved version (zed-docs 36) so one machine can
+    // hold the versions several projects pin without them colliding.
+    let package_root = zed_home
         .join("global")
         .join("profiles")
         .join("acme")
         .join("tool");
+    let profile = package_root.join("0.1.0");
+    assert!(
+        profile.join(".zed-global-profile.json").is_file(),
+        "the install must land in its version directory, not flat under the package"
+    );
+    assert_eq!(
+        fs::read_to_string(package_root.join("current"))
+            .unwrap()
+            .trim(),
+        "0.1.0",
+        "`zed global install` is what puts a version on PATH, and says so on disk"
+    );
     let lock_path = profile.join(LOCKFILE_FILE);
     let original_lock_text = fs::read_to_string(&lock_path).unwrap();
     let lock = Lockfile::parse(&original_lock_text).unwrap();
@@ -240,6 +254,10 @@ fn global_install_restore_and_uninstall_are_hermetic_and_lock_exact() {
     );
     assert!(uninstall.status.success(), "{}", stderr(&uninstall));
     assert!(!profile.exists());
+    assert!(
+        !package_root.exists(),
+        "removing the last version removes the package root and its PATH marker"
+    );
     assert!(!global_bin.join(installed_command_name()).exists());
 
     let final_list = run_zed(&["global", "list"], &home, &global_bin, &registry_root);

@@ -11,12 +11,6 @@ language = "rust"
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
 
-# The CLI consumes the shared contract and the Rust client target. There is no
-# zed-lib repository today; add it here if that reusable layer is introduced.
-[dependencies]
-"zed-pkg/zed-interfaces" = "^0.1.0"
-"zed-pkg/zed-clients-rust" = "^0.1.0"
-
 [build]
 command = "cargo build --release --locked --bins"
 outputs = ["target/release/zed", "target/release/zed-gitops"]
@@ -29,9 +23,25 @@ zed = "target/release/zed"
 adapter = "none"
 dir = ".vendor/.zed"
 
+# The CLI consumes the shared contract, the Rust client target, and the
+# extracted locking crate. There is no zed-lib repository today; add it here if
+# that reusable layer is introduced.
+#
+# Reconciled from two [dependencies] tables that a merge left side by side in
+# this file, which made it invalid TOML (duplicate key) and failed
+# `zed validate`. The union is taken semantically, not by picking a side:
+#   - zed-interfaces: declared identically by both. Kept.
+#   - zed-lock ^0.1.1: only the later table had it, and zed-pkg/zed-lock is a
+#     real repository with its own .zpkg.toml. Kept.
+#   - the clients edge: one table named the whole polyglot repository
+#     (zed-clients), the other its Rust slice (zed-clients-rust). zed-docs
+#     doc 32 says a CLI declares "the client target for its implementation
+#     language", and this CLI links only the Rust slice, so the target
+#     coordinate is the accurate edge and the umbrella one is dropped rather
+#     than kept alongside it.
 [dependencies]
-"zed-pkg/zed-clients" = "^0.1.0"
 "zed-pkg/zed-interfaces" = "^0.1.0"
+"zed-pkg/zed-clients-rust" = "^0.1.0"
 "zed-pkg/zed-lock" = "^0.1.1"
 
 [publish]

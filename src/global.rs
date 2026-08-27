@@ -3,11 +3,16 @@
 //! Project installs remain the default: dependencies belong beside the project
 //! that declared them. Global installs are an explicit tool-distribution path.
 //! Each requested top-level package gets an isolated manifestless profile under
-//! `<ZED_PKG_HOME>/global/profiles/<org>/<name>`, while its hoisted executables
-//! are copied transactionally into one user bin directory (`~/.local/bin` by
-//! default). Isolated profiles let two tools retain different transitive
-//! dependency versions without turning the global environment into one giant
-//! resolver.
+//! `<ZED_PKG_HOME>/global/profiles/<org>/<name>/<version>`, while the hoisted
+//! executables of the version marked `current` are copied transactionally into
+//! one user bin directory (`~/.local/bin` by default). Isolated profiles let
+//! two tools retain different transitive dependency versions without turning
+//! the global environment into one giant resolver.
+//!
+//! Profiles are keyed by **resolved version** so that this directory can also
+//! serve a project's `[tool-dependencies]` (zed-docs 36). Two projects pinning
+//! `acme/lint` at 8 and 9 get two central copies, not two copies per project;
+//! only one of them is on `PATH`, and `zed run` reaches the other by its pin.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -23,15 +28,19 @@ use sha2::{Digest, Sha256};
 use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::manifest::is_slug;
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MODULES_DIR};
+use zed_interfaces::version::{self, Requirement};
 
-use crate::cli::{Adapter, Globals, InstallMode};
+use crate::cli::{Globals, InstallMode};
 use crate::config::Config;
+use crate::store::Store;
 use crate::{interactive, manifestless};
 
 const GLOBAL_DIR: &str = "global";
 const PROFILES_DIR: &str = "profiles";
 const PROFILE_FILE: &str = ".zed-global-profile.json";
 const STATE_FILE: &str = "managed-bins.json";
+/// Names the version whose executables are exposed on `PATH` for one package.
+const CURRENT_FILE: &str = "current";
 const LOCK_FILE: &str = ".lock";
 
 #[derive(Debug, Args)]
@@ -141,12 +150,33 @@ enum Route {
 struct ProfileMetadata {
     package: String,
     requested: String,
+    /// The resolved version this profile materializes. Absent in profiles
+    /// written before global installs were version-keyed; those keep working
+    /// read-only and are migrated the next time the package is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct Profile {
+    /// Directory holding this profile's own `zed_modules/` tree.
     root: PathBuf,
+    /// Directory holding every installed version of this package.
+    package_root: PathBuf,
+    /// Resolved version, when the on-disk layout records one.
+    version: Option<String>,
+    /// Whether this profile is the one exposing the package on `PATH`.
+    current: bool,
     metadata: ProfileMetadata,
+}
+
+impl Profile {
+    fn label(&self) -> String {
+        match &self.version {
+            Some(version) => format!("{}@{version}", self.metadata.package),
+            None => self.metadata.package.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -188,7 +218,7 @@ struct StagedExecutable {
     desired: DesiredBin,
 }
 
-struct GlobalLock(fs::File);
+pub(crate) struct GlobalLock(fs::File);
 
 impl Drop for GlobalLock {
     fn drop(&mut self) {
@@ -366,7 +396,7 @@ fn global_flag(args: &[OsString]) -> Option<usize> {
         .position(|value| value == OsStr::new("--global"))
 }
 
-fn acquire_lock(cfg: &Config) -> Result<GlobalLock> {
+pub(crate) fn acquire_lock(cfg: &Config) -> Result<GlobalLock> {
     let root = global_root(cfg);
     fs::create_dir_all(&root)?;
     let file = fs::OpenOptions::new()
@@ -447,7 +477,8 @@ fn parse_install_specs(specs: &[String]) -> Result<Vec<(String, String)>> {
     Ok(parsed)
 }
 
-fn profile_root(cfg: &Config, key: &str) -> Result<PathBuf> {
+/// The directory holding every installed version of one global package.
+pub(crate) fn profile_root(cfg: &Config, key: &str) -> Result<PathBuf> {
     let (org, name) = key
         .split_once('/')
         .context("validated package identity contains a slash")?;
@@ -455,6 +486,167 @@ fn profile_root(cfg: &Config, key: &str) -> Result<PathBuf> {
         bail!("invalid global package identity `{key}`");
     }
     Ok(profiles_root(cfg).join(org).join(name))
+}
+
+pub(crate) fn version_dir(package_root: &Path, version: &str) -> Result<PathBuf> {
+    if !is_version_dir_name(version) {
+        bail!("unsafe global profile version `{version}`");
+    }
+    Ok(package_root.join(version))
+}
+
+/// A resolved version becomes a directory name, so it must be an ordinary,
+/// non-traversing, non-hidden file name. Every version scheme zed supports
+/// (semver, calver, opaque tags) already satisfies this. Anything else is
+/// refused rather than sanitized: a silently rewritten version is a wrong pin.
+fn is_version_dir_name(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 128
+        && !version.starts_with('.')
+        && version
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '+'))
+}
+
+/// Is this directory a materialized profile rather than a stray directory?
+pub(crate) fn is_profile_dir(root: &Path) -> bool {
+    root.join(PROFILE_FILE).is_file()
+}
+
+/// A staging directory at the same depth as a version directory, so promoting
+/// it is a plain rename and nothing inside the tree has to be rewritten.
+pub(crate) fn staging_dir(package_root: &Path) -> Result<PathBuf> {
+    unique_sibling(&package_root.join("staging"), "profile-staging")
+}
+
+/// Record what a profile directory holds. Shared with the tool store so a
+/// tool-provisioned profile is indistinguishable on disk from a globally
+/// installed one — the only difference is that nothing marks it `current`.
+pub(crate) fn write_profile_metadata(
+    root: &Path,
+    key: &str,
+    requested: &str,
+    version: &str,
+) -> Result<()> {
+    write_metadata(
+        root,
+        &ProfileMetadata {
+            package: key.to_string(),
+            requested: requested.to_string(),
+            version: Some(version.to_string()),
+        },
+    )
+}
+
+fn read_current_version(package_root: &Path) -> Option<String> {
+    let text = fs::read_to_string(package_root.join(CURRENT_FILE)).ok()?;
+    let version = text.trim().to_string();
+    is_version_dir_name(&version).then_some(version)
+}
+
+fn write_current_version(package_root: &Path, version: &str) -> Result<()> {
+    atomic_write(&package_root.join(CURRENT_FILE), version.as_bytes())
+}
+
+/// The version a profile tree actually installed, read back from the lockfile
+/// the install just wrote. The lock is the only authority here: the requested
+/// requirement was a range, and the directory name must be the exact result.
+fn locked_version_at(root: &Path, key: &str) -> Option<String> {
+    let text = fs::read_to_string(root.join(LOCKFILE_FILE)).ok()?;
+    let lock = Lockfile::parse(&text).ok()?;
+    let (org, name) = key.split_once('/')?;
+    lock.find(org, name).map(|package| package.version.clone())
+}
+
+fn read_metadata(root: &Path, expected: &str) -> Result<ProfileMetadata> {
+    let metadata_path = root.join(PROFILE_FILE);
+    let metadata: ProfileMetadata = serde_json::from_slice(&fs::read(&metadata_path)?)
+        .with_context(|| format!("parsing {}", metadata_path.display()))?;
+    if metadata.package != expected {
+        bail!(
+            "{} claims package `{}` but its managed path requires `{expected}`",
+            metadata_path.display(),
+            metadata.package
+        );
+    }
+    Ok(metadata)
+}
+
+/// Move a pre-version-keying profile into its version directory. Called under
+/// the global lock, before the package is written again.
+fn migrate_legacy_profile(store: &Store, package_root: &Path, key: &str) -> Result<()> {
+    if !package_root.join(PROFILE_FILE).is_file() {
+        return Ok(());
+    }
+    let Some(version) = locked_version_at(package_root, key).filter(|v| is_version_dir_name(v))
+    else {
+        // Nothing on disk identifies which version this tree holds, so it
+        // cannot be given a version-keyed home. Dropping it is safe: every
+        // byte is re-fetchable from the content-addressed store.
+        remove_path_if_present(package_root)?;
+        return Ok(());
+    };
+    let staging = unique_sibling(package_root, "profile-migrate")?;
+    fs::rename(package_root, &staging).with_context(|| {
+        format!(
+            "staging legacy global profile {} at {}",
+            package_root.display(),
+            staging.display()
+        )
+    })?;
+    fs::create_dir_all(package_root)?;
+    let destination = version_dir(package_root, &version)?;
+    if let Err(error) = fs::rename(&staging, &destination) {
+        let _ = remove_path_if_present(package_root);
+        let _ = fs::rename(&staging, package_root);
+        return Err(error).with_context(|| {
+            format!(
+                "promoting legacy global profile to {}",
+                destination.display()
+            )
+        });
+    }
+    // A legacy profile recorded its store references under the package root
+    // it used to occupy; that path is now the parent directory, not a project.
+    store.relocate_project(package_root, &destination)?;
+    write_current_version(package_root, &version)
+}
+
+/// Re-point (or drop) a package's `current` marker after versions were
+/// removed. A package that had a marker keeps one as long as any version
+/// remains — highest wins, using the installer's own version comparison. A
+/// package that never had one (provisioned only to satisfy project
+/// `[tool-dependencies]`) does not acquire one here.
+fn repoint_current_version(package_root: &Path) -> Result<()> {
+    if !package_root.is_dir() {
+        return Ok(());
+    }
+    let mut versions = Vec::new();
+    for entry in fs::read_dir(package_root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if is_version_dir_name(&name) && entry.path().join(PROFILE_FILE).is_file() {
+            versions.push(name);
+        }
+    }
+    if versions.is_empty() {
+        return remove_path_if_present(package_root);
+    }
+    match read_current_version(package_root) {
+        Some(current) if versions.contains(&current) => Ok(()),
+        Some(_) => {
+            versions.sort();
+            let highest = version::resolve(&Requirement::parse("*"), &versions)
+                .map(str::to_string)
+                .or_else(|| versions.last().cloned())
+                .context("a remaining global profile version is selectable")?;
+            write_current_version(package_root, &highest)
+        }
+        None => Ok(()),
+    }
 }
 
 fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i32> {
@@ -465,20 +657,16 @@ fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i
             bail!("no global package profiles are installed");
         }
         for profile in &profiles {
-            manifestless::install(
+            // The profile directory is the project: never let ancestor
+            // discovery walk out of <ZED_PKG_HOME> into the user's home.
+            manifestless::install_exact_root(
                 &profile.root,
                 cfg,
                 &[],
                 true,
                 options.install_mode,
-                Adapter::None,
                 options.allow_build,
-                false,
-                false,
-                None,
                 options.target.as_deref(),
-                true,
-                true,
             )?;
         }
         let profiles = discover_profiles(cfg)?;
@@ -501,42 +689,60 @@ fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i
 
     let requested = parse_install_specs(&options.specs)?;
     let mut staged_profiles = Vec::with_capacity(requested.len());
+    let mut staging_dirs: Vec<PathBuf> = Vec::new();
     let result = (|| -> Result<(usize, usize)> {
         for (spec, key) in &requested {
-            let root = profile_root(cfg, key)?;
-            staged_profiles.push(stage_profile_replacement(&root)?);
-            manifestless::install(
-                &root,
+            let package_root = profile_root(cfg, key)?;
+            migrate_legacy_profile(&Store::new(&cfg.home), &package_root, key)?;
+            fs::create_dir_all(&package_root)?;
+            // Resolve into a staging directory first: the version-keyed home
+            // is only known once the lockfile exists, and staging sits at the
+            // same depth as that home so promotion is a plain rename.
+            let staging = staging_dir(&package_root)?;
+            fs::create_dir_all(&staging)?;
+            staging_dirs.push(staging.clone());
+            manifestless::install_exact_root(
+                &staging,
                 cfg,
                 std::slice::from_ref(spec),
                 false,
                 options.install_mode,
-                Adapter::None,
                 options.allow_build,
-                false,
-                false,
-                None,
                 options.target.as_deref(),
-                true,
-                true,
             )?;
-            write_metadata(
-                &root,
-                &ProfileMetadata {
-                    package: key.clone(),
-                    requested: spec.clone(),
-                },
-            )?;
-            if profile_bins(&root)?.is_empty() {
+            let version = locked_version_at(&staging, key).with_context(|| {
+                format!("`{key}` did not record a resolved version in {LOCKFILE_FILE}")
+            })?;
+            write_profile_metadata(&staging, key, spec, &version)?;
+            if profile_bins(&staging)?.is_empty() {
                 eprintln!(
-                    "warning: {key} currently exposes no built [bin] entries in this profile; if it declares a [build] step, reinstall with --allow-build"
+                    "warning: {key}@{version} currently exposes no built [bin] entries in this profile; if it declares a [build] step, reinstall with --allow-build"
                 );
             }
+            let root = version_dir(&package_root, &version)?;
+            staged_profiles.push(stage_profile_replacement(&root)?);
+            remove_path_if_present(&root)?;
+            fs::rename(&staging, &root)
+                .with_context(|| format!("promoting global profile to {}", root.display()))?;
+            // The install recorded its store references under the staging
+            // path, which no longer exists. Follow them to the promoted home
+            // or the next `zed gc` prunes the entries this profile links into.
+            Store::new(&cfg.home).relocate_project(&staging, &root)?;
+            write_current_version(&package_root, &version)?;
         }
         let profiles = discover_profiles(cfg)?;
         let installed = sync_bins(cfg, bin_dir, &profiles)?;
         Ok((profiles.len(), installed))
     })();
+
+    for staging in &staging_dirs {
+        if let Err(error) = remove_path_if_present(staging) {
+            eprintln!(
+                "warning: could not remove global profile staging directory {}: {error:#}",
+                staging.display()
+            );
+        }
+    }
 
     match result {
         Ok((profile_count, installed)) => {
@@ -569,7 +775,7 @@ fn uninstall(cfg: &Config, bin_dir: &Path, options: GlobalUninstallArgs) -> Resu
     for profile in &profiles {
         interactive::confirm(
             cfg.interactive,
-            &format!("remove global package profile {}", profile.metadata.package),
+            &format!("remove global package profile {}", profile.label()),
         )?;
     }
 
@@ -577,6 +783,15 @@ fn uninstall(cfg: &Config, bin_dir: &Path, options: GlobalUninstallArgs) -> Resu
     let result = (|| -> Result<(usize, usize)> {
         for profile in &profiles {
             staged_profiles.push(stage_profile_removal(&profile.root)?);
+        }
+        // Removing one version can orphan the `current` marker, so every
+        // touched package is re-pointed (or dropped) before PATH is synced.
+        let mut touched: BTreeSet<PathBuf> = BTreeSet::new();
+        for profile in &profiles {
+            touched.insert(profile.package_root.clone());
+        }
+        for package_root in &touched {
+            repoint_current_version(package_root)?;
         }
         let remaining = discover_profiles(cfg)?;
         let installed = sync_bins(cfg, bin_dir, &remaining)?;
@@ -587,7 +802,7 @@ fn uninstall(cfg: &Config, bin_dir: &Path, options: GlobalUninstallArgs) -> Resu
         Ok((remaining, installed)) => {
             discard_profile_backups(&staged_profiles);
             for profile in &profiles {
-                println!("uninstalled {}", profile.metadata.package);
+                println!("uninstalled {}", profile.label());
             }
             println!(
                 "{remaining} global package profile(s) remain; {installed} executable(s) managed in {}",
@@ -612,13 +827,18 @@ fn list(cfg: &Config, bin_dir: &Path) -> Result<i32> {
         println!("no global package profiles installed");
     }
     for profile in profiles {
-        let version = locked_root_version(&profile).unwrap_or_else(|| "unknown".to_string());
+        let version = profile
+            .version
+            .clone()
+            .or_else(|| locked_root_version(&profile))
+            .unwrap_or_else(|| "unknown".to_string());
         let mut bins: Vec<String> = profile_bins(&profile.root)?.into_keys().collect();
         bins.sort();
         println!(
-            "{}@{} (requested `{}`; bins: {})",
+            "{}@{}{} (requested `{}`; bins: {})",
             profile.metadata.package,
             version,
+            if profile.current { " [on PATH]" } else { "" },
             profile.metadata.requested,
             if bins.is_empty() {
                 "none".to_string()
@@ -631,31 +851,38 @@ fn list(cfg: &Config, bin_dir: &Path) -> Result<i32> {
     Ok(0)
 }
 
+/// Select installed profiles by identity. `org/name` selects every installed
+/// version of that package; `org/name@<version>` selects one, and the version
+/// there is an exact installed version, not a range — these selectors address
+/// what is already on disk rather than asking the registry anything.
 fn selected_profiles(cfg: &Config, specs: &[String]) -> Result<Vec<Profile>> {
     let profiles = discover_profiles(cfg)?;
     if specs.is_empty() {
         return Ok(profiles);
     }
-    let mut by_key: BTreeMap<String, Profile> = profiles
-        .into_iter()
-        .map(|profile| (profile.metadata.package.clone(), profile))
-        .collect();
     let mut selected = Vec::new();
     let mut seen = BTreeSet::new();
     for spec in specs {
-        let (key, requirement) = parse_package_spec(spec)?;
-        if requirement.is_some() {
-            bail!(
-                "global profile selectors must be package identities without versions (got `{spec}`)"
-            );
+        let (key, requested_version) = parse_package_spec(spec)?;
+        if !seen.insert(spec.clone()) {
+            bail!("global package `{spec}` was selected more than once");
         }
-        if !seen.insert(key.clone()) {
-            bail!("global package `{key}` was selected more than once");
+        let matched: Vec<Profile> = profiles
+            .iter()
+            .filter(|profile| profile.metadata.package == key)
+            .filter(|profile| match &requested_version {
+                Some(version) => profile.version.as_deref() == Some(version.as_str()),
+                None => true,
+            })
+            .cloned()
+            .collect();
+        if matched.is_empty() {
+            match &requested_version {
+                Some(version) => bail!("global package `{key}@{version}` is not installed"),
+                None => bail!("global package `{key}` is not installed"),
+            }
         }
-        let profile = by_key
-            .remove(&key)
-            .with_context(|| format!("global package `{key}` is not installed"))?;
-        selected.push(profile);
+        selected.extend(matched);
     }
     Ok(selected)
 }
@@ -684,27 +911,65 @@ fn discover_profiles(cfg: &Config) -> Result<Vec<Profile>> {
             if !is_slug(&package_name) {
                 continue;
             }
-            let metadata_path = package.path().join(PROFILE_FILE);
-            if !metadata_path.is_file() {
+            let package_root = package.path();
+            let expected = format!("{org_name}/{package_name}");
+
+            // Pre-version-keying layout: one unversioned profile directly
+            // under the package. Still readable so an existing global install
+            // keeps working; installing that package again migrates it.
+            if package_root.join(PROFILE_FILE).is_file() {
+                let metadata = read_metadata(&package_root, &expected)?;
+                let version = metadata
+                    .version
+                    .clone()
+                    .or_else(|| locked_version_at(&package_root, &expected));
+                profiles.push(Profile {
+                    root: package_root.clone(),
+                    package_root,
+                    version,
+                    current: true,
+                    metadata,
+                });
                 continue;
             }
-            let metadata: ProfileMetadata = serde_json::from_slice(&fs::read(&metadata_path)?)
-                .with_context(|| format!("parsing {}", metadata_path.display()))?;
-            let expected = format!("{org_name}/{package_name}");
-            if metadata.package != expected {
-                bail!(
-                    "{} claims package `{}` but its managed path requires `{expected}`",
-                    metadata_path.display(),
-                    metadata.package
-                );
+
+            let marked = read_current_version(&package_root);
+            let mut versions = Vec::new();
+            for entry in fs::read_dir(&package_root)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
+                let version = entry.file_name().to_string_lossy().to_string();
+                if !is_version_dir_name(&version) {
+                    continue;
+                }
+                let version_root = entry.path();
+                if !version_root.join(PROFILE_FILE).is_file() {
+                    continue;
+                }
+                let mut metadata = read_metadata(&version_root, &expected)?;
+                if metadata.version.is_none() {
+                    metadata.version = Some(version.clone());
+                }
+                versions.push(Profile {
+                    root: version_root,
+                    package_root: package_root.clone(),
+                    current: marked.as_deref() == Some(version.as_str()),
+                    version: Some(version),
+                    metadata,
+                });
             }
-            profiles.push(Profile {
-                root: package.path(),
-                metadata,
-            });
+            // No fallback when the marker is missing: `zed global install` is
+            // the only thing that puts a package on PATH, and it always writes
+            // one. A version provisioned to satisfy a project's
+            // `[tool-dependencies]` must never drift onto PATH on its own.
+            profiles.extend(versions);
         }
     }
-    profiles.sort_by(|left, right| left.metadata.package.cmp(&right.metadata.package));
+    profiles.sort_by(|left, right| {
+        (&left.metadata.package, &left.version).cmp(&(&right.metadata.package, &right.version))
+    });
     Ok(profiles)
 }
 
@@ -802,10 +1067,7 @@ fn write_metadata(root: &Path, metadata: &ProfileMetadata) -> Result<()> {
 }
 
 fn locked_root_version(profile: &Profile) -> Option<String> {
-    let text = fs::read_to_string(profile.root.join(LOCKFILE_FILE)).ok()?;
-    let lock = Lockfile::parse(&text).ok()?;
-    let (org, name) = profile.metadata.package.split_once('/')?;
-    lock.find(org, name).map(|package| package.version.clone())
+    locked_version_at(&profile.root, &profile.metadata.package)
 }
 
 fn profile_bins(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
@@ -853,13 +1115,13 @@ fn collect_desired_bins(profiles: &[Profile]) -> Result<BTreeMap<String, Desired
                 bail!(
                     "global bin collision for `{destination}` between {} and {}; uninstall one package or use separate ZED_PKG_GLOBAL_BIN_DIR values",
                     existing.package,
-                    profile.metadata.package
+                    profile.label()
                 );
             }
             desired.insert(
                 destination,
                 DesiredBin {
-                    package: profile.metadata.package.clone(),
+                    package: profile.label(),
                     sha256: hash_file(&source)?,
                     source,
                 },
@@ -893,7 +1155,15 @@ fn load_state(cfg: &Config) -> Result<ManagedState> {
 }
 
 fn sync_bins(cfg: &Config, bin_dir: &Path, profiles: &[Profile]) -> Result<usize> {
-    let desired = collect_desired_bins(profiles)?;
+    // Only the version a package currently points at owns PATH entries. Other
+    // installed versions stay on disk for the projects that pin them and are
+    // reached by pin (`zed run`, `zed tools`), never by shadowing PATH.
+    let exposed: Vec<Profile> = profiles
+        .iter()
+        .filter(|profile| profile.current)
+        .cloned()
+        .collect();
+    let desired = collect_desired_bins(&exposed)?;
     let previous = load_state(cfg)?;
 
     let mut stale_owned = Vec::new();
@@ -1136,7 +1406,7 @@ fn path_present(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-fn remove_path_if_present(path: &Path) -> Result<()> {
+pub(crate) fn remove_path_if_present(path: &Path) -> Result<()> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1202,17 +1472,36 @@ mod tests {
     }
 
     fn add_profile(home: &Path, key: &str, bin_name: &str, contents: &[u8]) -> Profile {
+        add_versioned_profile(home, key, "1.0.0", bin_name, contents)
+    }
+
+    fn add_versioned_profile(
+        home: &Path,
+        key: &str,
+        version: &str,
+        bin_name: &str,
+        contents: &[u8],
+    ) -> Profile {
         let cfg = config(home);
-        let root = profile_root(&cfg, key).unwrap();
+        let package_root = profile_root(&cfg, key).unwrap();
+        let root = version_dir(&package_root, version).unwrap();
         let bin = root.join(MODULES_DIR).join(BIN_DIR).join(bin_name);
         fs::create_dir_all(bin.parent().unwrap()).unwrap();
         fs::write(&bin, contents).unwrap();
         let metadata = ProfileMetadata {
             package: key.to_string(),
             requested: key.to_string(),
+            version: Some(version.to_string()),
         };
         write_metadata(&root, &metadata).unwrap();
-        Profile { root, metadata }
+        write_current_version(&package_root, version).unwrap();
+        Profile {
+            root,
+            package_root,
+            version: Some(version.to_string()),
+            current: true,
+            metadata,
+        }
     }
 
     #[test]
@@ -1319,6 +1608,110 @@ mod tests {
         rollback_staged_profiles(&[staged]).unwrap();
         assert_eq!(fs::read(root.join("previous")).unwrap(), b"preserve me");
         assert!(!root.join("new").exists());
+    }
+
+    #[test]
+    fn versions_coexist_and_only_the_current_one_reaches_path() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        let bin_dir = home.path().join("path-bin");
+        add_versioned_profile(home.path(), "acme/lint", "8.57.0", "lint", b"eight");
+        add_versioned_profile(home.path(), "acme/lint", "9.12.0", "lint", b"nine");
+
+        let profiles = discover_profiles(&cfg).unwrap();
+        assert_eq!(profiles.len(), 2, "both versions stay installed centrally");
+        assert_eq!(
+            profiles.iter().filter(|profile| profile.current).count(),
+            1,
+            "exactly one version owns the PATH entry"
+        );
+
+        // Two versions of one tool would collide on the same bin name if both
+        // were exposed; syncing must select rather than fail.
+        assert_eq!(sync_bins(&cfg, &bin_dir, &profiles).unwrap(), 1);
+        assert_eq!(
+            fs::read(bin_dir.join(destination_name("lint"))).unwrap(),
+            b"nine"
+        );
+    }
+
+    #[test]
+    fn version_selectors_address_exactly_one_installed_version() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        add_versioned_profile(home.path(), "acme/lint", "8.57.0", "lint", b"eight");
+        add_versioned_profile(home.path(), "acme/lint", "9.12.0", "lint", b"nine");
+
+        let all = selected_profiles(&cfg, &["acme/lint".to_string()]).unwrap();
+        assert_eq!(all.len(), 2);
+        let one = selected_profiles(&cfg, &["acme/lint@8.57.0".to_string()]).unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].version.as_deref(), Some("8.57.0"));
+        assert!(selected_profiles(&cfg, &["acme/lint@1.0.0".to_string()]).is_err());
+    }
+
+    #[test]
+    fn removing_the_current_version_repoints_rather_than_orphaning_path() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        add_versioned_profile(home.path(), "acme/lint", "8.57.0", "lint", b"eight");
+        let newer = add_versioned_profile(home.path(), "acme/lint", "9.12.0", "lint", b"nine");
+        let package_root = profile_root(&cfg, "acme/lint").unwrap();
+        assert_eq!(
+            read_current_version(&package_root).as_deref(),
+            Some("9.12.0")
+        );
+
+        remove_path_if_present(&newer.root).unwrap();
+        repoint_current_version(&package_root).unwrap();
+        assert_eq!(
+            read_current_version(&package_root).as_deref(),
+            Some("8.57.0")
+        );
+
+        let remaining = profile_root(&cfg, "acme/lint").unwrap().join("8.57.0");
+        remove_path_if_present(&remaining).unwrap();
+        repoint_current_version(&package_root).unwrap();
+        assert!(!package_root.exists(), "an empty package root is removed");
+    }
+
+    #[test]
+    fn legacy_flat_profiles_migrate_into_their_version_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        let package_root = profile_root(&cfg, "acme/lint").unwrap();
+        let bin = package_root.join(MODULES_DIR).join(BIN_DIR).join("lint");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, b"legacy").unwrap();
+        write_metadata(
+            &package_root,
+            &ProfileMetadata {
+                package: "acme/lint".to_string(),
+                requested: "acme/lint".to_string(),
+                version: None,
+            },
+        )
+        .unwrap();
+
+        // Readable before migration, so an existing install keeps working.
+        let before = discover_profiles(&cfg).unwrap();
+        assert_eq!(before.len(), 1);
+        assert!(before[0].current);
+        assert_eq!(before[0].version, None);
+
+        // No lockfile means nothing identifies the version; the tree is
+        // dropped rather than filed under a guess.
+        migrate_legacy_profile(&Store::new(home.path()), &package_root, "acme/lint").unwrap();
+        assert!(discover_profiles(&cfg).unwrap().is_empty());
+    }
+
+    #[test]
+    fn version_directory_names_refuse_traversal() {
+        let root = Path::new("/profiles/acme/lint");
+        assert!(version_dir(root, "1.2.3").is_ok());
+        for invalid in ["..", ".", "../../etc", "1.2.3/../..", "", ".hidden"] {
+            assert!(version_dir(root, invalid).is_err(), "accepted {invalid}");
+        }
     }
 
     #[test]
