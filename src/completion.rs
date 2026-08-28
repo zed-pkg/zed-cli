@@ -126,6 +126,8 @@ mod tests {
             "--isolated-home",
             "--catalog",
             "--offline",
+            "--schema",
+            "--changed-from",
         ] {
             assert!(script.contains(option), "missing option {option:?}");
         }
@@ -195,6 +197,8 @@ mod tests {
             "--isolated-home",
             "--catalog",
             "--offline",
+            "--schema",
+            "--changed-from",
         ] {
             assert!(script.contains(option), "missing option {option:?}");
         }

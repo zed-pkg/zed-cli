@@ -10,7 +10,7 @@ Install or build both binaries into the same bin directory:
 ```console
 cargo install --path . --bins
 zed gitops validate --root . --offline --strict
-zed gitops validate --root . --offline --strict --format json
+zed gitops validate --root . --offline --changed-from origin/main --format json --strict
 zed gitops validate --root . --offline --strict --format sarif
 ```
 
@@ -31,6 +31,22 @@ command line. A literal `--` ends global-option extraction and passes every
 remaining argument to the external command unchanged.
 
 ## Evidence checked
+
+Generic gitlink contract (loaded from the target repository, not hardcoded
+Kubernetes/Argo policy):
+
+- `catalog/gitops/gitlink-contract.v1alpha1.json` when present, or `--schema`;
+- `.gitmodules` and indexed mode-160000 gitlinks are parsed as local evidence;
+- application gitlinks must live under `spec.approvedAppPathPrefixes`;
+- gitlinks under those prefixes that are missing from `spec.allowedGitlinks`
+  fail as unexpected;
+- untracked directories that contain a `.git` marker under an approved prefix
+  fail as submodule impersonators;
+- `--changed-from` compares the current gitlink set to an already-fetched local
+  ref such as `origin/main` and records the changed paths.
+
+Catalog/Argo checks remain repository-owned JSON under `--catalog` and are
+skipped when that directory is absent:
 
 - catalog JSON is regular UTF-8 data beneath the selected repository root;
 - unknown fields fail under `--strict`;
@@ -63,5 +79,8 @@ current validation implementation. Follow-up work should expose the existing
 `zed-pkg` library surface so the validator does not maintain parallel generic
 Git parsing.
 
-The deployment-specific schema and policy remain versioned in `k8s-cluster`;
-Zed remains the validator UX rather than the deployment controller.
+The deployment-specific application catalog and Argo policy remain versioned in
+the target repository (`k8s-cluster` today). The gitlink allow-list is a
+separate versioned schema the target repo owns; a fixture copy lives in
+`src/bin/zed_gitops/testdata/`. Zed remains the validator UX rather than the
+deployment controller.

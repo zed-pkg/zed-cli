@@ -1,0 +1,3 @@
+[submodule "remote/deployments/daedalus-infra"]
+	path = remote/deployments/daedalus-infra
+	url = git@github.com:daedalus-fab/daedalus-infra.git

@@ -1,0 +1,9 @@
+[submodule "remote/deployments/fabrication-server-rs"]
+	path = remote/deployments/fabrication-server-rs
+	url = git@github.com:daedalus-fab/fabrication-server.rs.git
+[submodule "remote/deployments/rogue-app"]
+	path = remote/deployments/rogue-app
+	url = git@github.com:example/rogue-app.git
+[submodule "remote/libs/pg-defs"]
+	path = remote/libs/pg-defs
+	url = git@github.com:oresoftware/pg-defs.git

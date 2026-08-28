@@ -79,7 +79,10 @@ been verified and written.
 
 `file://` lock sources must resolve to local absolute paths. User information,
 passwords, query strings, fragments, and non-local authorities fail closed, and
-diagnostics do not echo the rejected source literal.
+diagnostics do not echo the rejected source literal. The only accepted file
+authority is the URL-parser domain `localhost` (or no host at all); loopback
+IP literals are rejected before `Url::to_file_path()` so Windows cannot
+reinterpret them as UNC.
 
 ## Nix use
 

@@ -34,7 +34,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
@@ -76,7 +76,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
       - name: Build a container with the zed CLI
         run: |
@@ -272,7 +272,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -453,7 +453,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
       - name: Build the real CLI container
         run: |
@@ -700,7 +700,7 @@ jobs:
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - name: Install Zsh

@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
           persist-credentials: false
 
@@ -292,7 +292,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 4f7a911694e3d0ed7c107b6787c7ed12b88e1d37
+          ref: 3524038600e2a864617f82be8f104e688d80d23e
           path: zed-interfaces
           persist-credentials: false
       - name: Build with a version-pinned Rust toolchain
