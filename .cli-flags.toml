@@ -624,3 +624,82 @@ help = "Download cache operations."
 
 [commands.cache.commands.clean]
 help = "Clean the download cache."
+
+
+[flags.classpath]
+env = "CLASSPATH"
+long = "classpath"
+type = "string"
+help = "Runtime environment key CLASSPATH."
+
+[flags.comspec]
+env = "COMSPEC"
+long = "comspec"
+type = "string"
+help = "Runtime environment key COMSPEC."
+
+[flags.in-nix-shell]
+env = "IN_NIX_SHELL"
+long = "in-nix-shell"
+type = "string"
+help = "Runtime environment key IN_NIX_SHELL."
+
+[flags.nix-build-top]
+env = "NIX_BUILD_TOP"
+long = "nix-build-top"
+type = "string"
+help = "Runtime environment key NIX_BUILD_TOP."
+
+[flags.pythonpath]
+env = "PYTHONPATH"
+long = "pythonpath"
+type = "string"
+help = "Runtime environment key PYTHONPATH."
+
+[flags.xdg-config-home]
+env = "XDG_CONFIG_HOME"
+long = "xdg-config-home"
+type = "string"
+help = "Runtime environment key XDG_CONFIG_HOME."
+
+[flags.zed-pkg-auth-password]
+env = "ZED_PKG_AUTH_PASSWORD"
+long = "zed-pkg-auth-password"
+type = "string"
+help = "Runtime environment key ZED_PKG_AUTH_PASSWORD."
+
+[flags.zed-pkg-install-concurrency]
+env = "ZED_PKG_INSTALL_CONCURRENCY"
+long = "zed-pkg-install-concurrency"
+type = "string"
+help = "Runtime environment key ZED_PKG_INSTALL_CONCURRENCY."
+
+[flags.zed-pkg-layout-config]
+env = "ZED_PKG_LAYOUT_CONFIG"
+long = "zed-pkg-layout-config"
+type = "string"
+help = "Runtime environment key ZED_PKG_LAYOUT_CONFIG."
+
+[flags.zed-pkg-max-artifact-bytes]
+env = "ZED_PKG_MAX_ARTIFACT_BYTES"
+long = "zed-pkg-max-artifact-bytes"
+type = "string"
+help = "Runtime environment key ZED_PKG_MAX_ARTIFACT_BYTES."
+
+[flags.zed-pkg-max-binary-entries]
+env = "ZED_PKG_MAX_BINARY_ENTRIES"
+long = "zed-pkg-max-binary-entries"
+type = "string"
+help = "Runtime environment key ZED_PKG_MAX_BINARY_ENTRIES."
+
+[flags.zed-pkg-max-registry-bytes]
+env = "ZED_PKG_MAX_REGISTRY_BYTES"
+long = "zed-pkg-max-registry-bytes"
+type = "string"
+help = "Runtime environment key ZED_PKG_MAX_REGISTRY_BYTES."
+
+[flags.zed-pkg-max-unpacked-bytes]
+env = "ZED_PKG_MAX_UNPACKED_BYTES"
+long = "zed-pkg-max-unpacked-bytes"
+type = "string"
+help = "Runtime environment key ZED_PKG_MAX_UNPACKED_BYTES."
