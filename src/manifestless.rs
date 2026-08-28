@@ -333,6 +333,7 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
         build_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),
         hooks: Default::default(),
+        lifecycle: Default::default(),
         build: None,
         overrides: Default::default(),
         bin: BTreeMap::new(),
