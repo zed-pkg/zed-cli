@@ -16,6 +16,6 @@ concurrency:
 
 jobs:
   source-policy:
-    uses: ores-otel/.github/.github/workflows/source-policy-lint.yml@a9f82646e72c698ca7f99773c6b4d96395bb9020
+    uses: ores-otel/.github/.github/workflows/source-policy-lint.yml@34a36017bfa4da0a820f4a82f8d206958296ebbb
     permissions:
       contents: read
