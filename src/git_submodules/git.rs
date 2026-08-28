@@ -348,6 +348,7 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
             keywords: vec![GENERATED_MARKER.to_string()],
             language: Default::default(),
             ecosystem: Default::default(),
+            artifacts: Default::default(),
         },
         workspace: None,
         dependencies: BTreeMap::new(),
