@@ -773,6 +773,8 @@ mod tests {
                 download_url: "https://example.invalid/artifact".to_string(),
                 published_at: "1970-01-01T00:00:00Z".to_string(),
                 yanked: false,
+                mirrors: Vec::new(),
+                signatures: Vec::new(),
             };
             self.candidates.insert(
                 (key.to_string(), version_text.to_string()),
@@ -799,6 +801,8 @@ mod tests {
                     latest: None,
                     tags: Vec::new(),
                     versions: Vec::new(),
+                    mirrors: Vec::new(),
+                    signing_keys: Vec::new(),
                 });
             package.versions.push(version_text.to_string());
             version::sort_desc(&mut package.versions);

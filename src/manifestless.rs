@@ -25,7 +25,6 @@ use zed_interfaces::version::{self, VersionScheme};
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
 use crate::ops;
-use crate::registry::registry_for;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectSelection {
@@ -218,7 +217,7 @@ fn resolve_requested_specs(
     specs: &BTreeMap<String, Option<String>>,
 ) -> Result<BTreeMap<String, String>> {
     let registry = if specs.values().any(Option::is_none) {
-        Some(registry_for(&cfg.registry)?)
+        Some(cfg.open_registry()?)
     } else {
         None
     };

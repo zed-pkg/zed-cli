@@ -24,6 +24,7 @@ use zed_interfaces::version::{self, Requirement};
 use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::config::{Config, read_manifest};
+use crate::mirrored_registry::{MirrorContext, TrustAnchors};
 use crate::pack::sha256_file;
 use crate::registry::{Registry, registry_for};
 use crate::store::{Store, require_sha256};
@@ -125,7 +126,7 @@ struct FetchPool {
 }
 
 impl FetchPool {
-    fn new(concurrency: usize, registry_url: &str, home: &Path) -> Result<Self> {
+    fn new(concurrency: usize, context: &MirrorContext, home: &Path) -> Result<Self> {
         let queue = Arc::new(TaskQueue::default());
         let (result_tx, results) = mpsc::channel();
         let mut workers = Vec::with_capacity(concurrency);
@@ -133,11 +134,14 @@ impl FetchPool {
         for index in 0..concurrency {
             let worker_queue = Arc::clone(&queue);
             let worker_tx = result_tx.clone();
-            let worker_registry = registry_url.to_string();
+            // Each worker builds its own client, so the fallback policy has
+            // to travel as data. Cloning it here is what keeps a worker's
+            // client from being the one client in the process with no mirrors.
+            let worker_context = context.clone();
             let worker_home = home.to_path_buf();
             let spawn = thread::Builder::new()
                 .name(format!("zed-install-{index}"))
-                .spawn(move || worker_loop(worker_queue, worker_tx, worker_registry, worker_home));
+                .spawn(move || worker_loop(worker_queue, worker_tx, worker_context, worker_home));
             match spawn {
                 Ok(worker) => workers.push(worker),
                 Err(error) => {

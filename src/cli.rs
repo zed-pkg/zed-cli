@@ -75,6 +75,25 @@ pub struct Globals {
         action = clap::ArgAction::Set
     )]
     pub git_submodules: bool,
+
+    /// Fetch only from the configured registry; never fall back to a mirror.
+    ///
+    /// Use for a reproducibility audit, where "it installed" and "it installed
+    /// from the canonical registry" are different claims and only the second
+    /// one is being tested.
+    #[arg(long, global = true, env = "ZED_PKG_NO_MIRRORS")]
+    pub no_mirrors: bool,
+
+    /// Let a mirror answer metadata questions — resolving a range, reading a
+    /// version — when the registry cannot, provided the answer carries a
+    /// publisher signature that verifies.
+    ///
+    /// Off by default. Serving a *pinned* artifact from a mirror is safe
+    /// without this, because the lockfile digest decides what is acceptable.
+    /// Serving metadata is a genuine trust decision, so it is opt-in rather
+    /// than something an operator discovers after the fact.
+    #[arg(long, global = true, env = "ZED_PKG_TRUST_MIRROR_METADATA")]
+    pub trust_mirror_metadata: bool,
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -219,6 +238,16 @@ pub enum Cmd {
     },
     /// Add a dependency (org/name[@semver-req]) and install it
     Add { spec: String },
+    /// Inspect and exercise the fallback sources for this project's packages
+    Mirror {
+        #[command(subcommand)]
+        cmd: MirrorCmd,
+    },
+    /// Manage the publisher signing keys that let mirrors serve metadata
+    Key {
+        #[command(subcommand)]
+        cmd: KeyCmd,
+    },
     /// Remove a dependency
     Remove { spec: String },
     /// Resolve and install dependencies into the selected project
@@ -739,6 +768,74 @@ pub enum OrgCmd {
         /// Maximum entries to show, newest first (server clamps to 1000)
         #[arg(long, env = "ZED_PKG_AUDIT_LIMIT")]
         limit: Option<u64>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MirrorCmd {
+    /// Show the mirrors that would be tried, in order, for this project
+    List {
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_MIRROR_JSON")]
+        json: bool,
+    },
+    /// Probe every mirror for every locked package and report what answers
+    ///
+    /// Run this while things are healthy. A fallback nobody has ever
+    /// exercised is a fallback that does not work, and the moment you find
+    /// out is the moment you needed it.
+    Check {
+        /// Check only this package (`org/name`)
+        #[arg(long, value_name = "PACKAGE", env = "ZED_PKG_MIRROR_PACKAGE")]
+        package: Option<String>,
+        #[arg(long, env = "ZED_PKG_MIRROR_JSON")]
+        json: bool,
+    },
+    /// Recover the mirror set from any reachable host, without the registry
+    Bootstrap {
+        /// Base URL to ask; defaults to every known mirror in turn
+        #[arg(long, value_name = "URL", env = "ZED_PKG_MIRROR_BOOTSTRAP_URL")]
+        url: Option<String>,
+    },
+    /// Build a `file://` mirror of everything this project pins
+    ///
+    /// The output is a complete offline source: point `--registry` or a
+    /// `directory` mirror at it and the project installs with no network.
+    Sync {
+        /// Directory to write. Created if absent; existing artifacts are kept.
+        #[arg(long, value_name = "DIR", env = "ZED_PKG_MIRROR_OUTPUT")]
+        output: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum KeyCmd {
+    /// Create a publisher signing key and print the public half to enroll
+    Generate {
+        #[arg(long, env = "ZED_PKG_ORG")]
+        org: String,
+        /// Short stable label for this key, e.g. `acme-2026`
+        #[arg(long, value_name = "ID", env = "ZED_PKG_KEY_ID")]
+        key_id: String,
+    },
+    /// List the signing keys this machine holds for an org
+    List {
+        #[arg(long, env = "ZED_PKG_ORG")]
+        org: String,
+    },
+    /// Print the public half of one key, ready to paste into `.zpkg.toml`
+    Show {
+        #[arg(long, env = "ZED_PKG_ORG")]
+        org: String,
+        #[arg(long, value_name = "ID", env = "ZED_PKG_KEY_ID")]
+        key_id: String,
+    },
+    /// Upload the org's public key set to the registry
+    Enroll {
+        #[arg(long, env = "ZED_PKG_ORG")]
+        org: String,
+        #[arg(long, value_name = "ID", env = "ZED_PKG_KEY_ID")]
+        key_id: String,
     },
 }
 

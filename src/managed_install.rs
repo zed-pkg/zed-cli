@@ -29,7 +29,6 @@ use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
 use crate::manifestless;
 use crate::ops;
-use crate::registry::registry_for;
 
 const GENERATED_ORG: &str = "zed-local";
 const GENERATED_VERSION: &str = "0.0.0";
@@ -398,7 +397,7 @@ fn install_with_generated_manifest(
 fn resolve_direct_dependencies(cfg: &Config, specs: &[String]) -> Result<BTreeMap<String, String>> {
     let parsed = parse_requested_specs(specs)?;
     let registry = if parsed.values().any(Option::is_none) {
-        Some(registry_for(&cfg.registry)?)
+        Some(cfg.open_registry()?)
     } else {
         None
     };

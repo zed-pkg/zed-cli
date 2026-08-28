@@ -95,6 +95,8 @@ fn publish_fixture(
         download_url: format!("file://{}/{}.tar.gz", artifacts.display(), packed.sha256),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+        mirrors: Vec::new(),
+        signatures: Vec::new(),
     };
     fs::write(
         package_dir.join("versions").join(format!("{version}.json")),
@@ -111,6 +113,8 @@ fn publish_fixture(
         latest: Some(version.to_string()),
         tags: Vec::new(),
         versions: vec![version.to_string()],
+        mirrors: Vec::new(),
+        signing_keys: Vec::new(),
     };
     fs::write(
         package_dir.join("package.json"),
@@ -603,6 +607,9 @@ fn frozen_prefetch_installs_every_locked_artifact_without_a_manifest() {
             vcs_tag: version.vcs_tag,
             vcs_commit: version.vcs_commit,
             source: source.clone(),
+            mirrors: Vec::new(),
+            signed_by: None,
+            signing_key: None,
         });
     }
     fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();

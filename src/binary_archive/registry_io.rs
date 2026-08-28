@@ -52,6 +52,9 @@ pub fn publish_binary_zip_with_route(
         sha256: result.packed.sha256.clone(),
         size: result.packed.size,
         format: ArtifactFormat::Zip,
+        mirrors: Vec::new(),
+        published_at: None,
+        signatures: Vec::new(),
     };
     let descriptor_sha256 = hex::encode(Sha256::digest(
         result
@@ -90,7 +93,7 @@ pub fn publish_binary_zip_with_route(
         return Ok(None);
     }
 
-    let registry = registry_for(&cfg.registry)?;
+    let registry = cfg.open_registry()?;
     match get_binary_version(
         registry.as_ref(),
         route,
@@ -247,7 +250,7 @@ pub fn download_binary_zip_with_route(
     if let Some(target) = expected_target {
         validate_binary_target(target)?;
     }
-    let registry = registry_for(&cfg.registry)?;
+    let registry = cfg.open_registry()?;
     let metadata = get_binary_version(
         registry.as_ref(),
         route,
@@ -271,9 +274,7 @@ pub fn download_binary_zip_with_route(
     let temporary = tempfile::tempdir_in(parent)?;
     let temporary_path = temporary.path().join("artifact.zip");
     match &metadata {
-        ResolvedBinaryMetadata::Legacy(metadata) => {
-            registry.download(metadata, &temporary_path)?
-        }
+        ResolvedBinaryMetadata::Legacy(metadata) => registry.download(metadata, &temporary_path)?,
         ResolvedBinaryMetadata::Qualified(metadata) => {
             registry.download_binary_artifact(metadata, &temporary_path)?
         }
@@ -363,13 +364,7 @@ fn get_binary_version(
             .get_version(org, name, version)
             .map(ResolvedBinaryMetadata::Legacy),
         BinaryRegistryRoute::Qualified => registry
-            .get_binary_artifact(
-                org,
-                name,
-                version,
-                target,
-                BinaryArchiveFormatV1::Zip,
-            )
+            .get_binary_artifact(org, name, version, target, BinaryArchiveFormatV1::Zip)
             .map(Box::new)
             .map(ResolvedBinaryMetadata::Qualified),
     }
@@ -454,11 +449,9 @@ fn resolved_metadata_matches_publish(
     qualified_publish: &BinaryArtifactPublishMetaV1,
 ) -> Result<bool> {
     match metadata {
-        ResolvedBinaryMetadata::Legacy(metadata) => Ok(
-            metadata.sha256 == legacy_publish.sha256
-                && metadata.size == legacy_publish.size
-                && metadata.format == ArtifactFormat::Zip
-        ),
+        ResolvedBinaryMetadata::Legacy(metadata) => Ok(metadata.sha256 == legacy_publish.sha256
+            && metadata.size == legacy_publish.size
+            && metadata.format == ArtifactFormat::Zip),
         ResolvedBinaryMetadata::Qualified(metadata) => qualified_publish
             .is_idempotent_with(metadata)
             .map_err(|error| anyhow::anyhow!(error)),

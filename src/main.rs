@@ -18,6 +18,7 @@ use zed_cli::git_submodules as submodules;
 use zed_cli::global;
 use zed_cli::graph_export;
 use zed_cli::managed_install;
+use zed_cli::mirror_cmd;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_environment_export::ExportManager;
@@ -581,6 +582,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             OrgCmd::Claim { slug } => ops::org_claim(&cfg, &slug),
             OrgCmd::Audit { slug, limit } => ops::org_audit(&cfg, &slug, limit),
         },
+        Cmd::Mirror { cmd } => mirror_cmd::run_mirror(&cwd, &cfg, cmd),
+        Cmd::Key { cmd } => mirror_cmd::run_key(&cfg, cmd),
         Cmd::Store { cmd } => match cmd {
             StoreCmd::Status => ops::store_status(&cfg),
             StoreCmd::Path => {
