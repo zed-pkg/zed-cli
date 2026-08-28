@@ -162,7 +162,8 @@ pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
     if url.starts_with("file://") {
         Ok(Box::new(FileRegistry::new(file_registry_path(url)?)))
     } else if url.starts_with("http://") || url.starts_with("https://") {
-        Ok(Box::new(HttpRegistry::new(url.to_string())?))
+        let http = HttpRegistry::new(url.to_string())?;
+        Ok(crate::source_fallback::FallbackRegistry::wrap(http, url))
     } else {
         bail!("unsupported registry url `{url}` (expected http(s):// or file://)");
     }
@@ -261,6 +262,7 @@ impl FileRegistry {
             download_url: file_url_for_path(&dest)?,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
+        mirrors: Vec::new(),
         };
         fs::create_dir_all(version_path.parent().context("versions dir")?)?;
         fs::write(version_path, serde_json::to_string_pretty(&vm)?)?;
@@ -1303,6 +1305,7 @@ tool = "bin/tool"
             download_url: format!("http://{object_address}/object?X-Amz-Signature=do-not-log"),
             published_at: "2026-08-11T16:00:00Z".to_owned(),
             yanked: false,
+        mirrors: Vec::new(),
         };
         let output = tempfile::tempdir().unwrap().path().join("artifact.zip");
         let error = registry.download(&metadata, &output).unwrap_err();

@@ -47,7 +47,7 @@ impl Config {
             .unwrap_or_else(|| format!("{registry}/shared-auth"))
             .trim_end_matches('/')
             .to_string();
-        Ok(Self {
+        let cfg = Self {
             registry,
             home,
             token: globals.token.clone(),
@@ -65,7 +65,13 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             interactive: globals.interactive,
-        })
+        };
+        crate::source_fallback::apply_cli_overrides(
+            globals.r2_public_base.clone(),
+            globals.r2_public_key.clone(),
+            globals.source_fallback,
+        );
+        Ok(cfg)
     }
 
     /// Explicit token flag/env wins, followed by the refreshable human auth
@@ -499,6 +505,9 @@ url = "https://localhost/manifestless/consumer"
             supabase_key: None,
             interactive: false,
             git_submodules: false,
+            r2_public_base: None,
+            r2_public_key: None,
+            source_fallback: true,
         };
         let cfg = Config::from_globals(&globals).unwrap();
 

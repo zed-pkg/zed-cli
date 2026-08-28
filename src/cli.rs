@@ -75,6 +75,32 @@ pub struct Globals {
         action = clap::ArgAction::Set
     )]
     pub git_submodules: bool,
+
+    /// Public HTTPS origin for guessable R2/CDN objects when the registry host
+    /// is down. Overrides the default `https://cdn.zpkg.net`.
+    #[arg(long, global = true, env = "ZED_PKG_R2_PUBLIC_BASE")]
+    pub r2_public_base: Option<String>,
+
+    /// Public R2 origin spelled as a hostname, full `https://…` URL, or
+    /// Cloudflare `pub-<id>` account subdomain (`https://<id>.r2.dev`).
+    #[arg(long, global = true, env = "ZED_PKG_R2_PUBLIC_KEY")]
+    pub r2_public_key: Option<String>,
+
+    /// Retry public R2 and GitHub when an HTTP registry is unreachable.
+    /// Loopback and `file://` registries stay hermetic. Bare means true;
+    /// `--source-fallback=false` disables it.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_SOURCE_FALLBACK",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "true",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
+    pub source_fallback: bool,
 }
 
 /// Contextual adapters translate zed's universal layout into what a

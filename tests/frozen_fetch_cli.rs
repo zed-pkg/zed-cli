@@ -96,6 +96,7 @@ fn locked_package(
         download_url: "ignored-by-file-registry".to_string(),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+    mirrors: Vec::new(),
     };
     let locked = LockedPackage {
         org: org.to_string(),
