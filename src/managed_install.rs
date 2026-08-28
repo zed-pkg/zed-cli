@@ -512,6 +512,7 @@ fn generated_manifest(
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     };
     manifest.install.target = target.map(str::to_owned);

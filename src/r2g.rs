@@ -227,6 +227,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     };
     interactive::confirm(

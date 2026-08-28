@@ -1,12 +1,20 @@
 fn print_human(report: &Report) {
-    println!(
-        "GitOps composition contract: {} ({} records, {} errors, {} warnings, offline={})",
+    let mut summary = format!(
+        "GitOps composition contract: {} ({} records, {} gitlinks, {} errors, {} warnings, offline={})",
         if report.valid { "valid" } else { "invalid" },
         report.records,
+        report.gitlinks,
         report.errors,
         report.warnings,
         report.offline
     );
+    if let Some(changed_from) = &report.changed_from {
+        summary.push_str(&format!(
+            ", changed-from={changed_from} ({} gitlink changes)",
+            report.changed_gitlinks.len()
+        ));
+    }
+    println!("{summary}");
     for item in &report.diagnostics {
         let application = if item.application.is_empty() {
             String::new()

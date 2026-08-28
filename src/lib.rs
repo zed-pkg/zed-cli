@@ -12,6 +12,7 @@ pub mod completion;
 pub mod config;
 mod dart_wiring;
 pub mod dev;
+pub mod env_map;
 pub mod environment;
 pub mod environment_export_cli;
 pub mod external_subcommands;
@@ -24,6 +25,7 @@ pub mod host_downloads;
 pub mod inspect;
 pub mod install_graph;
 pub mod interactive;
+pub mod lifecycle;
 pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
@@ -118,7 +120,7 @@ pub mod oci;
 pub mod oci_command;
 pub mod oci_layout;
 pub mod oci_push;
-#[path = "ops_entry.rs"]
+#[path = "ops_lifecycle_entry.rs"]
 pub mod ops;
 pub mod pack;
 pub(crate) mod pack_guard;

@@ -360,6 +360,7 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     }
 }

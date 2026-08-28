@@ -367,6 +367,30 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
     }
 }
 
+/// Frozen `file:` sources are local only when they have no host, an empty
+/// host, or the URL-parser domain `localhost`. The parser lowercases domain
+/// hosts, matching `Url::to_file_path()`. IPv4/IPv6 (including loopback)
+/// and any other name are non-local: Windows `to_file_path()` would otherwise
+/// turn them into UNC paths.
+fn file_url_authority_is_local(url: &reqwest::Url) -> bool {
+    match url.host_str() {
+        None | Some("") | Some("localhost") => true,
+        Some(_) => false,
+    }
+}
+
+fn file_path_is_unc(path: &Path) -> bool {
+    path.components().next().is_some_and(|component| {
+        matches!(
+            component,
+            Component::Prefix(prefix) if matches!(
+                prefix.kind(),
+                std::path::Prefix::UNC(_, _) | std::path::Prefix::VerbatimUNC(_, _)
+            )
+        )
+    })
+}
+
 fn validate_source(source: &str) -> Result<()> {
     if source.starts_with("file://") {
         let url = reqwest::Url::parse(source).map_err(|_| {
@@ -381,13 +405,13 @@ fn validate_source(source: &str) -> Result<()> {
                 "frozen file registry sources may not embed credentials, query strings, or fragments"
             );
         }
-        if url.host_str().is_some() {
+        if !file_url_authority_is_local(&url) {
             bail!("frozen file registry source is not a local absolute path");
         }
         let path = url.to_file_path().map_err(|_| {
             anyhow::anyhow!("frozen file registry source is not a local absolute path")
         })?;
-        if !path.is_absolute() {
+        if !path.is_absolute() || file_path_is_unc(&path) {
             bail!("frozen file registry source is not a local absolute path");
         }
         return Ok(());
@@ -911,6 +935,106 @@ mod tests {
                 .to_string_lossy()
                 .starts_with(".zed-fetch-")
         })
+    }
+
+    fn assert_source_rejected_without_echo(source: &str, markers: &[&str]) {
+        let error = super::validate_source(source).expect_err("source must fail closed");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("not a local absolute path")
+                || message.contains("may not embed")
+                || message.contains("invalid file registry source")
+                || message.contains("unsupported registry source scheme"),
+            "unexpected diagnostic: {message}"
+        );
+        assert!(
+            !message.contains(source),
+            "untrusted source was echoed: {message}"
+        );
+        for marker in markers {
+            assert!(
+                !message.contains(*marker),
+                "secret marker `{marker}` was echoed: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_local_file_registry_authority_fails_closed_without_source_echo() {
+        assert_source_rejected_without_echo(
+            "file://remote-registry/secret-source",
+            &["remote-registry", "secret-source"],
+        );
+        assert_source_rejected_without_echo(
+            "file://remote-registry.invalid/private/path",
+            &["remote-registry.invalid", "private/path"],
+        );
+    }
+
+    #[test]
+    fn file_authority_localhost_policy_is_exact_and_cross_platform() {
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file:///tmp/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file://localhost/tmp/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file:///C:/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file://LocalHost/tmp/zed-registry").unwrap()
+        ));
+        assert!(super::file_url_authority_is_local(
+            &reqwest::Url::parse("file://LOCALHOST/tmp/zed-registry").unwrap()
+        ));
+        for source in [
+            "file://remote-registry/secret-source",
+            "file://127.0.0.1/tmp/zed-registry",
+            "file://[::1]/tmp/zed-registry",
+            "file://[fe80::1]/tmp/zed-registry",
+        ] {
+            let url = reqwest::Url::parse(source).unwrap();
+            assert!(
+                !super::file_url_authority_is_local(&url),
+                "authority must be non-local before to_file_path: {source}"
+            );
+            assert_source_rejected_without_echo(source, &["secret-source", "zed-registry"]);
+        }
+        let local_registry = tempfile::tempdir().unwrap();
+        let local_url = reqwest::Url::from_directory_path(local_registry.path()).unwrap();
+        super::validate_source(local_url.as_str()).unwrap();
+        let mut localhost_url = local_url;
+        localhost_url.set_host(Some("localhost")).unwrap();
+        super::validate_source(localhost_url.as_str()).unwrap();
+    }
+
+    #[test]
+    fn file_source_query_fragment_and_userinfo_are_rejected_without_echo() {
+        assert_source_rejected_without_echo(
+            "file:///tmp/zed-registry?token=super-secret-query-value",
+            &["super-secret-query-value"],
+        );
+        assert_source_rejected_without_echo(
+            "file:///tmp/zed-registry#super-secret-fragment",
+            &["super-secret-fragment"],
+        );
+        assert_source_rejected_without_echo(
+            "file://user:super-secret-password@localhost/tmp/zed-registry",
+            &["super-secret-password"],
+        );
+    }
+
+    #[test]
+    fn weakened_windows_unc_acceptance_is_rejected_by_the_authority_classifier() {
+        let remote = reqwest::Url::parse("file://remote-registry/secret-source").unwrap();
+        assert!(remote.host_str().is_some());
+        assert!(!super::file_url_authority_is_local(&remote));
+        let weakened_accepts_any_host_on_windows = remote.host_str().is_none();
+        assert!(
+            !weakened_accepts_any_host_on_windows,
+            "suite must keep rejecting remote file authorities"
+        );
     }
 
     #[test]
