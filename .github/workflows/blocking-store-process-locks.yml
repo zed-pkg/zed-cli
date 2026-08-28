@@ -44,7 +44,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: "1"
-  ZED_LOCK_COMMIT: a0dc78d385bc3ab553d3027b427f5f1428239c9c
 
 jobs:
   linux-kernel-lock:
@@ -85,21 +84,6 @@ jobs:
 
       - name: Run event-driven lock queue, isolation, and crash contracts
         run: cargo test --locked -p zed-cli --test store_lock_evented -- --nocapture
-
-      - name: Run evented waiter unit contracts
-        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
-
-      - name: Run evented kernel-lock handoff tests
-        run: cargo test --locked --test evented_process_lock -- --nocapture
-
-      - name: Run evented waiter-thread and channel contracts
-        run: cargo test --locked --lib lock_waiter::tests -- --nocapture
-
-      - name: Run the evented waiter against real Linux descriptor locks
-        run: cargo test --locked --test lock_waiter_process_lock -- --nocapture
-
-      - name: Run event-driven lock queue, isolation, and crash contracts
-        run: cargo test --locked --test store_lock_evented -- --nocapture
 
       - name: Run all store process-lock tests
         run: cargo test --locked -p zed-cli --lib store::tests

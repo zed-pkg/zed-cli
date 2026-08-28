@@ -9,9 +9,9 @@ use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 use zed_interfaces::artifact::ArtifactFormat;
-use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
+use zed_interfaces::excludes::ALWAYS_INCLUDE;
 use zed_interfaces::manifest::Manifest;
-use zed_interfaces::paths::{ARCHIVE_ROOT, IGNORE_FILE, PACK_OUT_DIR};
+use zed_interfaces::paths::{ARCHIVE_ROOT, PACK_OUT_DIR};
 
 /// One independently publishable artifact produced from a source manifest.
 /// A single-language manifest yields one item with `target = None`; a
@@ -24,6 +24,7 @@ pub struct PackagedTarget {
     pub packed: PackResult,
 }
 
+#[derive(Debug)]
 pub struct PackResult {
     pub path: PathBuf,
     pub sha256: String,
@@ -107,19 +108,21 @@ pub fn pack_all(
             );
         }
 
+        let ignore_rules = crate::publish_ignore::read_rules(&source)?;
         let staging = tempfile::tempdir().context("create target packing directory")?;
-        copy_files(&source, staging.path(), &derived)?;
+        copy_files(&source, staging.path(), &derived, &ignore_rules)?;
         copy_root_legal_files(project, staging.path())?;
         fs::write(
             staging.path().join(zed_interfaces::paths::MANIFEST_FILE),
             derived.to_toml_string()?,
         )?;
 
-        let packed = pack_format(
+        let packed = pack_format_with_ignore_rules(
             staging.path(),
             &derived,
             Some(&output),
             ArtifactFormat::TarGz,
+            &ignore_rules,
         )?;
         packages.push(PackagedTarget {
             target: Some(target),
@@ -130,10 +133,15 @@ pub fn pack_all(
     Ok(packages)
 }
 
-fn copy_files(source: &Path, destination: &Path, manifest: &Manifest) -> Result<()> {
-    let excludes = glob_set(&effective_excludes(
-        &manifest.publish.exclude,
-        manifest.publish.include_readme,
+fn copy_files(
+    source: &Path,
+    destination: &Path,
+    manifest: &Manifest,
+    ignore_rules: &[String],
+) -> Result<()> {
+    let excludes = glob_set(&crate::publish_ignore::effective_artifact_excludes(
+        manifest,
+        ignore_rules,
     ))?;
     let always: Vec<String> = ALWAYS_INCLUDE
         .iter()
@@ -197,30 +205,42 @@ pub fn pack_format(
     out_dir: Option<&Path>,
     format: ArtifactFormat,
 ) -> Result<PackResult> {
-    let mut extra = manifest.publish.exclude.clone();
-    // The default excludes strip `zed_modules/**`, but a package may relocate
-    // its installed tree with `[install].dir`. Never publish a dependency
-    // tree: it bloats the artifact and (in symlink mode) would ship links
-    // into the author's own store that mean nothing on a consumer's machine.
-    let modules_dir = manifest.modules_dir().trim_matches('/').to_string();
-    if !modules_dir.is_empty() {
-        extra.push(format!("{modules_dir}/**"));
-    }
-    // Interrupted lifecycle operations retain UUID-v4 rollback data here.
-    // It is local recovery state and must never enter a published artifact.
-    extra.push(format!("{}{}", crate::transaction::STAGING_DIR, "/**"));
-    let ignore_file = project.join(IGNORE_FILE);
-    if ignore_file.exists() {
-        for line in fs::read_to_string(&ignore_file)?.lines() {
-            let line = line.trim();
-            if !line.is_empty() && !line.starts_with('#') {
-                extra.push(line.to_string());
-            }
-        }
-    }
-    let excludes = glob_set(&effective_excludes(&extra, manifest.publish.include_readme))?;
+    let ignore_rules = crate::publish_ignore::read_rules(project)?;
+    pack_format_with_ignore_rules(project, manifest, out_dir, format, &ignore_rules)
+}
+
+fn pack_format_with_ignore_rules(
+    project: &Path,
+    manifest: &Manifest,
+    out_dir: Option<&Path>,
+    format: ArtifactFormat,
+    ignore_rules: &[String],
+) -> Result<PackResult> {
+    let excludes = glob_set(&crate::publish_ignore::effective_artifact_excludes(
+        manifest,
+        ignore_rules,
+    ))?;
     let always: Vec<String> = ALWAYS_INCLUDE.iter().map(|s| s.to_string()).collect();
     let always = glob_set(&always)?;
+
+    let out_dir = match out_dir {
+        Some(directory) => directory.to_path_buf(),
+        None => project.join(PACK_OUT_DIR),
+    };
+    let file_name = format!(
+        "{}-{}-{}.{}",
+        manifest.package.org,
+        manifest.package.name,
+        manifest.package.version,
+        format.extension()
+    );
+    let out_path = out_dir.join(file_name);
+    let output_directory_relative = out_dir
+        .strip_prefix(project)
+        .ok()
+        .filter(|relative| !relative.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    let output_file_relative = out_path.strip_prefix(project).ok().map(Path::to_path_buf);
 
     let mut included: Vec<PathBuf> = Vec::new();
     let mut excluded_count = 0usize;
@@ -236,6 +256,14 @@ pub fn pack_format(
         let Ok(rel) = entry.path().strip_prefix(project).map(Path::to_path_buf) else {
             continue;
         };
+        if output_file_relative.as_ref() == Some(&rel)
+            || output_directory_relative
+                .as_ref()
+                .is_some_and(|output| rel.starts_with(output))
+        {
+            excluded_count += 1;
+            continue;
+        }
         if always.is_match(&rel) || !excludes.is_match(&rel) {
             included.push(rel);
         } else {
@@ -244,19 +272,7 @@ pub fn pack_format(
     }
     included.sort();
 
-    let out_dir = match out_dir {
-        Some(d) => d.to_path_buf(),
-        None => project.join(PACK_OUT_DIR),
-    };
     fs::create_dir_all(&out_dir)?;
-    let file_name = format!(
-        "{}-{}-{}.{}",
-        manifest.package.org,
-        manifest.package.name,
-        manifest.package.version,
-        format.extension()
-    );
-    let out_path = out_dir.join(file_name);
 
     match format {
         ArtifactFormat::TarGz => write_tar_gz(project, &included, &out_path)?,
@@ -516,5 +532,72 @@ adapter = "node"
         let node_files = archive_files(&node.packed.path);
         assert!(node_files.contains("pkg/package.json"));
         assert!(!node_files.iter().any(|path| path.contains("clients/")));
+    }
+
+    #[test]
+    fn consecutive_default_packs_are_identical_and_exclude_prior_outputs() {
+        let project = tempfile::tempdir().unwrap();
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "deterministic"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/deterministic"
+"#;
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        fs::write(project.path().join("payload.txt"), "stable payload\n").unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
+
+        let first = pack(project.path(), &manifest, None).unwrap();
+        let first_files = archive_files(&first.path);
+        let second = pack(project.path(), &manifest, None).unwrap();
+        let second_files = archive_files(&second.path);
+
+        assert_eq!(second.sha256, first.sha256);
+        assert_eq!(second.size, first.size);
+        assert_eq!(second.file_count, first.file_count);
+        assert!(first_files.contains("pkg/.zpkg.toml"));
+        assert!(first_files.contains("pkg/payload.txt"));
+        assert_eq!(second_files, first_files);
+        assert!(
+            !second_files
+                .iter()
+                .any(|entry| entry.starts_with("pkg/.zed/pack/"))
+        );
+    }
+
+    #[test]
+    fn output_in_project_root_excludes_only_the_prior_archive() {
+        let project = tempfile::tempdir().unwrap();
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "root-output"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/root-output"
+"#;
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        fs::write(project.path().join("payload.txt"), "stable payload\n").unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
+
+        let first = pack(project.path(), &manifest, Some(project.path())).unwrap();
+        let second = pack(project.path(), &manifest, Some(project.path())).unwrap();
+        let files = archive_files(&second.path);
+
+        assert_eq!(second.sha256, first.sha256);
+        assert!(files.contains("pkg/payload.txt"));
+        assert!(!files.iter().any(|entry| entry.ends_with(".tar.gz")));
     }
 }

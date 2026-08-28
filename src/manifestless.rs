@@ -339,6 +339,7 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     }
 }

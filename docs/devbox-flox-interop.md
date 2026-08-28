@@ -12,18 +12,6 @@ zed env export flox   [--plan PATH] [--output PATH] [--receipt PATH] [--json]
 The separately installed compatibility binary remains available:
 
 ```console
-`zed-env-export` is the staged executable for the first DEN-1468 export slice.
-It consumes the shared, frozen `EnvironmentPlan` and emits manager-native
-configuration without invoking Devbox, Flox, Nix, package resolution, or any
-activation hook.
-
-The module is kept separate from the moving `zed env` dispatcher so it can be
-wired into `zed env export devbox|flox` after the common command branch lands
-without reimplementing generation.
-
-## Commands
-
-```text
 zed-env-export devbox [--plan PATH] [--out PATH] [--receipt PATH] [--json]
 zed-env-export flox   [--plan PATH] [--out PATH] [--receipt PATH] [--json]
 ```
@@ -34,7 +22,6 @@ receipts, diagnostics, idempotence, and error behavior therefore cannot drift
 between the canonical and staged routes.
 
 ## Defaults and flags-to-environment contract
-Defaults:
 
 | Manager | Output | Receipt |
 | --- | --- | --- |
@@ -65,13 +52,6 @@ outside the project.
 
 The exporter supports explicit Nixpkgs-backed entries only. It never guesses
 that a language name maps one-to-one to a Nix attribute.
-The default input is `.zed/environment-plan.json`. Every path must be normalized,
-project-relative, and free of symlink traversal outside the project.
-
-## Mapping contract
-
-The initial exporter supports explicit Nixpkgs-backed entries only. It never
-guesses that a language name maps one-to-one to a Nix attribute.
 
 A tool uses:
 
@@ -120,7 +100,6 @@ entries with `pkg-path`, `version`, and optional `systems`, an optional global
 `[hook].on-activate`.
 
 The certified Flox platform subset is:
-The initial Flox platform subset is the common Darwin/Linux matrix:
 
 - `aarch64-darwin`
 - `aarch64-linux`
@@ -168,6 +147,3 @@ The permanent Ubuntu, macOS, and Windows workflow runs unit tests, staged and
 canonical compiled-CLI tests, strict Clippy, checkout-cleanliness checks, and a
 repeated parity canary that compares canonical/staged result JSON, manager
 output bytes, and receipt bytes.
-adapter phase. This first PR chooses explicit conflict diagnostics rather than
-silently deleting scripts, services, includes, environment variables, or other
-manager-owned state.

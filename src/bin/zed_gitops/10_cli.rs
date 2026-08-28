@@ -16,13 +16,125 @@ fn run_validate(args: ValidateArgs) -> Result<i32> {
     if !args.offline {
         bail!("online validation is not implemented; pass --offline");
     }
-    let report = validate_catalog(&args.root, &args.catalog, args.strict, true)?;
+    let report = validate_gitops(&args)?;
     match args.format {
         OutputFormat::Human => print_human(&report),
         OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&report)?),
         OutputFormat::Sarif => print_sarif(&report)?,
     }
     Ok(if report.valid { 0 } else { 2 })
+}
+
+fn validate_gitops(args: &ValidateArgs) -> Result<Report> {
+    let root = fs::canonicalize(&args.root).with_context(|| {
+        format!(
+            "canonicalizing GitOps superproject root {}",
+            args.root.display()
+        )
+    })?;
+
+    if let Some(rev) = args.changed_from.as_deref() {
+        resolve_local_rev(&root, rev)?;
+    }
+
+    let schema_file = resolve_schema_path(&root, args.schema.as_deref())?;
+    let catalog_present = catalog_directory_exists(&root, &args.catalog)?;
+    if schema_file.is_none() && !catalog_present {
+        bail!(
+            "GitOps validation requires `{DEFAULT_SCHEMA}` or `{}` under {}",
+            path_text(&args.catalog)?,
+            root.display()
+        );
+    }
+
+    let modules = configured_submodules(&root)?
+        .into_iter()
+        .map(|module| (module.path.clone(), module))
+        .collect::<BTreeMap<_, _>>();
+    let gitlinks = indexed_gitlinks(&root)?;
+    let mut diagnostics = Vec::new();
+    let mut schema_rel = None;
+
+    if let Some(schema_file) = schema_file.as_ref() {
+        schema_rel = Some(relative_display(&root, schema_file));
+        if let Some(contract) =
+            load_gitlink_contract(&root, schema_file, args.strict, &mut diagnostics)?
+        {
+            let untracked = untracked_git_directories(
+                &root,
+                &contract.spec.approved_app_path_prefixes,
+                &modules,
+                &gitlinks,
+            )?;
+            validate_gitlink_contract(&contract, &modules, &gitlinks, &untracked, &mut diagnostics);
+        }
+    }
+
+    let mut records = 0usize;
+    if catalog_present {
+        let catalog_report = validate_catalog(&args.root, &args.catalog, args.strict, true)?;
+        records = catalog_report.records;
+        diagnostics.extend(catalog_report.diagnostics);
+    }
+
+    let changed_gitlinks = if let Some(rev) = args.changed_from.as_deref() {
+        changed_gitlink_paths(&root, rev, &modules, &gitlinks)?
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    diagnostics.sort_by(|left, right| {
+        (
+            &left.severity,
+            &left.path,
+            &left.application,
+            &left.rule_id,
+            &left.message,
+        )
+            .cmp(&(
+                &right.severity,
+                &right.path,
+                &right.application,
+                &right.rule_id,
+                &right.message,
+            ))
+    });
+    let errors = diagnostics
+        .iter()
+        .filter(|item| item.severity == "error")
+        .count();
+    let warnings = diagnostics
+        .iter()
+        .filter(|item| item.severity == "warning")
+        .count();
+    Ok(Report {
+        valid: errors == 0,
+        records,
+        gitlinks: gitlinks.len(),
+        errors,
+        warnings,
+        offline: true,
+        schema: schema_rel,
+        changed_from: args.changed_from.clone(),
+        changed_gitlinks,
+        diagnostics,
+    })
+}
+
+fn catalog_directory_exists(root: &Path, requested_catalog: &Path) -> Result<bool> {
+    let catalog_text = path_text(requested_catalog)?;
+    validate_relative_path(&catalog_text)
+        .with_context(|| format!("invalid --catalog path `{catalog_text}`"))?;
+    let catalog = root.join(&catalog_text);
+    match fs::symlink_metadata(&catalog) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| {
+            format!("inspecting catalog directory {}", catalog.display())
+        }),
+        Ok(metadata) => Ok(!metadata.file_type().is_symlink() && metadata.is_dir()),
+    }
 }
 
 fn validate_catalog(
@@ -189,9 +301,13 @@ fn validate_catalog(
     Ok(Report {
         valid: errors == 0,
         records,
+        gitlinks: gitlinks.len(),
         errors,
         warnings,
         offline,
+        schema: None,
+        changed_from: None,
+        changed_gitlinks: Vec::new(),
         diagnostics,
     })
 }

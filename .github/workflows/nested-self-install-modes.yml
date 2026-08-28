@@ -1,0 +1,86 @@
+name: Nested and self dependency install modes
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/nested-self-install-modes.yml
+      - src/install_graph/**
+      - src/lib.rs
+      - src/materialize.rs
+      - src/ops.rs
+      - tests/nested_self_modes.rs
+  pull_request:
+    paths:
+      - .github/workflows/nested-self-install-modes.yml
+      - src/install_graph/**
+      - src/lib.rs
+      - src/materialize.rs
+      - src/ops.rs
+      - tests/nested_self_modes.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nested-self-install-modes-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cli-roundtrip:
+    name: ${{ matrix.os }} registry/workspace roundtrip
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out zed-cli
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          path: zed-cli
+
+      - name: Check out pinned zed-interfaces
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          repository: zed-pkg/zed-interfaces
+          ref: e4feac2ce5ee15a20fba9847197fd03306f56a94
+          path: zed-interfaces
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: zed-cli
+
+      - name: Check formatting
+        working-directory: zed-cli
+        run: cargo fmt --check
+
+      - name: Run real nested/self CLI install roundtrips
+        working-directory: zed-cli
+        run: cargo test --locked --test nested_self_modes -- --nocapture
+
+      - name: Run materializer safety tests
+        working-directory: zed-cli
+        run: cargo test --locked --lib materialize::tests -- --nocapture
+
+      - name: Run nested/cyclic/self solver tests
+        working-directory: zed-cli
+        run: cargo test --locked --lib install_graph::solver::tests -- --nocapture
+
+      - name: Reject warnings across all targets
+        if: runner.os == 'Linux'
+        working-directory: zed-cli
+        run: cargo clippy --locked --all-targets -- -D warnings

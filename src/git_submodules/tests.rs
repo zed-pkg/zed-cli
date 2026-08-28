@@ -245,6 +245,7 @@ fn overtake_imports_manifest_workspace_and_git_lock() {
     assert_eq!(report.adopted, 1);
 
     let manifest = read_manifest(root.path()).unwrap();
+    assert!(manifest_consumes_gitmodules(root.path()).unwrap());
     assert_eq!(
         manifest.dependencies.get("acme/client").map(String::as_str),
         Some("=1.2.3")

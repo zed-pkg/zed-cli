@@ -81,6 +81,25 @@ type = "string"
 default = "symlink"
 help = "Install using symlinks or copies."
 
+[flags.cli]
+env = "ZED_PKG_CLI"
+aliases = ["cli"]
+type = "string"
+help = "Install a project-owned CLI runtime; repeat the option for multiple tools."
+
+[flags.cli_target]
+env = "ZED_PKG_CLI_TARGET"
+aliases = ["cli-target"]
+type = "string"
+help = "Exact target triple for project-owned CLI runtimes."
+
+[flags.cli_install_mode]
+env = "ZED_PKG_CLI_INSTALL_MODE"
+aliases = ["cli-install-mode"]
+type = "string"
+default = "copy"
+help = "Materialize CLI runtimes as self-contained project copies."
+
 [flags.adapter]
 env = "ZED_PKG_ADAPTER"
 aliases = ["adapter"]
@@ -145,6 +164,7 @@ aliases = ["allow-ecosystem-mismatch"]
 type = "bool"
 default = "false"
 help = "Install packages whose ecosystem this project does not have."
+
 [flags.force]
 env = "ZED_PKG_FORCE"
 aliases = ["force"]
@@ -238,7 +258,7 @@ env = "ZED_PKG_UPDATE_CHECK"
 aliases = ["check"]
 type = "bool"
 default = "false"
-help = "Check for an update without installing."
+help = "Check for an update without installing it."
 
 [flags.skip_checksum]
 env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
@@ -371,8 +391,13 @@ help = "Project-local schema-v2 environment plan path."
 env = "ZED_PKG_ENV_OUTPUT"
 aliases = ["output"]
 type = "string"
-default = ".mise.toml"
-help = "Project-local manager export path."
+help = "Project-local manager export path; defaults are manager-specific."
+
+[commands.env.commands.export.flags.env_receipt]
+env = "ZED_PKG_ENV_RECEIPT"
+aliases = ["receipt"]
+type = "string"
+help = "Zed-owned deterministic receipt path for Devbox or Flox export."
 
 [commands.env.commands.export.flags.env_check]
 env = "ZED_PKG_ENV_CHECK"

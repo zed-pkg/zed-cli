@@ -11,12 +11,6 @@ language = "rust"
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
 
-# The CLI consumes the shared contract and the Rust client target. There is no
-# zed-lib repository today; add it here if that reusable layer is introduced.
-[dependencies]
-"zed-pkg/zed-interfaces" = "^0.1.0"
-"zed-pkg/zed-clients-rust" = "^0.1.0"
-
 [build]
 command = "cargo build --release --locked --bins"
 outputs = ["target/release/zed", "target/release/zed-gitops"]

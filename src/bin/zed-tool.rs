@@ -4,8 +4,10 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
+use zed_cli::cli::InstallMode;
 use zed_cli::tool_profile::{
-    LockMode, default_zed_home, install_offline, list_target, load_environment_lock, verify_receipt,
+    LockMode, default_zed_home, install_offline_with_mode, list_target, load_environment_lock,
+    verify_receipt,
 };
 
 #[derive(Debug, Parser)]
@@ -64,6 +66,16 @@ enum ToolCommand {
         /// Project-local profile root.
         #[arg(long, env = "ZED_TOOL_PROFILE", default_value = ".zed/tools")]
         profile: PathBuf,
+
+        /// Store-backed links for development, or a self-contained project
+        /// copy for OCI/export boundaries.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_TOOL_INSTALL_MODE",
+            default_value = "symlink"
+        )]
+        install_mode: InstallMode,
 
         /// Zed content-addressed store and cache root.
         #[arg(long, env = "ZED_PKG_HOME")]
@@ -126,6 +138,7 @@ fn run(cli: Cli) -> Result<()> {
             target,
             offline,
             profile,
+            install_mode,
             home,
         } => {
             ensure!(
@@ -139,7 +152,14 @@ fn run(cli: Cli) -> Result<()> {
                 None => default_zed_home()?,
             };
             let rollback_directories = absent_profile_directories(&root, &profile);
-            let receipt = match install_offline(&root, &loaded, &target, Some(&profile), &home) {
+            let receipt = match install_offline_with_mode(
+                &root,
+                &loaded,
+                &target,
+                Some(&profile),
+                &home,
+                install_mode,
+            ) {
                 Ok(receipt) => receipt,
                 Err(error) => {
                     rollback_empty_profile_directories(&rollback_directories).with_context(|| {

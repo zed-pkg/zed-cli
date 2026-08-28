@@ -26,7 +26,6 @@ representation:
 - ordered single- and multi-version tools;
 - backend-qualified tool keys and core-tool aliases;
 - `version`, portable project-relative `path`, `prefix`, and `ref` selectors;
-- `version`, `path`, `prefix`, and `ref` selectors;
 - typed backend options and tool OS constraints;
 - scalar environment values;
 - typed project and task variables;
@@ -67,8 +66,6 @@ The plan contract does not yet expose a portable secret-reference type. Export
 therefore rejects literal environment, variable, and tool-option names that
 look credential-bearing at any nesting depth, including password, secret, token,
 private/access key, API key, credential, and authorization names. The generated file, sidecar,
-look credential-bearing, including password, secret, token, private/access key,
-API key, credential, and authorization names. The generated file, sidecar,
 logs, and diagnostics never print rejected values.
 
 ## Ownership and conflicts
@@ -99,7 +96,6 @@ Output and state changes share `ProjectTransaction`, including crash recovery
 and rollback. Plan, output, state, and staging identities are compared with
 portable ASCII case-folding so a Linux-generated ownership file cannot become
 ambiguous on Windows or macOS. Project, output, and state paths reject absolute/home/drive/UNC,
-and rollback. Project, output, and state paths reject absolute/home/drive/UNC,
 parent traversal, and symlink escape.
 
 ## Determinism
@@ -113,7 +109,6 @@ SHA256("zed-pkg:mise-export-plan:v1\0" || canonical-environment-plan-json)
 The output identity is SHA-256 over the exact generated TOML bytes. Print,
 check, and write modes all render the normalized semantic plan, so set-like
 presentation order cannot diverge under one plan digest. Repeated generation of the
-check, and write modes all use the same renderer. Repeated generation of the
 same normalized plan is byte-identical across supported platforms.
 
 ## Next gates

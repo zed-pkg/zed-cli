@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use crate::cli_oci::OciCmd;
-
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
 #[derive(Debug, Parser)]
@@ -175,10 +173,20 @@ impl From<CompletionShell> for clap_complete::Shell {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvironmentManagerArg {
-    /// Import, verify, or export project-local mise configuration.
+    /// Import or verify project-local mise configuration.
     Mise,
     /// Import or verify project-local asdf configuration and Zed-owned provenance.
     Asdf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum EnvironmentExportManagerArg {
+    /// Export deterministic mise TOML from a schema-v2 plan.
+    Mise,
+    /// Export deterministic Devbox JSON and a Zed-owned receipt.
+    Devbox,
+    /// Export deterministic Flox manifest TOML and a Zed-owned receipt.
+    Flox,
 }
 
 #[derive(Debug, Subcommand)]
@@ -198,8 +206,12 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_VALIDATE_JSON")]
         json: bool,
     },
-    /// Create a .zpkg.toml manifest in the current directory
+    /// Create a project directory and .zpkg.toml manifest (current directory by default)
     Init {
+        /// Project directory to create or initialize. Relative paths are
+        /// resolved below the current working directory.
+        #[arg(value_name = "PROJECT", env = "ZED_PKG_INIT_PROJECT")]
+        project: Option<PathBuf>,
         #[arg(long, env = "ZED_PKG_ORG")]
         org: Option<String>,
         #[arg(long, env = "ZED_PKG_NAME")]
@@ -218,6 +230,22 @@ pub enum Cmd {
         /// `zed add` to persist dependencies in an authored project.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
+        /// Install a project-owned CLI runtime. Repeat for multiple tools;
+        /// built-in aliases currently include nodejs and python3.
+        #[arg(long, value_name = "TOOL", env = "ZED_PKG_CLI", action = clap::ArgAction::Append)]
+        cli: Vec<String>,
+        /// Exact CLI runtime target used for cross-platform image builds.
+        #[arg(long, env = "ZED_PKG_CLI_TARGET")]
+        cli_target: Option<String>,
+        /// CLI runtimes default to a self-contained project copy so they can
+        /// cross OCI stages without Zed's global store.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_CLI_INSTALL_MODE",
+            default_value = "copy"
+        )]
+        cli_install_mode: InstallMode,
         /// Install exactly what .zpkg.lock pins; fail on any drift
         #[arg(long, env = "ZED_PKG_FROZEN")]
         frozen: bool,
@@ -354,11 +382,6 @@ pub enum Cmd {
     Release {
         #[command(subcommand)]
         cmd: ReleaseCmd,
-    },
-    /// Build an immutable OCI artifact plan without reading credentials or using the network
-    Oci {
-        #[command(subcommand)]
-        cmd: OciCmd,
     },
     /// Pack, verify VCS tag provenance, and upload to the registry
     Publish {
@@ -510,20 +533,23 @@ pub enum EnvCmd {
         #[arg(long, env = "ZED_PKG_ENV_JSON")]
         json: bool,
     },
-    /// Export a schema-v2 EnvironmentPlan as deterministic mise TOML.
+    /// Export a schema-v2 EnvironmentPlan to deterministic manager configuration.
     Export {
         #[arg(value_enum)]
-        manager: EnvironmentManagerArg,
-        /// Project-local schema-v2 EnvironmentPlan (.toml or .json).
+        manager: EnvironmentExportManagerArg,
+        /// Project-local schema-v2 EnvironmentPlan. Devbox/Flox default to `.zed/environment-plan.json`; mise requires this flag.
         #[arg(long, env = "ZED_PKG_ENV_PLAN")]
-        plan: PathBuf,
-        /// Project-local mise output path.
-        #[arg(long, env = "ZED_PKG_ENV_OUTPUT", default_value = ".mise.toml")]
-        output: PathBuf,
-        /// Verify that the output already equals the deterministic projection.
+        plan: Option<PathBuf>,
+        /// Project-local manager output path. Defaults are manager-specific.
+        #[arg(long, env = "ZED_PKG_ENV_OUTPUT")]
+        output: Option<PathBuf>,
+        /// Zed-owned deterministic receipt path for Devbox/Flox export.
+        #[arg(long, env = "ZED_PKG_ENV_RECEIPT")]
+        receipt: Option<PathBuf>,
+        /// Verify that the mise output already equals the deterministic projection.
         #[arg(long, env = "ZED_PKG_ENV_CHECK")]
         check: bool,
-        /// Transactionally create/update a Zed-owned manager view.
+        /// Transactionally create/update a Zed-owned mise view.
         #[arg(long, env = "ZED_PKG_ENV_WRITE")]
         write: bool,
         /// Emit a machine-readable export result.
@@ -735,10 +761,11 @@ pub enum CacheCmd {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::path::Path;
 
     use clap::{CommandFactory, Parser};
 
-    use super::{AuthCmd, Cli, Cmd, EnvCmd, R2gRegistryMode};
+    use super::{AuthCmd, Cli, Cmd, EnvCmd, InstallMode, R2gRegistryMode};
 
     #[test]
     fn flat_and_nested_auth_spellings_dispatch_identically() {
@@ -827,6 +854,40 @@ mod tests {
     }
 
     #[test]
+    fn init_accepts_a_project_directory_and_cli_tools_are_repeatable() {
+        let init = Cli::try_parse_from(["zed", "init", "project"]).unwrap();
+        assert!(matches!(
+            init.cmd,
+            Cmd::Init {
+                project: Some(ref path),
+                ..
+            } if path == Path::new("project")
+        ));
+
+        let install = Cli::try_parse_from([
+            "zed",
+            "install",
+            "--cli",
+            "nodejs",
+            "--cli",
+            "python3@3.14",
+            "--cli-target",
+            "x86_64-unknown-linux-gnu",
+        ])
+        .unwrap();
+        assert!(matches!(
+            install.cmd,
+            Cmd::Install {
+                ref cli,
+                cli_target: Some(ref target),
+                cli_install_mode: InstallMode::Copy,
+                ..
+            } if cli == &["nodejs", "python3@3.14"]
+                && target == "x86_64-unknown-linux-gnu"
+        ));
+    }
+
+    #[test]
     fn git_submodule_switch_is_global_boolish_and_does_not_consume_specs() {
         for args in [
             ["zed", "--git-submodules", "install", "acme/http-kit@^1"],
@@ -884,21 +945,23 @@ mod tests {
     }
 
     #[test]
-    fn environment_export_is_typed_and_rejects_ambiguous_write_modes() {
-        let cli = Cli::try_parse_from([
-            "zed",
-            "env",
-            "export",
-            "mise",
-            "--plan",
-            "zed-env.toml",
-            "--output",
-            ".mise.toml",
-            "--check",
-            "--json",
-        ])
-        .unwrap();
-        assert!(matches!(cli.cmd, Cmd::Env { .. }));
+    fn environment_export_is_typed_and_preserves_manager_boundaries() {
+        for manager in ["mise", "devbox", "flox"] {
+            let mut args = vec!["zed", "env", "export", manager, "--json"];
+            if manager == "mise" {
+                args.extend([
+                    "--plan",
+                    "zed-env.toml",
+                    "--output",
+                    ".mise.toml",
+                    "--check",
+                ]);
+            } else {
+                args.extend(["--receipt", ".zed/receipt.json"]);
+            }
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(matches!(cli.cmd, Cmd::Env { .. }));
+        }
 
         assert!(matches!(
             Cli::try_parse_from([

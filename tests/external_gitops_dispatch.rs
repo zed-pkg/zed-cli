@@ -31,6 +31,8 @@ fn root_dispatches_to_the_sibling_gitops_binary() {
     assert!(text.contains("Usage: zed-gitops"), "{text}");
     assert!(text.contains("validate [OPTIONS]"), "{text}");
     assert!(text.contains("--offline"), "{text}");
+    assert!(text.contains("--changed-from"), "{text}");
+    assert!(text.contains("--schema"), "{text}");
 }
 
 #[test]

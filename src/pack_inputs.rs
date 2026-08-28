@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use zed_interfaces::excludes::{ALWAYS_INCLUDE, effective_excludes};
+use zed_interfaces::excludes::ALWAYS_INCLUDE;
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::IGNORE_FILE;
 
@@ -154,24 +154,11 @@ impl ArtifactView {
         label: String,
         source: PathBuf,
         manifest: &Manifest,
-        include_source_ignore: bool,
+        ignore_rules: &[String],
     ) -> Result<Self> {
         let source = fs::canonicalize(&source)
             .with_context(|| format!("canonicalizing artifact source {}", source.display()))?;
-        let mut extra = manifest.publish.exclude.clone();
-
-        // Mirror pack_format's dynamic exclusions so the preflight evaluates
-        // the exact final payload rather than the intermediate staging tree.
-        let modules_dir = manifest.modules_dir().trim_matches('/').to_string();
-        if !modules_dir.is_empty() {
-            extra.push(format!("{modules_dir}/**"));
-        }
-        extra.push(format!("{}/**", crate::transaction::STAGING_DIR));
-        if include_source_ignore {
-            append_ignore_file(&source.join(IGNORE_FILE), &mut extra)?;
-        }
-
-        let excludes = effective_excludes(&extra, manifest.publish.include_readme);
+        let excludes = crate::publish_ignore::effective_artifact_excludes(manifest, ignore_rules);
         let always = ALWAYS_INCLUDE
             .iter()
             .map(|pattern| (*pattern).to_string())
@@ -200,11 +187,12 @@ impl ArtifactView {
 
 fn artifact_views(project: &Path, manifest: &Manifest) -> Result<Vec<ArtifactView>> {
     if !manifest.is_polyglot() {
+        let ignore_rules = crate::publish_ignore::read_rules(project)?;
         return Ok(vec![ArtifactView::new(
             "package artifact".to_string(),
             project.to_path_buf(),
             manifest,
-            true,
+            &ignore_rules,
         )?]);
     }
 
@@ -213,14 +201,13 @@ fn artifact_views(project: &Path, manifest: &Manifest) -> Result<Vec<ArtifactVie
         let derived = manifest
             .manifest_for_target(target)
             .with_context(|| format!("target `{target}` disappeared during package preflight"))?;
-        // pack_all first copies each target into a staging directory. The
-        // source target's .zedignore is intentionally not treated as active
-        // here because it is not copied into that staging tree by copy_files.
+        let source = project.join(&section.dir);
+        let ignore_rules = crate::publish_ignore::read_rules(&source)?;
         views.push(ArtifactView::new(
             format!("target `{target}` artifact"),
-            project.join(&section.dir),
+            source,
             &derived,
-            false,
+            &ignore_rules,
         )?);
     }
     Ok(views)
@@ -273,22 +260,6 @@ fn is_root_legal_file(project: &Path, path: &Path) -> bool {
     ["LICENSE", "LICENCE", "COPYING", "NOTICE"]
         .iter()
         .any(|prefix| upper.starts_with(prefix))
-}
-
-fn append_ignore_file(path: &Path, patterns: &mut Vec<String>) -> Result<()> {
-    if !path.is_file() {
-        return Ok(());
-    }
-    for line in fs::read_to_string(path)
-        .with_context(|| format!("reading package ignore file {}", path.display()))?
-        .lines()
-    {
-        let line = line.trim();
-        if !line.is_empty() && !line.starts_with('#') {
-            patterns.push(line.to_string());
-        }
-    }
-    Ok(())
 }
 
 fn glob_set(patterns: &[String]) -> Result<GlobSet> {

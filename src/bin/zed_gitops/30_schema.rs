@@ -10,6 +10,7 @@ fn validate_known_fields(
         "record",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
     check_object_keys(
@@ -18,6 +19,7 @@ fn validate_known_fields(
         "metadata",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
     let spec = value.get("spec").unwrap_or(&Value::Null);
@@ -27,6 +29,7 @@ fn validate_known_fields(
         "spec",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
     check_object_keys(
@@ -35,6 +38,7 @@ fn validate_known_fields(
         "spec.inventory",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
     check_object_keys(
@@ -43,6 +47,7 @@ fn validate_known_fields(
         "spec.source",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
     check_object_keys(
@@ -58,6 +63,7 @@ fn validate_known_fields(
         "spec.argo",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
     check_object_keys(
@@ -66,6 +72,7 @@ fn validate_known_fields(
         "spec.migration",
         path,
         app,
+        "catalog.unknown-field",
         diagnostics,
     );
 }
@@ -76,6 +83,7 @@ fn check_object_keys(
     identity: &str,
     path: &str,
     app: &str,
+    rule_id: &str,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(object) = value.as_object() else {
@@ -87,11 +95,54 @@ fn check_object_keys(
         .filter(|key| !allowed.iter().any(|allowed| *allowed == key.as_str()))
     {
         diagnostics.push(Diagnostic::error(
-            "catalog.unknown-field",
+            rule_id,
             format!("{identity} contains unsupported field {key:?}"),
             path,
             app,
         ));
+    }
+}
+
+fn validate_gitlink_contract_known_fields(
+    value: &Value,
+    path: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    check_object_keys(
+        value,
+        &["$schema", "apiVersion", "kind", "spec"],
+        "gitlink contract",
+        path,
+        "",
+        "schema.unknown-field",
+        diagnostics,
+    );
+    let spec = value.get("spec").unwrap_or(&Value::Null);
+    check_object_keys(
+        spec,
+        &[
+            "approvedAppPathPrefixes",
+            "forbiddenPathSuffixes",
+            "allowedGitlinks",
+        ],
+        "gitlink contract spec",
+        path,
+        "",
+        "schema.unknown-field",
+        diagnostics,
+    );
+    if let Some(allowed) = spec.get("allowedGitlinks").and_then(Value::as_array) {
+        for (index, item) in allowed.iter().enumerate() {
+            check_object_keys(
+                item,
+                &["path", "repository"],
+                &format!("gitlink contract spec.allowedGitlinks[{index}]"),
+                path,
+                "",
+                "schema.unknown-field",
+                diagnostics,
+            );
+        }
     }
 }
 

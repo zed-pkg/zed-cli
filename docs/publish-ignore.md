@@ -3,7 +3,7 @@
 Zed packages can keep publish-only exclusions in either of two places:
 
 - `.zpkg.toml` under `[publish].exclude`; or
-- an optional repository-root `.zedignore` file.
+- an optional artifact-root `.zedignore` file.
 
 Use `.zedignore` when the manifest would otherwise become a long list of local,
 hidden, generated, or editor-specific files. Keep rules in `.zpkg.toml` when they
@@ -76,13 +76,20 @@ the package's release policy, for example:
 .DS_Store
 ```
 
+For a single package or a whole-repository target, the artifact root is the
+repository root. For a non-root polyglot target, it is that target's declared
+`dir`; for example, `clients/ts/.zedignore` governs the re-rooted Node artifact.
+A repository-root `.zedignore` does not leak into unrelated non-root targets.
+When a target-local file and `[publish].exclude` are both active, diagnostics
+name the target and its exact `.zedignore` path.
+
 This avoids silently removing intentional package data. Built-in exclusions
 still remove development machinery such as VCS metadata, CI configuration,
 common test directories, dependency trees, and build-output directories.
 
 `.zpkg.toml` and repository license/notice files are always retained even when a
-user rule matches them. `.zedignore` is control metadata and is excluded from the
-published artifact by default.
+user rule matches them. `.zedignore` is control metadata and is always excluded
+from the published artifact; `!.zedignore` cannot re-include it.
 
 ## `.gitignore` is separate
 

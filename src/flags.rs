@@ -11,6 +11,8 @@ use std::fs;
 use anyhow::{Context, Result, bail};
 use flags2env::{BundledFlags2Env, StructuredParse};
 
+use crate::env_map::{EnvMap, process_env_map};
+
 const CONTRACT: &str = include_str!("../.cli-flags.toml");
 
 /// Validate inherited global booleans before any modular route can short-circuit.
@@ -32,7 +34,8 @@ pub fn normalize_global_boolean_environment(args: &[OsString]) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
     let explicit_envs = explicit_env_keys(&argv, &[])?;
-    normalize_active_boolean_environment(&[], &explicit_envs)
+    validate_active_boolean_environment(&process_env_map(), &[], &explicit_envs)?;
+    Ok(())
 }
 
 /// Audit and apply the embedded flags2env contract.
@@ -41,7 +44,9 @@ pub fn normalize_global_boolean_environment(args: &[OsString]) -> Result<()> {
 /// threads. Unknown options and typed parse errors fail closed instead of
 /// silently bypassing the contract. Precedence is explicit CLI flag, then an
 /// existing process environment value, then the declarative contract default.
-pub fn apply_cli_flags() -> Result<()> {
+/// Boolean spellings are canonicalized in the returned map; clap still reads
+/// argv so explicit CLI flags remain visible to the typed parser.
+pub fn apply_cli_flags() -> Result<EnvMap> {
     let argv = parser_argv(std::env::args());
     let parsed = parse_embedded(&argv)?;
 
@@ -67,18 +72,14 @@ pub fn apply_cli_flags() -> Result<()> {
     }
 
     let explicit_envs = explicit_env_keys(&argv, &parsed.subcommands)?;
-    normalize_active_boolean_environment(&parsed.subcommands, &explicit_envs)?;
+    let mut env = process_env_map();
+    normalize_boolean_values_in_map(&mut env, &parsed.subcommands, &explicit_envs)?;
     for (key, value) in parsed.flags {
-        if should_apply_value(
-            std::env::var_os(&key).is_some(),
-            explicit_envs.contains(&key),
-        ) {
-            // SAFETY: this function runs exactly once at process startup before
-            // clap/configuration creates threads or reads the affected variables.
-            unsafe { std::env::set_var(key, value) };
+        if should_apply_value(env.contains_key(&key), explicit_envs.contains(&key)) {
+            env.insert(key, value);
         }
     }
-    Ok(())
+    Ok(env)
 }
 
 fn should_apply_value(environment_exists: bool, explicitly_supplied: bool) -> bool {
@@ -88,28 +89,37 @@ fn should_apply_value(environment_exists: bool, explicitly_supplied: bool) -> bo
 /// Clap's boolean environment parser accepts canonical `true`/`false`, while
 /// shell and deployment configuration commonly use `1`, `0`, `yes`, `no`,
 /// `on`, and `off`. Canonicalize only boolean keys declared in the active
-/// flags2env scopes, before Clap reads them. Invalid values fail closed.
-fn normalize_active_boolean_environment(
+/// flags2env scopes. Invalid values fail closed. This never writes `std::env`.
+fn normalize_boolean_values_in_map(
+    env: &mut EnvMap,
     subcommands: &[String],
     explicit_envs: &BTreeSet<String>,
 ) -> Result<()> {
     let contract: toml::Value =
         toml::from_str(CONTRACT).context("parsing embedded flags2env contract")?;
-    for env in active_boolean_env_keys(&contract, subcommands)? {
-        let Some(raw) = std::env::var_os(&env) else {
+    for key in active_boolean_env_keys(&contract, subcommands)? {
+        let Some(raw) = env.get(&key).cloned() else {
             continue;
         };
         let Some(normalized) =
-            normalized_environment_boolean(&env, &raw, explicit_envs.contains(&env))?
+            normalized_environment_boolean(&key, OsStr::new(&raw), explicit_envs.contains(&key))?
         else {
             continue;
         };
-        if raw != OsStr::new(normalized) {
-            // SAFETY: apply_cli_flags runs once at process startup, before Clap
-            // or any worker thread reads or mutates the process environment.
-            unsafe { std::env::set_var(env, normalized) };
+        if raw != normalized {
+            env.insert(key, normalized.to_string());
         }
     }
+    Ok(())
+}
+
+fn validate_active_boolean_environment(
+    env: &EnvMap,
+    subcommands: &[String],
+    explicit_envs: &BTreeSet<String>,
+) -> Result<()> {
+    let mut snapshot = env.clone();
+    normalize_boolean_values_in_map(&mut snapshot, subcommands, explicit_envs)?;
     Ok(())
 }
 
@@ -360,6 +370,34 @@ mod tests {
     }
 
     #[test]
+    fn embedded_contract_accepts_project_cli_runtime_flags() {
+        let argv = vec![
+            "zed".to_string(),
+            "install".to_string(),
+            "--cli".to_string(),
+            "nodejs".to_string(),
+            "--cli".to_string(),
+            "python3".to_string(),
+            "--cli-target=x86_64-unknown-linux-gnu".to_string(),
+            "--cli-install-mode=copy".to_string(),
+        ];
+        let parsed = parse_embedded(&argv).expect("embedded contract must parse CLI tools");
+        assert!(parsed.unknown_options.is_empty());
+        assert!(parsed.errors.is_empty());
+        assert_eq!(
+            parsed.flags.get("ZED_PKG_CLI_TARGET").map(String::as_str),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(
+            parsed
+                .flags
+                .get("ZED_PKG_CLI_INSTALL_MODE")
+                .map(String::as_str),
+            Some("copy")
+        );
+    }
+
+    #[test]
     fn explicit_aliases_map_to_the_manifestless_environment_key() {
         for bypass in ["--allow-no-manifest", "--skip-manifest"] {
             let argv = vec![
@@ -530,5 +568,12 @@ mod tests {
             "--unknown=<redacted>"
         );
         assert_eq!(redact_option_value("plain diagnostic"), "plain diagnostic");
+    }
+
+    #[test]
+    fn source_does_not_write_process_environment() {
+        const SRC: &str = include_str!("flags.rs");
+        let production = SRC.split("#[cfg(test)]").next().unwrap_or(SRC);
+        assert!(!production.contains("set_var"));
     }
 }

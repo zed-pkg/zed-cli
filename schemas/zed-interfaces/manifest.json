@@ -44,6 +44,10 @@
       "description": "Where zed materializes the (few, hand-picked) dependencies it sources —\nzed complements npm/maven/etc. rather than replacing them, so this dir\nsits alongside the native one and the ecosystem adapter wires it into\nthe toolchain (NODE_PATH / node_modules, the JVM classpath, …). `dir`\ndefaults to `zed_modules`; relocate it with e.g. `.vendor/.zed` or\n`.deps/.zed`.",
       "$ref": "#/$defs/InstallSection"
     },
+    "interop": {
+      "description": "Explicit interoperability intent for external package and environment\nmanagers. Detection alone never grants Zed permission to consume\nanother tool's metadata.",
+      "$ref": "#/$defs/InteropSection"
+    },
     "native-dependencies": {
       "description": "Host-native packages required before this package's install hooks or\nbuild step can run. Keys are supported package-manager names (`apt`,\n`apk`, `brew`, `nix`, ...); values are package specs passed as argv,\nnever interpolated into a shell command. Installing these prerequisites\nis an explicitly consented zed operation, separate from build-hook\nconsent.",
       "type": "object",
@@ -183,6 +187,16 @@
         "azure-artifacts"
       ]
     },
+    "GitInteropSection": {
+      "description": "Explicit permission for Zed to consume metadata committed for Git.",
+      "type": "object",
+      "properties": {
+        "consume_gitmodules": {
+          "description": "Whether Zed may synchronize and initialize dependencies declared by the\nowning checkout's committed `.gitmodules` file.",
+          "type": "boolean"
+        }
+      }
+    },
     "InstallHooksSection": {
       "description": "Package-local lifecycle hooks. Commands are author-controlled shell code,\nbut execution is separately consented by the installer and occurs only in\na writable staging tree.",
       "type": "object",
@@ -228,8 +242,17 @@
         }
       }
     },
+    "InteropSection": {
+      "description": "Opt-in interoperability with repository-local metadata owned by other tools.",
+      "type": "object",
+      "properties": {
+        "git": {
+          "$ref": "#/$defs/GitInteropSection"
+        }
+      }
+    },
     "Language": {
-      "description": "The language a package's code is written for. Names the published package\n(`<repo>-<language>`), and implies an [`Ecosystem`] via\n[`Language::ecosystem`].\n\nCanonical tokens are the colloquial names people search for — `nodejs`, not\n`node`; `golang`, not `go` — because that is what ends up in a package name\na human has to recall. The shorter spellings, and near-synonyms like\n`typescript`, are accepted by [`Language::from_token`] and by umbrella\nvariant aliases, so both spellings resolve.",
+      "description": "The language a package's code is written for. Names the published package\n(`<repo>-<language>`), and implies an [`Ecosystem`] via\n[`Language::ecosystem`].\n\nCanonical tokens are the colloquial names people search for — `nodejs`, not\n`node`; `golang`, not `go` — because that is what ends up in a package name\na human has to recall. Short spellings and ecosystem-specific source labels\nare accepted by [`Language::from_token`] and manifest decoding. For example,\n`typescript` and `astro` route to the Node.js package ecosystem, while a\nYAML-only data or infrastructure package remains ungated as `universal`.",
       "oneOf": [
         {
           "type": "string",

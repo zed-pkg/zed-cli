@@ -9,12 +9,11 @@
 //! restored) rather than leaving a half-adopted project.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use walkdir::{DirEntry, WalkDir};
@@ -24,6 +23,7 @@ use zed_interfaces::manifest::{
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 use zed_interfaces::vcs::Vcs;
 use zed_interfaces::version::{self, VersionScheme};
+use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
@@ -512,6 +512,7 @@ fn generated_manifest(
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         install: Default::default(),
+        interop: Default::default(),
         targets: Default::default(),
     };
     manifest.install.target = target.map(str::to_owned);
@@ -582,7 +583,7 @@ fn slugify(value: &str) -> String {
     slug.trim_matches('-').to_string()
 }
 
-fn lock_project_manifest(cfg: &Config, project: &Path) -> Result<File> {
+fn lock_project_manifest(cfg: &Config, project: &Path) -> Result<LockGuard> {
     let canonical = fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf());
     let mut hasher = Sha256::new();
     hasher.update(canonical.to_string_lossy().as_bytes());
@@ -591,16 +592,14 @@ fn lock_project_manifest(cfg: &Config, project: &Path) -> Result<File> {
     fs::create_dir_all(&lock_dir)
         .with_context(|| format!("creating project lock directory {}", lock_dir.display()))?;
     let lock_path = lock_dir.join(format!("{key}.manifest.lock"));
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .with_context(|| format!("opening project manifest lock {}", lock_path.display()))?;
-    file.lock_exclusive()
-        .with_context(|| format!("locking project manifest {}", project.display()))?;
-    Ok(file)
+    LockManager::global()
+        .acquire_blocking(
+            LockRequest::exclusive(&lock_path)
+                .operation(format!("project manifest {}", project.display()))
+                .class(LockClass::Custom(5))
+                .queue_same_process(),
+        )
+        .with_context(|| format!("locking project manifest {}", project.display()))
 }
 
 fn temporary_with_contents(path: &Path, contents: &[u8]) -> Result<NamedTempFile> {

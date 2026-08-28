@@ -7,16 +7,19 @@ use clap_complete::{Shell, generate};
 
 use crate::cli_model;
 use crate::{
-    dev, external_subcommands, fetch, git_submodules, global, nix_bundle_write, nix_export_plan,
+    dev, external_subcommands, fetch, git_submodules, global, graph_export, nix_bundle_write,
+    nix_export_plan, oci_command,
 };
 
 /// Build the complete built-in command tree without external extensions.
 /// The external dispatcher uses this model to guarantee that a `zed-*`
 /// executable can never shadow a built-in name or alias.
 pub(crate) fn built_in_root_command() -> clap::Command {
-    global::augment_root_command(git_submodules::augment_root_command(
-        nix_bundle_write::augment_root_command(nix_export_plan::augment_root_command(
-            fetch::augment_root_command(dev::augment_root_command(cli_model::command())),
+    global::augment_root_command(oci_command::augment_root_command(
+        git_submodules::augment_root_command(nix_bundle_write::augment_root_command(
+            nix_export_plan::augment_root_command(fetch::augment_root_command(
+                graph_export::augment_root_command(dev::augment_root_command(cli_model::command())),
+            )),
         )),
     ))
 }
@@ -71,6 +74,8 @@ mod tests {
             "install",
             "init",
             "fetch",
+            "graph",
+            "package",
             "interop",
             "nix",
             "plan",
@@ -101,6 +106,9 @@ mod tests {
             "--lock",
             "--require-lock",
             "--install-mode",
+            "--cli",
+            "--cli-target",
+            "--cli-install-mode",
             "--global-bin-dir",
             "--frozen",
             "--json",
@@ -110,10 +118,16 @@ mod tests {
             "--output",
             "--password-stdin",
             "--registry-config",
+            "--format",
+            "--etag",
+            "--max-bytes",
+            "--metadata-json",
             "--python-venv",
             "--isolated-home",
             "--catalog",
             "--offline",
+            "--schema",
+            "--changed-from",
         ] {
             assert!(script.contains(option), "missing option {option:?}");
         }
@@ -131,6 +145,8 @@ mod tests {
             "install",
             "init",
             "fetch",
+            "graph",
+            "package",
             "interop",
             "nix",
             "plan",
@@ -161,6 +177,9 @@ mod tests {
             "--lock",
             "--require-lock",
             "--install-mode",
+            "--cli",
+            "--cli-target",
+            "--cli-install-mode",
             "--global-bin-dir",
             "--frozen",
             "--json",
@@ -170,10 +189,16 @@ mod tests {
             "--output",
             "--password-stdin",
             "--registry-config",
+            "--format",
+            "--etag",
+            "--max-bytes",
+            "--metadata-json",
             "--python-venv",
             "--isolated-home",
             "--catalog",
             "--offline",
+            "--schema",
+            "--changed-from",
         ] {
             assert!(script.contains(option), "missing option {option:?}");
         }

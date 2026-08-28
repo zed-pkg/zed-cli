@@ -20,7 +20,9 @@ Why it exists:
   and commit are pinned in `.zpkg.lock`.
 - **Container-first.** The documented [copy install ownership contract](docs/install-modes.md)
   materializes independent package, adapter, build-output, and hoisted-bin files
-  for Docker build contexts, OCI layers, and read-only runtimes.
+  for Docker build contexts, OCI layers, and read-only runtimes. First-class
+  [project-owned CLI runtimes](docs/cli-tools.md) make Node.js and Python part
+  of that same auditable workspace instead of an opaque base-image choice.
 
 ## Install
 
@@ -59,9 +61,6 @@ git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
 zed publish
 
-# derive the exact immutable OCI identity without credentials or uploads
-zed oci plan oci://ghcr.io/acme/my-lib:0.1.0
-
 # consume packages from a manifest
 zed add acme/http-kit@^1
 zed install
@@ -79,6 +78,13 @@ zed find http
 zed install --interactive
 zed r2g --docker --interactive
 zed publish --interactive
+
+# create a new directory and give it project-owned CLI runtimes
+zed init project --org acme
+cd project
+zed install --cli nodejs
+zed install --cli python3
+export PATH="$PWD/.zed/tools/bin:$PATH"
 ```
 
 Every authored package is `<org>/<name>`, declared in a `.zpkg.toml` manifest
@@ -131,25 +137,36 @@ Artifacts are `tar.gz` by default; `zip` is fully supported (both pack
 deterministically and install through the store's magic-byte extraction). The
 registry hosts both on S3/Cloudflare R2.
 
+Native executable bundles use the stricter self-describing ZIP profile described
+in [docs/binary-artifacts.md](docs/binary-artifacts.md). `zed-binary pack` and
+`verify` keep `.zpkg.toml` beside the payload under `pkg/`; publish/download use
+the legacy version route by default or the additive target-qualified route with
+`--artifact-route qualified`.
+
 ## Commands
 
 | Command | What it does |
 | --- | --- |
 | `zed validate [--manifest PATH] [--lock PATH] [--require-lock] [--json]` | Validate canonical package metadata offline and without mutation; direct lock coverage is checked, while v1 transitive completeness is explicitly not claimed |
-| `zed init` | Write a `.zpkg.toml` template |
+| `zed init [PROJECT]` | Create the optional project directory and write its `.zpkg.toml` template; `zed init project` infers the package name `project` |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
+| `zed install --cli <tool> [--cli <tool> ...]` | Resolve exact project-owned CLI runtimes into `.zed/environment.lock.toml` and copy their complete runtime roots below `.zed/tools`; built-ins are `nodejs` and `python3` |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
-| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool and lock subset as a normalized `EnvironmentPlan`; never load parent/global config or execute hooks |
+| `zed inspect --root ABSOLUTE_PATH [--format json]` | Fully offline, read-only manifest, lock, store, Git-submodule, mise, and Nix analysis for IDEs and automation |
+| `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
 | `zed env export mise --plan PATH [--output .mise.toml] [--check|--write] [--json]` | Deterministically project a schema-v2 environment plan into conflict-safe project-local mise TOML without invoking mise or executing project code |
+| `zed env export devbox [--plan PATH] [--output devbox.json] [--receipt PATH] [--json]` | Deterministically generate Devbox JSON and a Zed-owned receipt without invoking Devbox |
+| `zed env export flox [--plan PATH] [--output .flox/env/manifest.toml] [--receipt PATH] [--json]` | Deterministically generate Flox manifest TOML and a Zed-owned receipt without invoking Flox |
 | `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |
 | `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |
 | `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
+| `zed-binary pack\|verify\|publish\|download` | Build or transport a deterministic, self-describing native ZIP; target-qualified registry identity is opt-in and does not modify SemVer |
 | `zed release plan [--json] [--channel <track>]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
 | `zed oci plan <oci://registry/repository:version> [--target <name>] [--out <layout>] [--json]` | Derive exact OCI identities and optionally materialize a verified local image layout without credentials or network transport |
@@ -175,6 +192,36 @@ registry hosts both on S3/Cloudflare R2.
 | `zed cache clean` | Drop cached downloads |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
 | `zed completions bash\|zsh` | Generate shell completion from the same Clap model used by the executable |
+
+### Static inspection protocol
+
+`zed inspect --root ABSOLUTE_PATH --format json` is the supported process
+boundary for VS Code, Eclipse, Xcode, Sublime Text, and other tools. Inspection
+is always offline and is dispatched before configuration, credentials, or
+transaction recovery can be loaded. It never writes a lock, resolves a package,
+runs mise or Nix, or executes package code. It reports schema-versioned
+diagnostics and structured `argv` recommendations whose mutation, network, and
+code-execution properties are explicit.
+
+Add this declaration when Zed is expected to consume the checkout's committed
+`.gitmodules` metadata:
+
+```toml
+[interop.git]
+consume_gitmodules = true
+```
+
+`zed overtake --git-submodules` writes the declaration automatically, and
+later `zed add`/`zed remove` manifest rewrites preserve it. A `.gitmodules`
+file without the declaration is reported as a compatibility warning; a
+declaration with missing, indirect, or ambiguous Git metadata is an error.
+
+Mise analysis reuses the frozen, project-local import contract without loading
+user/global configuration or invoking mise. Nix analysis checks `flake.nix`
+and the adjacent `flake.lock` as data without running `nix develop`.
+
+See [Static inspection and editor interoperability](docs/static-inspection.md)
+for the JSON compatibility and plugin safety contract.
 
 ### Shell completion
 
@@ -444,6 +491,9 @@ actual CLI never drift, so it is always authoritative:
 | `--require-lock` (validate) | `ZED_PKG_VALIDATE_REQUIRE_LOCK` | off |
 | `--json` (validate) | `ZED_PKG_VALIDATE_JSON` | off |
 | `--install-mode` | `ZED_PKG_INSTALL_MODE` | `symlink` |
+| `--cli <tool>` (install) | `ZED_PKG_CLI` | none; repeat on the command line for multiple tools |
+| `--cli-target` (install) | `ZED_PKG_CLI_TARGET` | detected GNU/Linux architecture |
+| `--cli-install-mode` (install) | `ZED_PKG_CLI_INSTALL_MODE` | `copy` |
 | `--adapter` | `ZED_PKG_ADAPTER` | `auto` — context-aware linking: `package.json` projects also get `node_modules/@org/name` links; `pom.xml`/`build.gradle` projects get a generated `.zed/classpath` of installed jars for `java -cp "$(cat .zed/classpath)"`; python site-packages planned |
 | `--frozen` | `ZED_PKG_FROZEN` | off |
 | `--allow-build` (install) | `ZED_PKG_ALLOW_BUILD` | off |
@@ -495,32 +545,45 @@ always removes the local session.
 
 ## Containers & OCI
 
-### Immutable OCI publication plans
-
-`zed oci plan` derives the exact OCI artifact bytes and identities before any
-registry is contacted:
-
-```sh
-zed oci plan oci://ghcr.io/acme/tool:1.2.3
-zed oci plan oci://ghcr.io/acme/tool-rust:1.2.3 --target rust --json
-```
-
-The input is a tagged destination. Contract v1 requires that tag to equal the
-package version and rejects a caller-supplied digest. Zed validates the source
-manifest and frozen dependency provenance, packs in a temporary directory, and
-hashes the package archive, Zed manifest, optional lockfile, config JSON, and
-OCI image manifest. The output includes the resolved immutable
-`oci://...@sha256:...` reference. Planning reads no registry credentials,
-performs no network request, uploads nothing, and leaves no `.zed/pack` output.
-A later transport command can consume the same descriptors without changing
-what is signed, attested, or pushed.
-
 Symlinks into `$HOME/.zed-pkg` do not survive a `COPY --from=build` between
-image stages, so use copy mode inside builds and cache-mount the store:
+image stages. Project-owned CLI runtimes therefore default to copy mode: their
+complete runtime roots, command links, and portable environment lock all live
+below the workspace. The published builder image supports an intentionally
+small, readable multi-stage recipe:
 
 ```dockerfile
-FROM rust:1-slim AS build
-RUN cargo install zed-cli --root /usr/local            # or COPY a prebuilt zed
+FROM ghcr.io/zed-pkg/zed-oci:0.2.0 AS zed-builder
+WORKDIR /workspace
+
+RUN zed init project --org example
+WORKDIR /workspace/project
+RUN zed install --cli nodejs
+RUN zed install --cli python3
+
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=zed-builder /workspace/project/ /app/
+ENV PATH="/app/.zed/tools/bin:${PATH}"
+
+# The copied workspace owns both runtimes; Zed and its store stay behind.
+RUN node --version \
+ && python3 --version \
+ && ! command -v zed \
+ && test ! -e /home/zed/.zed-pkg
+```
+
+`node`/`nodejs`, `npm`, `npx`, and `corepack` come from the locked Node.js
+runtime. `python`/`python3`/`python3.14` and `pip`/`pip3`/`pip3.14` come from
+the locked Python runtime. The built-in catalog currently targets glibc-based
+x86_64 and arm64 Linux, so both the builder and the final image must provide a
+GNU/Linux runtime. See [CLI tools](docs/cli-tools.md) for the lock, target, and
+update contract.
+
+Package dependencies use their existing explicit copy mode and can share the
+same builder stage:
+
+```dockerfile
+FROM ghcr.io/zed-pkg/zed-oci:0.2.0 AS build
 WORKDIR /app
 COPY .zpkg.toml .zpkg.lock ./
 RUN --mount=type=cache,target=/root/.zed-pkg \
@@ -535,6 +598,8 @@ COPY --from=build /app/out /app
 - `--frozen` keeps builds reproducible: exactly the sha256s in `.zpkg.lock`.
 - `--install-mode copy` materializes files so the layer is self-contained;
   the cache mount still deduplicates downloads across builds.
+- `zed install --cli ...` writes a separate portable
+  `.zed/environment.lock.toml` and defaults to project-owned copy mode.
 - Artifacts are pre-pruned at publish time, so images stay small without
   extra cleanup steps.
 
@@ -638,6 +703,16 @@ Linux (arm64 + x64, gnu and musl), and Windows via
   credentials.toml                     legacy opaque registry tokens (0600)
 ```
 
+Verified binary downloads additionally receive a human-readable, source- and
+target-qualified view under ~/.zpkg/downloads. The existing
+~/.zed-pkg/store remains the content-addressed byte authority. The host view
+uses Windows-safe typed folders such as
+zed-org--acme/zed-project--payments/zed-package--tool/versions/1.2.3/zed/targets/aarch64-linux-android.
+Projectless packages omit the project segment. Configure the root, delimiter,
+source precedence, and project/package discovery indexes in
+~/.zpkg/zpkg-config.toml; see
+[docs/zpkg-config.toml.example](docs/zpkg-config.toml.example).
+
 ## Hardening
 
 Artifacts arrive over the network, so the client treats them as untrusted:
@@ -652,7 +727,8 @@ Artifacts arrive over the network, so the client treats them as untrusted:
   count are capped (`ZED_PKG_MAX_UNPACKED_BYTES`) against decompression bombs.
 - **Bounded downloads.** Artifact fetches are size-capped
   (`ZED_PKG_MAX_ARTIFACT_BYTES`) and a registry-supplied `download_url` must
-  be https (or loopback/http only when the registry itself is http).
+  be https (or loopback/the same http origin as an explicitly plaintext
+  registry). Authenticated API requests never follow redirects.
 - **No implicit install-time code execution or privilege use.** Native package
   installation, package lifecycle hooks, and builds require independent
   explicit consent. Native specs use fixed argv templates; hooks/builds run in

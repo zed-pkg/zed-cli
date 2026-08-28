@@ -4,18 +4,23 @@ use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
-    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd, TaskCmd,
+    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
+    ReleaseCmd, StoreCmd, TaskCmd,
 };
+use zed_cli::cli_tools;
 use zed_cli::completion;
 use zed_cli::config::Config;
 use zed_cli::dev;
 use zed_cli::environment;
+use zed_cli::environment_export_cli::{self, ExportOptions};
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
+use zed_cli::graph_export;
 use zed_cli::managed_install;
 use zed_cli::mise_export::{self, MiseExportMode};
 use zed_cli::nix_bundle_write;
+use zed_cli::nix_environment_export::ExportManager;
 use zed_cli::nix_export_plan;
 use zed_cli::oci_command;
 use zed_cli::ops;
@@ -65,6 +70,16 @@ fn main() {
             }
         }
     }
+    if let Some(result) = oci_command::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     if let Some(result) = submodules::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
@@ -96,6 +111,16 @@ fn main() {
         }
     }
     if let Some(result) = fetch::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = graph_export::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -211,11 +236,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
     match cli.cmd {
         Cmd::Validate { .. } => unreachable!("validation returned before mutable CLI setup"),
-        Cmd::Init { org, name } => ops::init(&cwd, org, name, cfg.interactive),
+        Cmd::Init { project, org, name } => {
+            let project = project.unwrap_or_else(|| std::path::PathBuf::from("."));
+            let project = if project.is_absolute() {
+                project
+            } else {
+                cwd.join(project)
+            };
+            std::fs::create_dir_all(&project)?;
+            ops::init(&project, org, name, cfg.interactive)
+        }
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
             specs,
+            cli,
+            cli_target,
+            cli_install_mode,
             frozen,
             install_mode,
             adapter,
@@ -227,13 +264,38 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
+            if !cli.is_empty() {
+                anyhow::ensure!(
+                    specs.is_empty(),
+                    "package operands and --cli tools cannot be mixed in one install; run them as separate deterministic transactions"
+                );
+                let receipt = cli_tools::install(
+                    &cwd,
+                    &cfg.home,
+                    &cli,
+                    cli_target.as_deref(),
+                    frozen,
+                    cli_install_mode,
+                )?;
+                println!("{} CLI tool profile {}", receipt.action, receipt.profile);
+                println!("lock: {}", receipt.lock);
+                println!("lock-sha256: {}", receipt.lock_sha256);
+                println!("target: {}", receipt.target);
+                println!("bin: {}", receipt.bin);
+                for tool in receipt.tools {
+                    println!("tool: {tool}");
+                }
+                return Ok(());
+            }
+            let sync_git_submodules =
+                git_submodules || submodules::manifest_consumes_gitmodules(&cwd)?;
             let permissions = ops::InstallPermissions {
                 allow_build,
                 allow_native_deps,
                 allow_install_hooks,
                 native_manager,
             };
-            if git_submodules {
+            if sync_git_submodules {
                 // Git synchronization mutates the submodule worktrees and must
                 // share one descriptor lifetime with manifest/lock resolution,
                 // materialization, adapter wiring, and Git-lock finalization.
@@ -304,30 +366,58 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
             EnvCmd::Export {
-                manager: EnvironmentManagerArg::Mise,
+                manager,
                 plan,
                 output,
+                receipt,
                 check,
                 write,
                 json,
-            } => {
-                if check && write {
-                    anyhow::bail!("the arguments '--check' and '--write' cannot be used together");
+            } => match manager {
+                EnvironmentExportManagerArg::Mise => {
+                    if check && write {
+                        anyhow::bail!(
+                            "the arguments '--check' and '--write' cannot be used together"
+                        );
+                    }
+                    if receipt.is_some() {
+                        anyhow::bail!("--receipt is supported only for Devbox and Flox export");
+                    }
+                    let Some(plan) = plan else {
+                        anyhow::bail!("mise export requires --plan PATH");
+                    };
+                    let output = output.unwrap_or_else(|| std::path::PathBuf::from(".mise.toml"));
+                    let mode = if check {
+                        MiseExportMode::Check
+                    } else if write {
+                        MiseExportMode::Write
+                    } else {
+                        MiseExportMode::Print
+                    };
+                    let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
+                    mise_export::print_export(&exported, json)
                 }
-                let mode = if check {
-                    MiseExportMode::Check
-                } else if write {
-                    MiseExportMode::Write
-                } else {
-                    MiseExportMode::Print
-                };
-                let exported = mise_export::export_mise(&cwd, &plan, &output, mode)?;
-                mise_export::print_export(&exported, json)
-            }
-            EnvCmd::Export {
-                manager: EnvironmentManagerArg::Asdf,
-                ..
-            } => anyhow::bail!("asdf export is not implemented; use `zed env export mise`"),
+                EnvironmentExportManagerArg::Devbox | EnvironmentExportManagerArg::Flox => {
+                    if check || write {
+                        anyhow::bail!("--check and --write are supported only for mise export");
+                    }
+                    let manager = match manager {
+                        EnvironmentExportManagerArg::Devbox => ExportManager::Devbox,
+                        EnvironmentExportManagerArg::Flox => ExportManager::Flox,
+                        EnvironmentExportManagerArg::Mise => unreachable!(),
+                    };
+                    environment_export_cli::execute(
+                        &cwd,
+                        manager,
+                        ExportOptions {
+                            plan,
+                            output,
+                            receipt,
+                            json,
+                        },
+                    )
+                }
+            },
             EnvCmd::Verify {
                 manager,
                 config,
@@ -422,7 +512,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ),
             ReleaseCmd::Versions { target } => release::versions(&cwd, target.as_deref()),
         },
-        Cmd::Oci { .. } => unreachable!("OCI commands return before Config construction"),
         Cmd::Publish {
             dry_run,
             allow_dirty,

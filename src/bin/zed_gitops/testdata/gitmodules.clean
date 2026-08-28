@@ -1,0 +1,3 @@
+[submodule "remote/deployments/fabrication-server-rs"]
+	path = remote/deployments/fabrication-server-rs
+	url = git@github.com:daedalus-fab/fabrication-server.rs.git

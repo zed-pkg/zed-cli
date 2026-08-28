@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zpkg.net/schemas/inspect-v1.schema.json",
+  "title": "Zed package inspection report v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "root",
+    "cli",
+    "package",
+    "workspace_members",
+    "adapter_outputs",
+    "locked_packages",
+    "interop",
+    "summary",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "root": { "type": "string" },
+    "cli": {
+      "type": "object",
+      "required": ["implementation", "command", "offline", "mutates_project", "loads_credentials"],
+      "properties": {
+        "implementation": { "const": "zed-pkg" },
+        "command": { "const": "inspect" },
+        "offline": { "const": true },
+        "mutates_project": { "const": false },
+        "loads_credentials": { "const": false }
+      }
+    },
+    "package": {
+      "type": "object",
+      "required": ["manifest", "lockfile", "materialization_dir", "identity"],
+      "properties": {
+        "manifest": { "type": "string" },
+        "lockfile": { "type": "string" },
+        "materialization_dir": { "type": "string" },
+        "identity": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["org", "name", "version"],
+              "properties": {
+                "org": { "type": "string" },
+                "name": { "type": "string" },
+                "version": { "type": "string" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "workspace_members": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "adapter_outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path", "present"],
+        "properties": {
+          "kind": { "type": "string" },
+          "path": { "type": "string" },
+          "present": { "type": "boolean" }
+        }
+      }
+    },
+    "locked_packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["org", "name", "version", "sha256", "store_present", "materialized"],
+        "properties": {
+          "org": { "type": "string" },
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "store_present": { "type": ["boolean", "null"] },
+          "materialized": { "type": "boolean" }
+        }
+      }
+    },
+    "interop": {
+      "type": "object",
+      "required": ["git_submodules", "mise", "nix_develop"],
+      "properties": {
+        "git_submodules": { "$ref": "#/$defs/interop_status" },
+        "mise": { "$ref": "#/$defs/interop_status" },
+        "nix_develop": { "$ref": "#/$defs/interop_status" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["health", "errors", "warnings", "frozen_ready", "recovery_pending"],
+      "properties": {
+        "health": { "enum": ["healthy", "warning", "error"] },
+        "errors": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "frozen_ready": { "type": "boolean" },
+        "recovery_pending": { "type": "boolean" }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "severity", "message", "location"],
+        "properties": {
+          "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "severity": { "enum": ["error", "warning", "info"] },
+          "message": { "type": "string" },
+          "detail": { "type": "string" },
+          "location": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": { "type": "string" },
+              "line": { "type": "integer", "minimum": 1 },
+              "column": { "type": "integer", "minimum": 1 }
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "kind",
+                "argv",
+                "cwd",
+                "mutates_project",
+                "requires_network",
+                "executes_package_code"
+              ],
+              "properties": {
+                "id": { "type": "string" },
+                "title": { "type": "string" },
+                "kind": { "const": "zed-command" },
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string" }
+                },
+                "cwd": { "type": "string" },
+                "mutates_project": { "type": "boolean" },
+                "requires_network": { "type": "boolean" },
+                "executes_package_code": { "type": "boolean" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "interop_status": {
+      "type": "object",
+      "required": ["detected", "declared", "verified", "source"],
+      "properties": {
+        "detected": { "type": "boolean" },
+        "declared": { "type": "boolean" },
+        "verified": { "type": "boolean" },
+        "source": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

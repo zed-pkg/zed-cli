@@ -3,13 +3,16 @@
 
 pub mod asdf_environment;
 pub mod auth;
+pub mod binary_archive;
 pub mod cli;
 pub mod cli_model;
 pub mod cli_oci;
+pub mod cli_tools;
 pub mod completion;
 pub mod config;
 mod dart_wiring;
 pub mod dev;
+pub mod env_map;
 pub mod environment;
 pub mod environment_export_cli;
 pub mod external_subcommands;
@@ -17,11 +20,16 @@ pub mod fetch;
 pub mod flags;
 pub mod git_submodules;
 pub mod global;
+pub mod graph_export;
+pub mod host_downloads;
+pub mod inspect;
 pub mod install_graph;
 pub mod interactive;
+pub mod lifecycle;
 pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
+pub(crate) mod materialize;
 #[path = "mise_export.rs"]
 mod mise_export_impl;
 pub mod mise_export {
@@ -112,13 +120,14 @@ pub mod oci;
 pub mod oci_command;
 pub mod oci_layout;
 pub mod oci_push;
-#[path = "ops_entry.rs"]
+#[path = "ops_lifecycle_entry.rs"]
 pub mod ops;
 pub mod pack;
 pub(crate) mod pack_guard;
 pub(crate) mod pack_inputs;
 pub mod preflight;
 pub mod project_lock;
+pub(crate) mod publish_ignore;
 pub mod r2g;
 pub mod registry;
 pub mod release;

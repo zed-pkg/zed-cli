@@ -11,7 +11,7 @@ on:
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - ".zpkg.toml"
       - ".zpkg.lock"
@@ -35,20 +35,19 @@ jobs:
     timeout-minutes: 12
     steps:
       - name: Check out exact CLI revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: zed-cli
           persist-credentials: false
-
       - name: Check out canonical interfaces package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: zed-pkg/zed-interfaces
+          ref: e4feac2ce5ee15a20fba9847197fd03306f56a94
           path: zed-interfaces
           persist-credentials: false
-
       - name: Check out canonical clients package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: zed-pkg/zed-clients
           path: zed-clients

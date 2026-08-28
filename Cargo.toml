@@ -3,7 +3,7 @@ resolver = "3"
 
 [package]
 name = "zed-cli"
-version = "0.1.0"
+version = "0.2.3"
 edition = "2024"
 description = "zed: the universal package manager backed by the VCS hosts you already use"
 license = "MIT"
@@ -17,12 +17,16 @@ path = "src/main.rs"
 name = "zed-gitops"
 path = "src/bin/zed-gitops.rs"
 
+[[bin]]
+name = "zed-binary"
+path = "src/bin/zed-binary.rs"
+
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "60a8ab55f8a55eb212a72dcb334c1c118047c7ef" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "e4feac2ce5ee15a20fba9847197fd03306f56a94" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"

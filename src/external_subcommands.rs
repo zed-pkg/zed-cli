@@ -89,6 +89,18 @@ pub fn augment_root_command(command: ClapCommand) -> ClapCommand {
                 .help("Repository-relative GitOpsApplication catalog directory"),
         )
         .arg(
+            Arg::new("schema")
+                .long("schema")
+                .value_name("PATH")
+                .help("Repository-relative versioned gitlink contract; defaults to catalog/gitops/gitlink-contract.v1alpha1.json when present"),
+        )
+        .arg(
+            Arg::new("changed_from")
+                .long("changed-from")
+                .value_name("REF")
+                .help("Compare gitlinks against an already-fetched local ref such as origin/main"),
+        )
+        .arg(
             Arg::new("format")
                 .long("format")
                 .value_name("FORMAT")
@@ -100,7 +112,7 @@ pub fn augment_root_command(command: ClapCommand) -> ClapCommand {
             Arg::new("strict")
                 .long("strict")
                 .action(ArgAction::SetTrue)
-                .help("Reject unknown fields in catalog objects"),
+                .help("Reject unknown fields in catalog and gitlink-contract objects"),
         )
         .arg(
             Arg::new("offline")
