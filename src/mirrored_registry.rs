@@ -116,11 +116,11 @@ pub enum FallbackPolicy {
 }
 
 impl FallbackPolicy {
-    fn allows_artifacts(self) -> bool {
+    pub fn allows_artifacts(self) -> bool {
         !matches!(self, FallbackPolicy::Disabled)
     }
 
-    fn allows_metadata(self) -> bool {
+    pub fn allows_metadata(self) -> bool {
         matches!(self, FallbackPolicy::Full)
     }
 }

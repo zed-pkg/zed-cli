@@ -70,6 +70,8 @@ url = "https://example.invalid/offline/tool"
         download_url: format!("file://{}", artifact.display()),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+        mirrors: Vec::new(),
+        signatures: Vec::new(),
     };
     fs::write(
         version_dir.join("1.0.0.json"),
@@ -88,6 +90,9 @@ url = "https://example.invalid/offline/tool"
         vcs_tag: version.vcs_tag,
         vcs_commit: version.vcs_commit,
         source: format!("file://{}", registry.display()),
+        mirrors: Vec::new(),
+        signed_by: None,
+        signing_key: None,
     });
     fs::write(project.join(LOCKFILE_FILE), lock.to_toml_string().unwrap()).unwrap();
 

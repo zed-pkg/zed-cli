@@ -797,6 +797,19 @@ pub enum MirrorCmd {
         #[arg(long, value_name = "URL", env = "ZED_PKG_MIRROR_BOOTSTRAP_URL")]
         url: Option<String>,
     },
+    /// Sign this package's version index and upload it to every mirror
+    ///
+    /// Separate from `zed publish` on purpose: building the index needs the
+    /// full version list, which is a registry read, and a publish that the
+    /// registry has already accepted must not be able to fail on one.
+    PublishIndex {
+        /// Package to index (`org/name`); defaults to this project's manifest
+        #[arg(long, value_name = "PACKAGE", env = "ZED_PKG_MIRROR_PACKAGE")]
+        package: Option<String>,
+        /// Show what would be signed and uploaded, and upload nothing
+        #[arg(long, env = "ZED_PKG_MIRROR_DRY_RUN")]
+        dry_run: bool,
+    },
     /// Build a `file://` mirror of everything this project pins
     ///
     /// The output is a complete offline source: point `--registry` or a

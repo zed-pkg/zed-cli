@@ -24,6 +24,9 @@ fn write_lock(project: &Path, source: Option<String>) {
                 vcs_tag: "v1.0.0".to_string(),
                 vcs_commit: None,
                 source,
+                mirrors: Vec::new(),
+                signed_by: None,
+                signing_key: None,
             }]
         })
         .unwrap_or_default();

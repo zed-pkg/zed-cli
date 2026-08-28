@@ -318,6 +318,58 @@ type = "bool"
 default = "false"
 help = "Emit environment interoperability output as JSON."
 
+[flags.no_mirrors]
+env = "ZED_PKG_NO_MIRRORS"
+aliases = ["no-mirrors"]
+type = "bool"
+default = "false"
+help = "Fetch only from the configured registry; never fall back to a mirror."
+
+[flags.trust_mirror_metadata]
+env = "ZED_PKG_TRUST_MIRROR_METADATA"
+aliases = ["trust-mirror-metadata"]
+type = "bool"
+default = "false"
+help = "Let a mirror answer metadata questions when the registry cannot, if the answer carries a publisher signature that verifies."
+
+[flags.mirror_json]
+env = "ZED_PKG_MIRROR_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable JSON."
+
+[flags.mirror_package]
+env = "ZED_PKG_MIRROR_PACKAGE"
+aliases = ["package"]
+type = "string"
+help = "Restrict a mirror operation to one package (org/name)."
+
+[flags.mirror_bootstrap_url]
+env = "ZED_PKG_MIRROR_BOOTSTRAP_URL"
+aliases = ["url"]
+type = "string"
+help = "Base URL to ask for a mirror bootstrap document."
+
+[flags.mirror_output]
+env = "ZED_PKG_MIRROR_OUTPUT"
+aliases = ["output"]
+type = "string"
+help = "Directory to write a file:// mirror into."
+
+[flags.mirror_dry_run]
+env = "ZED_PKG_MIRROR_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Show what would be signed and uploaded, and upload nothing."
+
+[flags.key_id]
+env = "ZED_PKG_KEY_ID"
+aliases = ["key-id"]
+type = "string"
+help = "Publisher signing key id."
+
 [commands.init]
 help = "Create a package manifest."
 
@@ -368,6 +420,126 @@ help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
 [commands.uninstall]
 aliases = ["un"]
 help = "Remove materialized dependencies while retaining the lockfile."
+
+[commands.mirror]
+help = "Inspect and exercise the fallback sources for this project's packages."
+
+[commands.mirror.commands.list]
+help = "Show the mirrors that would be tried, in order."
+
+[commands.mirror.commands.list.flags.mirror_json]
+env = "ZED_PKG_MIRROR_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable JSON."
+
+[commands.mirror.commands.check]
+help = "Probe every mirror for every locked package and report what answers."
+
+[commands.mirror.commands.check.flags.mirror_package]
+env = "ZED_PKG_MIRROR_PACKAGE"
+aliases = ["package"]
+type = "string"
+help = "Check only this package (org/name)."
+
+[commands.mirror.commands.check.flags.mirror_json]
+env = "ZED_PKG_MIRROR_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable JSON."
+
+[commands.mirror.commands.bootstrap]
+help = "Recover the mirror set from any reachable host, without the registry."
+
+[commands.mirror.commands.bootstrap.flags.mirror_bootstrap_url]
+env = "ZED_PKG_MIRROR_BOOTSTRAP_URL"
+aliases = ["url"]
+type = "string"
+help = "Base URL to ask; defaults to every known mirror in turn."
+
+[commands.mirror.commands.sync]
+help = "Build a file:// mirror of everything this project pins."
+
+[commands.mirror.commands.sync.flags.mirror_output]
+env = "ZED_PKG_MIRROR_OUTPUT"
+aliases = ["output"]
+type = "string"
+help = "Directory to write. Created if absent; existing artifacts are kept."
+
+[commands.mirror.commands.publish-index]
+help = "Sign this package's version index and upload it to every mirror."
+
+[commands.mirror.commands.publish-index.flags.mirror_package]
+env = "ZED_PKG_MIRROR_PACKAGE"
+aliases = ["package"]
+type = "string"
+help = "Package to index (org/name); defaults to this project's manifest."
+
+[commands.mirror.commands.publish-index.flags.mirror_dry_run]
+env = "ZED_PKG_MIRROR_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Show what would be signed and uploaded, and upload nothing."
+
+[commands.key]
+help = "Manage the publisher signing keys that let mirrors serve metadata."
+
+[commands.key.commands.generate]
+help = "Create a publisher signing key and print the public half to enroll."
+
+[commands.key.commands.generate.flags.org]
+env = "ZED_PKG_ORG"
+aliases = ["org"]
+type = "string"
+help = "Organization slug."
+
+[commands.key.commands.generate.flags.key_id]
+env = "ZED_PKG_KEY_ID"
+aliases = ["key-id"]
+type = "string"
+help = "Short stable label for this key."
+
+[commands.key.commands.list]
+help = "List the signing keys this machine holds for an org."
+
+[commands.key.commands.list.flags.org]
+env = "ZED_PKG_ORG"
+aliases = ["org"]
+type = "string"
+help = "Organization slug."
+
+[commands.key.commands.show]
+help = "Print the public half of one key, ready to paste into .zpkg.toml."
+
+[commands.key.commands.show.flags.org]
+env = "ZED_PKG_ORG"
+aliases = ["org"]
+type = "string"
+help = "Organization slug."
+
+[commands.key.commands.show.flags.key_id]
+env = "ZED_PKG_KEY_ID"
+aliases = ["key-id"]
+type = "string"
+help = "Short stable label for this key."
+
+[commands.key.commands.enroll]
+help = "Upload the org's public key set to the registry."
+
+[commands.key.commands.enroll.flags.org]
+env = "ZED_PKG_ORG"
+aliases = ["org"]
+type = "string"
+help = "Organization slug."
+
+[commands.key.commands.enroll.flags.key_id]
+env = "ZED_PKG_KEY_ID"
+aliases = ["key-id"]
+type = "string"
+help = "Short stable label for this key."
 
 [commands.env]
 help = "Import, verify, and export project-local developer environments."

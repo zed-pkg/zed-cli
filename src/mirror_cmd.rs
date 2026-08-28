@@ -18,7 +18,10 @@ use zed_interfaces::mirror::{
 };
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 use zed_interfaces::registry::{self, OrgKeysRequest, OrgKeysResponse};
-use zed_interfaces::signing::{PublisherKeySetV1, PublisherKeyV1};
+use zed_interfaces::signing::{
+    IndexAttestationV1, IndexEntryV1, PublisherKeySetV1, PublisherKeyV1, SIGNED_INDEX_SCHEMA_V1,
+    SignedIndexV1,
+};
 
 use crate::cli::{KeyCmd, MirrorCmd};
 use crate::config::Config;
@@ -32,6 +35,9 @@ pub fn run_mirror(cwd: &Path, cfg: &Config, cmd: MirrorCmd) -> Result<()> {
         MirrorCmd::Check { package, json } => check(cwd, cfg, package.as_deref(), json),
         MirrorCmd::Bootstrap { url } => bootstrap(cfg, url.as_deref()),
         MirrorCmd::Sync { output } => sync(cwd, cfg, &output),
+        MirrorCmd::PublishIndex { package, dry_run } => {
+            publish_index(cwd, cfg, package.as_deref(), dry_run)
+        }
     }
 }
 
@@ -466,6 +472,210 @@ fn enroll(cfg: &Config, store: &KeyStore, org: &str, key_id: &str) -> Result<()>
     println!();
     println!("Consumers pin this key the first time they resolve one of your packages.");
     println!("Declare it in {MANIFEST_FILE} too, so it travels with the source.");
+    Ok(())
+}
+
+/// Sign this package's version index and put it where mirrors can serve it.
+///
+/// The index is what makes range resolution survive an outage: without one, a
+/// mirror can hand over the bytes for a version you already named, but nothing
+/// can tell you which versions exist. It is signed by the publisher rather
+/// than the registry for the usual reason — a client asking a mirror has
+/// already decided it cannot rely on the registry's word.
+///
+/// Run after `zed publish`, not during it. Building the index needs the full
+/// version list, which is a registry read, and a publish the registry has
+/// already accepted must not be able to fail on one.
+fn publish_index(cwd: &Path, cfg: &Config, package: Option<&str>, dry_run: bool) -> Result<()> {
+    let manifest = crate::config::read_manifest(cwd).ok();
+    let (org, name) = match package {
+        Some(spec) => spec
+            .split_once('/')
+            .map(|(org, name)| (org.to_owned(), name.to_owned()))
+            .context("--package expects `org/name`")?,
+        None => {
+            let manifest = manifest
+                .as_ref()
+                .with_context(|| format!("no {MANIFEST_FILE} here; pass --package org/name"))?;
+            (manifest.package.org.clone(), manifest.package.name.clone())
+        }
+    };
+
+    let registry = cfg.open_registry()?;
+    let metadata = registry
+        .get_package(&org, &name)
+        .with_context(|| format!("reading {org}/{name} from {}", cfg.registry))?;
+
+    let mut versions = Vec::new();
+    for version in &metadata.versions {
+        let entry = registry
+            .get_version(&org, &name, version)
+            .with_context(|| format!("reading {org}/{name}@{version}"))?;
+        versions.push(IndexEntryV1 {
+            version: entry.version.clone(),
+            sha256: entry.sha256.clone(),
+            size: entry.size,
+            format: entry.format,
+            vcs_tag: entry.vcs_tag.clone(),
+            vcs_commit: entry.vcs_commit.clone().unwrap_or_default(),
+            published_at: entry.published_at.clone(),
+            yanked: entry.yanked,
+        });
+    }
+    ensure!(
+        !versions.is_empty(),
+        "{org}/{name} has no published versions to index"
+    );
+
+    // From the newest release, so the index advertises where artifacts live
+    // today rather than where an abandoned version said they did.
+    let mirrors = versions
+        .first()
+        .and_then(|first| {
+            registry
+                .get_version(&org, &name, &first.version)
+                .ok()
+                .map(|entry| entry.mirrors)
+        })
+        .unwrap_or_else(|| metadata.mirrors.clone());
+
+    let manifest = manifest.with_context(|| {
+        format!("signing an index needs {MANIFEST_FILE} for the `[signing]` key")
+    })?;
+    let key = manifest.signing.signing_key()?.with_context(|| {
+        format!(
+            "{MANIFEST_FILE} declares no signing key; run \
+                 `zed key generate --org {org} --key-id <id>` first"
+        )
+    })?;
+    let store = KeyStore::new(&cfg.home);
+    let stored = store.load(&org, &key.key_id)?;
+
+    // One past whatever the registry currently holds. Monotonic is the whole
+    // property: a client that has seen sequence n refuses anything lower, so a
+    // replayed old index becomes a loud failure rather than a quiet rollback
+    // past a security release.
+    let sequence = current_sequence(cfg, &org, &name)
+        .unwrap_or(0)
+        .saturating_add(1);
+
+    let payload = IndexAttestationV1 {
+        org: org.clone(),
+        name: name.clone(),
+        generated_at: crate::publisher_keys::utc_now_rfc3339(),
+        sequence,
+        versions,
+        mirrors: mirrors.clone(),
+    };
+    let preimage =
+        zed_interfaces::signing::index_attestation_preimage(&payload).map_err(|e| anyhow!(e))?;
+    let signature = crate::publisher_keys::sign_preimage(&stored, &preimage)?;
+    let document = SignedIndexV1 {
+        schema: SIGNED_INDEX_SCHEMA_V1.to_owned(),
+        payload,
+        signatures: vec![signature],
+    };
+    document.validate().map_err(|e| anyhow!(e))?;
+
+    if dry_run {
+        println!("{}", serde_json::to_string_pretty(&document)?);
+        println!();
+        println!(
+            "dry run: would upload sequence {sequence} ({} version(s)) signed by `{}`",
+            document.payload.versions.len(),
+            key.key_id
+        );
+        return Ok(());
+    }
+
+    upload_index_to_registry(cfg, &org, &name, &document)?;
+    println!(
+        "published index sequence {sequence} for {org}/{name} to {}",
+        cfg.registry
+    );
+
+    match crate::forge_publish::ForgeClient::discover()? {
+        Some(forge) => {
+            for mirror in crate::forge_publish::writable(&mirrors) {
+                let written = match mirror.kind {
+                    MirrorKindV1::GithubRelease => {
+                        forge.publish_index_only(mirror, &document, false)
+                    }
+                    MirrorKindV1::GithubRaw => forge.publish_raw_index(mirror, &document, false),
+                    _ => continue,
+                };
+                match written {
+                    Ok(uploads) => {
+                        for upload in uploads {
+                            println!(
+                                "  mirrored {} to {}@{} ({})",
+                                upload.asset,
+                                upload.repository,
+                                upload.tag,
+                                upload.outcome.as_str()
+                            );
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "warning: index published to the registry, but mirror `{}` was not \
+                         written: {error:#}",
+                        mirror.identifier()
+                    ),
+                }
+            }
+        }
+        None => eprintln!(
+            "note: no forge token found; the index reached the registry but no forge mirror"
+        ),
+    }
+    Ok(())
+}
+
+/// The sequence the registry currently holds, if it holds one.
+fn current_sequence(cfg: &Config, org: &str, name: &str) -> Option<u64> {
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .ok()?;
+    let url = format!("{}{}", cfg.registry, registry::signed_index_path(org, name));
+    let response = client.get(url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    response
+        .json::<serde_json::Value>()
+        .ok()?
+        .get("payload")?
+        .get("sequence")?
+        .as_u64()
+}
+
+fn upload_index_to_registry(
+    cfg: &Config,
+    org: &str,
+    name: &str,
+    document: &SignedIndexV1,
+) -> Result<()> {
+    let token = cfg
+        .resolve_token()?
+        .context("publishing an index needs a publish-scoped token; run `zed login`")?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let response = client
+        .put(format!(
+            "{}{}",
+            cfg.registry,
+            registry::signed_index_path(org, name)
+        ))
+        .bearer_auth(token)
+        .json(document)
+        .send()?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        bail!("publishing the index failed with HTTP {status}: {body}");
+    }
     Ok(())
 }
 
