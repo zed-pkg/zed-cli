@@ -30,6 +30,7 @@ use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
 use zed_cli::store::Store;
 use zed_cli::task_cli::{self, TaskAction};
+use zed_cli::tree;
 use zed_cli::update;
 use zed_cli::validation;
 
@@ -491,6 +492,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             dry_run,
         } => ops::gc(&cfg, &older_than, dry_run),
         Cmd::Find { query } => ops::find(&cfg, &query),
+        Cmd::Tree {
+            package,
+            depth,
+            json,
+        } => tree::tree(&cwd, package.as_deref(), depth, json),
+        Cmd::Why { package, json } => tree::why(&cwd, &package, json),
         Cmd::Pack { out } => ops::pack_cmd(&cwd, out.as_deref()).map(|_| ()),
         Cmd::Release { cmd } => match cmd {
             ReleaseCmd::Plan {
