@@ -82,6 +82,7 @@ pub enum GhcrOutcome {
 #[derive(Debug)]
 struct Blob {
     digest: String,
+    #[allow(dead_code)]
     media_type: &'static str,
     bytes: Vec<u8>,
 }
@@ -245,26 +246,56 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn ghcr_bearer(
+/// Exchange a GitHub PAT for a GHCR registry token.
+///
+/// A Bearer PAT against `https://ghcr.io/token` is pull-only (or rejected on
+/// `/v2`). Docker-style Basic `x-access-token:<pat>` is what GHCR accepts for
+/// push and for authenticated pull. Do not fall back to the raw PAT as a
+/// registry Bearer — GHCR returns `DENIED: invalid token`.
+pub(crate) fn ghcr_registry_token(
     client: &reqwest::blocking::Client,
     github_token: &str,
     identity: &GithubIdentity,
+    access: &str,
 ) -> Result<String> {
-    let scope = format!("repository:{}:push,pull", ghcr_repository(identity));
+    let scope = format!("repository:{}:{access}", ghcr_repository(identity));
     let response = client
         .get("https://ghcr.io/token")
         .query(&[("service", "ghcr.io"), ("scope", scope.as_str())])
-        .bearer_auth(github_token)
+        .basic_auth("x-access-token", Some(github_token))
         .send()
         .context("request GHCR registry token")?;
-    if response.status().is_success()
+    let status = response.status();
+    if status.is_success()
         && let Ok(body) = response.json::<GhcrTokenResponse>()
         && let Some(token) = body.token.or(body.access_token)
         && !token.is_empty()
     {
         return Ok(token);
     }
-    Ok(github_token.to_string())
+    bail!(
+        "GHCR token exchange for {} returned {status}",
+        ghcr_repository(identity)
+    )
+}
+
+fn ghcr_bearer(
+    client: &reqwest::blocking::Client,
+    github_token: &str,
+    identity: &GithubIdentity,
+) -> Result<String> {
+    ghcr_registry_token(client, github_token, identity, "push,pull")
+}
+
+pub(crate) fn identity_from_ghcr_url(url: &str) -> Option<GithubIdentity> {
+    let path = url.strip_prefix("https://ghcr.io/v2/")?;
+    let mut parts = path.split('/');
+    let owner = parts.next()?.to_string();
+    let repo = parts.next()?.to_string();
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some(GithubIdentity { owner, repo })
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -310,7 +341,7 @@ fn upload_blob(
     let put = client
         .put(&put_url)
         .bearer_auth(token)
-        .header("Content-Type", blob.media_type)
+        .header("Content-Type", "application/octet-stream")
         .body(blob.bytes.clone())
         .send()
         .with_context(|| format!("upload GHCR blob {}", blob.digest))?;
@@ -363,13 +394,27 @@ pub fn download_ghcr_layer(
     declared_size: u64,
     max_bytes: u64,
 ) -> Result<()> {
+    let registry_token = match (token, identity_from_ghcr_url(url)) {
+        (Some(github_token), Some(identity)) => {
+            Some(ghcr_registry_token(client, github_token, &identity, "pull")?)
+        }
+        (Some(github_token), None) => Some(github_token.to_string()),
+        (None, _) => None,
+    };
     if url.contains("/blobs/") {
-        return download_blob(client, token, url, dest, declared_size, max_bytes);
+        return download_blob(
+            client,
+            registry_token.as_deref(),
+            url,
+            dest,
+            declared_size,
+            max_bytes,
+        );
     }
     let mut request = client
         .get(url)
         .header("Accept", OCI_IMAGE_MANIFEST_MEDIA_TYPE);
-    if let Some(token) = token {
+    if let Some(token) = registry_token.as_deref() {
         request = request.bearer_auth(token);
     }
     let response = request.send().with_context(|| format!("GET {url}"))?;
@@ -391,7 +436,14 @@ pub fn download_ghcr_layer(
         .next()
         .map(|prefix| format!("{prefix}/blobs/{digest}"))
         .context("GHCR manifest URL is not a registry manifest")?;
-    download_blob(client, token, &blob_url, dest, declared_size, max_bytes)
+    download_blob(
+        client,
+        registry_token.as_deref(),
+        &blob_url,
+        dest,
+        declared_size,
+        max_bytes,
+    )
 }
 
 fn download_blob(
@@ -447,6 +499,17 @@ mod tests {
             excluded_count: 0,
             format: ArtifactFormat::TarGz,
         }
+    }
+
+    #[test]
+    fn identity_from_ghcr_blob_url() {
+        let identity = identity_from_ghcr_url(
+            "https://ghcr.io/v2/zed-pkg-test/ghcr-fallback-canary/blobs/sha256:abc",
+        )
+        .expect("parse");
+        assert_eq!(identity.owner, "zed-pkg-test");
+        assert_eq!(identity.repo, "ghcr-fallback-canary");
+        assert!(identity_from_ghcr_url("https://example.com/v2/acme/pkg/blobs/sha256:abc").is_none());
     }
 
     #[test]

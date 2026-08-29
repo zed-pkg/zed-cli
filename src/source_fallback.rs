@@ -375,7 +375,11 @@ impl FallbackRegistry {
             .get(&url)
             .header("Accept", "application/vnd.oci.image.manifest.v1+json");
         if let Some(token) = &self.config.github_token {
-            request = request.bearer_auth(token);
+            match crate::github_packages::ghcr_registry_token(&self.client, token, identity, "pull")
+            {
+                Ok(bearer) => request = request.bearer_auth(bearer),
+                Err(_) => return None,
+            }
         }
         let Ok(response) = request.send() else {
             return None;
@@ -430,6 +434,10 @@ impl FallbackRegistry {
     fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let mut errors = Vec::new();
         let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
+        // `github_packages_enabled` is false unless a GitHub repo URL is
+        // supplied (or the section opts in). Guess the coordinate as
+        // github.com/{org}/{name} so GHCR locators are actually emitted.
+        let guessed_repo = GithubIdentity::guessed_from_package(&version.org, &version.name).web_url();
         let locators = artifact_locators(&ArtifactQuery {
             org: &version.org,
             name: &version.name,
@@ -437,7 +445,7 @@ impl FallbackRegistry {
             vcs_tag: &version.vcs_tag,
             sha256: packed_digest.then_some(version.sha256.as_str()),
             format: version.format,
-            repo_url: None,
+            repo_url: Some(guessed_repo.as_str()),
             artifacts: Some(&ArtifactsSection::EMPTY),
             registry_base: None,
             r2_public_base: self.config.r2_public_base.as_deref(),
@@ -513,7 +521,7 @@ impl Registry for FallbackRegistry {
             Ok(()) => Ok(()),
             Err(error) => match self.download_locators(version, dest) {
                 Ok(()) => Ok(()),
-                Err(_) => Err(error),
+                Err(locator_error) => Err(error.context(locator_error)),
             },
         }
     }
