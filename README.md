@@ -59,7 +59,7 @@ cd my-lib
 zed init --org acme
 git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
-zed publish
+zed publish           # registry + git tag on GitHub + Release + GHCR (org Packages page)
 
 # consume packages from a manifest
 zed add acme/http-kit@^1
@@ -173,7 +173,7 @@ the legacy version route by default or the additive target-qualified route with
 | `zed oci push <layout> <oci://registry/repository:version>` | Verify a local OCI layout, copy it through ORAS using one explicit authentication mode, and require the remote tag to resolve to the expected digest |
 | `zed release publish [--channel <track>] [--dry-run]` | Upload each native route to its ecosystem registry over that registry's own HTTP API |
 | `zed release versions [--target <name>]` | List the versions each native route's registry already serves |
-| `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
+| `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload to the registry, then mirror the tarball to GitHub Releases and GHCR |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact through a private file registry by default, or through the configured Rust HTTP registry with explicit `--registry-mode server`; then install it into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
@@ -284,6 +284,12 @@ accepts PyPI, Packagist/Composer, and Go module routes; Bitbucket Packages
 accepts npm and Maven routes. Cargo and pub.dev remain canonical-native plus
 Zed destinations because those forges do not expose matching registry
 protocols.
+
+The Zed tarball itself is a different GitHub Packages path: `zed publish`
+pushes it to GHCR (`ghcr.io/{owner}/{repo}:{tag}`) so it appears on
+`https://github.com/orgs/{owner}/packages` as a container package. GitHub
+has no native Zed package type; OCI artifacts are the supported surface
+until one exists. Opt out with `[package.artifacts] github_packages = false`.
 
 ### First install without `.zpkg.toml`
 

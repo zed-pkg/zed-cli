@@ -238,7 +238,22 @@ fn upload_asset(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::pack::PackResult;
+    use zed_interfaces::ArtifactFormat;
+    use zed_interfaces::manifest::Manifest;
     use zed_interfaces::source::{GithubIdentity, github_api_git_tag_url};
+
+    fn packed_stub() -> PackResult {
+        PackResult {
+            path: std::path::PathBuf::from("/tmp/zed-release-missing.tar.gz"),
+            sha256: "ab".repeat(32),
+            size: 12,
+            file_count: 1,
+            excluded_count: 0,
+            format: ArtifactFormat::TarGz,
+        }
+    }
 
     #[test]
     fn git_tag_ref_url_matches_github_git_api() {
@@ -249,6 +264,64 @@ mod tests {
         assert_eq!(
             github_api_git_tag_url(&identity, "v0.1.0"),
             "https://api.github.com/repos/cliptown/cliptown-cli/git/ref/tags/v0.1.0"
+        );
+    }
+
+    #[test]
+    fn release_mirror_skips_when_disabled() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "http-kit"
+version = "1.2.0"
+license = "MIT"
+[package.repository]
+url = "https://github.com/acme/http-kit"
+[package.artifacts]
+github_release = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            mirror_packed_release(
+                &manifest,
+                &packed_stub(),
+                "v1.2.0",
+                None,
+                "https://example.test"
+            )
+            .unwrap(),
+            MirrorOutcome::Skipped("github_release disabled")
+        );
+    }
+
+    #[test]
+    fn release_mirror_skips_non_github_remotes() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "http-kit"
+version = "1.2.0"
+license = "MIT"
+[package.repository]
+url = "https://gitlab.com/acme/http-kit"
+[package.artifacts]
+github_release = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            mirror_packed_release(
+                &manifest,
+                &packed_stub(),
+                "v1.2.0",
+                None,
+                "https://example.test"
+            )
+            .unwrap(),
+            MirrorOutcome::Skipped("repository is not github.com")
         );
     }
 }

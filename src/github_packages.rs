@@ -433,7 +433,21 @@ fn download_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pack::PackResult;
+    use zed_interfaces::ArtifactFormat;
+    use zed_interfaces::manifest::Manifest;
     use zed_interfaces::source::GithubIdentity;
+
+    fn packed_stub() -> PackResult {
+        PackResult {
+            path: std::path::PathBuf::from("/tmp/zed-ghcr-missing.tar.gz"),
+            sha256: "ab".repeat(32),
+            size: 12,
+            file_count: 1,
+            excluded_count: 0,
+            format: ArtifactFormat::TarGz,
+        }
+    }
 
     #[test]
     fn upload_session_appends_digest_query() {
@@ -466,6 +480,50 @@ mod tests {
         assert_eq!(
             ghcr_reference(&identity, "v0.1.0"),
             "ghcr.io/cliptown/cliptown-cli:v0.1.0"
+        );
+    }
+
+    #[test]
+    fn ghcr_mirror_skips_when_github_packages_disabled() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "http-kit"
+version = "1.2.0"
+license = "MIT"
+[package.repository]
+url = "https://github.com/acme/http-kit"
+[package.artifacts]
+github_packages = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            mirror_packed_ghcr(&manifest, &packed_stub(), "v1.2.0", None).unwrap(),
+            GhcrOutcome::Skipped("github_packages disabled")
+        );
+    }
+
+    #[test]
+    fn ghcr_mirror_skips_non_github_remotes() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "http-kit"
+version = "1.2.0"
+license = "MIT"
+[package.repository]
+url = "https://gitlab.com/acme/http-kit"
+[package.artifacts]
+github_packages = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            mirror_packed_ghcr(&manifest, &packed_stub(), "v1.2.0", None).unwrap(),
+            GhcrOutcome::Skipped("repository is not github.com")
         );
     }
 }

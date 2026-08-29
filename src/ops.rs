@@ -2158,7 +2158,7 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
             keywords: Vec::new(),
             language: Default::default(),
             ecosystem: Default::default(),
-        artifacts: Default::default(),
+            artifacts: Default::default(),
         },
         dependencies: build_dependencies,
         build_dependencies: BTreeMap::new(),
@@ -3394,7 +3394,9 @@ pub fn publish(
                         identity.org, identity.name, identity.version
                     );
                 } else {
-                    return Err(error).context("registry, GitHub Release, and GitHub Packages publish all failed");
+                    return Err(error).context(
+                        "registry, GitHub Release, and GitHub Packages publish all failed",
+                    );
                 }
             }
         }
