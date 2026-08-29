@@ -58,6 +58,7 @@ impl Config {
             .unwrap_or_else(|| format!("{registry}/shared-auth"))
             .trim_end_matches('/')
             .to_string();
+        let mirrors = load_configured_mirrors(&home, &registry)?;
         let cfg = Self {
             registry,
             home,
@@ -76,7 +77,7 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             interactive: globals.interactive,
-            mirrors: load_configured_mirrors(&home, &registry)?,
+            mirrors,
             fallback: if globals.no_mirrors {
                 FallbackPolicy::Disabled
             } else if globals.trust_mirror_metadata {
@@ -590,6 +591,8 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         };
 
         with_install_prefetch(&cfg, || {
@@ -700,6 +703,8 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         };
         assert_eq!(
             explicit.resolve_token().unwrap().as_deref(),
@@ -723,6 +728,8 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         };
         assert_eq!(unknown_registry.resolve_token().unwrap(), None);
     }
@@ -739,6 +746,8 @@ url = "https://localhost/manifestless/consumer"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         };
         // A corrupt file must degrade to "no saved token", not a panic/err.
         assert_eq!(cfg.resolve_token().unwrap(), None);

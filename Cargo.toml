@@ -27,7 +27,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Union of GHCR/git-tag locators, public R2 fallback, and canonical lifecycle schema.
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "fe04381c71840d5d66e21e1511902f08a5b67fdf" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c51d732cb01a377b2bc00e8d945b355e41961c1" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"

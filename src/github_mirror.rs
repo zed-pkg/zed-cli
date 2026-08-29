@@ -86,6 +86,7 @@ pub fn mirror_packed_release(
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
         mirrors: Vec::new(),
+        signatures: Vec::new(),
     };
     let sidecar_bytes = serde_json::to_vec_pretty(&metadata)?;
     upload_asset(

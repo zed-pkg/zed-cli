@@ -205,6 +205,8 @@ impl FallbackRegistry {
             latest: versions.first().cloned(),
             tags: keywords,
             versions,
+            mirrors: Vec::new(),
+            signing_keys: Vec::new(),
         })
     }
 
@@ -268,7 +270,11 @@ impl FallbackRegistry {
             download_url,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-            mirrors: locators,
+            mirrors: locators
+                .iter()
+                .map(zed_interfaces::mirror::MirrorDescriptorV1::from_locator)
+                .collect(),
+            signatures: Vec::new(),
         };
         self.fill_digest(&mut metadata)?;
         self.remember(metadata.clone());
@@ -413,30 +419,30 @@ impl FallbackRegistry {
             download_url: url,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-            mirrors: locators,
+            mirrors: locators
+                .iter()
+                .map(zed_interfaces::mirror::MirrorDescriptorV1::from_locator)
+                .collect(),
+            signatures: Vec::new(),
         })
     }
 
     fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let mut errors = Vec::new();
         let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
-        let locators = if version.mirrors.is_empty() {
-            artifact_locators(&ArtifactQuery {
-                org: &version.org,
-                name: &version.name,
-                version: &version.version,
-                vcs_tag: &version.vcs_tag,
-                sha256: packed_digest.then_some(version.sha256.as_str()),
-                format: version.format,
-                repo_url: None,
-                artifacts: Some(&ArtifactsSection::EMPTY),
-                registry_base: None,
-                r2_public_base: self.config.r2_public_base.as_deref(),
-                r2_public_key: self.config.r2_public_key.as_deref(),
-            })
-        } else {
-            version.mirrors.clone()
-        };
+        let locators = artifact_locators(&ArtifactQuery {
+            org: &version.org,
+            name: &version.name,
+            version: &version.version,
+            vcs_tag: &version.vcs_tag,
+            sha256: packed_digest.then_some(version.sha256.as_str()),
+            format: version.format,
+            repo_url: None,
+            artifacts: Some(&ArtifactsSection::EMPTY),
+            registry_base: None,
+            r2_public_base: self.config.r2_public_base.as_deref(),
+            r2_public_key: self.config.r2_public_key.as_deref(),
+        });
         for locator in locators {
             if locator.kind == ArtifactSourceKind::GithubArchive && packed_digest {
                 continue;

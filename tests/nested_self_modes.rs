@@ -144,6 +144,8 @@ fn test_config(root: &Path, registry: &Path) -> Config {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        mirrors: Vec::new(),
+        fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
     }
 }
 

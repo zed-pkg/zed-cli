@@ -163,6 +163,8 @@ hello = "bin/hello"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         };
 
         publish_binary_zip_with_route(

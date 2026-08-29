@@ -231,6 +231,8 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         install: Default::default(),
         interop: Default::default(),
         targets: Default::default(),
+        signing: Default::default(),
+        mirrors: Vec::new(),
     };
     interactive::confirm(
         cfg.interactive,
@@ -257,6 +259,8 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         supabase_url: cfg.supabase_url.clone(),
         supabase_key: cfg.supabase_key.clone(),
         interactive: cfg.interactive,
+        mirrors: cfg.mirrors.clone(),
+        fallback: cfg.fallback,
     };
     // The author is roundtripping their own package, so running its [build]
     // step is consented — that's part of "as close to a real install as
@@ -620,6 +624,8 @@ mod tests {
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         }
     }
 
