@@ -658,6 +658,32 @@ help = "Run dependency build hooks."
 help = "Run a dependency executable."
 allow_unknown = true
 
+[commands.tree]
+help = "Print the installed dependency graph as a tree."
+
+[commands.tree.flags.tree_depth]
+env = "ZED_PKG_TREE_DEPTH"
+aliases = ["depth"]
+type = "int"
+help = "Levels below the root to print; omit for the whole graph."
+
+[commands.tree.flags.tree_json]
+env = "ZED_PKG_TREE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable dependency tree output."
+
+[commands.why]
+help = "Explain why a package is installed."
+
+[commands.why.flags.why_json]
+env = "ZED_PKG_WHY_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable dependency explanation output."
+
 [commands.gc]
 help = "Garbage-collect caches and stores."
 
