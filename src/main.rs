@@ -47,6 +47,16 @@ fn main() {
         }
         return;
     }
+    if let Some(result) = oci_command::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     let global_requested = args.iter().skip(1).any(|argument| {
         let argument = argument.as_os_str();
         argument == OsStr::new("global") || argument == OsStr::new("--global")

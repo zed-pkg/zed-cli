@@ -1074,6 +1074,11 @@ fn managed_environment(
     if let Some(venv) = venv {
         push_path(&mut paths, &mut seen, venv_bin_dir(venv));
     }
+    if let Some(profile) = crate::tool_profile::verified_active_profile(root, None, None)
+        .context("verifying project-local locked tool activation")?
+    {
+        push_path(&mut paths, &mut seen, profile.bin);
+    }
     push_path(&mut paths, &mut seen, root.join(&modules).join(BIN_DIR));
     push_path(&mut paths, &mut seen, root.join("node_modules/.bin"));
     if options.profile == DevProfile::Ai {
@@ -1746,5 +1751,41 @@ mod tests {
         let environment = managed_environment(temp.path(), &options, None).unwrap();
         let paths: Vec<PathBuf> = env::split_paths(environment.get("PATH").unwrap()).collect();
         assert!(paths.contains(&temp.path().join(".zed/dev/profiles/ai/bin")));
+    }
+
+    #[test]
+    fn malformed_locked_tool_activation_fails_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        prepare_directories(temp.path(), false).unwrap();
+        fs::create_dir_all(temp.path().join(".zed/tools")).unwrap();
+        fs::write(temp.path().join(".zed/tools/bin"), b"not a managed link").unwrap();
+
+        let error = managed_environment(temp.path(), &options(), None).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("verifying project-local locked tool activation")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verified_locked_tools_are_first_in_the_child_path_without_global_mutation() {
+        let root = crate::tool_profile::tests::active_profile_fixture();
+        let inherited_path = env::var_os("PATH");
+        let environment = managed_environment(root.path(), &options(), None).unwrap();
+        let paths: Vec<PathBuf> = env::split_paths(environment.get("PATH").unwrap()).collect();
+        assert_eq!(
+            paths.first(),
+            Some(&root.path().canonicalize().unwrap().join(".zed/tools/bin"))
+        );
+        assert_eq!(env::var_os("PATH"), inherited_path);
+
+        let output = Command::new("hello")
+            .env("PATH", environment.get("PATH").unwrap())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"hello\n");
     }
 }

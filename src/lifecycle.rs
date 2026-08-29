@@ -16,26 +16,16 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
+use zed_interfaces::{
+    ProjectLifecycleHookConfig as HookConfig, ProjectLifecycleMode as HookMode,
+    ProjectLifecycleSection,
+};
 
 const MANIFEST_FILE: &str = ".zpkg.toml";
 const SKIP_ENV: &str = "ZED_SKIP_LIFECYCLE";
 const STACK_ENV: &str = "ZED_LIFECYCLE_STACK";
 const CONVENTION_ROOTS: [&str; 4] = [".zed", ".zed/hooks", ".zpkg", ".zpkg/hooks"];
 const CONVENTION_SUFFIXES: [&str; 6] = ["", ".sh", ".bash", ".ps1", ".cmd", ".bat"];
-const LIFECYCLE_PHASE_NAMES: [&str; 12] = [
-    "pre-install",
-    "post-install",
-    "pre-build",
-    "post-build",
-    "pre-test",
-    "post-test",
-    "pre-pack",
-    "post-pack",
-    "pre-publish",
-    "post-publish",
-    "pre-uninstall",
-    "post-uninstall",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LifecyclePhase {
@@ -78,91 +68,10 @@ impl std::fmt::Display for LifecyclePhase {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum HookMode {
-    #[default]
-    Append,
-    Prepend,
-    Replace,
-    Disable,
-}
-
-impl<'de> Deserialize<'de> for HookMode {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        match value.trim().to_ascii_lowercase().as_str() {
-            "append" | "supplement" | "supplements" | "complement" | "complements" => {
-                Ok(Self::Append)
-            }
-            "prepend" => Ok(Self::Prepend),
-            "replace" | "override" | "overrides" => Ok(Self::Replace),
-            "disable" | "disabled" | "off" => Ok(Self::Disable),
-            other => Err(serde::de::Error::custom(format!(
-                "unsupported lifecycle mode `{other}`; expected append, prepend, replace, or disable"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
-struct HookConfig {
-    mode: HookMode,
-    command: Option<String>,
-    commands: Vec<String>,
-    shell: Option<String>,
-    env: BTreeMap<String, String>,
-}
-
-impl HookConfig {
-    fn normalized_commands(&self) -> Vec<String> {
-        self.command
-            .iter()
-            .chain(self.commands.iter())
-            .map(|command| command.trim())
-            .filter(|command| !command.is_empty())
-            .map(str::to_owned)
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum HookValue {
-    Config(HookConfig),
-    Commands(Vec<String>),
-    Command(String),
-    Enabled(bool),
-}
-
-impl HookValue {
-    fn into_config(self) -> HookConfig {
-        match self {
-            Self::Config(config) => config,
-            Self::Commands(commands) => HookConfig {
-                commands,
-                ..HookConfig::default()
-            },
-            Self::Command(command) => HookConfig {
-                command: Some(command),
-                ..HookConfig::default()
-            },
-            Self::Enabled(true) => HookConfig::default(),
-            Self::Enabled(false) => HookConfig {
-                mode: HookMode::Disable,
-                ..HookConfig::default()
-            },
-        }
-    }
-}
-
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 struct ManifestLifecycle {
-    lifecycle: BTreeMap<String, HookValue>,
+    lifecycle: ProjectLifecycleSection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,68 +242,94 @@ fn read_config(project: &Path, phase: LifecyclePhase) -> Result<Option<HookConfi
     }
     let contents = fs::read_to_string(&path)
         .with_context(|| format!("reading lifecycle configuration from {}", path.display()))?;
-    let document: ManifestLifecycle = toml::from_str(&contents)
-        .with_context(|| format!("parsing lifecycle configuration in {}", path.display()))?;
-    for configured_phase in document.lifecycle.keys() {
-        ensure!(
-            LIFECYCLE_PHASE_NAMES.contains(&configured_phase.as_str()),
-            "unknown lifecycle phase `{configured_phase}` in {}; expected one of {}",
-            path.display(),
-            LIFECYCLE_PHASE_NAMES.join(", ")
-        );
-    }
+    let document: ManifestLifecycle = toml::from_str(&contents).map_err(|error| {
+        anyhow::anyhow!(
+            "parsing lifecycle configuration in {}: {error}",
+            path.display()
+        )
+    })?;
+    document.lifecycle.validate().map_err(|error| {
+        anyhow::anyhow!(
+            "validating lifecycle configuration in {}: {error}",
+            path.display()
+        )
+    })?;
     Ok(document
         .lifecycle
         .get(phase.as_str())
         .cloned()
-        .map(HookValue::into_config))
+        .map(zed_interfaces::ProjectLifecycleHook::into_config))
 }
 
 fn discover_conventions(project: &Path, phase: LifecyclePhase) -> Result<Vec<HookSource>> {
     let root = project
         .canonicalize()
         .with_context(|| format!("resolving project root {}", project.display()))?;
-    let mut seen = HashSet::new();
-    let mut hooks = Vec::new();
+    let discovered = convention_relatives(phase)
+        .map(|relative| convention_hook(project, &root, relative))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten();
+    Ok(unique_conventions(discovered))
+}
 
-    for directory in CONVENTION_ROOTS {
-        for suffix in CONVENTION_SUFFIXES {
-            let relative = Path::new(directory).join(format!("{}{suffix}", phase.as_str()));
-            let candidate = project.join(&relative);
-            let metadata = match fs::symlink_metadata(&candidate) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("reading lifecycle hook {}", candidate.display())
-                    });
-                }
-            };
-            ensure!(
-                !metadata.file_type().is_symlink(),
-                "lifecycle hook {} must not be a symbolic link",
-                candidate.display()
-            );
-            ensure!(
-                metadata.is_file(),
-                "lifecycle hook {} is not a regular file",
-                candidate.display()
-            );
-            let canonical = candidate
-                .canonicalize()
-                .with_context(|| format!("resolving lifecycle hook {}", candidate.display()))?;
-            ensure!(
-                canonical.starts_with(&root),
-                "lifecycle hook {} resolves outside project root {}",
-                candidate.display(),
-                root.display()
-            );
-            if seen.insert(canonical) {
-                hooks.push(HookSource::Convention(relative));
-            }
+fn convention_relatives(phase: LifecyclePhase) -> impl Iterator<Item = PathBuf> {
+    CONVENTION_ROOTS.into_iter().flat_map(move |directory| {
+        CONVENTION_SUFFIXES
+            .into_iter()
+            .map(move |suffix| Path::new(directory).join(format!("{}{suffix}", phase.as_str())))
+    })
+}
+
+fn convention_hook(
+    project: &Path,
+    root: &Path,
+    relative: PathBuf,
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let candidate = project.join(&relative);
+    let metadata = match fs::symlink_metadata(&candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading lifecycle hook {}", candidate.display()));
         }
-    }
-    Ok(hooks)
+    };
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "lifecycle hook {} must not be a symbolic link",
+        candidate.display()
+    );
+    ensure!(
+        metadata.is_file(),
+        "lifecycle hook {} is not a regular file",
+        candidate.display()
+    );
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("resolving lifecycle hook {}", candidate.display()))?;
+    ensure!(
+        canonical.starts_with(root),
+        "lifecycle hook {} resolves outside project root {}",
+        candidate.display(),
+        root.display()
+    );
+    Ok(Some((canonical, relative)))
+}
+
+fn unique_conventions(discovered: impl IntoIterator<Item = (PathBuf, PathBuf)>) -> Vec<HookSource> {
+    discovered
+        .into_iter()
+        .fold(
+            (HashSet::new(), Vec::new()),
+            |(mut seen, mut hooks), (canonical, relative)| {
+                if seen.insert(canonical) {
+                    hooks.push(HookSource::Convention(relative));
+                }
+                (seen, hooks)
+            },
+        )
+        .1
 }
 
 fn command_for_hook(root: &Path, hook: &HookSource) -> Result<Command> {
@@ -655,7 +590,11 @@ mod tests {
             "[lifecycle.pre-publish]\nmode = \"disable\"\ncommands = [\"should-not-run\"]\n",
         );
         let error = resolve_hooks(project.path(), LifecyclePhase::PrePublish).unwrap_err();
-        assert!(error.to_string().contains("mode=disable"));
+        assert!(
+            error
+                .to_string()
+                .contains("mode `disable` cannot declare commands")
+        );
     }
 
     #[test]
@@ -713,11 +652,7 @@ mod tests {
             "[lifecycle.pre-buid]\ncommand = \"must-not-run\"\n",
         );
         let error = resolve_hooks(project.path(), LifecyclePhase::PreBuild).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("unknown lifecycle phase `pre-buid`")
-        );
+        assert!(error.to_string().contains("unknown field `pre-buid`"));
     }
 
     #[cfg(unix)]

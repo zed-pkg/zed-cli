@@ -58,7 +58,7 @@ impl Config {
             .unwrap_or_else(|| format!("{registry}/shared-auth"))
             .trim_end_matches('/')
             .to_string();
-        Ok(Self {
+        let cfg = Self {
             registry,
             home,
             token: globals.token.clone(),
@@ -88,7 +88,13 @@ impl Config {
                 // should make deliberately rather than discover afterwards.
                 FallbackPolicy::ArtifactsOnly
             },
-        })
+        };
+        crate::source_fallback::apply_cli_overrides(
+            globals.r2_public_base.clone(),
+            globals.r2_public_key.clone(),
+            globals.source_fallback,
+        );
+        Ok(cfg)
     }
 
     /// The mirror policy this invocation runs under, shared by every registry
@@ -610,6 +616,11 @@ url = "https://localhost/manifestless/consumer"
             supabase_key: None,
             interactive: false,
             git_submodules: false,
+            no_mirrors: false,
+            trust_mirror_metadata: false,
+            r2_public_base: None,
+            r2_public_key: None,
+            source_fallback: true,
         };
         let cfg = Config::from_globals(&globals).unwrap();
 

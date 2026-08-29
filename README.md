@@ -59,7 +59,7 @@ cd my-lib
 zed init --org acme
 git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
-zed publish
+zed publish           # registry + git tag on GitHub + Release + GHCR (org Packages page)
 
 # consume packages from a manifest
 zed add acme/http-kit@^1
@@ -169,9 +169,11 @@ the legacy version route by default or the additive target-qualified route with
 | `zed-binary pack\|verify\|publish\|download` | Build or transport a deterministic, self-describing native ZIP; target-qualified registry identity is opt-in and does not modify SemVer |
 | `zed release plan [--json] [--channel <track>]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed oci plan <oci://registry/repository:version> [--target <name>] [--out <layout>] [--json]` | Derive exact OCI identities and optionally materialize a verified local image layout without credentials or network transport |
+| `zed oci push <layout> <oci://registry/repository:version>` | Verify a local OCI layout, copy it through ORAS using one explicit authentication mode, and require the remote tag to resolve to the expected digest |
 | `zed release publish [--channel <track>] [--dry-run]` | Upload each native route to its ecosystem registry over that registry's own HTTP API |
 | `zed release versions [--target <name>]` | List the versions each native route's registry already serves |
-| `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
+| `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload to the registry, then mirror the tarball to GitHub Releases and GHCR |
 | `zed r2g` (`zed test-local`) | Roundtrip-test your artifact through a private file registry by default, or through the configured Rust HTTP registry with explicit `--registry-mode server`; then install it into a mock consumer and run `publish.smoke_test`, optionally inside an OCI container (`--docker`) |
 | `zed run <bin> [args]` | Run an executable a dependency exposes via `[bin]`, with `zed_modules/.bin` on `PATH` (npx-style, no global pollution) |
 | `zed build [--force]` | Run (or warm the cache for) dependencies' `[build]` steps |
@@ -282,6 +284,12 @@ accepts PyPI, Packagist/Composer, and Go module routes; Bitbucket Packages
 accepts npm and Maven routes. Cargo and pub.dev remain canonical-native plus
 Zed destinations because those forges do not expose matching registry
 protocols.
+
+The Zed tarball itself is a different GitHub Packages path: `zed publish`
+pushes it to GHCR (`ghcr.io/{owner}/{repo}:{tag}`) so it appears on
+`https://github.com/orgs/{owner}/packages` as a container package. GitHub
+has no native Zed package type; OCI artifacts are the supported surface
+until one exists. Opt out with `[package.artifacts] github_packages = false`.
 
 ### First install without `.zpkg.toml`
 
@@ -478,6 +486,10 @@ actual CLI never drift, so it is always authoritative:
 | Flag | Env var | Default |
 | --- | --- | --- |
 | `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
+| `--r2-public-base` | `ZED_PKG_R2_PUBLIC_BASE` | `https://cdn.zpkg.net` (Cloudflare → R2; independent of the registry origin) |
+| `--r2-public-key` | `ZED_PKG_R2_PUBLIC_KEY` | optional hostname, `https://…`, or Cloudflare `pub-<id>` |
+| `--source-fallback` | `ZED_PKG_SOURCE_FALLBACK` | on; retry public R2 and GitHub when the HTTP registry is down (`file://` and loopback stay hermetic) |
+| (env only) | `ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK` | off; test-org canaries that bind mocks to `127.0.0.1` must set this |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
@@ -500,6 +512,8 @@ actual CLI never drift, so it is always authoritative:
 | `--native-manager <name>` | `ZED_PKG_NATIVE_MANAGER` | auto-detect one graph-compatible manager |
 | `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
 | deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
+| `--target` (OCI plan/polyglot install) | `ZED_PKG_TARGET` | required for a polyglot OCI plan; inferred for install when possible |
+| `--json` (OCI plan) | `ZED_PKG_OCI_JSON` | off |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |

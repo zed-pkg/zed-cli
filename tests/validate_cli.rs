@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 const VALID: &str = "tests/fixtures/validate/valid";
 const SUBMODULE: &str = "tests/fixtures/validate/git-submodule";
-const INTERFACE_REVISION: &str = "e4feac2ce5ee15a20fba9847197fd03306f56a94";
+const INTERFACE_REVISION: &str = "3524038600e2a864617f82be8f104e688d80d23e";
 
 fn zed() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zed"))
@@ -99,6 +99,119 @@ fn valid_pair_has_deterministic_json_and_never_mutates_project_or_home() {
         "must survive"
     );
     assert!(!project.path().join("home-must-not-be-created").exists());
+}
+
+#[test]
+fn canonical_lifecycle_schema_accepts_all_shapes_and_rejects_unsafe_config() {
+    let valid = project(VALID);
+    let mut text = fs::read_to_string(valid.path().join(".zpkg.toml")).unwrap();
+    text.push_str(
+        r#"
+[lifecycle]
+pre-install = "./scripts/pre-install"
+post-install = ["./scripts/post-install"]
+pre-test = true
+post-test = false
+
+[lifecycle.pre-build]
+mode = "prepend"
+shell = "bash -eu"
+env = { ZED_CONTRACT_MODE = "strict" }
+commands = ["cargo check"]
+
+[lifecycle.post-build]
+mode = "replace"
+command = "cargo test"
+
+[lifecycle.pre-pack]
+mode = "append"
+
+[lifecycle.post-pack]
+mode = "supplement"
+
+[lifecycle.pre-publish]
+mode = "override"
+command = "cargo publish --dry-run"
+
+[lifecycle.post-publish]
+mode = "complement"
+
+[lifecycle.pre-uninstall]
+mode = "disable"
+
+[lifecycle.post-uninstall]
+mode = "append"
+"#,
+    );
+    fs::write(valid.path().join(".zpkg.toml"), text).unwrap();
+    let output = run(valid.path(), &["validate", "--require-lock", "--json"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["valid"], true);
+    assert_eq!(report["interface_revision"], INTERFACE_REVISION);
+
+    let unknown_phase = project(VALID);
+    let mut text = fs::read_to_string(unknown_phase.path().join(".zpkg.toml")).unwrap();
+    text.push_str("\n[lifecycle.pre-buid]\ncommand = \"must-not-run\"\n");
+    fs::write(unknown_phase.path().join(".zpkg.toml"), text).unwrap();
+    assert_failure_contains(unknown_phase.path(), "$.lifecycle.pre-buid");
+
+    let disabled_with_command = project(VALID);
+    let mut text = fs::read_to_string(disabled_with_command.path().join(".zpkg.toml")).unwrap();
+    text.push_str("\n[lifecycle.pre-build]\nmode = \"disable\"\ncommand = \"must-not-run\"\n");
+    fs::write(disabled_with_command.path().join(".zpkg.toml"), text).unwrap();
+    assert_failure_contains(disabled_with_command.path(), "mode `disable`");
+
+    let shell_expression = project(VALID);
+    let mut text = fs::read_to_string(shell_expression.path().join(".zpkg.toml")).unwrap();
+    text.push_str("\n[lifecycle.pre-build]\nshell = \"bash; curl\"\ncommand = \"cargo check\"\n");
+    fs::write(shell_expression.path().join(".zpkg.toml"), text).unwrap();
+    assert_failure_contains(shell_expression.path(), "not a shell expression");
+
+    let secret_env = project(VALID);
+    let mut text = fs::read_to_string(secret_env.path().join(".zpkg.toml")).unwrap();
+    text.push_str(
+        "\n[lifecycle.pre-build]\nenv = { REGISTRY_TOKEN = \"must-not-be-stored\" }\ncommand = \"cargo check\"\n",
+    );
+    fs::write(secret_env.path().join(".zpkg.toml"), text).unwrap();
+    assert_failure_contains(secret_env.path(), "appears secret-bearing");
+}
+
+#[test]
+fn canonical_lifecycle_contract_drives_real_pack_hooks() {
+    let project = project(VALID);
+    let output_dir = tempfile::tempdir().unwrap();
+    fs::write(project.path().join("payload.txt"), "contract payload\n").unwrap();
+    let mut text = fs::read_to_string(project.path().join(".zpkg.toml")).unwrap();
+    text.push_str(
+        r#"
+[lifecycle.pre-pack]
+mode = "prepend"
+command = "printf 'pre-pack\\n' >> lifecycle.log"
+
+[lifecycle.post-pack]
+mode = "append"
+command = "printf 'post-pack\\n' >> lifecycle.log"
+"#,
+    );
+    fs::write(project.path().join(".zpkg.toml"), text).unwrap();
+
+    let output = run(
+        project.path(),
+        &["pack", "--out", output_dir.path().to_str().unwrap()],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(project.path().join("lifecycle.log")).unwrap(),
+        "pre-pack\npost-pack\n"
+    );
+    assert!(fs::read_dir(output_dir.path()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .path()
+            .extension()
+            .is_some_and(|ext| ext == "gz")
+    }));
 }
 
 #[test]

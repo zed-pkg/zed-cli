@@ -162,7 +162,8 @@ pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
     if url.starts_with("file://") {
         Ok(Box::new(FileRegistry::new(file_registry_path(url)?)))
     } else if url.starts_with("http://") || url.starts_with("https://") {
-        Ok(Box::new(HttpRegistry::new(url.to_string())?))
+        let http = HttpRegistry::new(url.to_string())?;
+        Ok(crate::source_fallback::FallbackRegistry::wrap(http, url))
     } else {
         bail!("unsupported registry url `{url}` (expected http(s):// or file://)");
     }
