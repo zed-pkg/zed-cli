@@ -167,6 +167,8 @@ the legacy version route by default or the additive target-qualified route with
 | `zed env verify asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] --frozen [--json]` | Verify exact asdf tool, plugin revision, artifact SHA-256, platform, and normalized plan identity without reading parent/global configuration |
 | `zed task list\|info\|graph\|run ...` | Use the shared schema-v2 runtime to discover, inspect, graph, dry-run, execute, confirm, parallelize, and content-cache project tasks; `zed-task` remains a compatibility binary |
 | `zed find <query>` | Search the registry |
+| `zed tree [PACKAGE] [--depth N] [--json]` | Print the installed dependency graph as a tree, offline, from the lockfile plus each materialized package's own manifest; repeated subtrees are marked `(*)` and a package whose edges cannot be read says so rather than reading as a leaf |
+| `zed why <org>/<name> [--json]` | Explain why a package is installed: every path from this project to it, shortest first |
 | `zed pack` | Build the pruned, deterministic `tar.gz` artifact |
 | `zed-binary pack\|verify\|publish\|download` | Build or transport a deterministic, self-describing native ZIP; target-qualified registry identity is opt-in and does not modify SemVer |
 | `zed release plan [--json] [--channel <track>]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |

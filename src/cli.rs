@@ -480,6 +480,28 @@ pub enum Cmd {
     },
     /// Search the registry
     Find { query: String },
+    /// Print the installed dependency graph as a tree (`npm ls`, `cargo tree`)
+    Tree {
+        /// Root the tree at one locked package instead of at the project
+        #[arg(value_name = "PACKAGE")]
+        package: Option<String>,
+        /// Levels below the root to print; omit for the whole graph
+        #[arg(long, env = "ZED_PKG_TREE_DEPTH")]
+        depth: Option<usize>,
+        /// Emit deterministic machine-readable output
+        #[arg(long, env = "ZED_PKG_TREE_JSON")]
+        json: bool,
+    },
+    /// Explain why a package is installed: every path that reaches it
+    /// (`npm explain`, `cargo tree --invert`)
+    Why {
+        /// Package to explain (`org/name`)
+        #[arg(value_name = "PACKAGE")]
+        package: String,
+        /// Emit deterministic machine-readable output
+        #[arg(long, env = "ZED_PKG_WHY_JSON")]
+        json: bool,
+    },
     /// Build the pruned, deterministic artifact for this package
     Pack {
         #[arg(long, env = "ZED_PKG_PACK_OUT")]
