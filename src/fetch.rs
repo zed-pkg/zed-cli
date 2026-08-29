@@ -851,6 +851,8 @@ mod tests {
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            mirrors: Vec::new(),
+            fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
         }
     }
 

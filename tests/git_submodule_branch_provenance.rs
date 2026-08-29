@@ -133,6 +133,8 @@ fn branch_metadata_can_change_without_floating_the_locked_gitlink_commit() {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        mirrors: Vec::new(),
+        fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
     };
 
     let report = overtake(root.path(), &config).expect("initial overtake");

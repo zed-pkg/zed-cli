@@ -671,7 +671,8 @@ mod tests {
     fn only_forge_mirrors_are_writable() {
         let cdn = MirrorDescriptorV1::object_store("https://cdn.zpkg.net");
         let forge = MirrorDescriptorV1::github_release_of("https://github.com/acme/http-kit");
-        let writable = writable(&[cdn, forge]);
+        let candidates = [cdn, forge];
+        let writable = writable(&candidates);
         assert_eq!(writable.len(), 1);
         assert_eq!(writable[0].kind, MirrorKindV1::GithubRelease);
     }

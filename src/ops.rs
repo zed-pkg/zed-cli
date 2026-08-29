@@ -2227,6 +2227,8 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
         install: Default::default(),
         interop: Default::default(),
         targets: Default::default(),
+        signing: Default::default(),
+        mirrors: Vec::new(),
     }
 }
 

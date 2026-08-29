@@ -276,6 +276,8 @@ fn build_package(scratch: &Path, name: &str) -> Result<PublishedPackage> {
             latest: Some(VERSION.to_string()),
             tags: Vec::new(),
             versions: vec![VERSION.to_string()],
+            mirrors: Vec::new(),
+            signing_keys: Vec::new(),
         },
         version: VersionMetadata {
             org: ORG.to_string(),
@@ -289,7 +291,8 @@ fn build_package(scratch: &Path, name: &str) -> Result<PublishedPackage> {
             download_url: String::new(),
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-        mirrors: Vec::new(),
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
         },
         artifact,
     })
@@ -362,6 +365,8 @@ fn test_config(registry: &str, home: PathBuf) -> Config {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        mirrors: Vec::new(),
+        fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
     }
 }
 

@@ -364,6 +364,8 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
         install: Default::default(),
         interop: Default::default(),
         targets: Default::default(),
+        signing: Default::default(),
+        mirrors: Vec::new(),
     }
 }
 

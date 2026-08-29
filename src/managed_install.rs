@@ -515,6 +515,8 @@ fn generated_manifest(
         install: Default::default(),
         interop: Default::default(),
         targets: Default::default(),
+        signing: Default::default(),
+        mirrors: Vec::new(),
     };
     manifest.install.target = target.map(str::to_owned);
     manifest.install.adapter = adapter_name(adapter).map(str::to_owned);

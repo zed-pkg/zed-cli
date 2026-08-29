@@ -109,6 +109,8 @@ fn test_config(tmp: &Path, registry_dir: &Path) -> Config {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        mirrors: Vec::new(),
+        fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
     }
 }
 
@@ -902,6 +904,8 @@ fn concurrent_installs_share_the_store_safely() {
                 supabase_url: None,
                 supabase_key: None,
                 interactive: false,
+                mirrors: Vec::new(),
+                fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
             };
             ops::install(
                 &consumer,

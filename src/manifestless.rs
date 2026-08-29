@@ -342,6 +342,8 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
         install: Default::default(),
         interop: Default::default(),
         targets: Default::default(),
+        signing: Default::default(),
+        mirrors: Vec::new(),
     }
 }
 
