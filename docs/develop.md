@@ -58,6 +58,20 @@ The following state is repo-local and ignored by this repository's existing
 The user's existing `PATH` remains at the end of the managed path. No global
 packages are installed.
 
+When `zed install --cli` has activated a project-owned tool profile,
+`zed develop` adds `.zed/tools/bin` to the child process only. It first binds
+that stable relative link to one real copy-mode generation, validates the
+portable `.zed/environment.lock.toml`, requires the profile-state lock digest
+and target to match, and rechecks every copied executable and command link.
+A malformed link, state/lock drift, command collision, missing executable, or
+path escape aborts activation instead of falling back to ambient tools.
+
+Managed `PATH` precedence is deterministic: an active Python virtual
+environment comes first, followed by the verified locked-tool profile, Zed
+package executables, `node_modules/.bin`, the optional AI profile, managed
+language-tool directories, and finally the inherited process `PATH`. This
+changes neither the parent process nor a user-global shell configuration.
+
 By default, `HOME` is preserved so ordinary credentials and developer settings
 continue to work. `--isolated-home` redirects `HOME`, `XDG_CONFIG_HOME`, and
 `XDG_DATA_HOME` into `.zed/dev` too. Zed does not copy provider credentials or
