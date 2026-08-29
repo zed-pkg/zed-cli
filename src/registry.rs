@@ -21,7 +21,7 @@ use zed_interfaces::registry::{
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_REGISTRY_ERROR_BYTES: u64 = 64 * 1024;
 
-fn max_artifact_bytes() -> u64 {
+pub fn max_artifact_bytes() -> u64 {
     std::env::var("ZED_PKG_MAX_ARTIFACT_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -262,7 +262,8 @@ impl FileRegistry {
             download_url: file_url_for_path(&dest)?,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-        mirrors: Vec::new(),
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
         };
         fs::create_dir_all(version_path.parent().context("versions dir")?)?;
         fs::write(version_path, serde_json::to_string_pretty(&vm)?)?;
@@ -277,6 +278,8 @@ impl FileRegistry {
             latest: None,
             tags: meta.manifest.package.keywords.clone(),
             versions: Vec::new(),
+            mirrors: Vec::new(),
+            signing_keys: Vec::new(),
         });
         if !pkg.versions.contains(version) {
             pkg.versions.push(version.clone());
@@ -1305,7 +1308,8 @@ tool = "bin/tool"
             download_url: format!("http://{object_address}/object?X-Amz-Signature=do-not-log"),
             published_at: "2026-08-11T16:00:00Z".to_owned(),
             yanked: false,
-        mirrors: Vec::new(),
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
         };
         let output = tempfile::tempdir().unwrap().path().join("artifact.zip");
         let error = registry.download(&metadata, &output).unwrap_err();

@@ -3,7 +3,7 @@ use super::*;
 pub(super) fn worker_loop(
     queue: Arc<TaskQueue>,
     results: mpsc::Sender<FetchMessage>,
-    registry_url: String,
+    context: crate::mirrored_registry::MirrorContext,
     home: PathBuf,
 ) {
     let store = Store::new(&home);
@@ -14,7 +14,7 @@ pub(super) fn worker_loop(
         let key = task.key.clone();
         let message = run_fetch_task(sequence, &key, || -> Result<FetchResult> {
             if registry.is_none() {
-                registry = Some(registry_for(&registry_url)?);
+                registry = Some(context.open(&context.registry_url)?);
             }
             let registry = registry
                 .as_deref()

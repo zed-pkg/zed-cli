@@ -18,6 +18,7 @@ pub mod environment_export_cli;
 pub mod external_subcommands;
 pub mod fetch;
 pub mod flags;
+pub mod forge_publish;
 pub mod git_submodules;
 pub mod global;
 pub mod graph_export;
@@ -30,6 +31,9 @@ pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
 pub(crate) mod materialize;
+pub mod mirror;
+pub mod mirror_cmd;
+pub mod mirrored_registry;
 #[path = "mise_export.rs"]
 mod mise_export_impl;
 pub mod mise_export {
@@ -128,6 +132,7 @@ pub(crate) mod pack_inputs;
 pub mod preflight;
 pub mod project_lock;
 pub(crate) mod publish_ignore;
+pub mod publisher_keys;
 pub mod r2g;
 pub mod github_mirror;
 pub mod github_packages;

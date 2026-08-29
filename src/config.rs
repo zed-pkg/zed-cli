@@ -8,7 +8,12 @@ use serde::{Deserialize, Serialize};
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::{MANIFEST_FILE, ZED_HOME_DIR_NAME};
 
+use zed_interfaces::mirror::{MirrorDescriptorV1, MirrorKindV1, default_public_mirrors};
+
 use crate::cli::Globals;
+use crate::mirrored_registry::{FallbackPolicy, MirrorContext, TrustAnchors};
+use crate::publisher_keys::TrustCache;
+use crate::registry::Registry;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -19,6 +24,12 @@ pub struct Config {
     pub supabase_url: Option<String>,
     pub supabase_key: Option<String>,
     pub interactive: bool,
+    /// Extra mirrors from operator configuration, ahead of anything a package
+    /// declares. This is where a corporate cache or an air-gapped directory
+    /// goes: a site should be able to redirect fetches without editing every
+    /// dependency's manifest.
+    pub mirrors: Vec<MirrorDescriptorV1>,
+    pub fallback: FallbackPolicy,
 }
 
 impl Config {
@@ -65,6 +76,18 @@ impl Config {
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned),
             interactive: globals.interactive,
+            mirrors: load_configured_mirrors(&home, &registry)?,
+            fallback: if globals.no_mirrors {
+                FallbackPolicy::Disabled
+            } else if globals.trust_mirror_metadata {
+                FallbackPolicy::Full
+            } else {
+                // Bytes-only by default. Falling back for a pinned artifact is
+                // always safe — the pin decides — whereas trusting a mirror for
+                // *metadata* is a real trust decision, and one an operator
+                // should make deliberately rather than discover afterwards.
+                FallbackPolicy::ArtifactsOnly
+            },
         };
         crate::source_fallback::apply_cli_overrides(
             globals.r2_public_base.clone(),
@@ -72,6 +95,32 @@ impl Config {
             globals.source_fallback,
         );
         Ok(cfg)
+    }
+
+    /// The mirror policy this invocation runs under, shared by every registry
+    /// client it opens (including the ones built inside prefetch workers).
+    pub fn mirror_context(&self, anchors: TrustAnchors) -> MirrorContext {
+        MirrorContext {
+            registry_url: self.registry.clone(),
+            configured: self.mirrors.clone(),
+            anchors,
+            policy: self.fallback,
+            trust_cache: TrustCache::new(&self.home),
+            max_artifact_bytes: crate::registry::max_artifact_bytes(),
+        }
+    }
+
+    /// A registry client for the configured registry, with fallback but no
+    /// per-package trust anchors. For operations that read one thing and do
+    /// not consult a lockfile.
+    pub fn open_registry(&self) -> Result<Box<dyn Registry>> {
+        self.mirror_context(TrustAnchors::default())
+            .open(&self.registry)
+    }
+
+    /// A registry client anchored in what a project's lockfile already trusts.
+    pub fn open_registry_with(&self, anchors: TrustAnchors) -> Result<Box<dyn Registry>> {
+        self.mirror_context(anchors).open(&self.registry)
     }
 
     /// Explicit token flag/env wins, followed by the refreshable human auth
@@ -87,6 +136,68 @@ impl Config {
             .ok()
             .and_then(|c| c.token_for(&self.registry)))
     }
+}
+
+/// Operator-configured mirrors, from `<zed home>/mirrors.toml` and
+/// `ZED_PKG_MIRRORS`.
+///
+/// A malformed configuration file is a hard error, not a warning. Mirrors are
+/// a resilience mechanism: discovering during an outage that the file has been
+/// silently ignored since a typo three months ago is the exact failure this
+/// whole feature exists to prevent.
+fn load_configured_mirrors(home: &Path, registry: &str) -> Result<Vec<MirrorDescriptorV1>> {
+    #[derive(Debug, Default, Deserialize)]
+    struct MirrorsFile {
+        #[serde(default, rename = "mirror")]
+        mirrors: Vec<MirrorDescriptorV1>,
+    }
+
+    let mut mirrors: Vec<MirrorDescriptorV1> = Vec::new();
+
+    // Env first: a CI job pointing at a local cache should win over a stale
+    // file baked into an image.
+    if let Ok(raw) = std::env::var("ZED_PKG_MIRRORS") {
+        for (index, entry) in raw
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .enumerate()
+        {
+            let mut mirror = if let Some(path) = entry.strip_prefix("file://") {
+                let mut mirror = MirrorDescriptorV1::object_store(entry);
+                mirror.kind = MirrorKindV1::Directory;
+                mirror.url = None;
+                mirror.path = Some(path.to_owned());
+                mirror
+            } else {
+                MirrorDescriptorV1::object_store(entry)
+            };
+            mirror.id = Some(format!("env-{index}"));
+            // Ahead of everything but the canonical registry itself.
+            mirror.priority = Some(1);
+            mirror.validate().map_err(|error| {
+                anyhow!("ZED_PKG_MIRRORS entry {} is invalid: {error}", index + 1)
+            })?;
+            mirrors.push(mirror);
+        }
+    }
+
+    let path = home.join("mirrors.toml");
+    if path.is_file() {
+        let text =
+            fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+        let parsed: MirrorsFile =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        for mirror in parsed.mirrors {
+            mirror
+                .validate()
+                .map_err(|error| anyhow!("{}: {error}", path.display()))?;
+            mirrors.push(mirror);
+        }
+    }
+
+    mirrors.extend(default_public_mirrors(registry));
+    Ok(mirrors)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -505,6 +616,8 @@ url = "https://localhost/manifestless/consumer"
             supabase_key: None,
             interactive: false,
             git_submodules: false,
+            no_mirrors: false,
+            trust_mirror_metadata: false,
             r2_public_base: None,
             r2_public_key: None,
             source_fallback: true,

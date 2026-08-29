@@ -34,6 +34,11 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
 dirs = "5"
+# Publisher metadata signing. Pinned to the audited 2.x line; `rand_core` is
+# the RNG trait ed25519-dalek itself depends on, taken directly so key
+# generation does not pull a second RNG stack in behind it.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 flate2 = "1"
 globset = "0.4"
 hex = "0.4"

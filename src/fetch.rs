@@ -25,7 +25,8 @@ use zed_interfaces::registry::VersionMetadata;
 
 use crate::cli::Globals;
 use crate::config::Config;
-use crate::registry::{Registry, registry_for};
+use crate::mirrored_registry::{TrustAnchors, metadata_from_lock};
+use crate::registry::Registry;
 use crate::store::{Store, require_sha256};
 
 const FETCH_CONTRACT: &str = include_str!("../.fetch-cli-flags.toml");
@@ -81,6 +82,13 @@ pub struct FetchReport {
     pub output: PathBuf,
     pub packages: usize,
     pub lock_sha256: String,
+    /// One line per package that could not be served by its recorded source.
+    ///
+    /// A bundle built while the registry was down is byte-identical to one
+    /// built while it was up — the pins guarantee that — but the *fact* that
+    /// it happened belongs in the build log, because it usually means someone
+    /// should be paged.
+    pub degraded: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -167,6 +175,11 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
     match cli.command {
         FetchCommand::Fetch(options) => {
             let report = run(&cwd, &cfg, options)?;
+            for note in &report.degraded {
+                // stderr, not stdout: stdout is protocol-safe for automation
+                // and must stay parseable when a fetch degrades.
+                eprintln!("warning: {note}");
+            }
             println!(
                 "fetched {} package(s) to {} (lock sha256 {})",
                 report.packages,
@@ -211,6 +224,9 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
         .with_context(|| format!("{} is not UTF-8", lock_path.display()))?;
     let lock = Lockfile::parse(lock_text).context("parsing frozen lockfile")?;
     let packages = validate_locked_packages(&lock, &cfg.registry)?;
+    // Anchored in what this lockfile already established: the mirrors recorded
+    // at resolution time and the publisher key pinned on first use.
+    let context = cfg.mirror_context(TrustAnchors::from_lockfile(&lock));
     let lock_sha256 = sha256_bytes(&lock_bytes);
 
     let output = prepare_output_path(&requested_root, &project, &options.output)?;
@@ -234,24 +250,45 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
 
     let mut registries: BTreeMap<String, Box<dyn Registry>> = BTreeMap::new();
     let mut fetched = Vec::with_capacity(packages.len());
+    let mut degraded: Vec<String> = Vec::new();
     for locked in &packages {
         let source = effective_source(locked, &cfg.registry);
         if !registries.contains_key(source) {
-            registries.insert(source.to_string(), registry_for(source)?);
+            registries.insert(source.to_string(), context.open(source)?);
         }
         let registry = registries
             .get(source)
             .context("registry cache lost a just-inserted source")?;
-        let metadata = registry
-            .get_version(&locked.org, &locked.name, &locked.version)
-            .with_context(|| {
-                format!(
-                    "reading frozen registry record for {}@{}",
+        let metadata = match registry.get_version(&locked.org, &locked.name, &locked.version) {
+            Ok(metadata) => {
+                verify_registry_metadata(locked, &metadata)?;
+                metadata
+            }
+            // The record the registry would have returned is already pinned in
+            // the lock. When the registry cannot answer and the lock names
+            // somewhere else to look, a frozen restore proceeds from the pin —
+            // which is the authority the store verifies against regardless.
+            Err(registry_error)
+                if !locked.mirrors.is_empty() && context.policy.allows_artifacts() =>
+            {
+                degraded.push(format!(
+                    "{}@{}: registry unavailable ({}); restoring from the pinned mirrors",
                     locked.full_name(),
-                    locked.version
-                )
-            })?;
-        verify_registry_metadata(locked, &metadata)?;
+                    locked.version,
+                    first_line(&registry_error)
+                ));
+                metadata_from_lock(locked)
+            }
+            Err(registry_error) => {
+                return Err(registry_error).with_context(|| {
+                    format!(
+                        "reading frozen registry record for {}@{}",
+                        locked.full_name(),
+                        locked.version
+                    )
+                });
+            }
+        };
         let package = ensure_artifact(registry.as_ref(), &store, &metadata)?;
 
         let relative = PathBuf::from("packages").join(&locked.sha256).join("pkg");
@@ -307,6 +344,7 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
         output,
         packages: packages.len(),
         lock_sha256,
+        degraded,
     })
 }
 
@@ -613,6 +651,17 @@ fn copy_package_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The first line of an error chain. Degradation notes list one line per
+/// package; a full multi-line cause chain each would bury the summary.
+fn first_line(error: &anyhow::Error) -> String {
+    error
+        .to_string()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
 fn sha256_bytes(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -858,7 +907,8 @@ mod tests {
             download_url: "ignored-by-file-registry".to_string(),
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-        mirrors: Vec::new(),
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
         };
         let version_path = registry
             .join("packages")
@@ -883,6 +933,9 @@ mod tests {
             vcs_tag: format!("v{version}"),
             vcs_commit: metadata.vcs_commit,
             source: format!("file://{}", registry.display()),
+            mirrors: Vec::new(),
+            signed_by: None,
+            signing_key: None,
         }
     }
 
@@ -1199,6 +1252,9 @@ mod tests {
             vcs_tag: "v1.0.0".to_string(),
             vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             source: "file:///registry".to_string(),
+            mirrors: Vec::new(),
+            signed_by: None,
+            signing_key: None,
         };
         write_unchecked_lock(project.path(), vec![package.clone(), package]);
         let error = run(
@@ -1227,6 +1283,9 @@ mod tests {
             vcs_tag: "v1.0.0".to_string(),
             vcs_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
             source: "https://person:super-secret@example.com/registry".to_string(),
+            mirrors: Vec::new(),
+            signed_by: None,
+            signing_key: None,
         };
         write_unchecked_lock(project.path(), vec![credentialed.clone()]);
         let error = run(

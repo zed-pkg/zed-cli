@@ -24,7 +24,7 @@ use crate::config::{Config, Credentials, read_manifest, write_manifest};
 use crate::interactive;
 use crate::native::{self, NativeInstallOutcome, NativeRequirement};
 use crate::pack::{self, PackResult};
-use crate::registry::{Registry, registry_for};
+use crate::registry::Registry;
 use crate::store::{Store, human_size, require_sha256};
 use crate::transaction::ProjectTransaction;
 use crate::vcs::verify_publish_provenance;
@@ -1078,6 +1078,26 @@ fn validate_frozen_manifest_requirements(
     Ok(())
 }
 
+/// The publisher keys known for every org in a resolution, so the lockfile can
+/// pin whichever one signed.
+///
+/// Read from the local trust cache rather than fetched: the cache was just
+/// refreshed by the same resolution that produced `resolved`, and going back
+/// to the network here would add a round trip per org for information already
+/// in hand.
+fn publisher_keys_for(
+    cfg: &Config,
+    resolved: &BTreeMap<String, VersionMetadata>,
+) -> BTreeMap<String, Vec<zed_interfaces::signing::PublisherKeyV1>> {
+    let cache = crate::publisher_keys::TrustCache::new(&cfg.home);
+    let mut out = BTreeMap::new();
+    for vm in resolved.values() {
+        out.entry(vm.org.clone())
+            .or_insert_with(|| cache.keys_for(&vm.org));
+    }
+    out
+}
+
 /// Write a newly resolved lockfile. A frozen install is a verifier and
 /// materializer only: it must preserve the caller's exact lock bytes,
 /// including comments and provenance fields newer than this CLI knows.
@@ -1086,12 +1106,28 @@ fn write_resolved_lockfile(
     frozen: bool,
     resolved: &BTreeMap<String, VersionMetadata>,
     registry: &str,
+    signing_keys: &BTreeMap<String, Vec<zed_interfaces::signing::PublisherKeyV1>>,
 ) -> Result<()> {
     if frozen {
         return Ok(());
     }
     let mut lock = Lockfile::default();
     for vm in resolved.values() {
+        // Capture where else these bytes live, and who signed for them, at
+        // the one moment the answer is authoritative: resolution against the
+        // canonical registry over TLS. The lockfile is the only thing that
+        // survives into a later install with the registry unreachable, so
+        // anything not recorded here is unavailable exactly when it matters.
+        let pinned = vm
+            .signatures
+            .first()
+            .and_then(|signature| {
+                signing_keys
+                    .get(&vm.org)?
+                    .iter()
+                    .find(|key| key.key_id == signature.key_id)
+            })
+            .cloned();
         lock.upsert(LockedPackage {
             org: vm.org.clone(),
             name: vm.name.clone(),
@@ -1102,6 +1138,9 @@ fn write_resolved_lockfile(
             vcs_tag: vm.vcs_tag.clone(),
             vcs_commit: vm.vcs_commit.clone(),
             source: registry.to_string(),
+            mirrors: vm.mirrors.clone(),
+            signed_by: pinned.as_ref().map(|key| key.key_id.clone()),
+            signing_key: pinned.map(|key| key.public_key_multibase),
         });
     }
     fs::write(lock_path, lock.to_toml_string()?)?;
@@ -1123,6 +1162,7 @@ version = 1
         true,
         &BTreeMap::new(),
         "file:///temporary-registry-mirror",
+        &BTreeMap::new(),
     )
     .unwrap();
 
@@ -1145,7 +1185,8 @@ fn locked_version_metadata(locked: &LockedPackage) -> VersionMetadata {
         download_url: String::new(),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
-        mirrors: Vec::new(),
+        mirrors: locked.mirrors.clone(),
+        signatures: Vec::new(),
     }
 }
 
@@ -1162,6 +1203,9 @@ fn frozen_local_metadata_preserves_lock_identity_and_provenance() {
         vcs_tag: "v1.2.3".to_string(),
         vcs_commit: Some("b".repeat(40)),
         source: "https://registry.invalid".to_string(),
+        mirrors: Vec::new(),
+        signed_by: None,
+        signing_key: None,
     };
     let metadata = locked_version_metadata(&locked);
     assert_eq!(metadata.org, locked.org);
@@ -1215,7 +1259,7 @@ fn install_locked(
     let resolved_target = resolve_target(project, &manifest, target);
     // Computed once: the guard consults it per dependency.
     let project_ecos = project_ecosystems(project);
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let lock_path = project.join(LOCKFILE_FILE);
 
     let workspace = find_workspace(project);
@@ -1791,7 +1835,13 @@ fn install_locked(
         )
     };
     interactive::confirm(cfg.interactive, &transaction_summary)?;
-    write_resolved_lockfile(&lock_path, frozen, &resolved, &cfg.registry)?;
+    write_resolved_lockfile(
+        &lock_path,
+        frozen,
+        &resolved,
+        &cfg.registry,
+        &publisher_keys_for(cfg, &resolved),
+    )?;
     store.record_project(project, shas)?;
     transaction.commit()?;
 
@@ -2587,7 +2637,7 @@ pub fn build_cmd(
 ) -> Result<()> {
     let manifest = read_manifest(project)?;
     let resolved_target = resolve_target(project, &manifest, None);
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let store = Store::new(&cfg.home);
     let _install_lock = store.install_lock()?;
     let lock_path = project.join(LOCKFILE_FILE);
@@ -2877,7 +2927,7 @@ pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
 pub fn yank(cfg: &Config, spec: &str, undo: bool) -> Result<()> {
     let (key, version) = spec.split_once('@').context("expected org/name@version")?;
     let (org, name) = split_key(key)?;
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let token = cfg.resolve_token()?;
     let response = reg.yank(&org, &name, version, !undo, token.as_deref())?;
     println!(
@@ -3030,7 +3080,7 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
             req
         }
         None => {
-            let reg = registry_for(&cfg.registry)?;
+            let reg = cfg.open_registry()?;
             // Exact name first: an existing package always beats inference.
             let pkg = match reg.get_package(&org, &name) {
                 Ok(pkg) => pkg,
@@ -3193,14 +3243,88 @@ pub fn build_publish_meta(
     packed: &PackResult,
     commit: Option<String>,
 ) -> PublishMeta {
-    PublishMeta {
+    build_signed_publish_meta(manifest, packed, commit, None).0
+}
+
+/// Publish metadata, plus the signed document mirrors will serve when the
+/// manifest declares a signing key this machine holds.
+///
+/// The signature covers the resolved mirror set, so it can only be computed
+/// after the mirrors are resolved. The timestamp is chosen by the publisher
+/// rather than the server for the same structural reason: a signature can only
+/// cover fields its signer knows at signing time.
+///
+/// An unsigned publish is a supported outcome, not a failure. It costs the
+/// package the ability to have its *ranges* resolved while the registry is
+/// down; frozen installs from any mirror keep working either way, because
+/// those are decided by the lockfile digest.
+pub fn build_signed_publish_meta(
+    manifest: &Manifest,
+    packed: &PackResult,
+    commit: Option<String>,
+    key_store: Option<&crate::publisher_keys::KeyStore>,
+) -> (
+    PublishMeta,
+    Option<zed_interfaces::signing::SignedVersionV1>,
+) {
+    let mirrors = crate::mirror_cmd::publish_mirrors(manifest).unwrap_or_default();
+    let published_at = crate::publisher_keys::utc_now_rfc3339();
+    let mut meta = PublishMeta {
         manifest: manifest.clone(),
         vcs_tag: manifest.vcs_tag(),
         vcs_commit: commit,
         sha256: packed.sha256.clone(),
         size: packed.size,
         format: packed.format,
+        mirrors: mirrors.clone(),
+        published_at: Some(published_at.clone()),
+        signatures: Vec::new(),
+    };
+
+    let signed = key_store.and_then(|store| {
+        let key = manifest.signing.signing_key().ok().flatten()?;
+        let stored = match store.load(&manifest.package.org, &key.key_id) {
+            Ok(stored) => stored,
+            Err(error) => {
+                eprintln!(
+                    "warning: {MANIFEST_FILE} declares signing key `{}` but this machine cannot \
+                     load it ({error:#}); publishing unsigned",
+                    key.key_id
+                );
+                return None;
+            }
+        };
+        let attestation = zed_interfaces::signing::VersionAttestationV1 {
+            org: manifest.package.org.clone(),
+            name: manifest.package.name.clone(),
+            version: manifest.package.version.clone(),
+            sha256: packed.sha256.clone(),
+            size: packed.size,
+            format: packed.format,
+            vcs_tag: meta.vcs_tag.clone(),
+            vcs_commit: meta.vcs_commit.clone().unwrap_or_default(),
+            published_at,
+            mirrors,
+        };
+        let preimage = zed_interfaces::signing::version_attestation_preimage(&attestation).ok()?;
+        let signature = match crate::publisher_keys::sign_preimage(&stored, &preimage) {
+            Ok(signature) => signature,
+            Err(error) => {
+                eprintln!("warning: signing failed ({error:#}); publishing unsigned");
+                return None;
+            }
+        };
+        Some(zed_interfaces::signing::SignedVersionV1 {
+            schema: zed_interfaces::signing::SIGNED_VERSION_SCHEMA_V1.to_owned(),
+            payload: attestation,
+            signatures: vec![signature],
+        })
+    });
+
+    if let Some(document) = &signed {
+        meta.signatures = document.signatures.clone();
     }
+    (meta, signed)
 }
 
 pub fn publish(
@@ -3252,12 +3376,25 @@ pub fn publish(
         return Ok(());
     }
 
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let token = cfg.resolve_token()?;
+    let key_store = crate::publisher_keys::KeyStore::new(&cfg.home);
+    let forge = crate::forge_publish::ForgeClient::discover()?;
+    if forge.is_none() {
+        eprintln!(
+            "note: no forge token found (ZED_PKG_GITHUB_TOKEN, GH_TOKEN, GITHUB_TOKEN, or \
+             `gh auth token`); publishing to the registry only, without a forge mirror"
+        );
+    }
     let hermetic_registry = cfg.registry.starts_with("file://")
         || crate::source_fallback::is_loopback_registry(&cfg.registry);
     for package in &packages {
-        let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
+        let (meta, signed) = build_signed_publish_meta(
+            &package.manifest,
+            &package.packed,
+            commit.clone(),
+            Some(&key_store),
+        );
         let identity = &package.manifest.package;
         // Multi-package releases cannot be a single HTTP transaction. Make
         // retries safe instead: an already-published byte-identical target is
@@ -3320,6 +3457,35 @@ pub fn publish(
             cfg.registry.trim_end_matches('/'),
             zed_interfaces::registry::artifact_path(&meta.sha256)
         );
+        // Signed forge mirrors run after the registry accepted the publish.
+        // Failures are reported rather than propagated so a forge outage does
+        // not turn a completed publish into a failed retry.
+        if let (Some(forge), Some(signed)) = (forge.as_ref(), signed.as_ref()) {
+            match mirror_to_forge(forge, &meta, signed, &package.packed.path) {
+                Ok(uploads) => {
+                    for upload in uploads {
+                        println!(
+                            "  mirrored {} to {}@{} ({})",
+                            upload.asset,
+                            upload.repository,
+                            upload.tag,
+                            upload.outcome.as_str()
+                        );
+                    }
+                }
+                Err(error) => eprintln!(
+                    "warning: {}/{}@{} published, but the forge mirror was not written: {error:#}",
+                    identity.org, identity.name, identity.version
+                ),
+            }
+        } else if forge.is_some() && signed.is_none() {
+            eprintln!(
+                "note: {}/{}@{} was published unsigned, so no forge mirror was written; \
+                 run `zed key generate --org {} --key-id <id>` to enable signed mirrors",
+                identity.org, identity.name, identity.version, identity.org
+            );
+        }
+
         let mut published_github = false;
         match crate::github_mirror::mirror_packed_release(
             &package.manifest,
@@ -3407,6 +3573,33 @@ pub fn publish(
     Ok(())
 }
 
+/// Copy one published version onto every forge mirror its manifest declares.
+fn mirror_to_forge(
+    forge: &crate::forge_publish::ForgeClient,
+    meta: &PublishMeta,
+    signed: &zed_interfaces::signing::SignedVersionV1,
+    artifact: &Path,
+) -> Result<Vec<crate::forge_publish::ForgeUpload>> {
+    let mut uploads = Vec::new();
+    for mirror in crate::forge_publish::writable(&meta.mirrors) {
+        let written = match mirror.kind {
+            zed_interfaces::mirror::MirrorKindV1::GithubRelease => {
+                // The index is written by `zed mirror publish-index`, not here:
+                // building it needs the full version list, which is a registry
+                // read, and a publish that already succeeded should not fail on
+                // one.
+                forge.publish_version(mirror, artifact, signed, None, false)?
+            }
+            zed_interfaces::mirror::MirrorKindV1::GithubRaw => {
+                forge.publish_raw(mirror, signed, None, false)?
+            }
+            _ => continue,
+        };
+        uploads.extend(written);
+    }
+    Ok(uploads)
+}
+
 // The r2g roundtrip check (`zed r2g`, alias `zed test-local`) lives in the
 // `r2g` module; it composes `pack`, the `file://` registry, and `install`
 // from here into a consume-your-own-artifact test.
@@ -3415,7 +3608,7 @@ pub fn publish(
 // find / login / org / store / cache
 
 pub fn find(cfg: &Config, query: &str) -> Result<()> {
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let results = reg.search(query)?;
     if results.items.is_empty() {
         println!("no packages matched `{query}`");
@@ -3462,7 +3655,7 @@ pub fn org_claim(cfg: &Config, slug: &str) -> Result<()> {
     if !zed_interfaces::manifest::is_slug(slug) {
         bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
     }
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let token = cfg.resolve_token()?;
     let response = reg.claim_org(slug, token.as_deref())?;
     if response.created {
@@ -3479,7 +3672,7 @@ pub fn org_audit(cfg: &Config, slug: &str, limit: Option<u64>) -> Result<()> {
     if !zed_interfaces::manifest::is_slug(slug) {
         bail!("invalid org slug `{slug}` (lowercase letters, digits, hyphens)");
     }
-    let reg = registry_for(&cfg.registry)?;
+    let reg = cfg.open_registry()?;
     let token = cfg.resolve_token()?;
     let log = reg.audit_log(slug, limit, token.as_deref())?;
     if log.entries.is_empty() {

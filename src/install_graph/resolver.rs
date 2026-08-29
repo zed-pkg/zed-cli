@@ -7,12 +7,13 @@ use super::*;
 /// bounded worker pool and the shared per-artifact process locks.
 pub(crate) fn prepare(project: &Path, cfg: &Config) -> Result<PreparedInstall> {
     let concurrency = install_concurrency();
-    let registry = registry_for(&cfg.registry)?;
+    let context = cfg.mirror_context(project_trust_anchors(project));
+    let registry = context.open(&cfg.registry)?;
     let manifest = read_manifest(project)?;
     let prepared = if manifest.dependencies.is_empty() {
         PreparedInstall::default()
     } else {
-        run_with_pool(cfg, concurrency, |pool| {
+        run_with_pool(cfg, &context, concurrency, |pool| {
             solve_install(project, &manifest, registry.as_ref(), pool)
         })?
     };
@@ -56,10 +57,11 @@ pub(super) fn normalize_concurrency(raw: Option<&str>) -> usize {
 
 fn run_with_pool<T>(
     cfg: &Config,
+    context: &MirrorContext,
     concurrency: usize,
     operation: impl FnOnce(&FetchPool) -> Result<T>,
 ) -> Result<T> {
-    let pool = FetchPool::new(concurrency, &cfg.registry, &cfg.home)?;
+    let pool = FetchPool::new(concurrency, context, &cfg.home)?;
     match operation(&pool) {
         Ok(value) => {
             pool.shutdown(false)?;
@@ -87,8 +89,22 @@ fn locked_version_metadata(locked: &zed_interfaces::lockfile::LockedPackage) -> 
         download_url: String::new(),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
-        mirrors: Vec::new(),
+        mirrors: locked.mirrors.clone(),
+        signatures: Vec::new(),
     }
+}
+
+/// What a project's lockfile already establishes about the packages it pins.
+///
+/// Read best-effort: a project with no lockfile yet, or one being resolved for
+/// the first time, simply has no anchors, and every check that consults them
+/// degrades to "no pin" rather than to an error.
+pub(crate) fn project_trust_anchors(project: &Path) -> TrustAnchors {
+    fs::read_to_string(project.join(LOCKFILE_FILE))
+        .ok()
+        .and_then(|text| Lockfile::parse(&text).ok())
+        .map(|lock| TrustAnchors::from_lockfile(&lock))
+        .unwrap_or_default()
 }
 
 fn prefetch_locked(project: &Path, cfg: &Config, concurrency: usize) -> Result<PrefetchReport> {
@@ -97,6 +113,7 @@ fn prefetch_locked(project: &Path, cfg: &Config, concurrency: usize) -> Result<P
         .with_context(|| format!("--frozen requires {}", lock_path.display()))?;
     let lock = Lockfile::parse(&text)?;
     let store = Store::new(&cfg.home);
+    let context = cfg.mirror_context(TrustAnchors::from_lockfile(&lock));
     let mut registry: Option<Box<dyn Registry>> = None;
     let mut tasks = Vec::with_capacity(lock.packages.len());
     let mut seen = BTreeSet::new();
@@ -115,32 +132,63 @@ fn prefetch_locked(project: &Path, cfg: &Config, concurrency: usize) -> Result<P
             bail!("duplicate package `{key}` in {LOCKFILE_FILE}");
         }
 
-        let version =
-            if store.has(&locked.sha256) || store.cached_artifact(&locked.sha256).is_file() {
-                // The lockfile authenticates every immutable field needed to
-                // verify locally owned bytes. Frozen replay must not turn a local
-                // restore into a registry metadata availability check.
-                locked_version_metadata(locked)
-            } else {
-                if registry.is_none() {
-                    registry = Some(registry_for(&cfg.registry)?);
+        let version = if store.has(&locked.sha256)
+            || store.cached_artifact(&locked.sha256).is_file()
+        {
+            // The lockfile authenticates every immutable field needed to
+            // verify locally owned bytes. Frozen replay must not turn a local
+            // restore into a registry metadata availability check.
+            locked_version_metadata(locked)
+        } else {
+            if registry.is_none() {
+                registry = Some(context.open(&cfg.registry)?);
+            }
+            let live = registry
+                .as_deref()
+                .context("frozen prefetch registry was not initialized")?
+                .get_version(&locked.org, &locked.name, &locked.version);
+            match live {
+                Ok(version) => {
+                    validate_version_identity(
+                        &version,
+                        &locked.org,
+                        &locked.name,
+                        &locked.version,
+                    )?;
+                    if version.sha256 != locked.sha256 {
+                        bail!(
+                            "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
+                            key,
+                            locked.version,
+                            locked.sha256,
+                            version.sha256
+                        );
+                    }
+                    version
                 }
-                let version = registry
-                    .as_deref()
-                    .context("frozen prefetch registry was not initialized")?
-                    .get_version(&locked.org, &locked.name, &locked.version)?;
-                validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
-                if version.sha256 != locked.sha256 {
-                    bail!(
-                        "registry artifact for {}@{} changed (lock {} vs registry {}); refusing",
-                        key,
+                // A frozen install already knows everything about this
+                // artifact that the registry could tell it. When the
+                // registry is unreachable and the lock names other places
+                // to look, proceed from the pin — the store verifies the
+                // bytes against it either way.
+                Err(registry_error)
+                    if !locked.mirrors.is_empty() && context.policy.allows_artifacts() =>
+                {
+                    eprintln!(
+                        "warning: {key}@{}: registry unavailable ({}); \
+                             restoring from the mirrors pinned in {LOCKFILE_FILE}",
                         locked.version,
-                        locked.sha256,
-                        version.sha256
+                        registry_error
+                            .to_string()
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
                     );
+                    locked_version_metadata(locked)
                 }
-                version
-            };
+                Err(registry_error) => return Err(registry_error),
+            }
+        };
         validate_version_identity(&version, &locked.org, &locked.name, &locked.version)?;
         tasks.push(FetchTask {
             sequence: tasks.len(),
@@ -153,7 +201,7 @@ fn prefetch_locked(project: &Path, cfg: &Config, concurrency: usize) -> Result<P
         return Ok(PrefetchReport::default());
     }
 
-    run_with_pool(cfg, concurrency, |pool| {
+    run_with_pool(cfg, &context, concurrency, |pool| {
         let total = tasks.len();
         for task in tasks {
             pool.submit(task)?;
