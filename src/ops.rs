@@ -1145,6 +1145,7 @@ fn locked_version_metadata(locked: &LockedPackage) -> VersionMetadata {
         download_url: String::new(),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+        mirrors: Vec::new(),
     }
 }
 
@@ -2160,11 +2161,13 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
             keywords: Vec::new(),
             language: Default::default(),
             ecosystem: Default::default(),
+            artifacts: Default::default(),
         },
         dependencies: build_dependencies,
         build_dependencies: BTreeMap::new(),
         native_dependencies: NativeDependencies::new(),
         hooks: InstallHooksSection::default(),
+        lifecycle: Default::default(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         bin: BTreeMap::new(),
@@ -3231,12 +3234,28 @@ pub fn publish(
                 meta.sha256,
                 cfg.registry
             );
+            if let Some(identity) =
+                zed_interfaces::parse_github_identity(&package.manifest.package.repository.url)
+            {
+                println!(
+                    "dry run: would ensure git tag {} on {}",
+                    meta.vcs_tag,
+                    identity.web_url()
+                );
+                println!(
+                    "dry run: would push OCI artifact to {} ({})",
+                    zed_interfaces::ghcr_reference(&identity, &meta.vcs_tag),
+                    zed_interfaces::github_packages_web_url(&identity)
+                );
+            }
         }
         return Ok(());
     }
 
     let reg = registry_for(&cfg.registry)?;
     let token = cfg.resolve_token()?;
+    let hermetic_registry = cfg.registry.starts_with("file://")
+        || crate::source_fallback::is_loopback_registry(&cfg.registry);
     for package in &packages {
         let meta = build_publish_meta(&package.manifest, &package.packed, commit.clone());
         let identity = &package.manifest.package;
@@ -3244,35 +3263,146 @@ pub fn publish(
         // retries safe instead: an already-published byte-identical target is
         // accepted, while a same-version/different-hash target remains an
         // immutable-version error.
-        if let Ok(existing) = reg.get_version(&identity.org, &identity.name, &identity.version) {
-            if existing.sha256 == meta.sha256 {
+        let mut published_registry = false;
+        match reg.get_version(&identity.org, &identity.name, &identity.version) {
+            Ok(existing) if existing.sha256 == meta.sha256 => {
                 println!(
                     "already published {}/{}@{} with identical sha256; skipping",
                     identity.org, identity.name, identity.version
                 );
-                continue;
+                published_registry = true;
             }
-            bail!(
-                "{}/{}@{} already exists with sha256 {}; refusing to replace it with {}",
-                identity.org,
-                identity.name,
-                identity.version,
-                existing.sha256,
-                meta.sha256
-            );
+            Ok(existing) => {
+                bail!(
+                    "{}/{}@{} already exists with sha256 {}; refusing to replace it with {}",
+                    identity.org,
+                    identity.name,
+                    identity.version,
+                    existing.sha256,
+                    meta.sha256
+                );
+            }
+            Err(_) => {
+                interactive::confirm(
+                    cfg.interactive,
+                    &format!(
+                        "publish {}/{}@{} (sha256 {}) to {}",
+                        identity.org, identity.name, identity.version, meta.sha256, cfg.registry
+                    ),
+                )?;
+                match reg.publish(&meta, &package.packed.path, token.as_deref()) {
+                    Ok(response) => {
+                        println!(
+                            "published {}/{}@{} to {}",
+                            response.org, response.name, response.version, cfg.registry
+                        );
+                        published_registry = true;
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "warning: registry publish failed for {}/{}@{} ({error}); trying GitHub Release",
+                            identity.org, identity.name, identity.version
+                        );
+                        if hermetic_registry {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
         }
-        interactive::confirm(
-            cfg.interactive,
-            &format!(
-                "publish {}/{}@{} (sha256 {}) to {}",
-                identity.org, identity.name, identity.version, meta.sha256, cfg.registry
-            ),
-        )?;
-        let response = reg.publish(&meta, &package.packed.path, token.as_deref())?;
-        println!(
-            "published {}/{}@{} to {}",
-            response.org, response.name, response.version, cfg.registry
+
+        if hermetic_registry {
+            continue;
+        }
+
+        let download_url = format!(
+            "{}{}",
+            cfg.registry.trim_end_matches('/'),
+            zed_interfaces::registry::artifact_path(&meta.sha256)
         );
+        let mut published_github = false;
+        match crate::github_mirror::mirror_packed_release(
+            &package.manifest,
+            &package.packed,
+            &meta.vcs_tag,
+            meta.vcs_commit.as_deref(),
+            &download_url,
+        ) {
+            Ok(crate::github_mirror::MirrorOutcome::Uploaded {
+                owner,
+                repo,
+                tag,
+                asset,
+            }) => {
+                published_github = true;
+                println!(
+                    "mirrored {}/{}@{} to github.com/{owner}/{repo} release {tag} ({asset})",
+                    identity.org, identity.name, identity.version
+                );
+            }
+            Ok(crate::github_mirror::MirrorOutcome::Skipped(reason)) => {
+                if !published_registry {
+                    eprintln!(
+                        "warning: GitHub release mirror skipped ({reason}) for {}/{}@{}",
+                        identity.org, identity.name, identity.version
+                    );
+                }
+            }
+            Err(error) => {
+                if published_registry {
+                    eprintln!(
+                        "warning: GitHub release mirror failed for {}/{}@{} ({error})",
+                        identity.org, identity.name, identity.version
+                    );
+                } else {
+                    eprintln!(
+                        "warning: GitHub release mirror failed for {}/{}@{} ({error}); trying GitHub Packages",
+                        identity.org, identity.name, identity.version
+                    );
+                }
+            }
+        }
+
+        let hosted = published_registry || published_github;
+        match crate::github_packages::mirror_packed_ghcr(
+            &package.manifest,
+            &package.packed,
+            &meta.vcs_tag,
+            meta.vcs_commit.as_deref(),
+        ) {
+            Ok(crate::github_packages::GhcrOutcome::Uploaded {
+                reference,
+                digest,
+                web_url,
+            }) => {
+                println!(
+                    "mirrored {}/{}@{} to GitHub Packages {reference} ({digest})\n  {web_url}",
+                    identity.org, identity.name, identity.version
+                );
+            }
+            Ok(crate::github_packages::GhcrOutcome::Skipped(reason)) => {
+                if !hosted {
+                    bail!(
+                        "registry unreachable and GitHub mirrors skipped (release + packages: {reason}) for {}/{}@{}",
+                        identity.org,
+                        identity.name,
+                        identity.version
+                    );
+                }
+            }
+            Err(error) => {
+                if hosted {
+                    eprintln!(
+                        "warning: GitHub Packages (GHCR) mirror failed for {}/{}@{} ({error})",
+                        identity.org, identity.name, identity.version
+                    );
+                } else {
+                    return Err(error).context(
+                        "registry, GitHub Release, and GitHub Packages publish all failed",
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }

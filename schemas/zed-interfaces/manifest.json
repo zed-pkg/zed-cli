@@ -48,6 +48,10 @@
       "description": "Explicit interoperability intent for external package and environment\nmanagers. Detection alone never grants Zed permission to consume\nanother tool's metadata.",
       "$ref": "#/$defs/InteropSection"
     },
+    "lifecycle": {
+      "description": "Root-project lifecycle hooks around Zed operations. These belong to the\nreviewed checkout and are distinct from dependency package install\nhooks, which retain their separate consent and staging boundary.",
+      "$ref": "#/$defs/ProjectLifecycleSection"
+    },
     "native-dependencies": {
       "description": "Host-native packages required before this package's install hooks or\nbuild step can run. Keys are supported package-manager names (`apt`,\n`apk`, `brew`, `nix`, ...); values are package specs passed as argv,\nnever interpolated into a shell command. Installing these prerequisites\nis an explicitly consented zed operation, separate from build-hook\nconsent.",
       "type": "object",
@@ -103,6 +107,47 @@
     "package"
   ],
   "$defs": {
+    "ArtifactsSection": {
+      "description": "Optional `[package.artifacts]` table. Omit the whole table and clients\nguess GitHub + R2 paths from `[package.repository]` and `org`/`name`.",
+      "type": "object",
+      "properties": {
+        "github_packages": {
+          "description": "Push (and later fetch) a packed OCI artifact on GitHub Packages / GHCR.\nDefaults to true when `repository.url` is a github.com repo. This is\nwhat makes a Zed package show up on github.com/orgs/{org}/packages\nuntil GitHub hosts a native Zed registry there.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "github_release": {
+          "description": "Attach (and later fetch) a packed GitHub Release asset. Defaults to\ntrue when `repository.url` is a github.com repo.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "r2_key": {
+          "description": "Full object key, possibly with `{org}`, `{name}`, `{version}`, `{tag}`,\n`{sha256}`, `{ext}`, `{github_owner}`, `{github_repo}` placeholders.\nUse this when the artifact is not at a standard guessed path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "r2_prefix": {
+          "description": "Directory prefix in the bucket; the file name\n`{name}-{version}.{ext}` is appended. Ignored when `r2_key` is set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "r2_public_base": {
+          "description": "Public HTTPS origin for this package's R2/CDN objects. When omitted,\nclients use `ZED_PKG_R2_PUBLIC_BASE`, then `ZED_PKG_R2_PUBLIC_KEY`,\nthen [`DEFAULT_R2_PUBLIC_BASE`].",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
     "BuildSection": {
       "description": "A post-extract build step. Because compiled output is OS/arch-specific,\nzed-pkg runs `command` via `sh -c` inside a sandboxed staging copy of the\nsource and caches the result in a build cache keyed by\n`(source sha256, target triple, command)` — separate from the universal,\nplatform-independent source store (zed-docs issue #5).",
       "type": "object",
@@ -454,6 +499,10 @@
     "PackageSection": {
       "type": "object",
       "properties": {
+        "artifacts": {
+          "description": "Public artifact locations used when `registry.zpkg.net` is unreachable.\nOmit the table and clients guess GitHub Release / R2 / GHCR paths from\n`[package.repository]` and `org`/`name`.",
+          "$ref": "#/$defs/ArtifactsSection"
+        },
         "description": {
           "type": [
             "string",
@@ -510,6 +559,197 @@
         "version",
         "repository"
       ]
+    },
+    "ProjectLifecycleHook": {
+      "description": "One lifecycle phase accepts a full configuration or the documented string,\nstring-array, and boolean shorthands.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProjectLifecycleHookConfig"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    },
+    "ProjectLifecycleHookConfig": {
+      "description": "Explicit configuration for one root-project lifecycle phase.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "mode": {
+          "$ref": "#/$defs/ProjectLifecycleMode"
+        },
+        "shell": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ProjectLifecycleMode": {
+      "description": "Ordering policy for explicit root-project hooks relative to convention\nfiles discovered under `.zed/` and `.zpkg/`.",
+      "type": "string",
+      "enum": [
+        "append",
+        "prepend",
+        "replace",
+        "disable"
+      ]
+    },
+    "ProjectLifecycleSection": {
+      "description": "Typed vocabulary for every root-project lifecycle phase recognized by Zed.\nKeeping these as fields instead of an open map makes misspelled phases fail\nduring TOML parsing and gives the generated JSON Schema the same boundary.",
+      "type": "object",
+      "properties": {
+        "post-build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post-install": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post-pack": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post-publish": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post-test": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "post-uninstall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-install": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-pack": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-publish": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-test": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pre-uninstall": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectLifecycleHook"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "PublishSection": {
       "type": "object",

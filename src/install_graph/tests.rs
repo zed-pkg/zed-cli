@@ -95,6 +95,7 @@ fn publish_fixture(
         download_url: format!("file://{}/{}.tar.gz", artifacts.display(), packed.sha256),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+    mirrors: Vec::new(),
     };
     fs::write(
         package_dir.join("versions").join(format!("{version}.json")),
