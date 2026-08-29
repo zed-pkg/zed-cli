@@ -2164,6 +2164,7 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
         build_dependencies: BTreeMap::new(),
         native_dependencies: NativeDependencies::new(),
         hooks: InstallHooksSection::default(),
+        lifecycle: Default::default(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         bin: BTreeMap::new(),

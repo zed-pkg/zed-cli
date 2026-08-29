@@ -169,6 +169,8 @@ the legacy version route by default or the additive target-qualified route with
 | `zed-binary pack\|verify\|publish\|download` | Build or transport a deterministic, self-describing native ZIP; target-qualified registry identity is opt-in and does not modify SemVer |
 | `zed release plan [--json] [--channel <track>]` | Print the credential-free Zed, native-registry, and forge-package release set derived from `.zpkg.toml` |
 | `zed release preflight` | Validate native manifests, then run fixed credential-free package preflight adapters |
+| `zed oci plan <oci://registry/repository:version> [--target <name>] [--out <layout>] [--json]` | Derive exact OCI identities and optionally materialize a verified local image layout without credentials or network transport |
+| `zed oci push <layout> <oci://registry/repository:version>` | Verify a local OCI layout, copy it through ORAS using one explicit authentication mode, and require the remote tag to resolve to the expected digest |
 | `zed release publish [--channel <track>] [--dry-run]` | Upload each native route to its ecosystem registry over that registry's own HTTP API |
 | `zed release versions [--target <name>]` | List the versions each native route's registry already serves |
 | `zed publish` | Verify clean tree + matching VCS tag at HEAD, pack, upload |
@@ -504,6 +506,8 @@ actual CLI never drift, so it is always authoritative:
 | `--native-manager <name>` | `ZED_PKG_NATIVE_MANAGER` | auto-detect one graph-compatible manager |
 | `--do-not-write-new-manifest` (install) | `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` | off; normal first installs create a basic durable `.zpkg.toml` |
 | deprecated `--allow-no-manifest` / `--skip-manifest` | deprecated `ZED_PKG_ALLOW_NO_MANIFEST` | compatibility aliases for `--do-not-write-new-manifest` |
+| `--target` (OCI plan/polyglot install) | `ZED_PKG_TARGET` | required for a polyglot OCI plan; inferred for install when possible |
+| `--json` (OCI plan) | `ZED_PKG_OCI_JSON` | off |
 | `--force` (build) | `ZED_PKG_FORCE` | off |
 | `--older-than` (gc) | `ZED_PKG_GC_OLDER_THAN` | `90d` |
 | `--dry-run` (gc) | `ZED_PKG_GC_DRY_RUN` | off |
