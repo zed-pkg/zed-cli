@@ -163,6 +163,7 @@ hello = "bin/hello"
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         };
 
         publish_binary_zip_with_route(

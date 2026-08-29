@@ -67,6 +67,25 @@ type = "bool"
 default = "false"
 help = "Confirm each mutating lifecycle step in a real terminal."
 
+[flags.local_path_map]
+env = "ZED_PKG_LOCAL_REGISTRY_PATH_MAP"
+aliases = ["local-path-map"]
+type = "string"
+help = "host=container path rewrites for local registry entries, comma separated."
+
+[flags.local_link_policy]
+env = "ZED_PKG_LOCAL_LINK_POLICY"
+aliases = ["local-link-policy"]
+type = "string"
+help = "How a local checkout reaches zed_modules/: auto, symlink, or copy."
+
+[flags.local_ephemeral]
+env = "ZED_PKG_LOCAL_REGISTRY_EPHEMERAL"
+aliases = ["local-ephemeral"]
+type = "bool"
+default = "false"
+help = "Copy every local checkout because its media will not outlive this process."
+
 [flags.frozen]
 env = "ZED_PKG_FROZEN"
 aliases = ["frozen"]
@@ -414,6 +433,13 @@ help = "Remove a dependency."
 aliases = ["i"]
 help = "Install dependencies."
 
+[commands.install.flags.local_registry]
+env = "ZED_PKG_LOCAL_REGISTRY"
+aliases = ["local-registry"]
+type = "string"
+default = "auto"
+help = "Authority of `zed local` registrations over resolution: off, auto, prefer, or only."
+
 [commands.overtake]
 help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
 
@@ -540,6 +566,134 @@ env = "ZED_PKG_KEY_ID"
 aliases = ["key-id"]
 type = "string"
 help = "Short stable label for this key."
+
+[commands.local]
+help = "Register local project directories so installs resolve them from this filesystem."
+
+[commands.local.commands.register]
+help = "Register or refresh a project directory containing .zpkg.toml."
+
+[commands.local.commands.register.flags.local_register_priority]
+env = "ZED_PKG_LOCAL_REGISTER_PRIORITY"
+aliases = ["priority"]
+type = "int"
+help = "Tie-breaking priority between checkouts of one package; higher wins."
+
+[commands.local.commands.register.flags.local_register_disabled]
+env = "ZED_PKG_LOCAL_REGISTER_DISABLED"
+aliases = ["disabled"]
+type = "bool"
+default = "false"
+help = "Record the registration without making it selectable."
+
+[commands.local.commands.register.flags.local_register_link]
+env = "ZED_PKG_LOCAL_REGISTER_LINK"
+aliases = ["link"]
+type = "string"
+help = "Materialization preference for this checkout: auto, symlink, or copy."
+
+[commands.local.commands.unregister]
+help = "Forget a registration by path, org/name, or entry id."
+
+[commands.local.commands.unregister.flags.local_unregister_all]
+env = "ZED_PKG_LOCAL_UNREGISTER_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Allow a selector that matches several registrations."
+
+[commands.local.commands.list]
+help = "Show every registration and whether it still resolves."
+
+[commands.local.commands.list.flags.local_list_json]
+env = "ZED_PKG_LOCAL_LIST_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable local registry output."
+
+[commands.local.commands.enable]
+help = "Make a registration selectable again."
+
+[commands.local.commands.enable.flags.local_enable_all]
+env = "ZED_PKG_LOCAL_ENABLE_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Allow a selector that matches several registrations."
+
+[commands.local.commands.disable]
+help = "Keep a registration but stop selecting it."
+
+[commands.local.commands.disable.flags.local_disable_all]
+env = "ZED_PKG_LOCAL_DISABLE_ALL"
+aliases = ["all"]
+type = "bool"
+default = "false"
+help = "Allow a selector that matches several registrations."
+
+[commands.local.commands.prune]
+help = "Drop registrations whose directory, manifest, or identity broke."
+
+[commands.local.commands.prune.flags.local_prune_dry_run]
+env = "ZED_PKG_LOCAL_PRUNE_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "Report what would be dropped without writing the index."
+
+[commands.local.commands.scan]
+help = "Discover and register every project beneath a directory."
+
+[commands.local.commands.scan.flags.local_scan_max_depth]
+env = "ZED_PKG_LOCAL_SCAN_MAX_DEPTH"
+aliases = ["max-depth"]
+type = "int"
+default = "6"
+help = "How deep to descend below the scanned root."
+
+[commands.local.commands.scan.flags.local_scan_priority]
+env = "ZED_PKG_LOCAL_SCAN_PRIORITY"
+aliases = ["priority"]
+type = "int"
+help = "Priority applied to every registration this scan creates."
+
+[commands.local.commands.scan.flags.local_scan_dry_run]
+env = "ZED_PKG_LOCAL_SCAN_DRY_RUN"
+aliases = ["dry-run"]
+type = "bool"
+default = "false"
+help = "List discovered projects without writing the index."
+
+[commands.local.commands.resolve]
+help = "Show which registered local project would satisfy a dependency."
+
+[commands.local.commands.resolve.flags.local_resolve_require]
+env = "ZED_PKG_LOCAL_RESOLVE_REQUIRE"
+aliases = ["require"]
+type = "string"
+default = "*"
+help = "Version requirement the local project must satisfy."
+
+[commands.local.commands.resolve.flags.local_resolve_json]
+env = "ZED_PKG_LOCAL_RESOLVE_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable local registry output."
+
+[commands.local.commands.path]
+help = "Print the path of the shared local registry index."
+
+[commands.local.commands.doctor]
+help = "Explain the index location, container detection, path mapping, and every registration's volume."
+
+[commands.local.commands.doctor.flags.local_doctor_json]
+env = "ZED_PKG_LOCAL_DOCTOR_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable local registry output."
 
 [commands.env]
 help = "Import, verify, and export project-local developer environments."

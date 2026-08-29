@@ -24,6 +24,7 @@ fn test_config(registry: &Path, home: &Path) -> Config {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        local: Default::default(),
     }
 }
 

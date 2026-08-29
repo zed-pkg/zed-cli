@@ -155,6 +155,8 @@ the legacy version route by default or the additive target-qualified route with
 | `zed install --cli <tool> [--cli <tool> ...]` | Resolve exact project-owned CLI runtimes into `.zed/environment.lock.toml` and copy their complete runtime roots below `.zed/tools`; built-ins are `nodejs` and `python3` |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
+| `zed local register\|unregister\|list\|enable\|disable\|prune\|scan\|resolve\|path\|doctor` | Manage the machine-wide registry of local project checkouts that `zed install` may resolve from this filesystem instead of the network; entries are keyed by canonical path, so several checkouts of one package can coexist and are chosen by explicit priority |
+| `zed install --local-registry off\|auto\|prefer\|only` | Choose how much authority those registrations have: remote only, local-first for ordinary installs (default), local-first including `--frozen`, or fully offline |
 | `zed inspect --root ABSOLUTE_PATH [--format json]` | Fully offline, read-only manifest, lock, store, Git-submodule, mise, and Nix analysis for IDEs and automation |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
@@ -399,6 +401,49 @@ resolving its transitive deps. A member with install hooks or a build step is
 prepared in a writable staging copy and copied into the consumer instead, so
 its finalized files never point at an ephemeral staging directory. Members are
 not pinned in `.zpkg.lock` (there is no published artifact).
+
+### Local project registry (offline installs)
+
+Workspace members only help inside one tree. A checkout somewhere else on the
+same machine — or a dependency you need while the registry is down or the
+laptop is offline — is registered instead:
+
+```sh
+cd ~/src/widget && zed local register     # this checkout provides acme/widget
+cd ~/src/app    && zed install            # acme/widget resolves from the filesystem
+```
+
+Registrations live in a shared index under `ZED_PKG_HOME` and are keyed by
+**canonical filesystem path**, not by package name, so several checkouts of one
+package can be registered at once; `--priority` chooses between them and an
+unbreakable tie is an error rather than a guess. Selected projects are linked
+from source through exactly the same path as workspace members, so symlink mode
+gives a live link into the checkout and copy mode gives a standalone tree.
+
+`--local-registry` decides how much authority those registrations have: `off`,
+`auto` (default; ordinary installs only), `prefer` (also `--frozen`), or `only`
+(fully offline — a dependency with no healthy local entry is an error instead of
+a network lookup).
+
+Registrations record the volume they live on. A checkout on an external disk, a
+network share, or a container bind mount is **copied** into `zed_modules/`
+rather than symlinked, because a link into media that can disappear is a project
+that breaks when it does; `--local-link-policy` overrides that either way. When
+such a volume is unmounted the entry reports `unavailable` rather than
+`missing`, so `zed local prune` never forgets a checkout that is merely
+unplugged, and resolution falls through to the registry with a reason instead of
+failing.
+
+For containers, `ZED_PKG_LOCAL_REGISTRY_FILE` points at an index shared through
+a volume and `--local-path-map /host/path=/container/path` translates registered
+paths across the bind mount, in both directions, so one index serves a host and
+the containers it runs. `--local-ephemeral` copies everything, which is what a
+`docker build` step with a BuildKit mount needs. `zed local doctor` prints that
+whole picture — index, container detection, mapping, policy, and each entry's
+volume — when an install went to the network and you expected it not to.
+
+Full behavior, precedence against workspace members, and the index hardening
+rules are in [local-registry.md](docs/local-registry.md).
 
 ### Native dependencies, install hooks, and builds
 

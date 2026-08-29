@@ -930,6 +930,7 @@ mod tests {
             supabase_url: None,
             supabase_key: None,
             interactive: false,
+            local: Default::default(),
         }
     }
 

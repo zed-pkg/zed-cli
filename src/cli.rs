@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::local_registry::{LinkPolicy, LocalRegistryMode};
+
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
 #[derive(Debug, Parser)]
@@ -94,6 +96,65 @@ pub struct Globals {
     /// than something an operator discovers after the fact.
     #[arg(long, global = true, env = "ZED_PKG_TRUST_MIRROR_METADATA")]
     pub trust_mirror_metadata: bool,
+
+    /// `host=container` path rewrites applied to local registry entries,
+    /// separated by commas. With `-v /Users/me/codes:/work`, pass
+    /// `--local-path-map /Users/me/codes=/work` so one shared index serves both
+    /// the host and the containers it runs.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_LOCAL_REGISTRY_PATH_MAP",
+        value_name = "FROM=TO[,FROM=TO]"
+    )]
+    pub local_path_map: Option<String>,
+
+    /// How a registered local checkout reaches zed_modules/. `auto` symlinks
+    /// from stable media and copies from removable or container mounts.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_LOCAL_LINK_POLICY",
+        value_enum,
+        value_name = "POLICY"
+    )]
+    pub local_link_policy: Option<LocalLinkPolicy>,
+
+    /// Treat every local checkout as living on media that will not outlive this
+    /// process, so nothing is symlinked. Container image builds set this.
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_LOCAL_REGISTRY_EPHEMERAL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
+    pub local_ephemeral: bool,
+}
+
+/// CLI spelling of [`crate::local_registry::LinkPolicy`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum LocalLinkPolicy {
+    /// Symlink from stable media, copy from removable or container mounts
+    Auto,
+    /// Always symlink
+    Symlink,
+    /// Always copy; what a container image build needs
+    Copy,
+}
+
+impl From<LocalLinkPolicy> for LinkPolicy {
+    fn from(value: LocalLinkPolicy) -> Self {
+        match value {
+            LocalLinkPolicy::Auto => LinkPolicy::Auto,
+            LocalLinkPolicy::Symlink => LinkPolicy::Symlink,
+            LocalLinkPolicy::Copy => LinkPolicy::Copy,
+        }
+    }
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -330,6 +391,17 @@ pub enum Cmd {
         /// mismatch is almost always a mistake worth failing on
         #[arg(long, env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH")]
         allow_ecosystem_mismatch: bool,
+        /// How much authority `zed local` registrations have over resolution:
+        /// `off` uses the remote registry only, `auto` lets registered local
+        /// checkouts satisfy ordinary installs, `prefer` extends that to
+        /// `--frozen`, and `only` refuses to reach the network at all
+        #[arg(
+            long = "local-registry",
+            value_enum,
+            env = "ZED_PKG_LOCAL_REGISTRY",
+            default_value = "auto"
+        )]
+        local_registry: LocalRegistryMode,
     },
     /// Remove installed dependency trees while retaining .zpkg.toml and
     /// .zpkg.lock so `zed install --frozen` can restore them exactly.
@@ -339,6 +411,12 @@ pub enum Cmd {
         /// packages currently pinned by the lockfile.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
+    },
+    /// Register local project directories so installs can resolve them from
+    /// this filesystem instead of the remote registry.
+    Local {
+        #[command(subcommand)]
+        cmd: LocalCmd,
     },
     /// Import or verify project-local developer-environment configuration.
     Env {
@@ -866,6 +944,104 @@ pub enum StoreCmd {
 pub enum CacheCmd {
     /// Delete all cached artifact downloads
     Clean,
+}
+
+/// The shared, machine-wide registry of local project checkouts.
+///
+/// Entries are identified by canonical filesystem path, not by package name
+/// alone, so several checkouts of one package can be registered at once and
+/// selected explicitly.
+#[derive(Debug, Subcommand)]
+pub enum LocalCmd {
+    /// Register (or refresh) a project directory containing .zpkg.toml
+    Register {
+        /// Project directory. Defaults to the current directory.
+        #[arg(value_name = "PATH", env = "ZED_PKG_LOCAL_REGISTER_PATH")]
+        path: Option<PathBuf>,
+        /// Break ties between checkouts of the same package; higher wins
+        #[arg(long, env = "ZED_PKG_LOCAL_REGISTER_PRIORITY")]
+        priority: Option<i64>,
+        /// Register without making the entry selectable yet
+        #[arg(long, env = "ZED_PKG_LOCAL_REGISTER_DISABLED")]
+        disabled: bool,
+        /// How this checkout should reach zed_modules/. Defaults to `auto`,
+        /// which copies from removable and container media so the installed
+        /// tree survives the volume going away.
+        #[arg(long, value_enum, env = "ZED_PKG_LOCAL_REGISTER_LINK")]
+        link: Option<LocalLinkPolicy>,
+    },
+    /// Forget a registration, by path, `org/name`, or entry id
+    Unregister {
+        #[arg(value_name = "SELECTOR", env = "ZED_PKG_LOCAL_UNREGISTER_SELECTOR")]
+        selector: String,
+        /// Allow a selector that matches several registrations
+        #[arg(long, env = "ZED_PKG_LOCAL_UNREGISTER_ALL")]
+        all: bool,
+    },
+    /// Show every registration and whether it still resolves
+    List {
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_LOCAL_LIST_JSON")]
+        json: bool,
+    },
+    /// Make a registration selectable again
+    Enable {
+        #[arg(value_name = "SELECTOR", env = "ZED_PKG_LOCAL_ENABLE_SELECTOR")]
+        selector: String,
+        /// Allow a selector that matches several registrations
+        #[arg(long, env = "ZED_PKG_LOCAL_ENABLE_ALL")]
+        all: bool,
+    },
+    /// Keep a registration but stop selecting it
+    Disable {
+        #[arg(value_name = "SELECTOR", env = "ZED_PKG_LOCAL_DISABLE_SELECTOR")]
+        selector: String,
+        /// Allow a selector that matches several registrations
+        #[arg(long, env = "ZED_PKG_LOCAL_DISABLE_ALL")]
+        all: bool,
+    },
+    /// Drop registrations whose directory, manifest, or identity broke
+    Prune {
+        /// Report what would be dropped without writing the index
+        #[arg(long, env = "ZED_PKG_LOCAL_PRUNE_DRY_RUN")]
+        dry_run: bool,
+    },
+    /// Discover and register every project beneath a directory
+    Scan {
+        /// Directory to walk. Defaults to the current directory.
+        #[arg(value_name = "PATH", env = "ZED_PKG_LOCAL_SCAN_PATH")]
+        path: Option<PathBuf>,
+        /// How deep to descend below the root
+        #[arg(long, env = "ZED_PKG_LOCAL_SCAN_MAX_DEPTH", default_value_t = 6)]
+        max_depth: usize,
+        /// Priority applied to every registration this scan creates
+        #[arg(long, env = "ZED_PKG_LOCAL_SCAN_PRIORITY")]
+        priority: Option<i64>,
+        /// List discovered projects without writing the index
+        #[arg(long, env = "ZED_PKG_LOCAL_SCAN_DRY_RUN")]
+        dry_run: bool,
+    },
+    /// Show which local project would satisfy a dependency
+    Resolve {
+        /// Package to resolve, as `org/name`
+        #[arg(value_name = "PACKAGE")]
+        package: String,
+        /// Version requirement to satisfy
+        #[arg(long, env = "ZED_PKG_LOCAL_RESOLVE_REQUIRE", default_value = "*")]
+        require: String,
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_LOCAL_RESOLVE_JSON")]
+        json: bool,
+    },
+    /// Print the path of the shared index file
+    Path,
+    /// Explain this machine's view: index location, container detection, path
+    /// mapping, link policy, and every registration's volume and status
+    Doctor {
+        /// Emit deterministic machine-readable JSON
+        #[arg(long, env = "ZED_PKG_LOCAL_DOCTOR_JSON")]
+        json: bool,
+    },
 }
 
 #[cfg(test)]

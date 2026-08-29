@@ -240,6 +240,7 @@ fn overtake_imports_manifest_workspace_and_git_lock() {
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        local: Default::default(),
     };
     let report = overtake(root.path(), &cfg).unwrap();
     assert_eq!(report.adopted, 1);
@@ -350,6 +351,7 @@ url = "https://example.invalid/acme/root.git"
         supabase_url: None,
         supabase_key: None,
         interactive: false,
+        local: Default::default(),
     };
     let error = overtake(root.path(), &cfg).unwrap_err();
     assert!(

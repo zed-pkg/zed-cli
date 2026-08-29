@@ -27,6 +27,8 @@ pub mod inspect;
 pub mod install_graph;
 pub mod interactive;
 pub mod lifecycle;
+pub mod local_cli;
+pub mod local_registry;
 pub mod lock_waiter;
 pub mod managed_install;
 pub mod manifestless;
