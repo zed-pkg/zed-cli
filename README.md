@@ -480,6 +480,10 @@ actual CLI never drift, so it is always authoritative:
 | Flag | Env var | Default |
 | --- | --- | --- |
 | `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
+| `--r2-public-base` | `ZED_PKG_R2_PUBLIC_BASE` | `https://cdn.zpkg.net` (Cloudflare → R2; independent of the registry origin) |
+| `--r2-public-key` | `ZED_PKG_R2_PUBLIC_KEY` | optional hostname, `https://…`, or Cloudflare `pub-<id>` |
+| `--source-fallback` | `ZED_PKG_SOURCE_FALLBACK` | on; retry public R2 and GitHub when the HTTP registry is down (`file://` and loopback stay hermetic) |
+| (env only) | `ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK` | off; test-org canaries that bind mocks to `127.0.0.1` must set this |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |

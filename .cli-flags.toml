@@ -158,6 +158,25 @@ type = "bool"
 default = "false"
 help = "Enable global Git submodule compatibility for install and overtake; accepts explicit true/false."
 
+[flags.r2_public_base]
+env = "ZED_PKG_R2_PUBLIC_BASE"
+aliases = ["r2-public-base"]
+type = "string"
+help = "Public HTTPS origin for guessable R2/CDN objects (default https://cdn.zpkg.net, Cloudflare-proxied R2)."
+
+[flags.r2_public_key]
+env = "ZED_PKG_R2_PUBLIC_KEY"
+aliases = ["r2-public-key"]
+type = "string"
+help = "Public R2 origin as a hostname, https URL, or Cloudflare pub-<id> subdomain."
+
+[flags.source_fallback]
+env = "ZED_PKG_SOURCE_FALLBACK"
+aliases = ["source-fallback"]
+type = "bool"
+default = "true"
+help = "Retry public R2 and GitHub when an HTTP registry is unreachable. Loopback and file:// registries stay hermetic."
+
 [flags.allow_ecosystem_mismatch]
 env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
 aliases = ["allow-ecosystem-mismatch"]
