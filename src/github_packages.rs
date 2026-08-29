@@ -61,7 +61,13 @@ pub fn mirror_packed_ghcr(
     let bearer = ghcr_bearer(&client, token, &identity)?;
     upload_blob(&client, &bearer, &identity, &artifact.config)?;
     upload_blob(&client, &bearer, &identity, &artifact.layer)?;
-    put_manifest(&client, &bearer, &identity, vcs_tag, &artifact.manifest_bytes)?;
+    put_manifest(
+        &client,
+        &bearer,
+        &identity,
+        vcs_tag,
+        &artifact.manifest_bytes,
+    )?;
     Ok(GhcrOutcome::Uploaded {
         reference: ghcr_reference(&identity, vcs_tag),
         digest: artifact.manifest_digest,
@@ -190,10 +196,7 @@ fn build_ghcr_artifact(
             "org.opencontainers.image.ref.name".to_string(),
             vcs_tag.to_string(),
         ),
-        (
-            "dev.zed-pkg.package".to_string(),
-            manifest.full_name(),
-        ),
+        ("dev.zed-pkg.package".to_string(), manifest.full_name()),
         ("dev.zed-pkg.vcs-tag".to_string(), vcs_tag.to_string()),
     ]);
     if let Some(commit) = vcs_commit {
@@ -266,12 +269,14 @@ pub(crate) fn ghcr_registry_token(
         .send()
         .context("request GHCR registry token")?;
     let status = response.status();
-    if status.is_success()
-        && let Ok(body) = response.json::<GhcrTokenResponse>()
-        && let Some(token) = body.token.or(body.access_token)
-        && !token.is_empty()
-    {
-        return Ok(token);
+    if status.is_success() {
+        if let Ok(body) = response.json::<GhcrTokenResponse>() {
+            if let Some(token) = body.token.or(body.access_token) {
+                if !token.is_empty() {
+                    return Ok(token);
+                }
+            }
+        }
     }
     bail!(
         "GHCR token exchange for {} returned {status}",
@@ -348,11 +353,7 @@ fn upload_blob(
     if put.status().is_success() || put.status().as_u16() == 201 {
         return Ok(());
     }
-    bail!(
-        "GHCR blob upload {} returned {}",
-        blob.digest,
-        put.status()
-    )
+    bail!("GHCR blob upload {} returned {}", blob.digest, put.status())
 }
 
 fn put_manifest(
@@ -395,9 +396,12 @@ pub fn download_ghcr_layer(
     max_bytes: u64,
 ) -> Result<()> {
     let registry_token = match (token, identity_from_ghcr_url(url)) {
-        (Some(github_token), Some(identity)) => {
-            Some(ghcr_registry_token(client, github_token, &identity, "pull")?)
-        }
+        (Some(github_token), Some(identity)) => Some(ghcr_registry_token(
+            client,
+            github_token,
+            &identity,
+            "pull",
+        )?),
         (Some(github_token), None) => Some(github_token.to_string()),
         (None, _) => None,
     };
@@ -509,7 +513,9 @@ mod tests {
         .expect("parse");
         assert_eq!(identity.owner, "zed-pkg-test");
         assert_eq!(identity.repo, "ghcr-fallback-canary");
-        assert!(identity_from_ghcr_url("https://example.com/v2/acme/pkg/blobs/sha256:abc").is_none());
+        assert!(
+            identity_from_ghcr_url("https://example.com/v2/acme/pkg/blobs/sha256:abc").is_none()
+        );
     }
 
     #[test]

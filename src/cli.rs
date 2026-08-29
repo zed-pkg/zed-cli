@@ -1225,7 +1225,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("--{long} lacks an env fallback"))
                 .to_string_lossy();
             assert!(
-                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                is_registered_flag_env(&env),
                 "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
         }
@@ -1243,6 +1243,34 @@ mod tests {
             env_of("git-submodules").as_deref(),
             Some("ZED_PKG_GIT_SUBMODULES")
         );
+    }
+
+    /// Host keys in the generated flags-2-env runtime keep their native
+    /// names (`CLASSPATH`, `COMSPEC`, Nix, Python, XDG). Everything else
+    /// must stay in a registered `ZED_*` namespace.
+    fn is_registered_flag_env(env: &str) -> bool {
+        env.starts_with("ZED_PKG_")
+            || env.starts_with("ZED_TASK_")
+            || env.starts_with("ZED_DEV_")
+            || is_env_only_contract_key(env)
+    }
+
+    /// Keys flags-2-env generates that are not clap flags on `Cli`.
+    fn is_env_only_contract_key(env: &str) -> bool {
+        env.starts_with("ZED_PKG_OCI_")
+            || env.starts_with("ZED_PKG_MAX_")
+            || matches!(
+                env,
+                "CLASSPATH"
+                    | "COMSPEC"
+                    | "IN_NIX_SHELL"
+                    | "NIX_BUILD_TOP"
+                    | "PYTHONPATH"
+                    | "XDG_CONFIG_HOME"
+                    | "ZED_PKG_AUTH_PASSWORD"
+                    | "ZED_PKG_INSTALL_CONCURRENCY"
+                    | "ZED_PKG_LAYOUT_CONFIG"
+            )
     }
 
     /// Walk every command and subcommand, asserting each flag has a
@@ -1264,7 +1292,7 @@ mod tests {
                 .to_string_lossy()
                 .to_string();
             assert!(
-                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                is_registered_flag_env(&env),
                 "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
             envs.insert(env);
@@ -1310,7 +1338,7 @@ mod tests {
                         .and_then(toml::Value::as_str)
                         .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
                     assert!(
-                        env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                        is_registered_flag_env(env),
                         "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
                         name.replace('_', "-")
                     );
@@ -1332,7 +1360,12 @@ mod tests {
         collect_flag_envs(&Cli::command(), &mut clap_envs);
 
         let missing: Vec<&String> = clap_envs.difference(&file_envs).collect();
-        let stale: Vec<&String> = file_envs.difference(&clap_envs).collect();
+        // flags-2-env also records host mappings, generated runtime keys,
+        // and `zed oci` (a sibling clap tree not mounted on `Cli`).
+        let stale: Vec<&String> = file_envs
+            .difference(&clap_envs)
+            .filter(|env| !is_env_only_contract_key(env))
+            .collect();
         assert!(
             missing.is_empty(),
             "flags in the CLI but not declared in .cli-flags.toml: {missing:?}"

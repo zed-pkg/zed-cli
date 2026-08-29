@@ -62,6 +62,39 @@ type = "bool"
 default = "false"
 help = "Global Git submodule compatibility mode for install and overtake."
 
+[flags.no_mirrors]
+env = "ZED_PKG_NO_MIRRORS"
+aliases = ["no-mirrors"]
+type = "bool"
+default = "false"
+help = "Fetch only from the configured registry; never fall back to a mirror."
+
+[flags.trust_mirror_metadata]
+env = "ZED_PKG_TRUST_MIRROR_METADATA"
+aliases = ["trust-mirror-metadata"]
+type = "bool"
+default = "false"
+help = "Let a signed mirror answer metadata when the registry cannot."
+
+[flags.r2_public_base]
+env = "ZED_PKG_R2_PUBLIC_BASE"
+aliases = ["r2-public-base"]
+type = "string"
+help = "Public HTTPS origin for guessable R2/CDN objects."
+
+[flags.r2_public_key]
+env = "ZED_PKG_R2_PUBLIC_KEY"
+aliases = ["r2-public-key"]
+type = "string"
+help = "Public R2 origin spelled as a hostname, URL, or r2.dev account id."
+
+[flags.source_fallback]
+env = "ZED_PKG_SOURCE_FALLBACK"
+aliases = ["source-fallback"]
+type = "bool"
+default = "true"
+help = "Retry public R2 and GitHub when an HTTP registry is unreachable."
+
 [commands.develop]
 aliases = ["dev"]
 help = "Enter a package-aware, cross-language virtual development environment."

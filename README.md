@@ -188,6 +188,8 @@ the legacy version route by default or the additive target-qualified route with
 | `zed org claim <slug>` | Claim a namespace |
 | `zed org audit <slug> [--limit N]` | Read the org's audit log — who changed published state, newest first (server registries only; needs an `owner` token) |
 | `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
+| `zed mirror list\|check\|bootstrap\|sync` | Inspect configured fallbacks, probe them while healthy, fetch `.well-known/zpkg-mirrors.json`, or write a local mirror copy |
+| `zed key generate\|list\|show\|enroll` | Create, inspect, and enroll publisher signing keys used to verify mirror-served metadata |
 | `zed gc [--older-than 90d] [--dry-run]` | LRU collection: drop store/build entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |

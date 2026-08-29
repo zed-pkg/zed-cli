@@ -437,7 +437,8 @@ impl FallbackRegistry {
         // `github_packages_enabled` is false unless a GitHub repo URL is
         // supplied (or the section opts in). Guess the coordinate as
         // github.com/{org}/{name} so GHCR locators are actually emitted.
-        let guessed_repo = GithubIdentity::guessed_from_package(&version.org, &version.name).web_url();
+        let guessed_repo =
+            GithubIdentity::guessed_from_package(&version.org, &version.name).web_url();
         let locators = artifact_locators(&ArtifactQuery {
             org: &version.org,
             name: &version.name,

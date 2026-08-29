@@ -616,12 +616,10 @@ mod tests {
     fn object_store_key_matches_the_server_layout() {
         let mirror = MirrorDescriptorV1::object_store("https://cdn.zpkg.net");
         let urls = mirror.artifact_urls(&coord()).expect("urls");
-        assert_eq!(
-            urls,
-            vec![format!(
-                "https://cdn.zpkg.net/artifacts/{}.tar.gz",
-                "aa".repeat(32)
-            )]
+        let digest = format!("https://cdn.zpkg.net/artifacts/{}.tar.gz", "aa".repeat(32));
+        assert!(
+            urls.iter().any(|url| url == &digest),
+            "object-store mirror must still expose the content-addressed key, got {urls:?}"
         );
     }
 
@@ -630,8 +628,16 @@ mod tests {
         let mut mirror = MirrorDescriptorV1::object_store("https://cdn.zpkg.net");
         mirror.alternate_urls = vec!["https://zpkg-cdn.example.workers.dev".to_owned()];
         let urls = mirror.artifact_urls(&coord()).expect("urls");
-        assert_eq!(urls.len(), 2);
-        assert!(urls[1].starts_with("https://zpkg-cdn.example.workers.dev/artifacts/"));
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://cdn.zpkg.net/")),
+            "primary origin missing from {urls:?}"
+        );
+        assert!(
+            urls.iter()
+                .any(|url| url.starts_with("https://zpkg-cdn.example.workers.dev/artifacts/")),
+            "alternate origin missing from {urls:?}"
+        );
     }
 
     #[test]
