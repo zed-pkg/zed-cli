@@ -330,6 +330,7 @@ impl ForgeClient {
         Ok(created.json::<Release>()?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn upload_asset(
         &self,
         repo: &RepoRefV1,

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zed_interfaces::manifest::Manifest;
@@ -269,19 +269,24 @@ pub(crate) fn ghcr_registry_token(
         .send()
         .context("request GHCR registry token")?;
     let status = response.status();
-    if status.is_success() {
-        if let Ok(body) = response.json::<GhcrTokenResponse>() {
-            if let Some(token) = body.token.or(body.access_token) {
-                if !token.is_empty() {
-                    return Ok(token);
-                }
-            }
-        }
+    if !status.is_success() {
+        bail!(
+            "GHCR token exchange for {} returned {status}",
+            ghcr_repository(identity)
+        );
     }
-    bail!(
-        "GHCR token exchange for {} returned {status}",
-        ghcr_repository(identity)
-    )
+    let body: GhcrTokenResponse = response
+        .json()
+        .with_context(|| format!("decode GHCR token for {}", ghcr_repository(identity)))?;
+    body.token
+        .or(body.access_token)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "GHCR token exchange for {} returned an empty token",
+                ghcr_repository(identity)
+            )
+        })
 }
 
 fn ghcr_bearer(
