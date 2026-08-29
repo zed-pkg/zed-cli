@@ -265,47 +265,71 @@ fn discover_conventions(project: &Path, phase: LifecyclePhase) -> Result<Vec<Hoo
     let root = project
         .canonicalize()
         .with_context(|| format!("resolving project root {}", project.display()))?;
-    let mut seen = HashSet::new();
-    let mut hooks = Vec::new();
+    let discovered = convention_relatives(phase)
+        .map(|relative| convention_hook(project, &root, relative))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten();
+    Ok(unique_conventions(discovered))
+}
 
-    for directory in CONVENTION_ROOTS {
-        for suffix in CONVENTION_SUFFIXES {
-            let relative = Path::new(directory).join(format!("{}{suffix}", phase.as_str()));
-            let candidate = project.join(&relative);
-            let metadata = match fs::symlink_metadata(&candidate) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("reading lifecycle hook {}", candidate.display())
-                    });
-                }
-            };
-            ensure!(
-                !metadata.file_type().is_symlink(),
-                "lifecycle hook {} must not be a symbolic link",
-                candidate.display()
-            );
-            ensure!(
-                metadata.is_file(),
-                "lifecycle hook {} is not a regular file",
-                candidate.display()
-            );
-            let canonical = candidate
-                .canonicalize()
-                .with_context(|| format!("resolving lifecycle hook {}", candidate.display()))?;
-            ensure!(
-                canonical.starts_with(&root),
-                "lifecycle hook {} resolves outside project root {}",
-                candidate.display(),
-                root.display()
-            );
-            if seen.insert(canonical) {
-                hooks.push(HookSource::Convention(relative));
-            }
+fn convention_relatives(phase: LifecyclePhase) -> impl Iterator<Item = PathBuf> {
+    CONVENTION_ROOTS.into_iter().flat_map(move |directory| {
+        CONVENTION_SUFFIXES
+            .into_iter()
+            .map(move |suffix| Path::new(directory).join(format!("{}{suffix}", phase.as_str())))
+    })
+}
+
+fn convention_hook(
+    project: &Path,
+    root: &Path,
+    relative: PathBuf,
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let candidate = project.join(&relative);
+    let metadata = match fs::symlink_metadata(&candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading lifecycle hook {}", candidate.display()));
         }
-    }
-    Ok(hooks)
+    };
+    ensure!(
+        !metadata.file_type().is_symlink(),
+        "lifecycle hook {} must not be a symbolic link",
+        candidate.display()
+    );
+    ensure!(
+        metadata.is_file(),
+        "lifecycle hook {} is not a regular file",
+        candidate.display()
+    );
+    let canonical = candidate
+        .canonicalize()
+        .with_context(|| format!("resolving lifecycle hook {}", candidate.display()))?;
+    ensure!(
+        canonical.starts_with(root),
+        "lifecycle hook {} resolves outside project root {}",
+        candidate.display(),
+        root.display()
+    );
+    Ok(Some((canonical, relative)))
+}
+
+fn unique_conventions(discovered: impl IntoIterator<Item = (PathBuf, PathBuf)>) -> Vec<HookSource> {
+    discovered
+        .into_iter()
+        .fold(
+            (HashSet::new(), Vec::new()),
+            |(mut seen, mut hooks), (canonical, relative)| {
+                if seen.insert(canonical) {
+                    hooks.push(HookSource::Convention(relative));
+                }
+                (seen, hooks)
+            },
+        )
+        .1
 }
 
 fn command_for_hook(root: &Path, hook: &HookSource) -> Result<Command> {
