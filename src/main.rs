@@ -223,7 +223,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let cfg = Config::from_globals(&cli.globals)?;
-    let git_submodules = cli.globals.git_submodules;
+    let git_submodules = cli
+        .globals
+        .git_submodules
+        .parse_bool("ZED_PKG_GIT_SUBMODULES")?;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Recovery mutates the checkout and must use the same canonical
         // descriptor-lock boundary as every new lifecycle mutation. Unlike the

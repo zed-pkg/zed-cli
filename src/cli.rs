@@ -1,6 +1,46 @@
 use std::path::PathBuf;
 
+use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+
+/// Clap env + flag both feed this parser. A never-fail parse lets an explicit
+/// `--git-submodules=false` win over a garbage inherited env; the bool is
+/// checked only on the winning value.
+#[derive(Debug, Clone)]
+pub struct BoolishFlag {
+    raw: String,
+}
+
+impl BoolishFlag {
+    pub fn from_bool(value: bool) -> Self {
+        Self {
+            raw: if value { "true" } else { "false" }.into(),
+        }
+    }
+
+    pub fn parse_bool(&self, env_name: &str) -> Result<bool> {
+        match self.raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "y" | "on" => Ok(true),
+            "0" | "false" | "no" | "n" | "off" => Ok(false),
+            _ => Err(anyhow!(
+                "invalid value '{}' for {env_name}: value was not a boolean",
+                self.raw
+            )),
+        }
+    }
+}
+
+impl From<bool> for BoolishFlag {
+    fn from(value: bool) -> Self {
+        Self::from_bool(value)
+    }
+}
+
+fn parse_boolish_flag(raw: &str) -> std::result::Result<BoolishFlag, std::convert::Infallible> {
+    Ok(BoolishFlag {
+        raw: raw.to_string(),
+    })
+}
 
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
@@ -71,10 +111,10 @@ pub struct Globals {
         require_equals = true,
         default_missing_value = "true",
         default_value = "false",
-        value_parser = clap::builder::BoolishValueParser::new(),
+        value_parser = parse_boolish_flag,
         action = clap::ArgAction::Set
     )]
-    pub git_submodules: bool,
+    pub git_submodules: BoolishFlag,
 
     /// Fetch only from the configured registry; never fall back to a mirror.
     ///
@@ -1017,7 +1057,13 @@ mod tests {
             ["zed", "install", "--git-submodules", "acme/http-kit@^1"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(cli.globals.git_submodules, "{args:?}");
+            assert!(
+                cli.globals
+                    .git_submodules
+                    .parse_bool("ZED_PKG_GIT_SUBMODULES")
+                    .unwrap(),
+                "{args:?}"
+            );
             match cli.cmd {
                 Cmd::Install { specs, .. } => {
                     assert_eq!(specs, ["acme/http-kit@^1"]);
@@ -1033,7 +1079,12 @@ mod tests {
             "acme/http-kit@^1",
         ])
         .unwrap();
-        assert!(!cli.globals.git_submodules);
+        assert!(
+            !cli.globals
+                .git_submodules
+                .parse_bool("ZED_PKG_GIT_SUBMODULES")
+                .unwrap()
+        );
         assert!(matches!(cli.cmd, Cmd::Install { .. }));
     }
 
