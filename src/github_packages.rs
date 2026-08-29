@@ -61,13 +61,7 @@ pub fn mirror_packed_ghcr(
     let bearer = ghcr_bearer(&client, token, &identity)?;
     upload_blob(&client, &bearer, &identity, &artifact.config)?;
     upload_blob(&client, &bearer, &identity, &artifact.layer)?;
-    put_manifest(
-        &client,
-        &bearer,
-        &identity,
-        vcs_tag,
-        &artifact.manifest_bytes,
-    )?;
+    put_manifest(&client, &bearer, &identity, vcs_tag, &artifact.manifest_bytes)?;
     Ok(GhcrOutcome::Uploaded {
         reference: ghcr_reference(&identity, vcs_tag),
         digest: artifact.manifest_digest,
@@ -195,7 +189,10 @@ fn build_ghcr_artifact(
             "org.opencontainers.image.ref.name".to_string(),
             vcs_tag.to_string(),
         ),
-        ("dev.zed-pkg.package".to_string(), manifest.full_name()),
+        (
+            "dev.zed-pkg.package".to_string(),
+            manifest.full_name(),
+        ),
         ("dev.zed-pkg.vcs-tag".to_string(), vcs_tag.to_string()),
     ]);
     if let Some(commit) = vcs_commit {
@@ -320,7 +317,11 @@ fn upload_blob(
     if put.status().is_success() || put.status().as_u16() == 201 {
         return Ok(());
     }
-    bail!("GHCR blob upload {} returned {}", blob.digest, put.status())
+    bail!(
+        "GHCR blob upload {} returned {}",
+        blob.digest,
+        put.status()
+    )
 }
 
 fn put_manifest(
@@ -437,6 +438,17 @@ mod tests {
     use zed_interfaces::manifest::Manifest;
     use zed_interfaces::source::GithubIdentity;
 
+    fn packed_stub() -> PackResult {
+        PackResult {
+            path: std::path::PathBuf::from("/tmp/zed-ghcr-missing.tar.gz"),
+            sha256: "ab".repeat(32),
+            size: 12,
+            file_count: 1,
+            excluded_count: 0,
+            format: ArtifactFormat::TarGz,
+        }
+    }
+
     #[test]
     fn upload_session_appends_digest_query() {
         assert_eq!(
@@ -469,17 +481,6 @@ mod tests {
             ghcr_reference(&identity, "v0.1.0"),
             "ghcr.io/cliptown/cliptown-cli:v0.1.0"
         );
-    }
-
-    fn packed_stub() -> PackResult {
-        PackResult {
-            path: std::path::PathBuf::from("/tmp/zed-ghcr-missing.tar.gz"),
-            sha256: "ab".repeat(32),
-            size: 12,
-            file_count: 1,
-            excluded_count: 0,
-            format: ArtifactFormat::TarGz,
-        }
     }
 
     #[test]

@@ -1142,6 +1142,7 @@ fn locked_version_metadata(locked: &LockedPackage) -> VersionMetadata {
         download_url: String::new(),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+        mirrors: Vec::new(),
     }
 }
 
@@ -2163,6 +2164,7 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
         build_dependencies: BTreeMap::new(),
         native_dependencies: NativeDependencies::new(),
         hooks: InstallHooksSection::default(),
+        lifecycle: Default::default(),
         publish: PublishSection::default(),
         scripts: ScriptsSection::default(),
         bin: BTreeMap::new(),

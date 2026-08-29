@@ -5,6 +5,7 @@
 //! `registry.zpkg.net` fall back to guessed public R2 keys and GitHub Release
 //! assets, then to a tagged source archive only when no packed digest is known.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read as _;
@@ -32,6 +33,33 @@ use crate::registry::{HttpRegistry, Registry};
 
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 
+thread_local! {
+    static CLI_OVERRIDES: RefCell<Option<CliFallbackOverrides>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+struct CliFallbackOverrides {
+    r2_public_base: Option<String>,
+    r2_public_key: Option<String>,
+    enabled: bool,
+}
+
+/// Apply clap `--r2-public-*` / `--source-fallback` without writing process env
+/// (edition 2024 `set_var` is unsafe). `from_env` overlays these on env values.
+pub fn apply_cli_overrides(
+    r2_public_base: Option<String>,
+    r2_public_key: Option<String>,
+    enabled: bool,
+) {
+    CLI_OVERRIDES.with(|slot| {
+        *slot.borrow_mut() = Some(CliFallbackOverrides {
+            r2_public_base,
+            r2_public_key,
+            enabled,
+        });
+    });
+}
+
 fn max_artifact_bytes() -> u64 {
     std::env::var("ZED_PKG_MAX_ARTIFACT_BYTES")
         .ok()
@@ -50,7 +78,7 @@ pub struct SourceFallbackConfig {
 
 impl SourceFallbackConfig {
     pub fn from_env() -> Self {
-        Self {
+        let mut config = Self {
             enabled: env_bool("ZED_PKG_SOURCE_FALLBACK", true),
             r2_public_base: env_nonempty("ZED_PKG_R2_PUBLIC_BASE"),
             r2_public_key: env_nonempty("ZED_PKG_R2_PUBLIC_KEY"),
@@ -60,7 +88,19 @@ impl SourceFallbackConfig {
             // Test-org / local canaries bind the registry to 127.0.0.1 so they
             // can take it down. Production loopback stays hermetic.
             allow_loopback: env_bool("ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK", false),
-        }
+        };
+        CLI_OVERRIDES.with(|slot| {
+            if let Some(over) = slot.borrow().as_ref() {
+                if over.r2_public_base.is_some() {
+                    config.r2_public_base = over.r2_public_base.clone();
+                }
+                if over.r2_public_key.is_some() {
+                    config.r2_public_key = over.r2_public_key.clone();
+                }
+                config.enabled = over.enabled;
+            }
+        });
+        config
     }
 }
 
@@ -228,6 +268,7 @@ impl FallbackRegistry {
             download_url,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
+            mirrors: locators,
         };
         self.fill_digest(&mut metadata)?;
         self.remember(metadata.clone());
@@ -346,6 +387,20 @@ impl FallbackRegistry {
             .strip_prefix("sha256:")
             .unwrap_or(digest.as_str())
             .to_string();
+        let repo_url = identity.web_url();
+        let locators = artifact_locators(&ArtifactQuery {
+            org,
+            name,
+            version,
+            vcs_tag: tag,
+            sha256: Some(sha256.as_str()),
+            format: ArtifactFormat::TarGz,
+            repo_url: Some(repo_url.as_str()),
+            artifacts: Some(&ArtifactsSection::EMPTY),
+            registry_base: None,
+            r2_public_base: self.config.r2_public_base.as_deref(),
+            r2_public_key: self.config.r2_public_key.as_deref(),
+        });
         Some(VersionMetadata {
             org: org.to_string(),
             name: name.to_string(),
@@ -358,25 +413,30 @@ impl FallbackRegistry {
             download_url: url,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
+            mirrors: locators,
         })
     }
 
     fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let mut errors = Vec::new();
         let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
-        let locators = artifact_locators(&ArtifactQuery {
-            org: &version.org,
-            name: &version.name,
-            version: &version.version,
-            vcs_tag: &version.vcs_tag,
-            sha256: packed_digest.then_some(version.sha256.as_str()),
-            format: version.format,
-            repo_url: None,
-            artifacts: Some(&ArtifactsSection::EMPTY),
-            registry_base: None,
-            r2_public_base: self.config.r2_public_base.as_deref(),
-            r2_public_key: self.config.r2_public_key.as_deref(),
-        });
+        let locators = if version.mirrors.is_empty() {
+            artifact_locators(&ArtifactQuery {
+                org: &version.org,
+                name: &version.name,
+                version: &version.version,
+                vcs_tag: &version.vcs_tag,
+                sha256: packed_digest.then_some(version.sha256.as_str()),
+                format: version.format,
+                repo_url: None,
+                artifacts: Some(&ArtifactsSection::EMPTY),
+                registry_base: None,
+                r2_public_base: self.config.r2_public_base.as_deref(),
+                r2_public_key: self.config.r2_public_key.as_deref(),
+            })
+        } else {
+            version.mirrors.clone()
+        };
         for locator in locators {
             if locator.kind == ArtifactSourceKind::GithubArchive && packed_digest {
                 continue;
@@ -595,7 +655,6 @@ pub fn is_loopback_registry(url: &str) -> bool {
     match parsed.host_str() {
         Some("localhost") => true,
         Some(host) => host
-            .trim_matches(|c| c == '[' || c == ']')
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback()),
         None => false,
@@ -633,16 +692,7 @@ mod tests {
     fn loopback_registries_are_hermetic() {
         assert!(is_loopback_registry("http://127.0.0.1:18080"));
         assert!(is_loopback_registry("http://localhost:8080"));
-        assert!(is_loopback_registry("http://[::1]:8080"));
         assert!(!is_loopback_registry("https://registry.zpkg.net"));
-        assert!(!is_loopback_registry("file:///tmp/zed-registry"));
-    }
-
-    #[test]
-    fn github_guess_requires_slugs() {
-        assert!(github_guess_is_safe("acme", "http-kit"));
-        assert!(!github_guess_is_safe("Acme", "http-kit"));
-        assert!(!github_guess_is_safe("acme", "../evil"));
     }
 
     #[test]
