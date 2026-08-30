@@ -398,6 +398,33 @@ mod tests {
     }
 
     #[test]
+    fn embedded_contract_accepts_global_mirror_controls() {
+        for (argv, expected_env) in [
+            (vec!["zed", "--no-mirrors", "install"], "ZED_PKG_NO_MIRRORS"),
+            (
+                vec!["zed", "install", "--trust-mirror-metadata"],
+                "ZED_PKG_TRUST_MIRROR_METADATA",
+            ),
+        ] {
+            let argv = argv.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let parsed = parse_embedded(&argv).expect("mirror controls must parse");
+            assert!(parsed.unknown_options.is_empty(), "{argv:?}");
+            assert!(parsed.errors.is_empty(), "{argv:?}");
+            assert_eq!(
+                parsed.flags.get(expected_env).map(String::as_str),
+                Some("true"),
+                "{argv:?}"
+            );
+            assert!(
+                explicit_env_keys(&argv, &parsed.subcommands)
+                    .expect("mirror controls must resolve their environment key")
+                    .contains(expected_env),
+                "{argv:?}"
+            );
+        }
+    }
+
+    #[test]
     fn explicit_aliases_map_to_the_manifestless_environment_key() {
         for bypass in ["--allow-no-manifest", "--skip-manifest"] {
             let argv = vec![
