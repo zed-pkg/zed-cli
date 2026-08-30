@@ -67,6 +67,20 @@ type = "bool"
 default = "false"
 help = "Confirm each mutating lifecycle step in a real terminal."
 
+[flags.no_mirrors]
+env = "ZED_PKG_NO_MIRRORS"
+aliases = ["no-mirrors"]
+type = "bool"
+default = "false"
+help = "Fetch only from the configured registry and disable mirror fallback."
+
+[flags.trust_mirror_metadata]
+env = "ZED_PKG_TRUST_MIRROR_METADATA"
+aliases = ["trust-mirror-metadata"]
+type = "bool"
+default = "false"
+help = "Allow signed mirror metadata to answer resolution requests."
+
 [flags.frozen]
 env = "ZED_PKG_FROZEN"
 aliases = ["frozen"]
