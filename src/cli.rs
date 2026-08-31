@@ -55,7 +55,16 @@ pub struct Globals {
 
     /// Confirm every mutating lifecycle step in a real terminal. A declined
     /// prompt, EOF, or redirected stdin fails closed before that step.
-    #[arg(long, global = true, env = "ZED_PKG_INTERACTIVE")]
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_INTERACTIVE",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
     pub interactive: bool,
 
     /// Enable Git submodule compatibility for commands that consume Git
