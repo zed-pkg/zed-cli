@@ -20,8 +20,9 @@ const CONTRACT: &str = include_str!("../.cli-flags.toml");
 /// Root help is rendered by the modular `develop` router, before the legacy
 /// command parser runs. This preflight keeps malformed deployment environment
 /// values fail-closed even for `zed --help`, while preserving explicit CLI
-/// precedence (`--interactive` may intentionally replace a malformed inherited
-/// `ZED_PKG_INTERACTIVE`). The full flags2env audit and parse still run for
+/// precedence for valid inherited values. Clap still rejects malformed
+/// inherited values instead of allowing argv to mask bad deployment state.
+/// The full flags2env audit and parse still run for
 /// established commands in [`apply_cli_flags`].
 pub fn normalize_global_boolean_environment(args: &[OsString]) -> Result<()> {
     let argv = args
