@@ -679,6 +679,10 @@ mod tests {
     #[test]
     fn file_mirror_rejects_a_remote_authority() {
         assert!(local_path("file://evil.example.com/etc/passwd").is_none());
-        assert!(local_path("file:///tmp/mirror/artifacts/x.tar.gz").is_some());
+        let local_url =
+            reqwest::Url::from_file_path(std::env::temp_dir().join("mirror/artifacts/x.tar.gz"))
+                .expect("temporary path has a file URL")
+                .to_string();
+        assert!(local_path(&local_url).is_some());
     }
 }

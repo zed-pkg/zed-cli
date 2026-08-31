@@ -339,7 +339,15 @@ pub enum Cmd {
         /// Run dependencies' [build] commands (arbitrary code from the
         /// package author — off by default; builds are cached per
         /// (artifact, platform, command) under ~/.zed-pkg/builds)
-        #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
+        #[arg(
+            long,
+            env = "ZED_PKG_ALLOW_BUILD",
+            num_args = 0..=1,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
+        )]
         allow_build: bool,
         /// Install host-native prerequisites declared by packages. This may
         /// invoke an OS package manager and is independent from build-hook
