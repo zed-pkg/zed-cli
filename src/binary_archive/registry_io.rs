@@ -1,5 +1,5 @@
 enum ResolvedBinaryMetadata {
-    Legacy(VersionMetadata),
+    Legacy(Box<VersionMetadata>),
     Qualified(Box<BinaryArtifactMetadataV1>),
 }
 
@@ -362,6 +362,7 @@ fn get_binary_version(
     match route {
         BinaryRegistryRoute::Legacy => registry
             .get_version(org, name, version)
+            .map(Box::new)
             .map(ResolvedBinaryMetadata::Legacy),
         BinaryRegistryRoute::Qualified => registry
             .get_binary_artifact(org, name, version, target, BinaryArchiveFormatV1::Zip)
