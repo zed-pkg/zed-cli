@@ -61,7 +61,13 @@ pub fn mirror_packed_ghcr(
     let bearer = ghcr_bearer(&client, token, &identity)?;
     upload_blob(&client, &bearer, &identity, &artifact.config)?;
     upload_blob(&client, &bearer, &identity, &artifact.layer)?;
-    put_manifest(&client, &bearer, &identity, vcs_tag, &artifact.manifest_bytes)?;
+    put_manifest(
+        &client,
+        &bearer,
+        &identity,
+        vcs_tag,
+        &artifact.manifest_bytes,
+    )?;
     Ok(GhcrOutcome::Uploaded {
         reference: ghcr_reference(&identity, vcs_tag),
         digest: artifact.manifest_digest,
@@ -189,10 +195,7 @@ fn build_ghcr_artifact(
             "org.opencontainers.image.ref.name".to_string(),
             vcs_tag.to_string(),
         ),
-        (
-            "dev.zed-pkg.package".to_string(),
-            manifest.full_name(),
-        ),
+        ("dev.zed-pkg.package".to_string(), manifest.full_name()),
         ("dev.zed-pkg.vcs-tag".to_string(), vcs_tag.to_string()),
     ]);
     if let Some(commit) = vcs_commit {
@@ -317,11 +320,7 @@ fn upload_blob(
     if put.status().is_success() || put.status().as_u16() == 201 {
         return Ok(());
     }
-    bail!(
-        "GHCR blob upload {} returned {}",
-        blob.digest,
-        put.status()
-    )
+    bail!("GHCR blob upload {} returned {}", blob.digest, put.status())
 }
 
 fn put_manifest(
