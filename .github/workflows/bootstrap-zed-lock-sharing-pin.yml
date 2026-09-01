@@ -1,0 +1,90 @@
+name: bootstrap exact zed-lock sharing-violation pin
+
+on:
+  push:
+    branches:
+      - fix/pin-zed-lock-sharing-violation
+    paths:
+      - .github/workflows/bootstrap-zed-lock-sharing-pin.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bootstrap-zed-lock-sharing-pin
+  cancel-in-progress: false
+
+jobs:
+  update-test-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/pin-zed-lock-sharing-violation
+          fetch-depth: 0
+
+      - name: Install Rust validation toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt,clippy
+
+      - name: Pin the exact zed-lock candidate and refresh Cargo.lock
+        shell: bash
+        env:
+          OLD_ZED_LOCK: 1db0da00d30fcf2e0762f50eedb1f88458020b52
+          NEW_ZED_LOCK: 1a95bb87272ac7b08895cea1f61743cf40321213
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path('Cargo.toml')
+          source = path.read_text(encoding='utf-8')
+          old = os.environ['OLD_ZED_LOCK']
+          new = os.environ['NEW_ZED_LOCK']
+          if source.count(old) != 1:
+              raise SystemExit(f'expected exactly one zed-lock pin at {old}')
+          source = source.replace(
+              '# Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.\n',
+              '# Includes Windows ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION contention normalization.\n',
+          )
+          source = source.replace(old, new)
+          path.write_text(source, encoding='utf-8', newline='\n')
+          PY
+          cargo update -p zed-lock --precise "$NEW_ZED_LOCK"
+          grep -Fq "rev = \"$NEW_ZED_LOCK\"" Cargo.toml
+          grep -Fq "#$NEW_ZED_LOCK" Cargo.lock
+          ! grep -Fq "$OLD_ZED_LOCK" Cargo.toml
+          ! grep -Fq "#$OLD_ZED_LOCK" Cargo.lock
+          cargo fmt --all -- --check
+          git diff --check
+
+      - name: Exercise lock consumers and compile the full target surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib project_lock -- --nocapture
+          cargo test --locked --lib store::tests::install_process_lock_blocks_without_polling_until_owner_release -- --exact --nocapture
+          cargo test --locked --lib store::tests::install_process_lock_is_released_when_owner_process_is_terminated -- --exact --nocapture
+          cargo check --locked --all-targets
+          cargo clippy --locked --lib --bin zed -- -D warnings
+
+      - name: Commit only the exact dependency pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/bootstrap-zed-lock-sharing-pin.yml
+          git add Cargo.toml Cargo.lock .github/workflows/bootstrap-zed-lock-sharing-pin.yml
+          git diff --cached --check
+          test "$(git diff --cached --name-only | sort)" = "$(printf '%s\n' \
+            .github/workflows/bootstrap-zed-lock-sharing-pin.yml \
+            Cargo.lock \
+            Cargo.toml | sort)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(lock): pin sharing-violation contention normalization'
+          git push origin HEAD:fix/pin-zed-lock-sharing-violation
