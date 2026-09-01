@@ -1,6 +1,10 @@
 name: Apply GitHub sidecar patch
 
 on:
+  pull_request:
+    paths:
+      - .agent/github-release-sidecar.patch
+      - .github/workflows/apply-agent-sidecar-patch.yml
   push:
     branches:
       - agent/github-release-sidecar-20260901
