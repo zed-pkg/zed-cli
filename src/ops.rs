@@ -220,7 +220,11 @@ fn expand_glob_segment(candidates: Vec<PathBuf>, segment: &str) -> Vec<PathBuf> 
                     .collect()
             } else {
                 let candidate = base.join(segment);
-                candidate.is_dir().then_some(candidate).into_iter().collect()
+                candidate
+                    .is_dir()
+                    .then_some(candidate)
+                    .into_iter()
+                    .collect()
             }
         })
         .collect()
