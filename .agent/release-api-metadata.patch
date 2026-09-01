@@ -1,0 +1,173 @@
+diff --git a/src/source_fallback.rs b/src/source_fallback.rs
+index a5dfb16..0000000 100644
+--- a/src/source_fallback.rs
++++ b/src/source_fallback.rs
+@@ -24,8 +24,8 @@ use zed_interfaces::source::{
+     ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity, artifact_locators,
+     github_api_release_url, github_api_repo_url, github_api_tags_url, github_identity_for,
+-    github_raw_manifest_url, github_release_sidecar_names, version_from_git_tag,
++    github_raw_manifest_url, github_release_asset_names, github_release_sidecar_names,
++    version_from_git_tag,
+ };
+ use zed_interfaces::vcs::Vcs;
+@@ -299,10 +299,15 @@ impl FallbackRegistry {
+         version: &str,
+         tag: &str,
+     ) -> Option<VersionMetadata> {
+-        let _ = self
++        let release = self
+             .github_headers(self.client.get(github_api_release_url(identity, tag)))
+-            .send();
++            .send()
++            .ok()
++            .and_then(|response| response.error_for_status().ok())
++            .and_then(|response| response.json::<GithubRelease>().ok());
+         for sidecar in github_release_sidecar_names(org, name, version) {
+             let url = zed_interfaces::source::github_release_download_url(identity, tag, &sidecar);
+             let Ok(response) = self.client.get(&url).send() else {
+@@ -324,7 +329,7 @@ impl FallbackRegistry {
+                 return Some(metadata);
+             }
+         }
+-        None
++        release.and_then(|release| release_asset_metadata(&release, identity, org, name, version, tag))
+     }
+@@ -558,6 +563,83 @@ struct GithubRepo {
+     html_url: String,
+ }
+ 
++#[derive(Debug, Deserialize)]
++struct GithubRelease {
++    #[serde(default)]
++    published_at: Option<String>,
++    #[serde(default)]
++    assets: Vec<GithubReleaseAsset>,
++}
++
++#[derive(Debug, Deserialize)]
++struct GithubReleaseAsset {
++    name: String,
++    browser_download_url: String,
++    size: u64,
++    #[serde(default)]
++    digest: Option<String>,
++}
++
++fn release_asset_metadata(
++    release: &GithubRelease,
++    identity: &GithubIdentity,
++    org: &str,
++    name: &str,
++    version: &str,
++    tag: &str,
++) -> Option<VersionMetadata> {
++    for format in [ArtifactFormat::TarGz, ArtifactFormat::Zip] {
++        for asset_name in github_release_asset_names(org, name, version, format.extension()) {
++            let Some(asset) = release.assets.iter().find(|asset| asset.name == asset_name) else {
++                continue;
++            };
++            let Some(sha256) = asset
++                .digest
++                .as_deref()
++                .and_then(|digest| digest.strip_prefix("sha256:"))
++            else {
++                continue;
++            };
++            if !zed_interfaces::manifest::is_sha256_hex(sha256) || asset.size == 0 {
++                continue;
++            }
++            let Ok(url) = reqwest::Url::parse(&asset.browser_download_url) else {
++                continue;
++            };
++            if url.scheme() != "https"
++                || !matches!(url.host_str(), Some(host) if host.eq_ignore_ascii_case("github.com"))
++            {
++                continue;
++            }
++            let repo_url = identity.web_url();
++            let locators = artifact_locators(&ArtifactQuery {
++                org,
++                name,
++                version,
++                vcs_tag: tag,
++                sha256: Some(sha256),
++                format,
++                repo_url: Some(repo_url.as_str()),
++                artifacts: Some(&ArtifactsSection::EMPTY),
++                registry_base: None,
++                r2_public_base: None,
++                r2_public_key: None,
++            });
++            return Some(VersionMetadata {
++                org: org.to_string(),
++                name: name.to_string(),
++                version: version.to_string(),
++                sha256: sha256.to_string(),
++                size: asset.size,
++                format,
++                vcs_tag: tag.to_string(),
++                vcs_commit: None,
++                download_url: asset.browser_download_url.clone(),
++                published_at: release
++                    .published_at
++                    .clone()
++                    .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string()),
++                yanked: false,
++                mirrors: locators
++                    .iter()
++                    .map(zed_interfaces::mirror::MirrorDescriptorV1::from_locator)
++                    .collect(),
++                signatures: Vec::new(),
++            });
++        }
++    }
++    None
++}
++
+ fn default_branch() -> String {
+     "main".to_string()
+ }
+@@ -705,6 +787,43 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn release_asset_digest_recovers_version_metadata_without_a_sidecar() {
++        let identity = GithubIdentity {
++            owner: "acme".into(),
++            repo: "http-kit".into(),
++        };
++        let sha256 = "cd".repeat(32);
++        let release = GithubRelease {
++            published_at: Some("2026-09-01T00:00:00Z".into()),
++            assets: vec![GithubReleaseAsset {
++                name: "zpkg-acme-http-kit-1.2.0.tar.gz".into(),
++                browser_download_url:
++                    "https://github.com/acme/http-kit/releases/download/v1.2.0/zpkg-acme-http-kit-1.2.0.tar.gz"
++                        .into(),
++                size: 42,
++                digest: Some(format!("sha256:{sha256}")),
++            }],
++        };
++        let metadata = release_asset_metadata(
++            &release,
++            &identity,
++            "acme",
++            "http-kit",
++            "1.2.0",
++            "v1.2.0",
++        )
++        .unwrap();
++        assert_eq!(metadata.sha256, sha256);
++        assert_eq!(metadata.size, 42);
++        assert_eq!(metadata.format, ArtifactFormat::TarGz);
++        assert_eq!(
++            metadata.download_url,
++            "https://github.com/acme/http-kit/releases/download/v1.2.0/zpkg-acme-http-kit-1.2.0.tar.gz"
++        );
++        assert_eq!(metadata.published_at, "2026-09-01T00:00:00Z");
++    }
++
+     #[test]
+     fn r2_public_key_env_is_the_guessable_origin() {
+         assert_eq!(
