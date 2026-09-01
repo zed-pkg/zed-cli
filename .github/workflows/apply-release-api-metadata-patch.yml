@@ -7,13 +7,17 @@ on:
     paths:
       - .agent/release-api-metadata.patch
       - .github/workflows/apply-release-api-metadata-patch.yml
+  pull_request:
+    paths:
+      - .agent/release-api-metadata.patch
+      - .github/workflows/apply-release-api-metadata-patch.yml
 
 permissions:
   contents: write
 
 jobs:
   apply:
-    if: ${{ !contains(github.event.head_commit.message, '[release-api-metadata-applied]') }}
+    if: ${{ github.event_name == 'push' && !contains(github.event.head_commit.message, '[release-api-metadata-applied]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
