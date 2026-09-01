@@ -9,8 +9,8 @@ use zed_interfaces::manifest::Manifest;
 use zed_interfaces::registry::VersionMetadata;
 use zed_interfaces::source::{
     GithubIdentity, github_api_git_refs_url, github_api_git_tag_url, github_api_release_url,
-    github_api_repo_url, github_release_asset_names, github_release_sidecar_names,
-    parse_github_identity,
+    github_api_repo_url, github_release_asset_names, github_release_download_url,
+    github_release_sidecar_names, parse_github_identity,
 };
 
 use crate::pack::PackResult;
@@ -24,7 +24,7 @@ pub fn mirror_packed_release(
     packed: &PackResult,
     vcs_tag: &str,
     vcs_commit: Option<&str>,
-    download_url: &str,
+    _registry_download_url: &str,
 ) -> Result<MirrorOutcome> {
     if !manifest
         .package
@@ -62,6 +62,7 @@ pub fn mirror_packed_release(
         .into_iter()
         .next()
         .expect("at least one sidecar name");
+    let download_url = github_release_download_url(&identity, vcs_tag, &asset);
 
     upload_asset(
         &client,
@@ -82,7 +83,7 @@ pub fn mirror_packed_release(
         format: packed.format,
         vcs_tag: vcs_tag.to_string(),
         vcs_commit: vcs_commit.map(str::to_string),
-        download_url: download_url.to_string(),
+        download_url,
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
         mirrors: Vec::new(),
