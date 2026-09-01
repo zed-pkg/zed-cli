@@ -73,14 +73,8 @@ pub fn mirror_packed_release(
         &fs::read(&packed.path)?,
     )?;
 
-    let metadata = github_version_metadata(
-        manifest,
-        packed,
-        vcs_tag,
-        vcs_commit,
-        &identity,
-        &asset,
-    );
+    let metadata =
+        github_version_metadata(manifest, packed, vcs_tag, vcs_commit, &identity, &asset);
     let sidecar_bytes = serde_json::to_vec_pretty(&metadata)?;
     upload_asset(
         &client,
