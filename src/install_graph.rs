@@ -26,7 +26,9 @@ use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 use crate::config::{Config, read_manifest};
 use crate::mirrored_registry::{MirrorContext, TrustAnchors};
 use crate::pack::sha256_file;
-use crate::registry::{Registry, registry_for};
+use crate::registry::Registry;
+#[cfg(test)]
+use crate::registry::registry_for;
 use crate::store::{Store, require_sha256};
 
 /// Default number of artifact installs allowed to make progress at once.

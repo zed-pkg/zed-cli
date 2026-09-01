@@ -106,6 +106,12 @@ struct ReleaseAsset {
     size: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AssetUploadOptions<'a> {
+    content_type: &'a str,
+    replace: Replace,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateRelease<'a> {
     tag_name: &'a str,
@@ -189,10 +195,12 @@ impl ForgeClient {
             &tag,
             &artifact_asset,
             &fs::read(artifact).with_context(|| format!("reading {}", artifact.display()))?,
-            "application/octet-stream",
             // Digest-named: identical name plus identical size means identical
             // bytes, so an existing asset is already correct.
-            Replace::OnlyIfDifferentSize,
+            AssetUploadOptions {
+                content_type: "application/octet-stream",
+                replace: Replace::OnlyIfDifferentSize,
+            },
         )?);
         uploads.push(self.upload_asset(
             &repo,
@@ -200,10 +208,12 @@ impl ForgeClient {
             &tag,
             &metadata_asset,
             &metadata_bytes,
-            "application/json",
             // Not digest-named, and a re-publish may add mirrors or a second
             // signature. Always take the newer document.
-            Replace::Always,
+            AssetUploadOptions {
+                content_type: "application/json",
+                replace: Replace::Always,
+            },
         )?);
 
         if let Some(index) = signed_index {
@@ -218,8 +228,10 @@ impl ForgeClient {
                 DEFAULT_INDEX_TAG,
                 &index_asset_name(prefix, &index.payload.org, &index.payload.name),
                 &serde_json::to_vec_pretty(index)?,
-                "application/json",
-                Replace::Always,
+                AssetUploadOptions {
+                    content_type: "application/json",
+                    replace: Replace::Always,
+                },
             )?);
         }
         Ok(uploads)
@@ -337,13 +349,12 @@ impl ForgeClient {
         tag: &str,
         name: &str,
         bytes: &[u8],
-        content_type: &str,
-        replace: Replace,
+        options: AssetUploadOptions<'_>,
     ) -> Result<ForgeUpload> {
         let existing = release.assets.iter().find(|asset| asset.name == name);
         let mut outcome = ForgeOutcome::Uploaded;
         if let Some(asset) = existing {
-            match replace {
+            match options.replace {
                 Replace::OnlyIfDifferentSize if asset.size == bytes.len() as u64 => {
                     return Ok(ForgeUpload {
                         repository: repo_label(repo),
@@ -373,7 +384,7 @@ impl ForgeClient {
             .bearer_auth(&self.token)
             .header("Accept", "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
-            .header("Content-Type", content_type)
+            .header("Content-Type", options.content_type)
             .body(bytes.to_vec())
             .send()?;
         if !response.status().is_success() {
