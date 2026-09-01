@@ -26,6 +26,9 @@ use crate::mirror::{MirrorClient, merge_mirrors, registry_mirror};
 use crate::publisher_keys::KeyStore;
 use crate::registry::max_artifact_bytes;
 
+type PackageMirrors = BTreeMap<String, Vec<MirrorDescriptorV1>>;
+type ProjectMirrors = (Vec<MirrorDescriptorV1>, PackageMirrors);
+
 pub fn run_mirror(cwd: &Path, cfg: &Config, cmd: MirrorCmd) -> Result<()> {
     match cmd {
         MirrorCmd::List { json } => list(cwd, cfg, json),
@@ -121,13 +124,7 @@ fn describe(mirror: &MirrorDescriptorV1) -> MirrorRow {
 }
 
 /// Everything that could serve this project, ambient and per-package.
-fn project_mirrors(
-    cwd: &Path,
-    cfg: &Config,
-) -> Result<(
-    Vec<MirrorDescriptorV1>,
-    BTreeMap<String, Vec<MirrorDescriptorV1>>,
-)> {
+fn project_mirrors(cwd: &Path, cfg: &Config) -> Result<ProjectMirrors> {
     let canonical: Vec<MirrorDescriptorV1> = registry_mirror(&cfg.registry).into_iter().collect();
     let ambient = merge_mirrors(&[&cfg.mirrors, &canonical])?;
 
