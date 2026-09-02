@@ -2,6 +2,7 @@ use anyhow::anyhow;
 
 use super::*;
 use crate::pack::pack;
+use crate::registry::registry_for;
 
 fn manifest_text(org: &str, name: &str, version: &str) -> String {
     format!(
@@ -139,19 +140,41 @@ fn sequenced_receive_buffers_later_failures_until_earlier_results_arrive() {
     sender
         .send(FetchMessage {
             sequence: 0,
-            result: Ok(FetchResult {
-                dependencies: BTreeMap::new(),
+            result: Ok(FetchOutcome {
+                sequence: 0,
+                dependencies: Vec::new(),
                 downloaded: false,
             }),
         })
         .unwrap();
     drop(sender);
 
-    let mut buffered = BTreeMap::new();
-    let first = super::resolver::receive_in_order(&pool, &mut buffered, 0).unwrap();
-    assert!(first.dependencies.is_empty());
-    let error = super::resolver::receive_in_order(&pool, &mut buffered, 1)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("later lockfile entry failed"), "{error}");
+    let first = pool.recv_for_sequence(0).unwrap();
+    assert_eq!(first.sequence, 0);
+    assert_eq!(pool.pending.len(), 1);
+    let error = pool.recv_for_sequence(1).unwrap_err().to_string();
+    assert!(error.contains("later lockfile entry failed first"), "{error}");
+}
+
+#[test]
+fn metadata_failures_are_reported_in_lockfile_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let registry = temp.path().join("registry");
+    fs::create_dir_all(&registry).unwrap();
+    let manifest = temp.path().join(MANIFEST_FILE);
+    fs::write(
+        &manifest,
+        manifest_text("test", "root", "1.0.0")
+            + "\n[dependencies]\n\"test/b\" = \"1\"\n\"test/a\" = \"1\"\n",
+    )
+    .unwrap();
+    let registry_url = format!("file://{}", registry.display());
+    let options = InstallGraphOptions {
+        manifest_path: Some(manifest),
+        registry: Some(registry_url),
+        ..InstallGraphOptions::default()
+    };
+
+    let error = install_graph(options).unwrap_err().to_string();
+    assert!(error.contains("test/a"), "{error}");
 }
