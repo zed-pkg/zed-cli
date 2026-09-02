@@ -1,0 +1,53 @@
+name: Apply exact manifest boolean repair
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/apply-ci-boolean-fix.yml"
+      - ".github/workflows/ci.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-ci-boolean-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Merge current main and apply the one-line repair
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git merge --no-commit --no-ff origin/main
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/ci.yml')
+          text = path.read_text(encoding='utf-8')
+          old = 'ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=1'
+          new = 'ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST=true'
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'expected exactly one malformed boolean literal, found {count}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          PY
+          rm .github/workflows/apply-ci-boolean-fix.yml
+          git add -A
+          git diff --cached --check
+          git commit -m 'ci: pass canonical boolean to manifestless install test'
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
