@@ -9,8 +9,8 @@ use zed_interfaces::manifest::Manifest;
 use zed_interfaces::registry::VersionMetadata;
 use zed_interfaces::source::{
     GithubIdentity, github_api_git_refs_url, github_api_git_tag_url, github_api_release_url,
-    github_api_repo_url, github_release_asset_names, github_release_sidecar_names,
-    parse_github_identity,
+    github_api_repo_url, github_release_asset_names, github_release_download_url,
+    github_release_sidecar_names, parse_github_identity,
 };
 
 use crate::pack::PackResult;
@@ -24,7 +24,7 @@ pub fn mirror_packed_release(
     packed: &PackResult,
     vcs_tag: &str,
     vcs_commit: Option<&str>,
-    download_url: &str,
+    _registry_download_url: &str,
 ) -> Result<MirrorOutcome> {
     if !manifest
         .package
@@ -73,21 +73,8 @@ pub fn mirror_packed_release(
         &fs::read(&packed.path)?,
     )?;
 
-    let metadata = VersionMetadata {
-        org: org.to_string(),
-        name: name.to_string(),
-        version: version.to_string(),
-        sha256: packed.sha256.clone(),
-        size: packed.size,
-        format: packed.format,
-        vcs_tag: vcs_tag.to_string(),
-        vcs_commit: vcs_commit.map(str::to_string),
-        download_url: download_url.to_string(),
-        published_at: "1970-01-01T00:00:00Z".to_string(),
-        yanked: false,
-        mirrors: Vec::new(),
-        signatures: Vec::new(),
-    };
+    let metadata =
+        github_version_metadata(manifest, packed, vcs_tag, vcs_commit, &identity, &asset);
     let sidecar_bytes = serde_json::to_vec_pretty(&metadata)?;
     upload_asset(
         &client,
@@ -115,6 +102,31 @@ pub enum MirrorOutcome {
         tag: String,
         asset: String,
     },
+}
+
+fn github_version_metadata(
+    manifest: &Manifest,
+    packed: &PackResult,
+    vcs_tag: &str,
+    vcs_commit: Option<&str>,
+    identity: &GithubIdentity,
+    asset: &str,
+) -> VersionMetadata {
+    VersionMetadata {
+        org: manifest.package.org.clone(),
+        name: manifest.package.name.clone(),
+        version: manifest.package.version.clone(),
+        sha256: packed.sha256.clone(),
+        size: packed.size,
+        format: packed.format,
+        vcs_tag: vcs_tag.to_string(),
+        vcs_commit: vcs_commit.map(str::to_string),
+        download_url: github_release_download_url(identity, vcs_tag, asset),
+        published_at: "1970-01-01T00:00:00Z".to_string(),
+        yanked: false,
+        mirrors: Vec::new(),
+        signatures: Vec::new(),
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -256,6 +268,23 @@ mod tests {
         }
     }
 
+    fn github_manifest() -> Manifest {
+        Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "http-kit"
+version = "1.2.0"
+license = "MIT"
+[package.repository]
+url = "https://github.com/acme/http-kit"
+[package.artifacts]
+github_release = true
+"#,
+        )
+        .unwrap()
+    }
+
     #[test]
     fn git_tag_ref_url_matches_github_git_api() {
         let identity = GithubIdentity {
@@ -266,6 +295,29 @@ mod tests {
             github_api_git_tag_url(&identity, "v0.1.0"),
             "https://api.github.com/repos/cliptown/cliptown-cli/git/ref/tags/v0.1.0"
         );
+    }
+
+    #[test]
+    fn mirrored_metadata_points_at_the_hosted_github_asset() {
+        let manifest = github_manifest();
+        let identity = GithubIdentity {
+            owner: "acme".into(),
+            repo: "http-kit".into(),
+        };
+        let metadata = github_version_metadata(
+            &manifest,
+            &packed_stub(),
+            "v1.2.0",
+            Some("0123456789abcdef"),
+            &identity,
+            "zpkg-acme-http-kit-1.2.0.tar.gz",
+        );
+        assert_eq!(
+            metadata.download_url,
+            "https://github.com/acme/http-kit/releases/download/v1.2.0/zpkg-acme-http-kit-1.2.0.tar.gz"
+        );
+        assert_eq!(metadata.sha256, "ab".repeat(32));
+        assert_eq!(metadata.vcs_commit.as_deref(), Some("0123456789abcdef"));
     }
 
     #[test]
