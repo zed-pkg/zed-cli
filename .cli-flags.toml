@@ -158,6 +158,20 @@ type = "bool"
 default = "false"
 help = "Enable global Git submodule compatibility for install and overtake; accepts explicit true/false."
 
+[flags.no_mirrors]
+env = "ZED_PKG_NO_MIRRORS"
+aliases = ["no-mirrors"]
+type = "bool"
+default = "false"
+help = "Fetch only from the configured registry; never fall back to a mirror."
+
+[flags.trust_mirror_metadata]
+env = "ZED_PKG_TRUST_MIRROR_METADATA"
+aliases = ["trust-mirror-metadata"]
+type = "bool"
+default = "false"
+help = "Let a signed mirror answer metadata when the registry cannot."
+
 [flags.r2_public_base]
 env = "ZED_PKG_R2_PUBLIC_BASE"
 aliases = ["r2-public-base"]
@@ -708,6 +722,67 @@ help = "Claim an organization."
 
 [commands.org.commands.audit]
 help = "Read an organization audit log."
+
+[commands.mirror]
+help = "Inspect, probe, bootstrap, or materialize package mirrors."
+
+[commands.mirror.commands.list]
+help = "Show the mirrors that would be tried, in order."
+
+[commands.mirror.commands.list.flags.json]
+env = "ZED_PKG_MIRROR_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable JSON."
+
+[commands.mirror.commands.check]
+help = "Probe every mirror for every locked package."
+
+[commands.mirror.commands.check.flags.package]
+env = "ZED_PKG_MIRROR_PACKAGE"
+aliases = ["package"]
+type = "string"
+help = "Check only this package (org/name)."
+
+[commands.mirror.commands.bootstrap]
+help = "Recover the mirror set from any reachable host."
+
+[commands.mirror.commands.bootstrap.flags.url]
+env = "ZED_PKG_MIRROR_BOOTSTRAP_URL"
+aliases = ["url"]
+type = "string"
+help = "Base URL to ask; defaults to every known mirror in turn."
+
+[commands.mirror.commands.sync]
+help = "Build a file:// mirror of everything this project pins."
+
+[commands.mirror.commands.sync.flags.output]
+env = "ZED_PKG_MIRROR_OUTPUT"
+aliases = ["output"]
+type = "string"
+help = "Directory to write. Created if absent; existing artifacts are kept."
+
+[commands.key]
+help = "Create, inspect, and enroll publisher signing keys."
+
+[commands.key.commands.generate]
+help = "Create a publisher signing key and print the public half."
+
+[commands.key.commands.generate.flags.key_id]
+env = "ZED_PKG_KEY_ID"
+aliases = ["key-id"]
+type = "string"
+help = "Short stable label for this key, e.g. acme-2026."
+
+[commands.key.commands.list]
+help = "List the signing keys this machine holds for an org."
+
+[commands.key.commands.show]
+help = "Print the public half of one key."
+
+[commands.key.commands.enroll]
+help = "Upload the org's public key set to the registry."
 
 [commands.store]
 help = "Global store operations."

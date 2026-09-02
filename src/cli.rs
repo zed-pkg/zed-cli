@@ -1,6 +1,46 @@
 use std::path::PathBuf;
 
+use anyhow::{Result, anyhow};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+
+/// Clap env + flag both feed this parser. A never-fail parse lets an explicit
+/// `--git-submodules=false` win over a garbage inherited env; the bool is
+/// checked only on the winning value.
+#[derive(Debug, Clone)]
+pub struct BoolishFlag {
+    raw: String,
+}
+
+impl BoolishFlag {
+    pub fn from_bool(value: bool) -> Self {
+        Self {
+            raw: if value { "true" } else { "false" }.into(),
+        }
+    }
+
+    pub fn parse_bool(&self, env_name: &str) -> Result<bool> {
+        match self.raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "y" | "on" => Ok(true),
+            "0" | "false" | "no" | "n" | "off" => Ok(false),
+            _ => Err(anyhow!(
+                "invalid value '{}' for {env_name}: value was not a boolean",
+                self.raw
+            )),
+        }
+    }
+}
+
+impl From<bool> for BoolishFlag {
+    fn from(value: bool) -> Self {
+        Self::from_bool(value)
+    }
+}
+
+fn parse_boolish_flag(raw: &str) -> std::result::Result<BoolishFlag, std::convert::Infallible> {
+    Ok(BoolishFlag {
+        raw: raw.to_string(),
+    })
+}
 
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
@@ -71,10 +111,10 @@ pub struct Globals {
         require_equals = true,
         default_missing_value = "true",
         default_value = "false",
-        value_parser = clap::builder::BoolishValueParser::new(),
+        value_parser = parse_boolish_flag,
         action = clap::ArgAction::Set
     )]
-    pub git_submodules: bool,
+    pub git_submodules: BoolishFlag,
 
     /// Fetch only from the configured registry; never fall back to a mirror.
     ///
@@ -1017,7 +1057,13 @@ mod tests {
             ["zed", "install", "--git-submodules", "acme/http-kit@^1"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(cli.globals.git_submodules, "{args:?}");
+            assert!(
+                cli.globals
+                    .git_submodules
+                    .parse_bool("ZED_PKG_GIT_SUBMODULES")
+                    .unwrap(),
+                "{args:?}"
+            );
             match cli.cmd {
                 Cmd::Install { specs, .. } => {
                     assert_eq!(specs, ["acme/http-kit@^1"]);
@@ -1033,7 +1079,12 @@ mod tests {
             "acme/http-kit@^1",
         ])
         .unwrap();
-        assert!(!cli.globals.git_submodules);
+        assert!(
+            !cli.globals
+                .git_submodules
+                .parse_bool("ZED_PKG_GIT_SUBMODULES")
+                .unwrap()
+        );
         assert!(matches!(cli.cmd, Cmd::Install { .. }));
     }
 
@@ -1225,7 +1276,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("--{long} lacks an env fallback"))
                 .to_string_lossy();
             assert!(
-                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                is_registered_flag_env(&env),
                 "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
         }
@@ -1243,6 +1294,34 @@ mod tests {
             env_of("git-submodules").as_deref(),
             Some("ZED_PKG_GIT_SUBMODULES")
         );
+    }
+
+    /// Host keys in the generated flags-2-env runtime keep their native
+    /// names (`CLASSPATH`, `COMSPEC`, Nix, Python, XDG). Everything else
+    /// must stay in a registered `ZED_*` namespace.
+    fn is_registered_flag_env(env: &str) -> bool {
+        env.starts_with("ZED_PKG_")
+            || env.starts_with("ZED_TASK_")
+            || env.starts_with("ZED_DEV_")
+            || is_env_only_contract_key(env)
+    }
+
+    /// Keys flags-2-env generates that are not clap flags on `Cli`.
+    fn is_env_only_contract_key(env: &str) -> bool {
+        env.starts_with("ZED_PKG_OCI_")
+            || env.starts_with("ZED_PKG_MAX_")
+            || matches!(
+                env,
+                "CLASSPATH"
+                    | "COMSPEC"
+                    | "IN_NIX_SHELL"
+                    | "NIX_BUILD_TOP"
+                    | "PYTHONPATH"
+                    | "XDG_CONFIG_HOME"
+                    | "ZED_PKG_AUTH_PASSWORD"
+                    | "ZED_PKG_INSTALL_CONCURRENCY"
+                    | "ZED_PKG_LAYOUT_CONFIG"
+            )
     }
 
     /// Walk every command and subcommand, asserting each flag has a
@@ -1264,7 +1343,7 @@ mod tests {
                 .to_string_lossy()
                 .to_string();
             assert!(
-                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                is_registered_flag_env(&env),
                 "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
             );
             envs.insert(env);
@@ -1310,7 +1389,7 @@ mod tests {
                         .and_then(toml::Value::as_str)
                         .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
                     assert!(
-                        env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                        is_registered_flag_env(env),
                         "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
                         name.replace('_', "-")
                     );
@@ -1332,7 +1411,12 @@ mod tests {
         collect_flag_envs(&Cli::command(), &mut clap_envs);
 
         let missing: Vec<&String> = clap_envs.difference(&file_envs).collect();
-        let stale: Vec<&String> = file_envs.difference(&clap_envs).collect();
+        // flags-2-env also records host mappings, generated runtime keys,
+        // and `zed oci` (a sibling clap tree not mounted on `Cli`).
+        let stale: Vec<&String> = file_envs
+            .difference(&clap_envs)
+            .filter(|env| !is_env_only_contract_key(env))
+            .collect();
         assert!(
             missing.is_empty(),
             "flags in the CLI but not declared in .cli-flags.toml: {missing:?}"
