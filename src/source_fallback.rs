@@ -361,9 +361,8 @@ impl FallbackRegistry {
                 return Some(metadata);
             }
         }
-        release.and_then(|release| {
-            release_asset_metadata(&release, identity, org, name, version, tag)
-        })
+        release
+            .and_then(|release| release_asset_metadata(&release, identity, org, name, version, tag))
     }
 
     fn ghcr_version(
@@ -836,15 +835,9 @@ mod tests {
                 digest: Some(format!("sha256:{sha256}")),
             }],
         };
-        let metadata = release_asset_metadata(
-            &release,
-            &identity,
-            "acme",
-            "http-kit",
-            "1.2.0",
-            "v1.2.0",
-        )
-        .unwrap();
+        let metadata =
+            release_asset_metadata(&release, &identity, "acme", "http-kit", "1.2.0", "v1.2.0")
+                .unwrap();
         assert_eq!(metadata.sha256, sha256);
         assert_eq!(metadata.size, 42);
         assert_eq!(metadata.format, ArtifactFormat::TarGz);
