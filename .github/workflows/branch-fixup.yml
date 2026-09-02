@@ -4,6 +4,7 @@ on:
   push:
     branches: ["feat/role-contract-fix"]
     paths: [".github/workflows/branch-fixup.yml"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -124,16 +125,8 @@ jobs:
           text = text.replace(test_marker, boolish_test)
           cli.write_text(text, encoding="utf-8")
 
-          replace(
-              "src/binary_archive.rs",
-              "use crate::registry::registry_for;\n",
-              "",
-          )
-          replace(
-              "src/install_graph.rs",
-              "use crate::registry::{Registry, registry_for};",
-              "use crate::registry::Registry;",
-          )
+          replace("src/binary_archive.rs", "use crate::registry::registry_for;\n", "")
+          replace("src/install_graph.rs", "use crate::registry::{Registry, registry_for};", "use crate::registry::Registry;")
           replace(
               "src/publisher_keys.rs",
               '''    fn a_pin_refuses_a_different_key_from_the_same_org() {
@@ -141,11 +134,7 @@ jobs:
               '''    fn a_pin_refuses_a_different_key_from_the_same_org() {
                       let (_stored, public) = key_pair("acme-2026");''',
           )
-          replace(
-              "src/binary_archive/registry_io.rs",
-              "    Legacy(VersionMetadata),",
-              "    Legacy(Box<VersionMetadata>),",
-          )
+          replace("src/binary_archive/registry_io.rs", "    Legacy(VersionMetadata),", "    Legacy(Box<VersionMetadata>),")
           replace(
               "src/binary_archive/registry_io.rs",
               '''        BinaryRegistryRoute::Legacy => registry
