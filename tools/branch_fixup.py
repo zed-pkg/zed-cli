@@ -109,8 +109,79 @@ def patch_cli() -> None:
     path.write_text(text.replace(test_marker, boolish_test), encoding="utf-8")
 
 
+def patch_cli_flags() -> None:
+    path = Path(".cli-flags.toml")
+    text = path.read_text(encoding="utf-8")
+    definitions = (
+        ("zed-pkg-key-id", "ZED_PKG_KEY_ID", "string", None, "Publisher signing key identifier."),
+        (
+            "zed-pkg-mirror-bootstrap-url",
+            "ZED_PKG_MIRROR_BOOTSTRAP_URL",
+            "string",
+            None,
+            "Bootstrap URL for signed mirror discovery metadata.",
+        ),
+        (
+            "zed-pkg-mirror-json",
+            "ZED_PKG_MIRROR_JSON",
+            "bool",
+            "false",
+            "Emit mirror command output as deterministic JSON.",
+        ),
+        (
+            "zed-pkg-mirror-output",
+            "ZED_PKG_MIRROR_OUTPUT",
+            "string",
+            None,
+            "Output path for generated mirror configuration.",
+        ),
+        (
+            "zed-pkg-mirror-package",
+            "ZED_PKG_MIRROR_PACKAGE",
+            "string",
+            None,
+            "Package coordinate used by mirror inspection commands.",
+        ),
+        (
+            "zed-pkg-no-mirrors",
+            "ZED_PKG_NO_MIRRORS",
+            "bool",
+            "false",
+            "Disable mirror fallback and use configured registries only.",
+        ),
+        (
+            "zed-pkg-trust-mirror-metadata",
+            "ZED_PKG_TRUST_MIRROR_METADATA",
+            "bool",
+            "false",
+            "Allow explicitly trusted unsigned local mirror metadata.",
+        ),
+    )
+    additions: list[str] = []
+    for flag_name, env_name, value_type, default, help_text in definitions:
+        marker = f'env = "{env_name}"'
+        if marker in text:
+            continue
+        block = [
+            f"[flags.{flag_name}]",
+            marker,
+            f'long = "{flag_name}"',
+            f'type = "{value_type}"',
+        ]
+        if default is not None:
+            block.append(f'default = "{default}"')
+        block.append(f'help = "{help_text}"')
+        additions.append("\n".join(block))
+    if additions:
+        path.write_text(
+            text.rstrip() + "\n\n" + "\n\n".join(additions) + "\n",
+            encoding="utf-8",
+        )
+
+
 def main() -> None:
     patch_cli()
+    patch_cli_flags()
     replace("src/binary_archive.rs", "use crate::registry::registry_for;\n", "")
     replace(
         "src/install_graph.rs",
