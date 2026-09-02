@@ -1,0 +1,121 @@
+name: one-shot runtime env schema-test patch
+
+on:
+  push:
+    branches:
+      - fix/install-graph-registry-test-import
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: fix/install-graph-registry-test-import
+          persist-credentials: true
+      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+        with:
+          python-version: '3.12'
+      - name: Separate reviewed runtime-only env keys from Clap flags
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/cli.rs')
+          text = path.read_text(encoding='utf-8')
+          start_marker = '        fn collect_file_envs(value: &toml::Value, envs: &mut BTreeSet<String>) {'
+          end_marker = '        let mut clap_envs = BTreeSet::new();'
+          start = text.index(start_marker)
+          end = text.index(end_marker, start)
+          replacement = r'''        const RUNTIME_ONLY_ENVS: [&str; 13] = [
+              "CLASSPATH",
+              "COMSPEC",
+              "IN_NIX_SHELL",
+              "NIX_BUILD_TOP",
+              "PYTHONPATH",
+              "XDG_CONFIG_HOME",
+              "ZED_PKG_AUTH_PASSWORD",
+              "ZED_PKG_INSTALL_CONCURRENCY",
+              "ZED_PKG_LAYOUT_CONFIG",
+              "ZED_PKG_MAX_ARTIFACT_BYTES",
+              "ZED_PKG_MAX_BINARY_ENTRIES",
+              "ZED_PKG_MAX_REGISTRY_BYTES",
+              "ZED_PKG_MAX_UNPACKED_BYTES",
+          ];
+
+          fn collect_file_envs(
+              value: &toml::Value,
+              cli_envs: &mut BTreeSet<String>,
+              runtime_envs: &mut BTreeSet<String>,
+          ) {
+              let Some(table) = value.as_table() else {
+                  return;
+              };
+              if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
+                  for (name, flag) in flags {
+                      let env = flag
+                          .get("env")
+                          .and_then(toml::Value::as_str)
+                          .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
+                      let runtime_help = format!("Runtime environment key {env}.");
+                      let is_runtime_only = flag
+                          .get("help")
+                          .and_then(toml::Value::as_str)
+                          == Some(runtime_help.as_str());
+                      if is_runtime_only {
+                          assert!(
+                              RUNTIME_ONLY_ENVS.contains(&env),
+                              "unreviewed runtime-only environment key `{env}` in .cli-flags.toml"
+                          );
+                          assert!(
+                              runtime_envs.insert(env.to_string()),
+                              "duplicate runtime-only env `{env}` in .cli-flags.toml"
+                          );
+                          continue;
+                      }
+                      assert!(
+                          env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
+                          "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
+                          name.replace('_', "-")
+                      );
+                      assert!(
+                          cli_envs.insert(env.to_string()),
+                          "duplicate CLI env `{env}` in .cli-flags.toml"
+                      );
+                  }
+              }
+              for child in table.values() {
+                  collect_file_envs(child, cli_envs, runtime_envs);
+              }
+          }
+
+          let mut file_envs = BTreeSet::new();
+          let mut runtime_envs = BTreeSet::new();
+          collect_file_envs(&doc, &mut file_envs, &mut runtime_envs);
+          let expected_runtime_envs = RUNTIME_ONLY_ENVS
+              .into_iter()
+              .map(str::to_string)
+              .collect::<BTreeSet<_>>();
+          assert_eq!(
+              runtime_envs, expected_runtime_envs,
+              "the reviewed runtime-only environment key set drifted"
+          );
+
+'''
+          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
+          PY
+          cargo fmt --all
+      - name: Commit the narrow test-model repair
+        run: |
+          set -eu
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/cli.rs
+          git diff --cached --check
+          git commit -m 'test(cli): distinguish runtime env schema from Clap flags'
+          git push origin HEAD:fix/install-graph-registry-test-import
