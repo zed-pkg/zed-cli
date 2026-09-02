@@ -113,6 +113,8 @@ pub mod mise_export {
         Ok(())
     }
 }
+pub mod github_mirror;
+pub mod github_packages;
 pub mod mise_lock;
 pub mod native;
 pub mod native_host_client;
@@ -134,11 +136,9 @@ pub mod project_lock;
 pub(crate) mod publish_ignore;
 pub mod publisher_keys;
 pub mod r2g;
-pub mod github_mirror;
-pub mod github_packages;
 pub mod registry;
-pub mod source_fallback;
 pub mod release;
+pub mod source_fallback;
 pub mod store;
 pub mod task_cli;
 pub mod task_runtime;
