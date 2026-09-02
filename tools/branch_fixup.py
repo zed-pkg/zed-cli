@@ -115,7 +115,12 @@ def main() -> None:
     replace(
         "src/install_graph.rs",
         "use crate::registry::{Registry, registry_for};",
-        "use crate::registry::Registry;\n#[cfg(test)]\nuse crate::registry::registry_for;",
+        "use crate::registry::Registry;",
+    )
+    replace(
+        "src/install_graph/hardening_tests.rs",
+        "use crate::pack::pack;",
+        "use crate::pack::pack;\nuse crate::registry::registry_for;",
     )
     replace(
         "src/publisher_keys.rs",
