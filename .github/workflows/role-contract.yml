@@ -40,7 +40,7 @@ jobs:
   branch-fixup:
     if: github.event_name == 'pull_request' && github.head_ref == 'feat/role-contract-fix'
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -53,14 +53,18 @@ jobs:
           components: rustfmt, clippy
       - name: Apply exact branch-owned fixes
         run: python3 tools/branch_fixup.py
-      - name: Format and test exact fixes
+      - name: Format the complete Rust workspace
         run: |
           cargo fmt --all
           cargo fmt --all -- --check
-          cargo test --locked cli::tests::manifest_write_switch_accepts_boolish_values
-          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
-          python3 -m unittest tests/role-contract/test_zed_role_contract.py
-          cargo clippy --locked --all-targets -- -D warnings
+      - name: Test boolish manifest-write compatibility
+        run: cargo test --locked cli::tests::manifest_write_switch_accepts_boolish_values
+      - name: Test generated CLI flag registry parity
+        run: cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+      - name: Test transactional role-contract semantics
+        run: python3 -m unittest tests/role-contract/test_zed_role_contract.py -v
+      - name: Lint all production and test targets
+        run: cargo clippy --locked --all-targets -- -D warnings
       - name: Commit tested fixes and restore the permanent workflow
         run: |
           git fetch origin main --depth=1
