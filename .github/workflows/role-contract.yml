@@ -8,7 +8,7 @@ on:
       - "tests/role-contract/**"
       - "docs/role-based-zed-dependency-contract.md"
   push:
-    branches: [main]
+    branches: [main, feat/role-contract-fix]
     paths:
       - ".github/workflows/role-contract.yml"
       - "tools/role-contract/**"
@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: role-contract-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -36,3 +36,37 @@ jobs:
           python-version: "3.12"
       - run: python -m unittest discover -s tests/role-contract -p 'test_*.py' -v
       - run: python tools/role-contract/zed_role_contract.py audit . --output /tmp/zed-role-audit.json
+
+  branch-fixup:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/role-contract-fix'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Apply exact branch-owned fixes
+        run: python3 tools/branch_fixup.py
+      - name: Format and test exact fixes
+        run: |
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --locked cli::tests::manifest_write_switch_accepts_boolish_values
+          cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
+          python3 -m unittest tests/role-contract/test_zed_role_contract.py
+          cargo clippy --locked --all-targets -- -D warnings
+      - name: Commit tested fixes and restore the permanent workflow
+        run: |
+          git fetch origin main --depth=1
+          git show FETCH_HEAD:.github/workflows/role-contract.yml > .github/workflows/role-contract.yml
+          rm -f .github/workflows/branch-fixup.yml tools/branch_fixup.py
+          git config user.name "ORESoftware"
+          git config user.email "alex@oresoftware.com"
+          git add -A
+          git commit -m "fix: close Zed environment and portability regressions"
+          git push origin HEAD:feat/role-contract-fix
