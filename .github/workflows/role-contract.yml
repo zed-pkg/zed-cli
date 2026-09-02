@@ -38,12 +38,13 @@ jobs:
       - run: python tools/role-contract/zed_role_contract.py audit . --output /tmp/zed-role-audit.json
 
   branch-fixup:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feat/role-contract-fix'
+    if: github.event_name == 'pull_request' && github.head_ref == 'feat/role-contract-fix'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: feat/role-contract-fix
           fetch-depth: 0
           persist-credentials: true
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
