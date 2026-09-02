@@ -13,11 +13,11 @@ permissions:
 
 concurrency:
   group: apply-source-fallback-format-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   apply:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.head.sha, '0000000') }}
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -27,7 +27,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
-      - name: Merge current main, format, verify, and remove this workflow
+      - name: Merge current main, format, verify, and push source changes
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
@@ -36,7 +36,6 @@ jobs:
           git merge --no-commit --no-ff origin/main
           cargo fmt --all
           cargo fmt --all -- --check
-          rm .github/workflows/apply-source-fallback-format.yml
           git add -A
           git diff --cached --check
           git commit -m 'style(resolve): format fallback metadata recovery'
