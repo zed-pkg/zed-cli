@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+
+[package]
+name = "zed-cli"
+version = "0.2.3"
+edition = "2024"
+description = "zed: the universal package manager backed by the VCS hosts you already use"
+license = "MIT"
+repository = "https://github.com/zed-pkg/zed-cli"
+
+[[bin]]
+name = "zed"
+path = "src/main.rs"
+
+[[bin]]
+name = "zed-gitops"
+path = "src/bin/zed-gitops.rs"
+
+[[bin]]
+name = "zed-binary"
+path = "src/bin/zed-binary.rs"
+
+[lib]
+name = "zed_cli"
+path = "src/lib.rs"
+
+[dependencies]
+# Union of GHCR/git-tag locators, public R2 fallback, and canonical lifecycle schema.
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c51d732cb01a377b2bc00e8d945b355e41961c1" }
+# Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
+zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
+# ORE structured cycle diagnostics; pin the exact reviewed SDK revision.
+oresoftware-next-loggers = { git = "https://github.com/ores-otel/ores.otel.log.git", rev = "f6422ef56c80cdc702aee04008b53fee87757671", package = "oresoftware-next-loggers" }
+anyhow = "1"
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
+dirs = "5"
+# Publisher metadata signing. Pinned to the audited 2.x line; `rand_core` is
+# the RNG trait ed25519-dalek itself depends on, taken directly so key
+# generation does not pull a second RNG stack in behind it.
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+flate2 = "1"
+globset = "0.4"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
+rpassword = "7"
+semver = { version = "1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+toml = "1"
+uuid = { version = "1", features = ["serde", "v4"] }
+walkdir = "2"
+fs2 = "0.4.3"
+flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "2946224fb3a1bd84c0e39146b24f5f1ca8d69862" }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
