@@ -49,9 +49,13 @@ jobs:
           )
           replace_exact(
               "src/versioned_graph.rs",
-              "cycles[0].path",
-              "cycles[0]",
-              expected=2,
+              "            cycles[0].path,\n            vec![id(\"a\", \"2\"), id(\"b\", \"0\"), id(\"a\", \"2\")]",
+              "            cycles[0],\n            vec![id(\"a\", \"2\"), id(\"b\", \"0\"), id(\"a\", \"2\")]",
+          )
+          replace_exact(
+              "src/versioned_graph.rs",
+              "        assert_eq!(cycles[0].path, vec![only.clone(), only]);",
+              "        assert_eq!(cycles[0], vec![only.clone(), only]);",
           )
           replace_exact(
               "src/binary_archive.rs",
