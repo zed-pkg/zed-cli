@@ -1,0 +1,241 @@
+
+fn required_artifact_digest(node: &ResolvedDependencyNode) -> Result<String> {
+    let digest = node
+        .artifact_digest
+        .clone()
+        .with_context(|| format!("exact dependency node `{}` has no artifact_digest", node.id))?;
+    let Some(hex) = digest.strip_prefix("sha256:") else {
+        bail!(
+            "exact dependency node `{}` artifact_digest must use `sha256:<lowercase-hex>`",
+            node.id
+        );
+    };
+    ensure!(
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "exact dependency node `{}` has a non-canonical artifact_digest",
+        node.id
+    );
+    ensure!(
+        hex.bytes().any(|byte| byte != b'0'),
+        "exact dependency node `{}` has an all-zero artifact_digest",
+        node.id
+    );
+    Ok(digest)
+}
+
+fn path_is_real_directory(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir() && !metadata.file_type().is_symlink()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect directory {}", path.display())),
+    }
+}
+
+fn ensure_absent(path: &Path, message: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => bail!("{message}"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left == right || left.starts_with(right) || right.starts_with(left)
+}
+
+fn compute_materialization_digest(
+    graph_digest: &str,
+    nodes: &BTreeMap<PackageVersionIdentity, ValidatedNode>,
+) -> Result<String> {
+    #[derive(Serialize)]
+    struct Binding<'a> {
+        package: &'a PackageVersionIdentity,
+        artifact_digest: &'a str,
+        source: String,
+    }
+
+    let bindings = nodes
+        .values()
+        .map(|node| Binding {
+            package: &node.id,
+            artifact_digest: &node.artifact_digest,
+            source: node.source.to_string_lossy().into_owned(),
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::to_vec(&(graph_digest, bindings))
+        .context("serializing exact graph source bindings")?;
+    Ok(format!("sha256:{}", hex_sha256(&payload)))
+}
+
+fn detect_cycle_paths<'a, I>(
+    roots: &[PackageVersionIdentity],
+    nodes: I,
+    edges: &[ResolvedDependencyEdge],
+) -> Result<Vec<Vec<PackageVersionIdentity>>>
+where
+    I: IntoIterator<Item = &'a PackageVersionIdentity>,
+{
+    let mut adjacency: BTreeMap<PackageVersionIdentity, BTreeSet<PackageVersionIdentity>> =
+        BTreeMap::new();
+    for node in nodes {
+        adjacency.entry(node.clone()).or_default();
+    }
+    for edge in edges {
+        adjacency
+            .entry(edge.from.clone())
+            .or_default()
+            .insert(edge.to.clone());
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Visit {
+        Visiting(usize),
+        Done,
+    }
+
+    #[derive(Debug)]
+    struct Frame {
+        node: PackageVersionIdentity,
+        children: Vec<PackageVersionIdentity>,
+        next_child: usize,
+    }
+
+    impl Frame {
+        fn new(
+            node: PackageVersionIdentity,
+            adjacency: &BTreeMap<PackageVersionIdentity, BTreeSet<PackageVersionIdentity>>,
+        ) -> Self {
+            Self {
+                children: adjacency
+                    .get(&node)
+                    .map(|children| children.iter().cloned().collect())
+                    .unwrap_or_default(),
+                node,
+                next_child: 0,
+            }
+        }
+    }
+
+    let mut states = BTreeMap::new();
+    let mut stack = Vec::new();
+    let mut found: BTreeMap<String, Vec<PackageVersionIdentity>> = BTreeMap::new();
+    let mut traversal = roots.to_vec();
+    traversal.extend(adjacency.keys().cloned());
+    traversal.sort();
+    traversal.dedup();
+
+    for start in traversal {
+        if states.contains_key(&start) {
+            continue;
+        }
+        states.insert(start.clone(), Visit::Visiting(0));
+        stack.push(start.clone());
+        let mut frames = vec![Frame::new(start, &adjacency)];
+
+        while !frames.is_empty() {
+            let next_child = {
+                let frame = frames.last_mut().expect("checked non-empty frame stack");
+                if frame.next_child == frame.children.len() {
+                    None
+                } else {
+                    let child = frame.children[frame.next_child].clone();
+                    frame.next_child += 1;
+                    Some(child)
+                }
+            };
+
+            let Some(child) = next_child else {
+                let frame = frames.pop().expect("checked non-empty frame stack");
+                let popped = stack.pop().expect("DFS node stack matches frame stack");
+                debug_assert_eq!(popped, frame.node);
+                states.insert(frame.node, Visit::Done);
+                continue;
+            };
+
+            match states.get(&child).copied() {
+                None => {
+                    states.insert(child.clone(), Visit::Visiting(stack.len()));
+                    stack.push(child.clone());
+                    frames.push(Frame::new(child, &adjacency));
+                }
+                Some(Visit::Visiting(index)) => {
+                    let mut path = stack[index..].to_vec();
+                    path.push(child);
+                    let path = canonical_cycle(path);
+                    let key = path
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    if !found.contains_key(&key) && found.len() >= MAX_CYCLE_WITNESSES {
+                        bail!(
+                            "exact dependency graph exposes more than {MAX_CYCLE_WITNESSES} deterministic cycle witnesses; refusing to flood diagnostics"
+                        );
+                    }
+                    found.entry(key).or_insert(path);
+                }
+                Some(Visit::Done) => {}
+            }
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+fn canonical_cycle(path: Vec<PackageVersionIdentity>) -> Vec<PackageVersionIdentity> {
+    debug_assert!(path.len() >= 2 && path.first() == path.last());
+    let body = &path[..path.len() - 1];
+    let mut best = 0;
+    for start in 1..body.len() {
+        let candidate = (0..body.len())
+            .map(|offset| &body[(start + offset) % body.len()])
+            .collect::<Vec<_>>();
+        let current = (0..body.len())
+            .map(|offset| &body[(best + offset) % body.len()])
+            .collect::<Vec<_>>();
+        if candidate < current {
+            best = start;
+        }
+    }
+    let mut canonical = (0..body.len())
+        .map(|offset| body[(best + offset) % body.len()].clone())
+        .collect::<Vec<_>>();
+    canonical.push(canonical[0].clone());
+    canonical
+}
+
+fn decorate_cycles(
+    paths: Vec<Vec<PackageVersionIdentity>>,
+    nodes: &BTreeMap<PackageVersionIdentity, ValidatedNode>,
+) -> Result<Vec<DependencyCycle>> {
+    paths
+        .into_iter()
+        .map(|path| {
+            let exact_path = path
+                .iter()
+                .map(|id| {
+                    let node = nodes
+                        .get(id)
+                        .with_context(|| format!("cycle references absent exact node `{id}`"))?;
+                    Ok(ExactDependencyNodeIdentity {
+                        package: id.clone(),
+                        artifact_digest: node.artifact_digest.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let key = exact_path
+                .iter()
+                .map(ExactDependencyNodeIdentity::label)
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            let closing_from = exact_path[exact_path.len() - 2].clone();
+            let closing_to = exact_path[exact_path.len() - 1].clone();
+            Ok(DependencyCycle {
+                cycle_id: format!("sha256:{}", hex_sha256(key.as_bytes())),
+                path: exact_path,
+                closing_from,
+                closing_to,
+            })
