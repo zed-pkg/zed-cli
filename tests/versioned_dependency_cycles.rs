@@ -195,7 +195,10 @@ fn public_cli_materializes_and_replays_the_four_node_cycle_without_payload_copie
         );
     }
     let (a2, closing_a2) = follow_chain(&project);
-    assert_eq!(fs::read_link(closing_a2).unwrap(), a2.canonicalize().unwrap());
+    assert_eq!(
+        fs::read_link(closing_a2).unwrap(),
+        a2.canonicalize().unwrap()
+    );
 
     let second = run_zed(
         &home,
@@ -279,7 +282,9 @@ fn verified_graph_path_binds_nodes_to_the_content_addressed_store() {
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    assert!(node_metadata.iter().all(|record| {
-        Path::new(record["source"].as_str().unwrap()).starts_with(store.root())
-    }));
+    assert!(
+        node_metadata.iter().all(|record| {
+            Path::new(record["source"].as_str().unwrap()).starts_with(store.root())
+        })
+    );
 }
