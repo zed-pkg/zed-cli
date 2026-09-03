@@ -29,7 +29,6 @@ use zed_interfaces::registry::{PublishMeta, PublishResponse, VersionMetadata};
 use crate::config::{Config, read_manifest};
 use crate::interactive;
 use crate::pack::{PackResult, sha256_file};
-use crate::registry::registry_for;
 
 const DEFAULT_MAX_BINARY_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
 const DEFAULT_MAX_BINARY_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;

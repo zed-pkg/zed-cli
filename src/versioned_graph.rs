@@ -1349,10 +1349,7 @@ mod tests {
         assert_eq!(nodes.len(), 4);
         assert_eq!(edges.len(), 4);
         assert_eq!(cycles.len(), 1);
-        assert_eq!(
-            cycles[0].path,
-            vec![id("a", "2"), id("b", "0"), id("a", "2")]
-        );
+        assert_eq!(cycles[0], vec![id("a", "2"), id("b", "0"), id("a", "2")]);
     }
 
     #[test]
@@ -1441,7 +1438,7 @@ mod tests {
         };
         let cycles = detect_cycle_paths(roots, nodes.iter().map(|node| &node.id), edges).unwrap();
         assert_eq!(cycles.len(), 1);
-        assert_eq!(cycles[0].path, vec![only.clone(), only]);
+        assert_eq!(cycles[0], vec![only.clone(), only]);
     }
 
     #[test]
