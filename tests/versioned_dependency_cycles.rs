@@ -260,6 +260,7 @@ fn verified_graph_path_binds_nodes_to_the_content_addressed_store() {
             .unwrap();
         write_payload(&store.pkg_dir(sha256), &node.id.to_string());
     }
+    let canonical_store_root = store.root().canonicalize().unwrap();
     let project = temp.path().join("store-project");
     let output = run_zed(
         &home,
@@ -282,9 +283,7 @@ fn verified_graph_path_binds_nodes_to_the_content_addressed_store() {
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    assert!(
-        node_metadata.iter().all(|record| {
-            Path::new(record["source"].as_str().unwrap()).starts_with(store.root())
-        })
-    );
+    assert!(node_metadata.iter().all(|record| {
+        Path::new(record["source"].as_str().unwrap()).starts_with(&canonical_store_root)
+    }));
 }
