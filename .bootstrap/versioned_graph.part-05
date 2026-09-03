@@ -1,0 +1,247 @@
+        PackageVersionIdentity {
+            registry_id: "fixture-registry".into(),
+            org: "fixture".into(),
+            name: name.into(),
+            version: version.into(),
+        }
+    }
+
+    fn digest(seed: u8) -> String {
+        format!("sha256:{}", format!("{seed:02x}").repeat(32))
+    }
+
+    fn node(id: PackageVersionIdentity, seed: u8) -> ResolvedDependencyNode {
+        ResolvedDependencyNode {
+            id,
+            artifact_digest: Some(digest(seed)),
+            features: Vec::new(),
+        }
+    }
+
+    fn edge(from: PackageVersionIdentity, to: PackageVersionIdentity) -> ResolvedDependencyEdge {
+        ResolvedDependencyEdge {
+            from,
+            to,
+            kind: DependencyKind::Runtime,
+            requirement: Some("exact fixture edge".into()),
+            target: None,
+            optional: false,
+            features: Vec::new(),
+        }
+    }
+
+    fn graph(
+        roots: Vec<PackageVersionIdentity>,
+        nodes: Vec<ResolvedDependencyNode>,
+        edges: Vec<ResolvedDependencyEdge>,
+    ) -> DependencyGraphDocument {
+        DependencyGraphDocument {
+            schema: zed_interfaces::dependency_graph::DEPENDENCY_GRAPH_SCHEMA_V1.into(),
+            graph: DependencyGraphData::Resolved {
+                completeness: DependencyGraphCompleteness::Complete,
+                roots,
+                nodes,
+                edges,
+                provenance: ResolutionProvenance {
+                    resolver_version: "versioned-graph-test/v1".into(),
+                    target: "test-target".into(),
+                    enabled_features: Vec::new(),
+                    registry_snapshots: vec![RegistrySnapshot {
+                        registry_id: "fixture-registry".into(),
+                        checkpoint_digest: digest(0xee),
+                    }],
+                    lock_digest: digest(0xdd),
+                },
+                parent_graph_digest: None,
+                projection: None,
+            },
+            graph_digest: None,
+        }
+        .finalize()
+        .unwrap()
+    }
+
+    fn canonical_cycle_graph() -> DependencyGraphDocument {
+        let a1 = id("a", "1");
+        let b1 = id("b", "1");
+        let a2 = id("a", "2");
+        let b0 = id("b", "0");
+        graph(
+            vec![a1.clone()],
+            vec![
+                node(a1.clone(), 1),
+                node(b1.clone(), 2),
+                node(a2.clone(), 3),
+                node(b0.clone(), 4),
+            ],
+            vec![
+                edge(a1, b1.clone()),
+                edge(b1, a2.clone()),
+                edge(a2.clone(), b0.clone()),
+                edge(b0, a2),
+            ],
+        )
+    }
+
+    fn write_sources(root: &Path, graph: &DependencyGraphDocument) -> Vec<LocalPackageSource> {
+        let DependencyGraphData::Resolved { nodes, .. } = &graph.graph else {
+            unreachable!()
+        };
+        nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                let source = root.join(format!("source-{index}"));
+                fs::create_dir_all(&source).unwrap();
+                fs::write(source.join("payload.txt"), format!("{}\n", node.id)).unwrap();
+                LocalPackageSource {
+                    id: node.id.clone(),
+                    source,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn exact_version_back_edge_terminates_without_conflating_a1_and_a2() {
+        let graph = canonical_cycle_graph();
+        let DependencyGraphData::Resolved {
+            roots,
+            nodes,
+            edges,
+            ..
+        } = &graph.graph
+        else {
+            unreachable!()
+        };
+        let cycles = detect_cycle_paths(roots, nodes.iter().map(|node| &node.id), edges).unwrap();
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(edges.len(), 4);
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(
+            cycles[0].path,
+            vec![id("a", "2"), id("b", "0"), id("a", "2")]
+        );
+    }
+
+    #[test]
+    fn a_repeated_package_name_at_a_different_version_is_not_a_cycle() {
+        let a1 = id("a", "1");
+        let b1 = id("b", "1");
+        let a2 = id("a", "2");
+        let graph = graph(
+            vec![a1.clone()],
+            vec![
+                node(a1.clone(), 1),
+                node(b1.clone(), 2),
+                node(a2.clone(), 3),
+            ],
+            vec![edge(a1, b1.clone()), edge(b1, a2)],
+        );
+        let DependencyGraphData::Resolved {
+            roots,
+            nodes,
+            edges,
+            ..
+        } = &graph.graph
+        else {
+            unreachable!()
+        };
+        assert!(
+            detect_cycle_paths(roots, nodes.iter().map(|node| &node.id), edges)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_shared_completed_node_is_not_reported_as_a_cycle() {
+        let root = id("root", "1");
+        let left = id("left", "1");
+        let right = id("right", "1");
+        let shared = id("shared", "1");
+        let graph = graph(
+            vec![root.clone()],
+            vec![
+                node(root.clone(), 1),
+                node(left.clone(), 2),
+                node(right.clone(), 3),
+                node(shared.clone(), 4),
+            ],
+            vec![
+                edge(root.clone(), left.clone()),
+                edge(root, right.clone()),
+                edge(left, shared.clone()),
+                edge(right, shared),
+            ],
+        );
+        let DependencyGraphData::Resolved {
+            roots,
+            nodes,
+            edges,
+            ..
+        } = &graph.graph
+        else {
+            unreachable!()
+        };
+        assert!(
+            detect_cycle_paths(roots, nodes.iter().map(|node| &node.id), edges)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn self_cycle_has_one_closed_exact_path() {
+        let only = id("self", "1");
+        let graph = graph(
+            vec![only.clone()],
+            vec![node(only.clone(), 1)],
+            vec![edge(only.clone(), only.clone())],
+        );
+        let DependencyGraphData::Resolved {
+            roots,
+            nodes,
+            edges,
+            ..
+        } = &graph.graph
+        else {
+            unreachable!()
+        };
+        let cycles = detect_cycle_paths(roots, nodes.iter().map(|node| &node.id), edges).unwrap();
+        assert_eq!(cycles.len(), 1);
+        assert_eq!(cycles[0].path, vec![only.clone(), only]);
+    }
+
+    #[test]
+    fn two_node_same_version_cycle_is_reported_once() {
+        let left = id("left", "1.0.0");
+        let right = id("right", "1.0.0");
+        let graph = graph(
+            vec![left.clone()],
+            vec![node(left.clone(), 1), node(right.clone(), 2)],
+            vec![
+                edge(left.clone(), right.clone()),
+                edge(right.clone(), left.clone()),
+            ],
+        );
+        let DependencyGraphData::Resolved {
+            roots,
+            nodes,
+            edges,
+            ..
+        } = &graph.graph
+        else {
+            unreachable!()
+        };
+        let cycles = detect_cycle_paths(roots, nodes.iter().map(|node| &node.id), edges).unwrap();
+        assert_eq!(cycles, vec![vec![left.clone(), right, left]]);
+    }
+
+    #[test]
+    fn cycle_witnesses_are_deterministic_when_edges_arrive_in_another_order() {
+        let graph = canonical_cycle_graph();
+        let DependencyGraphData::Resolved {
+            roots,
+            nodes,
+            edges,
