@@ -1,0 +1,241 @@
+//! Exact-version dependency graph cycle detection and finite symlink materialization.
+//!
+//! The ordinary one-version solver remains useful when every requirement can share
+//! one package version. This module owns the stronger graph shape required when
+//! separate parents intentionally select separate versions or when an exact
+//! package-version edge closes a cycle. Package payloads remain immutable and are
+//! never recursively mirrored into descendant directories.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use anyhow::{Context, Result, bail, ensure};
+use next_loggers::{JsonObject, Logger, Options, json};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+use zed_interfaces::dependency_graph::{
+    DependencyGraphCompleteness, DependencyGraphData, DependencyGraphDocument,
+    PackageVersionIdentity, ResolvedDependencyEdge, ResolvedDependencyNode,
+};
+
+use crate::store::Store;
+
+pub const LOCAL_MATERIALIZATION_SCHEMA_V1: &str = "zpkg/local-graph-materialization/v1";
+pub const CYCLE_EVENT: &str = "zed.install.circular_dependency";
+pub const RESOLUTION_MODE: &str = "exact-node-symlink";
+pub const MATERIALIZATION_REPORT_SCHEMA_V1: &str =
+    "zpkg/versioned-graph-materialization-report/v1";
+const GRAPH_ROOT: &str = ".zed/versioned-graph/v1";
+const MAX_MATERIALIZED_NODES: usize = 50_000;
+const MAX_MATERIALIZED_EDGES: usize = 500_000;
+const MAX_CYCLE_WITNESSES: usize = 4_096;
+
+fn local_materialization_schema_v1() -> String {
+    LOCAL_MATERIALIZATION_SCHEMA_V1.to_string()
+}
+
+/// Local payload location for one exact node in the canonical resolved graph.
+///
+/// `source` is interpreted relative to the plan file's parent when it is not
+/// absolute. Production callers should point it at the immutable global store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalPackageSource {
+    pub id: PackageVersionIdentity,
+    pub source: PathBuf,
+}
+
+/// A canonical exact resolved graph plus the local immutable source directory
+/// for every node. Edges and roots remain authoritative in `graph`; filesystem
+/// layout is only a projection of that document.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalGraphMaterializationPlan {
+    #[serde(default = "local_materialization_schema_v1")]
+    pub schema: String,
+    pub graph: DependencyGraphDocument,
+    pub sources: Vec<LocalPackageSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionedMaterializationMode {
+    Symlink,
+    Copy,
+}
+
+impl FromStr for VersionedMaterializationMode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "symlink" | "link" => Ok(Self::Symlink),
+            "copy" | "isolate" => Ok(Self::Copy),
+            other => bail!(
+                "unsupported exact-graph materialization mode `{other}`; expected `symlink` or `copy`"
+            ),
+        }
+    }
+}
+
+/// Exact materialized node identity. The graph contract keeps the artifact
+/// digest on the node rather than inside [`PackageVersionIdentity`], so cycle
+/// diagnostics carry both pieces explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ExactDependencyNodeIdentity {
+    pub package: PackageVersionIdentity,
+    pub artifact_digest: String,
+}
+
+impl ExactDependencyNodeIdentity {
+    pub fn label(&self) -> String {
+        let digest = self
+            .artifact_digest
+            .strip_prefix("sha256:")
+            .unwrap_or(&self.artifact_digest);
+        let short = &digest[..digest.len().min(12)];
+        format!("{}#{short}", self.package)
+    }
+}
+
+/// One deterministic directed-cycle witness. `path` is closed: its final item
+/// equals its first item. A repeated package name at another version is not a
+/// cycle unless the exact package-version-and-digest identity is revisited.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyCycle {
+    pub cycle_id: String,
+    pub path: Vec<ExactDependencyNodeIdentity>,
+    pub closing_from: ExactDependencyNodeIdentity,
+    pub closing_to: ExactDependencyNodeIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionedMaterializationReport {
+    pub schema: String,
+    pub graph_digest: String,
+    pub materialization_digest: String,
+    pub generation_dir: PathBuf,
+    pub modules_dir: PathBuf,
+    pub nodes: usize,
+    pub edges: usize,
+    pub cycles: Vec<DependencyCycle>,
+    pub reused_generation: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedNode {
+    id: PackageVersionIdentity,
+    artifact_digest: String,
+    source: PathBuf,
+    key: String,
+}
+
+#[derive(Debug, Clone)]
+struct ValidatedPlan {
+    graph: DependencyGraphDocument,
+    graph_digest: String,
+    materialization_digest: String,
+    roots: Vec<PackageVersionIdentity>,
+    nodes: BTreeMap<PackageVersionIdentity, ValidatedNode>,
+    edges: Vec<ResolvedDependencyEdge>,
+    cycles: Vec<DependencyCycle>,
+    has_parallel_versions: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct GenerationMarker {
+    schema: String,
+    graph_digest: String,
+    materialization_digest: String,
+    nodes: usize,
+    edges: usize,
+}
+
+impl GenerationMarker {
+    fn for_plan(plan: &ValidatedPlan) -> Self {
+        Self {
+            schema: MATERIALIZATION_REPORT_SCHEMA_V1.into(),
+            graph_digest: plan.graph_digest.clone(),
+            materialization_digest: plan.materialization_digest.clone(),
+            nodes: plan.nodes.len(),
+            edges: plan.edges.len(),
+        }
+    }
+}
+
+/// ORE structured logger used by the public CLI boundary. Console output is
+/// enabled so users see exact circular-dependency paths during materialization.
+pub fn terminal_cycle_logger() -> Logger {
+    let fields = JsonObject::from_iter([
+        ("component".into(), json!("versioned_dependency_graph")),
+        ("event_family".into(), json!("dependency_resolution")),
+    ]);
+    Logger::new(Options {
+        app_name: "zed-cli".into(),
+        name: Some("exact-version-graph".into()),
+        fields,
+        console: true,
+        ..Options::default()
+    })
+}
+
+/// Read a materialization plan and project its exact graph into the project.
+pub fn materialize_plan_file(
+    plan_path: &Path,
+    project: &Path,
+    mode: VersionedMaterializationMode,
+    logger: &Logger,
+) -> Result<VersionedMaterializationReport> {
+    let bytes = fs::read(plan_path).with_context(|| {
+        format!(
+            "failed to read exact dependency graph plan {}",
+            plan_path.display()
+        )
+    })?;
+    let plan: LocalGraphMaterializationPlan = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "failed to parse exact dependency graph plan {}",
+            plan_path.display()
+        )
+    })?;
+    let source_base = plan_path.parent().unwrap_or_else(|| Path::new("."));
+    materialize_plan(&plan, source_base, project, mode, logger)
+}
+
+/// Read one byte-canonical, digest-verified resolved graph and bind every node
+/// to its immutable package directory in the configured Zed store.
+pub fn materialize_graph_file_from_store(
+    graph_path: &Path,
+    store: &Store,
+    project: &Path,
+    mode: VersionedMaterializationMode,
+    logger: &Logger,
+) -> Result<VersionedMaterializationReport> {
+    let bytes = fs::read(graph_path).with_context(|| {
+        format!(
+            "failed to read exact dependency graph {}",
+            graph_path.display()
+        )
+    })?;
+    let graph = DependencyGraphDocument::parse_verified_canonical(&bytes).with_context(|| {
+        format!(
+            "{} is not a canonical digest-verified exact dependency graph",
+            graph_path.display()
+        )
+    })?;
+    let plan = plan_from_store(graph, store)?;
+    materialize_plan(&plan, Path::new("."), project, mode, logger)
+}
+
+/// Bind an exact resolved graph to the content-addressed Zed store. Missing
+/// artifacts are reported explicitly; this projection never fetches or guesses.
+pub fn plan_from_store(
+    graph: DependencyGraphDocument,
+    store: &Store,
+) -> Result<LocalGraphMaterializationPlan> {
+    let DependencyGraphData::Resolved { nodes, .. } = &graph.graph else {
+        bail!("store materialization requires a resolved exact dependency graph");
+    };
+    let mut sources = Vec::with_capacity(nodes.len());
+    for node in nodes {
