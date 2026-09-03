@@ -30,8 +30,9 @@ path = "src/lib.rs"
 zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c51d732cb01a377b2bc00e8d945b355e41961c1" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
-# ORE structured cycle diagnostics; pin the exact reviewed SDK revision.
-oresoftware-next-loggers = { git = "https://github.com/ores-otel/ores.otel.log.git", rev = "f6422ef56c80cdc702aee04008b53fee87757671", package = "oresoftware-next-loggers" }
+# ORE structured cycle diagnostics; pin the exact reviewed SDK revision whose
+# serde_json contract is compatible with the pinned zed-interfaces revision.
+oresoftware-next-loggers = { git = "https://github.com/ores-otel/ores.otel.log.git", rev = "39b897243b92839a80a9fa67a39745710ca93fd4", package = "oresoftware-next-loggers" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
