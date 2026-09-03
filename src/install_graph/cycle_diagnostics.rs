@@ -38,6 +38,7 @@ impl CycleDiagnostic {
         self.cycle.join(" -> ")
     }
 
+    #[cfg(test)]
     fn terminal_line(&self) -> String {
         format!(
             "zed-pkg: dependency cycle detected: {}; closing edge {} -> {} requires `{}`; \
