@@ -1,0 +1,89 @@
+name: repair and validate DEN-3488 exact graph
+
+on:
+  push:
+    branches:
+      - feat/den-3488-versioned-circular-graph
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3488-repair
+  cancel-in-progress: true
+
+jobs:
+  repair-test-and-commit:
+    if: ${{ !contains(github.event.head_commit.message, '[den-3488-repaired]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: true
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Apply exact compile and lint repairs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_exact(path: str, old: str, new: str, expected: int = 1) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(
+                      f"{path}: expected {expected} occurrence(s), found {count}: {old!r}"
+                  )
+              file.write_text(text.replace(old, new))
+
+          replace_exact(
+              "Cargo.toml",
+              'oresoftware-next-loggers = { git = "https://github.com/ores-otel/ores.otel.log.git", rev = "39b897243b92839a80a9fa67a39745710ca93fd4", package = "oresoftware-next-loggers" }',
+              'next_loggers = { git = "https://github.com/ores-otel/ores.otel.log.git", rev = "9e28eca35b4c3f283cde933ae645216972d2f3e3", package = "oresoftware-next-loggers" }',
+          )
+          replace_exact(
+              "src/versioned_graph.rs",
+              "cycles[0].path",
+              "cycles[0]",
+              expected=2,
+          )
+          replace_exact(
+              "src/binary_archive.rs",
+              "use crate::registry::registry_for;\n",
+              "",
+          )
+          replace_exact(
+              "src/publisher_keys.rs",
+              '        let (stored, public) = key_pair("acme-2026");\n        let other_signing = SigningKey::from_bytes(&[9_u8; 32]);',
+              '        let (_stored, public) = key_pair("acme-2026");\n        let other_signing = SigningKey::from_bytes(&[9_u8; 32]);',
+          )
+          PY
+      - name: Refresh lockfile and format
+        run: |
+          cargo generate-lockfile
+          cargo fmt --all
+          git diff --check
+      - name: Exact-node unit tests
+        run: cargo test --locked --lib versioned_graph -- --nocapture
+      - name: Public graph command tests
+        run: cargo test --locked --lib graph_export::tests -- --nocapture
+      - name: Executable finite-symlink tests
+        run: cargo test --locked --test versioned_dependency_cycles -- --nocapture
+      - name: Full all-target test
+        run: cargo test --locked --all-targets
+      - name: Clippy with warnings denied
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Commit the validated repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock src/versioned_graph.rs src/binary_archive.rs src/publisher_keys.rs
+          git commit -m "fix(DEN-3488): compile and validate exact cycle graph [den-3488-repaired]"
+          git push origin HEAD:feat/den-3488-versioned-circular-graph
