@@ -28,7 +28,6 @@ pub const CYCLE_EVENT: &str = "zed.install.circular_dependency";
 pub const RESOLUTION_MODE: &str = "exact-node-symlink";
 pub const MATERIALIZATION_REPORT_SCHEMA_V1: &str =
     "zpkg/versioned-graph-materialization-report/v1";
-const GRAPH_ROOT: &str = ".zed/versioned-graph/v1";
 const MAX_MATERIALIZED_NODES: usize = 50_000;
 const MAX_MATERIALIZED_EDGES: usize = 500_000;
 const MAX_CYCLE_WITNESSES: usize = 4_096;
