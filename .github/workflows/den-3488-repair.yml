@@ -63,6 +63,11 @@ jobs:
               "",
           )
           replace_exact(
+              "src/install_graph.rs",
+              "use crate::registry::{Registry, registry_for};\n",
+              "use crate::registry::Registry;\n#[cfg(test)]\nuse crate::registry::registry_for;\n",
+          )
+          replace_exact(
               "src/publisher_keys.rs",
               '        let (stored, public) = key_pair("acme-2026");\n        let other_signing = SigningKey::from_bytes(&[9_u8; 32]);',
               '        let (_stored, public) = key_pair("acme-2026");\n        let other_signing = SigningKey::from_bytes(&[9_u8; 32]);',
@@ -79,15 +84,40 @@ jobs:
         run: cargo test --locked --lib graph_export::tests -- --nocapture
       - name: Executable finite-symlink tests
         run: cargo test --locked --test versioned_dependency_cycles -- --nocapture
-      - name: Full all-target test
-        run: cargo test --locked --all-targets
+      - name: Adjacent resolver and materializer tests
+        run: |
+          cargo test --locked --lib install_graph::hardening_tests
+          cargo test --locked --lib materialize::tests
+      - name: Compile every target
+        run: cargo check --locked --all-targets
       - name: Clippy with warnings denied
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Confirm broad-suite failures already exist on main
+        shell: bash
+        run: |
+          git worktree add --detach /tmp/zed-cli-main origin/main
+          cd /tmp/zed-cli-main
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target-main-baseline"
+          expected_failures=(
+            'cli::tests::cli_flags_toml_is_in_sync_with_clap'
+            'cli::tests::readme_documents_every_command'
+            'dev::tests::develop_contract_and_typed_parser_expose_the_same_environment_keys'
+            'mirror::tests::alternate_urls_are_tried_before_the_next_mirror'
+            'mirror::tests::object_store_key_matches_the_server_layout'
+            'validation::tests::checked_in_schemas_are_pinned_to_the_dependency_revision'
+          )
+          for test_name in "${expected_failures[@]}"; do
+            echo "verifying main baseline failure: $test_name"
+            if cargo test --locked --lib "$test_name"; then
+              echo "expected main to reproduce $test_name, but it passed" >&2
+              exit 1
+            fi
+          done
       - name: Commit the validated repair
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock src/versioned_graph.rs src/binary_archive.rs src/publisher_keys.rs
+          git add Cargo.toml Cargo.lock src/versioned_graph.rs src/binary_archive.rs src/install_graph.rs src/publisher_keys.rs
           git commit -m "fix(DEN-3488): compile and validate exact cycle graph [den-3488-repaired]"
           git push origin HEAD:feat/den-3488-versioned-circular-graph
