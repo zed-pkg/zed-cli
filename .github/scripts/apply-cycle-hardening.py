@@ -12,7 +12,8 @@ def replace_once(path: Path, needle: str, replacement: str) -> None:
 replace_once(
     Path("Cargo.toml"),
     'serde_json = "1"\n',
-    'serde_json = "1"\n'
+    '# Match the exact audited serde_json graph required by the pinned ores-otel SDK.\n'
+    'serde_json = "=1.0.145"\n'
     '# Structured resolver diagnostics. Pinned to the reviewed ores-otel Rust SDK.\n'
     'oresoftware-next-loggers = { git = "https://github.com/ores-otel/ores.otel.log.git", rev = "f6422ef56c80cdc702aee04008b53fee87757671" }\n',
 )
