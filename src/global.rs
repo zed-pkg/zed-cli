@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
@@ -164,6 +165,11 @@ struct ManagedBin {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ManagedState {
+    /// The normalized directory containing `bins`. Older state files omitted
+    /// this field; they are interpreted as owning commands in the currently
+    /// selected directory and upgraded on the next successful sync.
+    #[serde(default)]
+    bin_dir: Option<PathBuf>,
     #[serde(default)]
     bins: BTreeMap<String, ManagedBin>,
 }
@@ -268,7 +274,7 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
         }
     };
     let cfg = Config::from_globals(&cli.globals)?;
-    let bin_dir = resolve_bin_dir(&cfg, cli.global_bin_dir.as_deref());
+    let bin_dir = resolve_bin_dir(&cfg, cli.global_bin_dir.as_deref())?;
     match cli.command {
         GlobalCommand::Global(args) => match args.command {
             GlobalAction::Install(options) => install(&cfg, &bin_dir, options),
@@ -393,19 +399,75 @@ fn state_path(cfg: &Config) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn resolve_bin_dir(cfg: &Config, explicit: Option<&Path>) -> PathBuf {
-    explicit
+fn resolve_bin_dir(cfg: &Config, explicit: Option<&Path>) -> Result<PathBuf> {
+    let selected = explicit
         .map(Path::to_path_buf)
         .or_else(|| dirs::data_local_dir().map(|root| root.join("zed-pkg").join("bin")))
-        .unwrap_or_else(|| cfg.home.join("bin"))
+        .unwrap_or_else(|| cfg.home.join("bin"));
+    normalize_bin_dir(&selected)
 }
 
 #[cfg(not(windows))]
-fn resolve_bin_dir(cfg: &Config, explicit: Option<&Path>) -> PathBuf {
-    explicit
+fn resolve_bin_dir(cfg: &Config, explicit: Option<&Path>) -> Result<PathBuf> {
+    let selected = explicit
         .map(Path::to_path_buf)
         .or_else(|| dirs::home_dir().map(|home| home.join(".local").join("bin")))
-        .unwrap_or_else(|| cfg.home.join("bin"))
+        .unwrap_or_else(|| cfg.home.join("bin"));
+    normalize_bin_dir(&selected)
+}
+
+fn normalize_bin_dir(path: &Path) -> Result<PathBuf> {
+    if !path.is_absolute() {
+        bail!(
+            "global bin directory must be absolute, got {}; use an absolute --global-bin-dir or ZED_PKG_GLOBAL_BIN_DIR",
+            path.display()
+        );
+    }
+    let text = path
+        .to_str()
+        .context("global bin directory must be valid UTF-8")?;
+    if text.chars().any(char::is_control) {
+        bail!("global bin directory must not contain control characters");
+    }
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    bail!(
+                        "global bin directory escapes its filesystem root: {}",
+                        path.display()
+                    );
+                }
+            }
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+
+    // Canonicalize the longest existing ancestor, then append missing path
+    // components. This keeps state stable when (for example) ~/.local is a
+    // symlink but ~/.local/bin does not exist until the first install.
+    let mut ancestor = normalized.as_path();
+    let mut missing: Vec<OsString> = Vec::new();
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(ancestor) {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return Ok(canonical);
+        }
+        let Some(name) = ancestor.file_name() else {
+            return Ok(normalized);
+        };
+        missing.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            return Ok(normalized);
+        };
+        ancestor = parent;
+    }
 }
 
 fn parse_package_spec(spec: &str) -> Result<(String, Option<String>)> {
@@ -889,13 +951,19 @@ fn load_state(cfg: &Config) -> Result<ManagedState> {
 fn sync_bins(cfg: &Config, bin_dir: &Path, profiles: &[Profile]) -> Result<usize> {
     let desired = collect_desired_bins(profiles)?;
     let previous = load_state(cfg)?;
+    let previous_bin_dir = previous
+        .bin_dir
+        .as_deref()
+        .map(normalize_bin_dir)
+        .transpose()?
+        .unwrap_or_else(|| bin_dir.to_path_buf());
 
     let mut stale_owned = Vec::new();
     for (name, managed) in &previous.bins {
-        if desired.contains_key(name) {
+        if previous_bin_dir == bin_dir && desired.contains_key(name) {
             continue;
         }
-        let destination = bin_dir.join(name);
+        let destination = previous_bin_dir.join(name);
         if !path_present(&destination) {
             continue;
         }
@@ -913,13 +981,24 @@ fn sync_bins(cfg: &Config, bin_dir: &Path, profiles: &[Profile]) -> Result<usize
     for (name, wanted) in &desired {
         let destination = bin_dir.join(name);
         if !path_present(&destination) {
+            if let Some(existing) = path_command_collision(
+                name,
+                &[bin_dir, &previous_bin_dir],
+                env::var_os("PATH").as_deref(),
+            ) {
+                bail!(
+                    "refusing to install global executable `{name}` because it conflicts with an existing PATH command at {}; rename the package command or remove the ambiguity explicitly",
+                    existing.display()
+                );
+            }
             continue;
         }
         let current = hash_file(&destination)?;
-        let owned = previous
-            .bins
-            .get(name)
-            .is_some_and(|managed| managed.sha256 == current);
+        let owned = previous_bin_dir == bin_dir
+            && previous
+                .bins
+                .get(name)
+                .is_some_and(|managed| managed.sha256 == current);
         if !owned {
             bail!(
                 "refusing to replace unmanaged global executable {}; choose another --global-bin-dir or remove the collision explicitly",
@@ -971,7 +1050,10 @@ fn sync_bins(cfg: &Config, bin_dir: &Path, profiles: &[Profile]) -> Result<usize
             });
         }
 
-        let mut next = ManagedState::default();
+        let mut next = ManagedState {
+            bin_dir: Some(bin_dir.to_path_buf()),
+            ..ManagedState::default()
+        };
         for entry in &staged {
             fs::rename(&entry.temporary, &entry.destination).with_context(|| {
                 format!(
@@ -1034,9 +1116,7 @@ fn stage_executable(source: &Path, destination: &Path) -> Result<PathBuf> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = fs::metadata(&temporary)?.permissions();
-        permissions.set_mode(permissions.mode() | 0o111);
-        fs::set_permissions(&temporary, permissions)?;
+        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o755))?;
     }
     Ok(temporary)
 }
@@ -1145,8 +1225,59 @@ fn remove_path_if_present(path: &Path) -> Result<()> {
 }
 
 fn hash_file(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    let mut file = fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("reading {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex::encode(digest.finalize()))
+}
+
+fn path_command_collision(
+    name: &str,
+    allowed_dirs: &[&Path],
+    path_value: Option<&OsStr>,
+) -> Option<PathBuf> {
+    let path_value = path_value?;
+    for entry in env::split_paths(path_value) {
+        if allowed_dirs
+            .iter()
+            .any(|allowed| paths_equivalent(&entry, allowed))
+        {
+            continue;
+        }
+        let candidate = entry.join(name);
+        if is_executable_file(&candidate) {
+            return Some(fs::canonicalize(&candidate).unwrap_or(candidate));
+        }
+    }
+    None
+}
+
+fn paths_equivalent(first: &Path, second: &Path) -> bool {
+    let first = fs::canonicalize(first).unwrap_or_else(|_| first.to_path_buf());
+    let second = fs::canonicalize(second).unwrap_or_else(|_| second.to_path_buf());
+    first == second
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(windows)]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 #[cfg(windows)]
@@ -1165,11 +1296,21 @@ fn print_path_guidance(bin_dir: &Path) {
     if path_contains(bin_dir) {
         return;
     }
-    eprintln!(
-        "warning: {} is not currently on PATH; add it once, for example:\n  export PATH=\"{}:$PATH\"",
-        bin_dir.display(),
-        bin_dir.display()
+    let quoted = shell_single_quote(
+        bin_dir
+            .to_str()
+            .expect("global bin directory was validated as UTF-8"),
     );
+    eprintln!(
+        "warning: {} is not currently on PATH; add it once to your shell startup file (for example ~/.zshrc or ~/.bashrc):\n  export PATH={}:\"$PATH\"",
+        bin_dir.display(),
+        quoted
+    );
+}
+
+#[cfg(not(windows))]
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 fn path_contains(bin_dir: &Path) -> bool {
@@ -1301,6 +1442,46 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn command_collision_elsewhere_on_path_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let bin_dir = home.path().join("managed-bin");
+        let existing_dir = home.path().join("existing-bin");
+        fs::create_dir_all(&existing_dir).unwrap();
+        let existing = existing_dir.join("git");
+        fs::write(&existing, b"existing git").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = env::join_paths([&bin_dir, &existing_dir]).unwrap();
+
+        assert_eq!(
+            path_command_collision("git", &[&bin_dir], Some(&path)),
+            Some(fs::canonicalize(existing).unwrap())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn previous_managed_bin_directory_is_allowed_during_migration() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let old_bin = home.path().join("old-bin");
+        let new_bin = home.path().join("new-bin");
+        fs::create_dir_all(&old_bin).unwrap();
+        let existing = old_bin.join("acme-tool");
+        fs::write(&existing, b"managed tool").unwrap();
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = env::join_paths([&old_bin, &new_bin]).unwrap();
+
+        assert_eq!(
+            path_command_collision("acme-tool", &[&old_bin, &new_bin], Some(&path)),
+            None
+        );
+    }
+
     #[test]
     fn profile_replacement_rolls_back_exact_previous_tree() {
         let home = tempfile::tempdir().unwrap();
@@ -1320,6 +1501,103 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let cfg = config(home.path());
         let explicit = home.path().join("custom-bin");
-        assert_eq!(resolve_bin_dir(&cfg, Some(&explicit)), explicit);
+        assert_eq!(resolve_bin_dir(&cfg, Some(&explicit)).unwrap(), explicit);
+    }
+
+    #[test]
+    fn relative_global_bin_directory_is_rejected() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        let error = resolve_bin_dir(&cfg, Some(Path::new("relative-bin"))).unwrap_err();
+        assert!(error.to_string().contains("must be absolute"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_bin_below_a_symlinked_parent_has_a_stable_identity() {
+        use std::os::unix::fs::symlink;
+
+        let home = tempfile::tempdir().unwrap();
+        let actual = home.path().join("actual-local");
+        let alias = home.path().join("local-alias");
+        fs::create_dir_all(&actual).unwrap();
+        symlink(&actual, &alias).unwrap();
+
+        assert_eq!(
+            normalize_bin_dir(&alias.join("bin")).unwrap(),
+            actual.join("bin")
+        );
+    }
+
+    #[test]
+    fn changing_global_bin_directory_migrates_owned_commands() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        let first_bin = home.path().join("first-bin");
+        let second_bin = home.path().join("second-bin");
+        let profile = add_profile(home.path(), "acme/tool", "acme-tool", b"tool");
+
+        sync_bins(&cfg, &first_bin, std::slice::from_ref(&profile)).unwrap();
+        sync_bins(&cfg, &second_bin, std::slice::from_ref(&profile)).unwrap();
+
+        assert!(!first_bin.join("acme-tool").exists());
+        assert_eq!(fs::read(second_bin.join("acme-tool")).unwrap(), b"tool");
+        let state: ManagedState =
+            serde_json::from_slice(&fs::read(state_path(&cfg)).unwrap()).unwrap();
+        assert_eq!(state.bin_dir.as_deref(), Some(second_bin.as_path()));
+    }
+
+    #[test]
+    fn changing_global_bin_directory_does_not_claim_matching_unmanaged_bytes() {
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        let first_bin = home.path().join("first-bin");
+        let second_bin = home.path().join("second-bin");
+        let profile = add_profile(home.path(), "acme/tool", "acme-tool", b"same bytes");
+
+        sync_bins(&cfg, &first_bin, std::slice::from_ref(&profile)).unwrap();
+        fs::create_dir_all(&second_bin).unwrap();
+        fs::write(second_bin.join("acme-tool"), b"same bytes").unwrap();
+
+        let error = sync_bins(&cfg, &second_bin, std::slice::from_ref(&profile)).unwrap_err();
+        assert!(error.to_string().contains("unmanaged global executable"));
+        assert_eq!(
+            fs::read(first_bin.join("acme-tool")).unwrap(),
+            b"same bytes"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn path_guidance_quotes_shell_metacharacters() {
+        assert_eq!(
+            shell_single_quote("/tmp/zed's $bin; echo nope"),
+            "'/tmp/zed'\\''s $bin; echo nope'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn global_executable_is_not_installed_group_or_world_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let cfg = config(home.path());
+        let bin_dir = home.path().join("bin");
+        let profile = add_profile(home.path(), "acme/tool", "acme-tool", b"tool");
+        let source = profile
+            .root
+            .join(MODULES_DIR)
+            .join(BIN_DIR)
+            .join("acme-tool");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o777)).unwrap();
+
+        sync_bins(&cfg, &bin_dir, &[profile]).unwrap();
+
+        let mode = fs::metadata(bin_dir.join("acme-tool"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
     }
 }

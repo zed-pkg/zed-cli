@@ -26,6 +26,9 @@ jobs:
           repository: zed-pkg/zed-interfaces
           ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
           path: zed-interfaces
+      - name: Verify installer integrity and PATH contract
+        run: bash tests/install-script.sh
+        working-directory: zed-cli
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

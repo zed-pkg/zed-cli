@@ -28,8 +28,12 @@ Why it exists:
 curl -fsSL https://zpkg.tech/install.sh | bash
 ```
 
-The installer detects your OS/arch, drops the `zed` binary in `~/.zed/bin`,
-and adds it to your `PATH` idempotently. Or via Homebrew:
+The installer detects your OS/arch, verifies the release checksum, and drops
+the `zed` binary in `~/.local/bin`. Global package executables use that same
+directory, so only one Zed-related PATH entry is needed. When the directory is
+not already visible, the installer adds a marked, idempotent block to the
+detected shell profile; set `ZED_NO_MODIFY_PATH=1` to leave startup files
+unchanged. Or install via Homebrew:
 
 ```sh
 brew tap zed-pkg/tap
@@ -45,9 +49,11 @@ cargo install --path .
 Keep zed current with `zed self-update` (checks the latest GitHub release for
 your platform and replaces the binary in place; `--check` reports only).
 
-Note: the Zed editor also installs a `zed` binary. The Homebrew formula
-declares the conflict; if you use both, install with
-`cargo install --path . --root ~/.zed-pkg-cli` and alias as you like.
+Note: the Zed editor also installs a `zed` binary. The bootstrap installer
+warns when another `zed` is already on PATH, and the Homebrew formula declares
+the conflict. If you use both, install the package-manager CLI with
+`cargo install --path . --root ~/.zed-pkg-cli` and give one command an explicit
+alias.
 
 ## Quickstart
 
@@ -117,6 +123,7 @@ registry hosts both on S3/Cloudflare R2.
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
+| `zed global install\|uninstall\|list\|bin-dir` | Manage isolated global executable-package profiles and their owned copies in `~/.local/bin`; see [global packages](docs/global-packages.md) |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
 | `zed env import asdf [--config .tool-versions] [--lock .zed/asdf.lock.toml] [--frozen] [--json]` | Import project-local asdf selections and optional immutable plugin/artifact provenance without invoking asdf or plugin code |

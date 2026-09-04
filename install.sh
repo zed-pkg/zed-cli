@@ -7,23 +7,24 @@
 # What it does:
 #   * detects your OS/arch and picks the matching release target
 #   * downloads the latest zed-<target>.tar.gz from the GitHub Release
-#   * installs the `zed` binary into ~/.zed/bin
-#   * adds ~/.zed/bin to PATH in your shell profile (idempotent)
+#   * installs the `zed` binary into ~/.local/bin
+#   * adds ~/.local/bin to PATH in your shell profile when needed (idempotent)
 #
-# NOTE: ~/.zed/bin holds the `zed` executable (what lands on PATH). It is
-# deliberately separate from ~/.zed-pkg, the content-addressed package store
-# that `zed` itself manages (ZED_PKG_HOME). Do not conflate the two.
+# NOTE: ~/.local/bin also holds executables from `zed global install`, so a
+# user needs at most one Zed-related PATH entry. Package profiles and the
+# content-addressed store remain under ZED_PKG_HOME (default: ~/.zed-pkg).
 #
 # Environment overrides:
 #   ZED_VERSION       pin a release tag (e.g. v0.1.0) instead of latest
-#   ZED_INSTALL_DIR   install location (default: ~/.zed/bin)
+#   ZED_INSTALL_DIR   absolute install location (default: ~/.local/bin)
 #   ZED_PROFILE       shell profile to edit for PATH (default: auto-detected)
+#   ZED_NO_MODIFY_PATH 1 to leave shell startup files unchanged
 #   NO_COLOR          disable colored output
 set -euo pipefail
 
 REPO="zed-pkg/zed-cli"
 EXE_NAME="zed"
-INSTALL_DIR="${ZED_INSTALL_DIR:-$HOME/.zed/bin}"
+INSTALL_DIR="${ZED_INSTALL_DIR:-$HOME/.local/bin}"
 
 # --- output helpers --------------------------------------------------------
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -45,7 +46,9 @@ error()   { printf '%serror:%s %s\n' "$c_red" "$c_reset" "$*" >&2; }
 # --- cleanup ---------------------------------------------------------------
 workdir=""
 cleanup() {
-  if [ -n "$workdir" ]; then rm -rf "$workdir"; fi
+  if [ -n "$workdir" ] && [ -d "$workdir" ]; then
+    find "$workdir" -depth -delete
+  fi
 }
 trap cleanup EXIT
 
@@ -57,7 +60,41 @@ require() {
   }
 }
 require curl
+require find
+require install
 require tar
+
+case "$INSTALL_DIR" in
+  /*) ;;
+  *)
+    error "ZED_INSTALL_DIR must be an absolute path: $INSTALL_DIR"
+    exit 1
+    ;;
+esac
+case "$INSTALL_DIR" in
+  *$'\n'* | *$'\r'*)
+    error "ZED_INSTALL_DIR must not contain newlines."
+    exit 1
+    ;;
+esac
+
+case "${ZED_NO_MODIFY_PATH:-0}" in
+  "" | 0 | false | no) modify_path=1 ;;
+  1 | true | yes) modify_path=0 ;;
+  *)
+    error "ZED_NO_MODIFY_PATH must be 0/1, true/false, or yes/no."
+    exit 1
+    ;;
+esac
+
+if command -v sha256sum >/dev/null 2>&1; then
+  checksum_tool="sha256sum"
+elif command -v shasum >/dev/null 2>&1; then
+  checksum_tool="shasum"
+else
+  error "'sha256sum' or 'shasum' is required to verify the release archive."
+  exit 1
+fi
 
 # --- detect platform -------------------------------------------------------
 os="$(uname -s)"
@@ -108,6 +145,12 @@ printf '%szed-cli installer%s\n' "$c_bold" "$c_reset"
 info "platform: ${os} ${arch}  ->  target ${target}"
 
 tag="$(resolve_tag)"
+case "$tag" in
+  "" | *[!A-Za-z0-9._-]*)
+    error "invalid release tag: $tag"
+    exit 1
+    ;;
+esac
 asset="${EXE_NAME}-${target}.tar.gz"
 url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 info "release:  ${tag}"
@@ -120,16 +163,54 @@ if ! curl -fSL --proto '=https' --tlsv1.2 -o "${workdir}/${asset}" "$url"; then
   exit 1
 fi
 
-tar -xzf "${workdir}/${asset}" -C "$workdir"
-if [ ! -f "${workdir}/${EXE_NAME}" ]; then
+checksum="${asset}.sha256"
+if ! curl -fSL --proto '=https' --tlsv1.2 -o "${workdir}/${checksum}" "${url}.sha256"; then
+  error "checksum download failed: ${url}.sha256"
+  exit 1
+fi
+IFS=' ' read -r expected_checksum checksum_name <"${workdir}/${checksum}" || true
+checksum_name="${checksum_name# }"
+checksum_name="${checksum_name#\*}"
+case "$expected_checksum" in
+  "" | *[!a-f0-9]*)
+    error "release checksum for ${asset} is malformed."
+    exit 1
+    ;;
+esac
+if [ "${#expected_checksum}" -ne 64 ] || [ "$checksum_name" != "$asset" ]; then
+  error "release checksum does not name exactly ${asset}."
+  exit 1
+fi
+if [ "$checksum_tool" = "sha256sum" ]; then
+  actual_line="$(sha256sum "${workdir}/${asset}")"
+else
+  actual_line="$(shasum -a 256 "${workdir}/${asset}")"
+fi
+IFS=' ' read -r actual_checksum _ <<<"$actual_line"
+if [ "$actual_checksum" != "$expected_checksum" ]; then
+  error "checksum verification failed for ${asset}."
+  exit 1
+fi
+success "verified ${asset} checksum"
+
+# Extract only the expected file to stdout. This avoids materializing any
+# archive paths supplied by a compromised or malformed release.
+if ! tar -xOzf "${workdir}/${asset}" -- "$EXE_NAME" >"${workdir}/${EXE_NAME}"; then
+  error "archive ${asset} did not contain a regular '${EXE_NAME}' payload."
+  exit 1
+fi
+if [ ! -s "${workdir}/${EXE_NAME}" ]; then
   error "archive ${asset} did not contain a '${EXE_NAME}' binary."
   exit 1
 fi
 
 # --- install ---------------------------------------------------------------
+existing_zed="$(command -v "$EXE_NAME" 2>/dev/null || true)"
+if [ -n "$existing_zed" ] && [ "$existing_zed" != "${INSTALL_DIR}/${EXE_NAME}" ]; then
+  warn "another 'zed' command is already available at ${existing_zed}. The Zed editor uses the same command name; PATH order will decide which one runs."
+fi
 mkdir -p "$INSTALL_DIR"
-mv -f "${workdir}/${EXE_NAME}" "${INSTALL_DIR}/${EXE_NAME}"
-chmod +x "${INSTALL_DIR}/${EXE_NAME}"
+install -m 0755 "${workdir}/${EXE_NAME}" "${INSTALL_DIR}/${EXE_NAME}"
 success "installed ${EXE_NAME} -> ${INSTALL_DIR}/${EXE_NAME}"
 
 # --- PATH injection (idempotent) -------------------------------------------
@@ -138,7 +219,7 @@ detect_profile() {
     printf '%s' "$ZED_PROFILE"
     return
   fi
-  case "$(basename "${SHELL:-}")" in
+  case "${SHELL##*/}" in
     zsh) printf '%s' "${ZDOTDIR:-$HOME}/.zshrc" ;;
     bash)
       if [ -f "$HOME/.bashrc" ]; then
@@ -153,23 +234,54 @@ detect_profile() {
   esac
 }
 
-# Portable marker: reference $HOME literally when the dir lives under it, so the
-# written profile line survives a home-directory path change.
+shell_single_quote() {
+  local value="${1//\'/\'\\\'\'}"
+  printf "'%s'" "$value"
+}
+
+# Recognize older unmarked PATH lines before writing the managed block. New
+# writes use an exact marker so comments or similarly named directories do not
+# create duplicate entries on later installer runs.
 case "$INSTALL_DIR" in
   "$HOME"/*) path_marker="\$HOME/${INSTALL_DIR#"$HOME"/}" ;;
   *) path_marker="$INSTALL_DIR" ;;
 esac
 
-profile="$(detect_profile)"
-if [ -f "$profile" ] && grep -Fq "$path_marker" "$profile"; then
-  info "PATH already configured in ${profile}"
+path_block_begin="# >>> zed-pkg PATH >>>"
+path_block_end="# <<< zed-pkg PATH <<<"
+path_is_on_path=0
+IFS=: read -r -a current_path_entries <<<"${PATH:-}"
+for path_entry in "${current_path_entries[@]}"; do
+  if [ "$path_entry" = "$INSTALL_DIR" ]; then
+    path_is_on_path=1
+    break
+  fi
+done
+if [ "$modify_path" -eq 0 ]; then
+  info "left shell startup files unchanged (ZED_NO_MODIFY_PATH=1)"
+elif [ "$path_is_on_path" -eq 1 ]; then
+  info "${INSTALL_DIR} is already on PATH; no shell profile change needed"
 else
-  {
-    printf '\n# Added by the zed-cli installer\n'
-    # shellcheck disable=SC2016  # write $PATH literally; it expands at shell init
-    printf 'export PATH="%s:$PATH"\n' "$path_marker"
-  } >>"$profile"
-  success "added ${INSTALL_DIR} to PATH in ${profile}"
+  profile="$(detect_profile)"
+  if [ -d "$profile" ]; then
+    error "shell profile path is a directory: ${profile}"
+    exit 1
+  fi
+  mkdir -p "$(dirname "$profile")"
+  if [ -f "$profile" ] && grep -Fqx "$path_block_begin" "$profile"; then
+    info "PATH already configured in ${profile}"
+  elif [ -f "$profile" ] && grep -Fq "$path_marker" "$profile"; then
+    info "${profile} already references ${INSTALL_DIR}"
+  else
+    quoted_install_dir="$(shell_single_quote "$INSTALL_DIR")"
+    {
+      printf '\n%s\n' "$path_block_begin"
+      # shellcheck disable=SC2016  # write $PATH literally; it expands at shell init
+      printf 'export PATH=%s:"$PATH"\n' "$quoted_install_dir"
+      printf '%s\n' "$path_block_end"
+    } >>"$profile"
+    success "added ${INSTALL_DIR} to PATH in ${profile}"
+  fi
 fi
 
 # --- done ------------------------------------------------------------------
@@ -180,12 +292,16 @@ else
   success "${EXE_NAME} is ready"
 fi
 
-case ":${PATH}:" in
-  *":${INSTALL_DIR}:"*) : ;; # already on PATH for this session
-  *)
+case "$path_is_on_path" in
+  1) : ;;
+  0)
     info "restart your shell, or run this to use it now:"
     # shellcheck disable=SC2016  # print $PATH literally as a copy-paste command
-    printf '    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    printf '    export PATH=%s:"$PATH"\n' "$(shell_single_quote "$INSTALL_DIR")"
     ;;
 esac
-info "try:  ${EXE_NAME} --help"
+if [ "$(command -v "$EXE_NAME" 2>/dev/null || true)" = "${INSTALL_DIR}/${EXE_NAME}" ]; then
+  info "try:  ${EXE_NAME} --help"
+else
+  info "try:  $(shell_single_quote "${INSTALL_DIR}/${EXE_NAME}") --help"
+fi
