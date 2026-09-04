@@ -731,9 +731,7 @@ fn download_url(
     {
         request = request.bearer_auth(token);
     }
-    let response = request
-        .send()
-        .with_context(|| format!("GET {url}"))?;
+    let response = request.send().with_context(|| format!("GET {url}"))?;
     if !response.status().is_success() {
         bail!("{url} returned {}", response.status());
     }
