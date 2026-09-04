@@ -349,6 +349,7 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
             language: Default::default(),
             ecosystem: Default::default(),
         },
+        interop: Default::default(),
         workspace: None,
         dependencies: BTreeMap::new(),
         build_dependencies: BTreeMap::new(),

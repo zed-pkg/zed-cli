@@ -7,12 +7,13 @@ use zed_cli::cli::{
     AuthCmd, CacheCmd, Cli, Cmd, EnvironmentManagerArg, OrgCmd, ReleaseCmd, StoreCmd,
 };
 use zed_cli::completion;
-use zed_cli::config::Config;
+use zed_cli::config::{self, Config};
 use zed_cli::dev;
 use zed_cli::environment;
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
+use zed_cli::inspect;
 use zed_cli::managed_install;
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
@@ -22,6 +23,7 @@ use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
 use zed_cli::store::Store;
 use zed_cli::update;
+use zed_interfaces::paths::MANIFEST_FILE;
 
 fn main() {
     let args = std::env::args_os().collect::<Vec<_>>();
@@ -158,9 +160,22 @@ fn root_global_option_takes_value(token: &str) -> bool {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    let cfg = Config::from_globals(&cli.globals)?;
-    let git_submodules = cli.globals.git_submodules;
+    if let Cmd::Inspect { format, root } = &cli.cmd {
+        return inspect::run(root.as_deref(), *format);
+    }
+
     let cwd = std::env::current_dir()?;
+    let manifest_git_submodules = if cwd.join(MANIFEST_FILE).is_file() {
+        config::read_manifest(&cwd)?.interop.git_submodules
+    } else {
+        false
+    };
+    let git_submodules = cli
+        .globals
+        .git_submodules
+        .unwrap_or(manifest_git_submodules);
+    let _git_submodules_override = submodules::override_enabled(cli.globals.git_submodules);
+    let cfg = Config::from_globals(&cli.globals)?;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Every live project transaction already owns this kernel-backed
         // install lock. Recover under the same lock so a concurrent process
@@ -247,6 +262,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
         },
+        Cmd::Inspect { .. } => unreachable!("inspect is handled before mutable CLI setup"),
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

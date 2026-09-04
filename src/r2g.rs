@@ -137,6 +137,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
             language: Default::default(),
             ecosystem: Default::default(),
         },
+        interop: Default::default(),
         dependencies,
         build_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),

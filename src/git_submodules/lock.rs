@@ -49,6 +49,7 @@ struct LockExtensionDocument<'a> {
 
 #[derive(Debug)]
 pub(crate) enum InstallLockPlan {
+    Disabled,
     Frozen,
     Refresh(Vec<GitSubmoduleLock>),
 }
@@ -56,6 +57,7 @@ pub(crate) enum InstallLockPlan {
 impl InstallLockPlan {
     pub(crate) fn finish(self, project: &Path) -> Result<()> {
         match self {
+            InstallLockPlan::Disabled => Ok(()),
             InstallLockPlan::Frozen => Ok(()),
             InstallLockPlan::Refresh(entries) => write_lock_extensions(project, &entries),
         }
@@ -65,6 +67,9 @@ impl InstallLockPlan {
 /// Verify or precompute additive Git lock records before the ordinary installer
 /// mutates anything. Frozen mode compares every field and never rewrites bytes.
 pub(crate) fn prepare_install(project: &Path, frozen: bool) -> Result<InstallLockPlan> {
+    if !super::enabled(project)? {
+        return Ok(InstallLockPlan::Disabled);
+    }
     if !project.join(MANIFEST_FILE).is_file() {
         let previous = read_lock_extensions(project)?;
         if frozen && !previous.is_empty() {
@@ -100,6 +105,9 @@ pub(crate) fn preflight_mutation(project: &Path) -> Result<()> {
 }
 
 pub(crate) fn refresh_lock_extensions(project: &Path) -> Result<()> {
+    if !super::enabled(project)? {
+        return Ok(());
+    }
     if !project.join(MANIFEST_FILE).is_file() || !project.join(LOCKFILE_FILE).is_file() {
         return Ok(());
     }

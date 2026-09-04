@@ -6,8 +6,17 @@ workspace resolution, integrity, and frozen replay.
 
 ## Cooperative install mode
 
-Submodule handling is opt-in and defaults to off. The compatibility switch is
-global, so it can appear before or after the command:
+Submodule handling is opt-in and defaults to off. Durable project authority is
+declared in `.zpkg.toml` so editor diagnostics, CI, and runtime commands all
+agree whether Zed consumes `.gitmodules`:
+
+```toml
+[interop]
+git-submodules = true
+```
+
+The global compatibility switch is a one-invocation override, so it can appear
+before or after the command:
 
 ```sh
 zed --git-submodules install
@@ -21,7 +30,7 @@ ZED_PKG_GIT_SUBMODULES=1 zed install
 ```
 
 Boolean values accept `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`.
-An explicit CLI value can disable an inherited environment setting:
+An explicit CLI value can disable an inherited manifest or environment setting:
 
 ```sh
 zed install --git-submodules=false
@@ -37,14 +46,15 @@ git submodule update --init --recursive --checkout
 The explicit `--checkout` strategy prevents repository configuration from
 selecting a custom `submodule.<name>.update = !command` hook. With no
 `.gitmodules` at or above the invocation directory, the operation is a safe
-no-op and ordinary Zed installation continues.
+no-op and ordinary Zed installation continues. Without manifest opt-in or an
+explicit true override, Zed leaves a present `.gitmodules` under Git authority.
 
 A fresh-clone frozen restore can therefore use one command:
 
 ```sh
 git clone <superproject>
 cd <superproject>
-zed install --git-submodules --frozen
+zed install --frozen
 ```
 
 All configured Git submodules are synchronized and initialized in this mode,
@@ -73,10 +83,11 @@ Takeover performs these steps:
    superproject `HEAD`;
 5. requires each adopted checkout to match its committed gitlink and have no
    tracked or untracked changes;
-6. adds each adopted package path to `[workspace].members`;
-7. adds an exact direct requirement under `[dependencies]`;
-8. runs the normal Zed solver and transactional installer; and
-9. records immutable Git provenance in `.zpkg.lock`.
+6. records `[interop] git-submodules = true` in the root manifest;
+7. adds each adopted package path to `[workspace].members`;
+8. adds an exact direct requirement under `[dependencies]`;
+9. runs the normal Zed solver and transactional installer; and
+10. records immutable Git provenance in `.zpkg.lock`.
 
 This makes takeover incremental in a mixed repository. For example, a project
 may keep a documentation theme or large fixture repository as an ordinary Git
@@ -99,6 +110,9 @@ For example, a submodule at `vendor/client` declaring `acme/client@1.2.3`
 produces manifest intent equivalent to:
 
 ```toml
+[interop]
+git-submodules = true
+
 [workspace]
 members = ["vendor/client"]
 
@@ -108,7 +122,7 @@ members = ["vendor/client"]
 
 A neighboring submodule such as `vendor/docs-theme` with no `.zpkg.toml`
 remains in `.gitmodules` and is still initialized by
-`zed install --git-submodules`, but it is not added to the Zed workspace or
+`zed install` after takeover, but it is not added to the Zed workspace or
 lockfile.
 
 If the superproject has no `.zpkg.toml`, takeover creates the same deterministic,

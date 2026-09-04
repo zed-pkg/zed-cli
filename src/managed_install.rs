@@ -461,6 +461,7 @@ fn generated_manifest(
             language: Default::default(),
             ecosystem: Default::default(),
         },
+        interop: Default::default(),
         workspace: None,
         dependencies,
         build_dependencies: BTreeMap::new(),

@@ -319,6 +319,7 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
             language: Default::default(),
             ecosystem: Default::default(),
         },
+        interop: Default::default(),
         workspace: None,
         dependencies,
         build_dependencies: BTreeMap::new(),

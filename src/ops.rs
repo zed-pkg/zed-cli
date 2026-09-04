@@ -1958,6 +1958,7 @@ fn build_artifact(
                 language: Default::default(),
                 ecosystem: Default::default(),
             },
+            interop: Default::default(),
             dependencies: build_deps,
             build_dependencies: BTreeMap::new(),
             native_dependencies: Default::default(),

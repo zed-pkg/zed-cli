@@ -106,11 +106,12 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
     let cwd = env::current_dir().context("reading the current directory")?;
     match cli.command {
         OvertakeCommand::Overtake(_) => {
-            if !cli.globals.git_submodules {
+            if cli.globals.git_submodules != Some(true) {
                 bail!(
                     "no takeover source selected; pass `--git-submodules` or set ZED_PKG_GIT_SUBMODULES=1"
                 );
             }
+            let _override = super::override_enabled(Some(true));
             let report = super::overtake(&cwd, &cfg)?;
             println!(
                 "overtook {} Git submodule package(s) in {}",
@@ -209,11 +210,11 @@ mod tests {
             ["zed", "overtake", "--git-submodules"],
         ] {
             let cli = OvertakeCli::try_parse_from(args).unwrap();
-            assert!(cli.globals.git_submodules, "{args:?}");
+            assert_eq!(cli.globals.git_submodules, Some(true), "{args:?}");
         }
 
         let cli =
             OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
-        assert!(!cli.globals.git_submodules);
+        assert_eq!(cli.globals.git_submodules, Some(false));
     }
 }

@@ -227,6 +227,9 @@ version = "1.2.3"
 vcs = "git"
 url = "https://example.invalid/acme/pack-guard.git"
 
+[interop]
+git-submodules = true
+
 {extra}
 "#
         )

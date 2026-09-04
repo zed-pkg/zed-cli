@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use crate::inspect::InspectFormat;
+
 /// Every flag can also be set through a `ZED_PKG_*` environment variable,
 /// following the flags-2-env convention (github.com/oresoftware/flags-2-env).
 #[derive(Debug, Parser)]
@@ -62,7 +64,7 @@ pub struct Globals {
     /// transport metadata. `install` synchronizes recursively before package
     /// resolution; `overtake` imports eligible submodules into Zed authority.
     /// Bare means true; use `--git-submodules=false` to override an enabled
-    /// environment value.
+    /// manifest or environment value for one invocation.
     #[arg(
         long,
         global = true,
@@ -70,11 +72,10 @@ pub struct Globals {
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
-        default_value = "false",
         value_parser = clap::builder::BoolishValueParser::new(),
         action = clap::ArgAction::Set
     )]
-    pub git_submodules: bool,
+    pub git_submodules: Option<bool>,
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -244,6 +245,20 @@ pub enum Cmd {
     Env {
         #[command(subcommand)]
         cmd: EnvCmd,
+    },
+    /// Statically inspect package and project interoperability without executing tools
+    Inspect {
+        /// Stable machine-readable protocol format used by editor integrations
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_INSPECT_FORMAT",
+            default_value = "json"
+        )]
+        format: InspectFormat,
+        /// Project directory to inspect (defaults to the current directory)
+        #[arg(long, env = "ZED_PKG_INSPECT_ROOT")]
+        root: Option<PathBuf>,
     },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {
@@ -643,7 +658,7 @@ mod tests {
             ["zed", "install", "--git-submodules", "acme/http-kit@^1"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(cli.globals.git_submodules, "{args:?}");
+            assert_eq!(cli.globals.git_submodules, Some(true), "{args:?}");
             match cli.cmd {
                 Cmd::Install { specs, .. } => {
                     assert_eq!(specs, ["acme/http-kit@^1"]);
@@ -659,8 +674,11 @@ mod tests {
             "acme/http-kit@^1",
         ])
         .unwrap();
-        assert!(!cli.globals.git_submodules);
+        assert_eq!(cli.globals.git_submodules, Some(false));
         assert!(matches!(cli.cmd, Cmd::Install { .. }));
+
+        let cli = Cli::try_parse_from(["zed", "install", "acme/http-kit@^1"]).unwrap();
+        assert_eq!(cli.globals.git_submodules, None);
     }
 
     #[test]

@@ -14,6 +14,7 @@ mod lock;
 #[cfg_attr(not(unix), allow(dead_code, unused_imports))]
 mod tests;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,38 @@ use git::{
 
 pub use cli::{OvertakeArgs, augment_root_command, dispatch};
 pub(crate) use lock::{preflight_mutation, prepare_install, refresh_lock_extensions};
+
+thread_local! {
+    static ENABLED_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Restores the previous one-invocation override when command dispatch ends.
+pub struct EnabledOverride {
+    previous: Option<bool>,
+}
+
+impl Drop for EnabledOverride {
+    fn drop(&mut self) {
+        ENABLED_OVERRIDE.set(self.previous);
+    }
+}
+
+/// Apply an explicit CLI/environment choice without changing project files.
+pub fn override_enabled(value: Option<bool>) -> EnabledOverride {
+    let previous = ENABLED_OVERRIDE.replace(value);
+    EnabledOverride { previous }
+}
+
+/// Whether Zed is authorized to consume `.gitmodules` for this project.
+pub(crate) fn enabled(project: &Path) -> Result<bool> {
+    if let Some(value) = ENABLED_OVERRIDE.get() {
+        return Ok(value);
+    }
+    if !project.join(MANIFEST_FILE).is_file() {
+        return Ok(false);
+    }
+    Ok(read_manifest(project)?.interop.git_submodules)
+}
 
 #[derive(Debug)]
 pub struct OvertakeReport {
@@ -102,6 +135,9 @@ fn verify_gitmodules_index_regular(project: &Path) -> Result<()> {
 /// or publish operation consumes it. An untracked regular file remains usable
 /// for cooperative Git workflows; once indexed, it must be a regular blob.
 pub(crate) fn preflight_gitmodules_metadata(requested: &Path) -> Result<()> {
+    if !enabled(requested)? {
+        return Ok(());
+    }
     let Some(root) = find_root(requested) else {
         return Ok(());
     };
@@ -168,6 +204,9 @@ impl PackSubmodules {
 }
 
 pub(crate) fn pack_submodules(requested: &Path) -> Result<Option<PackSubmodules>> {
+    if !enabled(requested)? {
+        return Ok(None);
+    }
     let Some(root) = find_root(requested) else {
         return Ok(None);
     };
@@ -393,6 +432,7 @@ pub fn overtake(requested: &Path, cfg: &Config) -> Result<OvertakeReport> {
     }
     workspace.members.sort();
     workspace.members.dedup();
+    root.interop.git_submodules = true;
     root.validate()
         .context("validating overtaken root manifest")?;
     let manifest_text = root.to_toml_string()?;
@@ -516,7 +556,34 @@ mod manifest_kind_tests {
 
     #[cfg(unix)]
     use super::preflight_gitmodules_metadata;
-    use super::{submodule_manifest_present, validate_gitmodules_index};
+    use super::{enabled, override_enabled, submodule_manifest_present, validate_gitmodules_index};
+
+    const MANIFEST: &str = r#"[package]
+org = "acme"
+name = "consumer"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/acme/consumer.git"
+"#;
+
+    #[test]
+    fn manifest_opt_in_controls_gitmodules_consumption_with_one_run_overrides() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(project.path().join(".zpkg.toml"), MANIFEST).unwrap();
+        assert!(!enabled(project.path()).unwrap());
+
+        fs::write(
+            project.path().join(".zpkg.toml"),
+            format!("{MANIFEST}\n[interop]\ngit-submodules = true\n"),
+        )
+        .unwrap();
+        assert!(enabled(project.path()).unwrap());
+
+        let _override = override_enabled(Some(false));
+        assert!(!enabled(project.path()).unwrap());
+    }
 
     #[test]
     fn only_a_missing_manifest_is_skippable() {
@@ -574,6 +641,7 @@ mod manifest_kind_tests {
     fn symlinked_gitmodules_fail_before_git_parsing() {
         use std::os::unix::fs::symlink;
 
+        let _override = override_enabled(Some(true));
         let project = tempfile::tempdir().unwrap();
         let target = project.path().join("external-gitmodules");
         fs::write(

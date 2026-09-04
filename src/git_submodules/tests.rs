@@ -78,11 +78,11 @@ fn route_recognizes_overtake_and_help_with_global_options() {
 #[test]
 fn boolish_overtake_flag_supports_bare_and_explicit_off() {
     let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
-    assert!(cli.globals.git_submodules);
+    assert_eq!(cli.globals.git_submodules, Some(true));
     assert!(matches!(cli.command, OvertakeCommand::Overtake(_)));
 
     let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
-    assert!(!cli.globals.git_submodules);
+    assert_eq!(cli.globals.git_submodules, Some(false));
     assert!(matches!(cli.command, OvertakeCommand::Overtake(_)));
 }
 
