@@ -37,8 +37,8 @@ jobs:
           grep -A4 '^name = "zed-cli"$' Cargo.lock | grep -F 'version = "0.3.0"'
           grep -F 'name = "oresoftware-next-loggers"' Cargo.lock
           grep -F '9e28eca35b4c3f283cde933ae645216972d2f3e3' Cargo.lock
-      # The first run stopped at rustfmt before compiling or testing. The exact
-      # formatter output is now committed; every substantive gate still runs.
+      # Prior runs stopped at exact, attributable source findings. The formatter
+      # output and obsolete test-only import are now repaired; all gates rerun.
       - name: Validate the merged exact graph
         shell: bash --noprofile --norc -euo pipefail {0}
         run: |
