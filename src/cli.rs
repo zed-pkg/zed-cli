@@ -55,7 +55,16 @@ pub struct Globals {
 
     /// Confirm every mutating lifecycle step in a real terminal. A declined
     /// prompt, EOF, or redirected stdin fails closed before that step.
-    #[arg(long, global = true, env = "ZED_PKG_INTERACTIVE")]
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_INTERACTIVE",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
     pub interactive: bool,
 
     /// Enable Git submodule compatibility for commands that consume Git
@@ -81,7 +90,17 @@ pub struct Globals {
     /// Use for a reproducibility audit, where "it installed" and "it installed
     /// from the canonical registry" are different claims and only the second
     /// one is being tested.
-    #[arg(long, global = true, env = "ZED_PKG_NO_MIRRORS")]
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_NO_MIRRORS",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
     pub no_mirrors: bool,
 
     /// Let a mirror answer metadata questions — resolving a range, reading a
@@ -92,7 +111,17 @@ pub struct Globals {
     /// without this, because the lockfile digest decides what is acceptable.
     /// Serving metadata is a genuine trust decision, so it is opt-in rather
     /// than something an operator discovers after the fact.
-    #[arg(long, global = true, env = "ZED_PKG_TRUST_MIRROR_METADATA")]
+    #[arg(
+        long,
+        global = true,
+        env = "ZED_PKG_TRUST_MIRROR_METADATA",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
     pub trust_mirror_metadata: bool,
 
     /// Public HTTPS origin for guessable R2/CDN objects when the registry host
@@ -319,7 +348,15 @@ pub enum Cmd {
         /// Run dependencies' [build] commands (arbitrary code from the
         /// package author — off by default; builds are cached per
         /// (artifact, platform, command) under ~/.zed-pkg/builds)
-        #[arg(long, env = "ZED_PKG_ALLOW_BUILD")]
+        #[arg(
+            long,
+            env = "ZED_PKG_ALLOW_BUILD",
+            num_args = 0..=1,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
+        )]
         allow_build: bool,
         /// Install host-native prerequisites declared by packages. This may
         /// invoke an OS package manager and is independent from build-hook
@@ -347,7 +384,13 @@ pub enum Cmd {
         #[arg(
             long = "do-not-write-new-manifest",
             visible_aliases = ["allow-no-manifest", "skip-manifest"],
-            env = "ZED_PKG_ALLOW_NO_MANIFEST"
+            env = "ZED_PKG_ALLOW_NO_MANIFEST",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
         )]
         allow_no_manifest: bool,
         /// Install single-language packages whose ecosystem this project does
@@ -802,7 +845,16 @@ pub enum MirrorCmd {
     /// Show the mirrors that would be tried, in order, for this project
     List {
         /// Emit deterministic machine-readable JSON
-        #[arg(long, env = "ZED_PKG_MIRROR_JSON")]
+        #[arg(
+            long,
+            env = "ZED_PKG_MIRROR_JSON",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
+        )]
         json: bool,
     },
     /// Probe every mirror for every locked package and report what answers
@@ -814,7 +866,16 @@ pub enum MirrorCmd {
         /// Check only this package (`org/name`)
         #[arg(long, value_name = "PACKAGE", env = "ZED_PKG_MIRROR_PACKAGE")]
         package: Option<String>,
-        #[arg(long, env = "ZED_PKG_MIRROR_JSON")]
+        #[arg(
+            long,
+            env = "ZED_PKG_MIRROR_JSON",
+            num_args = 0..=1,
+            require_equals = true,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
+        )]
         json: bool,
     },
     /// Recover the mirror set from any reachable host, without the registry
@@ -1245,8 +1306,53 @@ mod tests {
         );
     }
 
+    const REGISTERED_RUNTIME_ENVS: [&str; 6] = [
+        "CLASSPATH",
+        "COMSPEC",
+        "IN_NIX_SHELL",
+        "NIX_BUILD_TOP",
+        "PYTHONPATH",
+        "XDG_CONFIG_HOME",
+    ];
+
+    // `.cli-flags.toml` is shared with environment export and the dedicated
+    // OCI publisher, so these audited entries intentionally are not clap
+    // arguments on the primary `zed` command tree.
+    const NON_CLAP_FLAG_ENVS: [&str; 24] = [
+        "CLASSPATH",
+        "COMSPEC",
+        "IN_NIX_SHELL",
+        "NIX_BUILD_TOP",
+        "PYTHONPATH",
+        "XDG_CONFIG_HOME",
+        "ZED_PKG_AUTH_PASSWORD",
+        "ZED_PKG_INSTALL_CONCURRENCY",
+        "ZED_PKG_LAYOUT_CONFIG",
+        "ZED_PKG_MAX_ARTIFACT_BYTES",
+        "ZED_PKG_MAX_BINARY_ENTRIES",
+        "ZED_PKG_MAX_REGISTRY_BYTES",
+        "ZED_PKG_MAX_UNPACKED_BYTES",
+        "ZED_PKG_OCI_ALLOW_TAG_REPLACEMENT",
+        "ZED_PKG_OCI_ANONYMOUS",
+        "ZED_PKG_OCI_CA_FILE",
+        "ZED_PKG_OCI_INSECURE_TLS",
+        "ZED_PKG_OCI_JSON",
+        "ZED_PKG_OCI_ORAS",
+        "ZED_PKG_OCI_PASSWORD_STDIN",
+        "ZED_PKG_OCI_PLAIN_HTTP",
+        "ZED_PKG_OCI_PUSH_JSON",
+        "ZED_PKG_OCI_REGISTRY_CONFIG",
+        "ZED_PKG_OCI_USERNAME",
+    ];
+
+    fn is_registered_env(env: &str) -> bool {
+        env.starts_with("ZED_PKG_")
+            || env.starts_with("ZED_TASK_")
+            || REGISTERED_RUNTIME_ENVS.contains(&env)
+    }
+
     /// Walk every command and subcommand, asserting each flag has a
-    /// `ZED_PKG_*` env fallback, and collecting the full set of envs.
+    /// registered Zed or runtime env fallback, and collecting the full set.
     fn collect_flag_envs(cmd: &clap::Command, envs: &mut BTreeSet<String>) {
         for arg in cmd.get_arguments() {
             let Some(long) = arg.get_long() else { continue };
@@ -1264,8 +1370,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string();
             assert!(
-                env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
-                "--{long} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace"
+                is_registered_env(&env),
+                "--{long} env `{env}` must use a registered Zed or runtime namespace"
             );
             envs.insert(env);
         }
@@ -1310,8 +1416,8 @@ mod tests {
                         .and_then(toml::Value::as_str)
                         .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
                     assert!(
-                        env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
-                        "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
+                        is_registered_env(env),
+                        "flag --{} env `{env}` must use a registered Zed or runtime namespace",
                         name.replace('_', "-")
                     );
                     assert!(
@@ -1332,7 +1438,10 @@ mod tests {
         collect_flag_envs(&Cli::command(), &mut clap_envs);
 
         let missing: Vec<&String> = clap_envs.difference(&file_envs).collect();
-        let stale: Vec<&String> = file_envs.difference(&clap_envs).collect();
+        let stale: Vec<&String> = file_envs
+            .difference(&clap_envs)
+            .filter(|env| !NON_CLAP_FLAG_ENVS.contains(&env.as_str()))
+            .collect();
         assert!(
             missing.is_empty(),
             "flags in the CLI but not declared in .cli-flags.toml: {missing:?}"

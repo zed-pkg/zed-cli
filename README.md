@@ -190,6 +190,8 @@ the legacy version route by default or the additive target-qualified route with
 | `zed store status\|path\|prune` | Inspect the store or prune unreferenced entries |
 | `zed gc [--older-than 90d] [--dry-run]` | LRU collection: drop store/build entries no live project references and unused past the cutoff, plus stale downloads |
 | `zed cache clean` | Drop cached downloads |
+| `zed mirror list\|check\|bootstrap\|sync` | Inspect, probe, recover, or materialize the configured package mirrors |
+| `zed key generate\|list\|show\|enroll` | Manage publisher signing keys and enroll their public identities |
 | `zed self-update [--check] [--force]` | Replace the binary with the latest GitHub release for your platform |
 | `zed completions bash\|zsh` | Generate shell completion from the same Clap model used by the executable |
 

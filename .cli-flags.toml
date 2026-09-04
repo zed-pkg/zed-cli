@@ -67,6 +67,20 @@ type = "bool"
 default = "false"
 help = "Confirm each mutating lifecycle step in a real terminal."
 
+[flags.no_mirrors]
+env = "ZED_PKG_NO_MIRRORS"
+aliases = ["no-mirrors"]
+type = "bool"
+default = "false"
+help = "Fetch only from the configured registry and disable mirror fallback."
+
+[flags.trust_mirror_metadata]
+env = "ZED_PKG_TRUST_MIRROR_METADATA"
+aliases = ["trust-mirror-metadata"]
+type = "bool"
+default = "false"
+help = "Allow signed mirror metadata to answer resolution requests."
+
 [flags.frozen]
 env = "ZED_PKG_FROZEN"
 aliases = ["frozen"]
@@ -726,6 +740,37 @@ help = "Download cache operations."
 
 [commands.cache.commands.clean]
 help = "Clean the download cache."
+
+[flags.mirror_json]
+env = "ZED_PKG_MIRROR_JSON"
+long = "json"
+type = "bool"
+default = "false"
+help = "Emit deterministic machine-readable mirror output."
+
+[flags.mirror_package]
+env = "ZED_PKG_MIRROR_PACKAGE"
+long = "package"
+type = "string"
+help = "Limit a mirror check to one package coordinate."
+
+[flags.mirror_bootstrap_url]
+env = "ZED_PKG_MIRROR_BOOTSTRAP_URL"
+long = "url"
+type = "string"
+help = "Select the base URL used to recover mirror metadata."
+
+[flags.mirror_output]
+env = "ZED_PKG_MIRROR_OUTPUT"
+long = "output"
+type = "string"
+help = "Select the directory written by mirror sync."
+
+[flags.key_id]
+env = "ZED_PKG_KEY_ID"
+long = "key-id"
+type = "string"
+help = "Select a publisher signing key by its stable identifier."
 
 
 [flags.classpath]

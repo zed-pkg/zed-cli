@@ -120,14 +120,13 @@ fn describe(mirror: &MirrorDescriptorV1) -> MirrorRow {
     }
 }
 
-/// Everything that could serve this project, ambient and per-package.
-fn project_mirrors(
-    cwd: &Path,
-    cfg: &Config,
-) -> Result<(
+type ProjectMirrors = (
     Vec<MirrorDescriptorV1>,
     BTreeMap<String, Vec<MirrorDescriptorV1>>,
-)> {
+);
+
+/// Everything that could serve this project, ambient and per-package.
+fn project_mirrors(cwd: &Path, cfg: &Config) -> Result<ProjectMirrors> {
     let canonical: Vec<MirrorDescriptorV1> = registry_mirror(&cfg.registry).into_iter().collect();
     let ambient = merge_mirrors(&[&cfg.mirrors, &canonical])?;
 

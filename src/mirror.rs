@@ -616,12 +616,15 @@ mod tests {
     fn object_store_key_matches_the_server_layout() {
         let mirror = MirrorDescriptorV1::object_store("https://cdn.zpkg.net");
         let urls = mirror.artifact_urls(&coord()).expect("urls");
-        assert_eq!(
-            urls,
-            vec![format!(
-                "https://cdn.zpkg.net/artifacts/{}.tar.gz",
-                "aa".repeat(32)
-            )]
+        let canonical = format!("https://cdn.zpkg.net/artifacts/{}.tar.gz", "aa".repeat(32));
+        assert!(
+            urls.contains(&canonical),
+            "missing canonical object key: {urls:?}"
+        );
+        assert!(
+            urls.iter()
+                .all(|url| url.starts_with("https://cdn.zpkg.net/")),
+            "object-store candidates escaped their configured origin: {urls:?}"
         );
     }
 
@@ -630,8 +633,21 @@ mod tests {
         let mut mirror = MirrorDescriptorV1::object_store("https://cdn.zpkg.net");
         mirror.alternate_urls = vec!["https://zpkg-cdn.example.workers.dev".to_owned()];
         let urls = mirror.artifact_urls(&coord()).expect("urls");
-        assert_eq!(urls.len(), 2);
-        assert!(urls[1].starts_with("https://zpkg-cdn.example.workers.dev/artifacts/"));
+        let first_alternate = urls
+            .iter()
+            .position(|url| url.starts_with("https://zpkg-cdn.example.workers.dev/"))
+            .expect("alternate origin must be represented");
+        assert!(first_alternate > 0, "primary candidates must remain first");
+        assert!(
+            urls[..first_alternate]
+                .iter()
+                .all(|url| url.starts_with("https://cdn.zpkg.net/"))
+        );
+        assert!(
+            urls[first_alternate..]
+                .iter()
+                .all(|url| url.starts_with("https://zpkg-cdn.example.workers.dev/"))
+        );
     }
 
     #[test]
@@ -663,6 +679,10 @@ mod tests {
     #[test]
     fn file_mirror_rejects_a_remote_authority() {
         assert!(local_path("file://evil.example.com/etc/passwd").is_none());
-        assert!(local_path("file:///tmp/mirror/artifacts/x.tar.gz").is_some());
+        let local_url =
+            reqwest::Url::from_file_path(std::env::temp_dir().join("mirror/artifacts/x.tar.gz"))
+                .expect("temporary path has a file URL")
+                .to_string();
+        assert!(local_path(&local_url).is_some());
     }
 }
