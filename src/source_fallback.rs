@@ -317,8 +317,15 @@ impl FallbackRegistry {
             .send()
             .with_context(|| format!("list tags for {}", identity.web_url()))?;
         if !response.status().is_success() {
+            let hint = if self.config.github_token.is_none()
+                && response.status() == reqwest::StatusCode::NOT_FOUND
+            {
+                " (private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN)"
+            } else {
+                ""
+            };
             bail!(
-                "GitHub tags for {} returned {}",
+                "GitHub tags for {} returned {}{hint}",
                 identity.web_url(),
                 response.status()
             );
@@ -464,8 +471,18 @@ impl FallbackRegistry {
                     version.size,
                     max_artifact_bytes(),
                 )
+            } else if locator.kind == ArtifactSourceKind::GithubArchive
+                && let Some(token) = self.config.github_token.as_deref()
+            {
+                // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
+                // private repository 404s there even with a token. The REST
+                // tarball endpoint honours the token and redirects to a signed
+                // codeload URL for the same tag.
+                let identity = github_identity_for(&version.org, &version.name, None);
+                let api_url = github_api_tarball_url(&identity, &version.vcs_tag);
+                download_url(&self.client, &api_url, dest, version.size, Some(token))
             } else {
-                download_url(&self.client, &locator.url, dest, version.size)
+                download_url(&self.client, &locator.url, dest, version.size, None)
             };
             match result {
                 Ok(()) => return Ok(()),
@@ -493,7 +510,9 @@ impl Registry for FallbackRegistry {
                     );
                     Ok(package)
                 }
-                Err(_) => Err(error),
+                Err(fallback) => Err(error.context(format!(
+                    "registry unavailable and the GitHub fallback also failed: {fallback:#}"
+                ))),
             },
         }
     }
@@ -508,7 +527,9 @@ impl Registry for FallbackRegistry {
                     );
                     Ok(metadata)
                 }
-                Err(_) => Err(error),
+                Err(fallback) => Err(error.context(format!(
+                    "registry unavailable and the GitHub/R2 fallback also failed: {fallback:#}"
+                ))),
             },
         }
     }
@@ -518,7 +539,9 @@ impl Registry for FallbackRegistry {
             Ok(()) => Ok(()),
             Err(error) => match self.download_locators(version, dest) {
                 Ok(()) => Ok(()),
-                Err(_) => Err(error),
+                Err(fallback) => Err(error.context(format!(
+                    "registry download failed and the GitHub/R2 fallback also failed: {fallback:#}"
+                ))),
             },
         }
     }
@@ -680,6 +703,7 @@ fn download_url(
     url: &str,
     dest: &Path,
     declared_size: u64,
+    token: Option<&str>,
 ) -> Result<()> {
     let parsed = reqwest::Url::parse(url).with_context(|| format!("bad fallback url {url}"))?;
     if parsed.scheme() != "https"
@@ -698,8 +722,16 @@ fn download_url(
             bail!("refusing plaintext fallback download from {url}");
         }
     }
-    let response = client
-        .get(parsed)
+    // The token is only ever sent to api.github.com (REST tarball for private
+    // repositories); reqwest drops Authorization on the cross-host redirect to
+    // codeload, so it never reaches R2, GHCR, or an arbitrary mirror.
+    let mut request = client.get(parsed.clone());
+    if let Some(token) = token
+        && matches!(parsed.host_str(), Some("api.github.com"))
+    {
+        request = request.bearer_auth(token);
+    }
+    let response = request
         .send()
         .with_context(|| format!("GET {url}"))?;
     if !response.status().is_success() {
@@ -724,6 +756,14 @@ fn download_url(
         bail!("fallback artifact from {url} was empty");
     }
     Ok(())
+}
+
+/// REST tarball for a tag: the only GitHub archive URL that accepts a token.
+fn github_api_tarball_url(identity: &GithubIdentity, tag: &str) -> String {
+    format!(
+        "https://api.github.com/repos/{}/{}/tarball/{tag}",
+        identity.owner, identity.repo
+    )
 }
 
 fn sha256_and_size(path: &Path) -> Result<(String, u64)> {
@@ -846,6 +886,18 @@ mod tests {
             "https://github.com/acme/http-kit/releases/download/v1.2.0/zpkg-acme-http-kit-1.2.0.tar.gz"
         );
         assert_eq!(metadata.published_at, "2026-09-01T00:00:00Z");
+    }
+
+    #[test]
+    fn private_archives_use_the_authenticated_rest_tarball() {
+        let identity = GithubIdentity {
+            owner: "acme".into(),
+            repo: "http-kit".into(),
+        };
+        assert_eq!(
+            github_api_tarball_url(&identity, "v1.2.0"),
+            "https://api.github.com/repos/acme/http-kit/tarball/v1.2.0"
+        );
     }
 
     #[test]
