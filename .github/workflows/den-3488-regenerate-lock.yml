@@ -1,0 +1,65 @@
+name: DEN-3488 regenerate merged lock
+
+on:
+  push:
+    branches:
+      - feat/den-3488-versioned-circular-graph
+    paths:
+      - .github/workflows/den-3488-regenerate-lock.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3488-regenerate-lock
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    if: github.repository == 'zed-pkg/zed-cli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact integration branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: feat/den-3488-versioned-circular-graph
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Install the pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt, clippy
+      - name: Regenerate the exact v0.3.0 lockfile
+        shell: bash --noprofile --norc -euo pipefail {0}
+        run: |
+          cargo generate-lockfile
+          grep -A4 '^name = "zed-cli"$' Cargo.lock | grep -F 'version = "0.3.0"'
+          grep -F 'name = "oresoftware-next-loggers"' Cargo.lock
+          grep -F '9e28eca35b4c3f283cde933ae645216972d2f3e3' Cargo.lock
+      - name: Validate the merged exact graph
+        shell: bash --noprofile --norc -euo pipefail {0}
+        run: |
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo test --locked --lib versioned_graph -- --nocapture
+          cargo test --locked --lib graph_export::tests::materialize_requires_exactly_one_graph_input
+          cargo test --locked --test versioned_dependency_cycles -- --nocapture
+          cargo clippy --locked --all-targets -- \
+            -D warnings \
+            -A clippy::large-enum-variant \
+            -A clippy::too-many-arguments \
+            -A clippy::type-complexity
+      - name: Publish only the regenerated lock and remove this one-shot workflow
+        shell: bash --noprofile --norc -euo pipefail {0}
+        env:
+          EXPECTED_BRANCH: feat/den-3488-versioned-circular-graph
+        run: |
+          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
+          git diff --exit-code -- . ':!Cargo.lock' ':!.github/workflows/den-3488-regenerate-lock.yml'
+          git rm .github/workflows/den-3488-regenerate-lock.yml
+          git add Cargo.lock
+          git config user.name 'ores-ci'
+          git config user.email 'noreply@oresoftware.com'
+          git commit -m 'chore(DEN-3488): regenerate v0.3.0 graph lockfile'
+          git push origin HEAD:"$EXPECTED_BRANCH"
