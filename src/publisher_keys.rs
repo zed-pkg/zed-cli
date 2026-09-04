@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn a_pin_refuses_a_different_key_from_the_same_org() {
-        let (stored, public) = key_pair("acme-2026");
+        let (_stored, public) = key_pair("acme-2026");
         let other_signing = SigningKey::from_bytes(&[9_u8; 32]);
         let other = PublisherKeyV1 {
             key_id: "acme-rogue".to_owned(),

@@ -155,3 +155,4 @@ fn sequenced_receive_buffers_later_failures_until_earlier_results_arrive() {
         .to_string();
     assert!(error.contains("later lockfile entry failed"), "{error}");
 }
+use crate::registry::registry_for;

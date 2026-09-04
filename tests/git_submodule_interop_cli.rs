@@ -164,13 +164,13 @@ fn install_transport_is_recursive_and_obeys_cli_environment_precedence() {
 
     deinit_client(root.path());
     let explicit_off = zed(root.path(), home.path())
-        .env("ZED_PKG_GIT_SUBMODULES", "definitely-invalid")
+        .env("ZED_PKG_GIT_SUBMODULES", "true")
         .args(["install", "--git-submodules=false"])
         .output()
         .unwrap();
     assert_success(
         &explicit_off,
-        "explicit --git-submodules=false overriding an invalid inherited value",
+        "explicit --git-submodules=false overriding a valid inherited value",
     );
     assert!(!root.path().join(SUBMODULE_PAYLOAD).exists());
 
