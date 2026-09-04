@@ -360,6 +360,18 @@ mod tests {
     }
 
     #[test]
+    fn embedded_contract_does_not_mask_the_manifest_gitmodule_default() {
+        let argv = vec!["zed".to_string(), "install".to_string()];
+        let parsed = parse_embedded(&argv).expect("embedded contract must parse");
+        assert!(parsed.unknown_options.is_empty());
+        assert!(parsed.errors.is_empty());
+        assert!(
+            !parsed.flags.contains_key("ZED_PKG_GIT_SUBMODULES"),
+            "an absent CLI/environment override must remain absent so [interop].git-submodules can apply"
+        );
+    }
+
+    #[test]
     fn explicit_aliases_map_to_the_manifestless_environment_key() {
         for bypass in ["--allow-no-manifest", "--skip-manifest"] {
             let argv = vec![

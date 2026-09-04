@@ -6,8 +6,18 @@ workspace resolution, integrity, and frozen replay.
 
 ## Cooperative install mode
 
-Submodule handling is opt-in and defaults to off. The compatibility switch is
-global, so it can appear before or after the command:
+Submodule handling is opt-in and defaults to off. A repository can make its
+ownership boundary machine-readable in `.zpkg.toml`:
+
+```toml
+[interop]
+git-submodules = true
+```
+
+That declaration tells the CLI, editor integrations, and CI that Zed consumes
+the committed `.gitmodules` graph. Use `false` to explicitly document Git-only
+ownership. If the key is absent, the global compatibility switch can appear
+before or after the command:
 
 ```sh
 zed --git-submodules install
@@ -21,11 +31,18 @@ ZED_PKG_GIT_SUBMODULES=1 zed install
 ```
 
 Boolean values accept `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`.
-An explicit CLI value can disable an inherited environment setting:
+An explicit CLI value can disable an inherited environment or manifest
+setting:
 
 ```sh
 zed install --git-submodules=false
 ```
+
+The precedence order is explicit CLI value, environment value, manifest value,
+then off. `zed inspect --format json --root <project>` reports missing or
+contradictory declarations, unsafe metadata, checkout drift, duplicate
+authority, and materialization-path conflicts without changing either graph.
+See [the local inspection contract](inspect.md).
 
 When enabled, Zed runs the equivalent of:
 

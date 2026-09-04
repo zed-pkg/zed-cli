@@ -78,12 +78,82 @@ fn route_recognizes_overtake_and_help_with_global_options() {
 #[test]
 fn boolish_overtake_flag_supports_bare_and_explicit_off() {
     let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules"]).unwrap();
-    assert!(cli.globals.git_submodules);
+    assert_eq!(cli.globals.git_submodules, Some(true));
     assert!(matches!(cli.command, OvertakeCommand::Overtake(_)));
 
     let cli = OvertakeCli::try_parse_from(["zed", "overtake", "--git-submodules=false"]).unwrap();
-    assert!(!cli.globals.git_submodules);
+    assert_eq!(cli.globals.git_submodules, Some(false));
     assert!(matches!(cli.command, OvertakeCommand::Overtake(_)));
+}
+
+#[test]
+fn manifest_declares_gitmodule_consumption_with_a_typed_boolean() {
+    let project = tempfile::tempdir().unwrap();
+    fs::write(
+        project.path().join(MANIFEST_FILE),
+        r#"[package]
+org = "acme"
+name = "workspace"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.com/acme/workspace"
+
+[interop]
+git-submodules = true
+"#,
+    )
+    .unwrap();
+    let nested = project.path().join("apps/example");
+    fs::create_dir_all(&nested).unwrap();
+
+    let declaration = manifest_git_submodules(&nested).unwrap().unwrap();
+    assert_eq!(declaration.root, project.path());
+    assert_eq!(declaration.value, ManifestGitSubmodules::Enabled);
+    assert_eq!(declaration.line, Some(11));
+    assert!(manifest_consumes_gitmodules(&nested).unwrap());
+    assert!(consumes_gitmodules(&nested, Some(true)).unwrap());
+    assert!(!consumes_gitmodules(&nested, Some(false)).unwrap());
+
+    fs::write(
+        project.path().join(MANIFEST_FILE),
+        "[interop]\ngit-submodules = \"yes\"\n",
+    )
+    .unwrap();
+    assert!(manifest_git_submodules(&nested).is_err());
+
+    fs::write(
+        project.path().join(MANIFEST_FILE),
+        "[interop]\ngit_submodules = true\n",
+    )
+    .unwrap();
+    let declaration = manifest_git_submodules(&nested).unwrap().unwrap();
+    assert_eq!(declaration.value, ManifestGitSubmodules::Undeclared);
+}
+
+#[test]
+fn reportable_submodule_urls_reject_credentials_and_command_transports() {
+    for url in [
+        "https://example.com/acme/client.git",
+        "ssh://git@example.com/acme/client.git",
+        "git@example.com:acme/client.git",
+        "../client",
+    ] {
+        validate_repository_url_for_interop(url).unwrap();
+    }
+    for url in [
+        "https://user:secret@example.com/acme/client.git",
+        "https://example.com/acme/client.git?token=secret",
+        "https://example.com/acme/client.git#secret",
+        "ext::sh -c dangerous",
+        "-unsafe",
+    ] {
+        assert!(
+            validate_repository_url_for_interop(url).is_err(),
+            "unsafe URL unexpectedly accepted"
+        );
+    }
 }
 
 #[test]

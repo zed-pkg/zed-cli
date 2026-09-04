@@ -70,11 +70,10 @@ pub struct Globals {
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "true",
-        default_value = "false",
         value_parser = clap::builder::BoolishValueParser::new(),
         action = clap::ArgAction::Set
     )]
-    pub git_submodules: bool,
+    pub git_submodules: Option<bool>,
 }
 
 /// Contextual adapters translate zed's universal layout into what a
@@ -149,6 +148,12 @@ impl ContainerRuntime {
 pub enum CompletionShell {
     Bash,
     Zsh,
+}
+
+/// Machine-readable output formats supported by `zed inspect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InspectFormat {
+    Json,
 }
 
 impl From<CompletionShell> for clap_complete::Shell {
@@ -244,6 +249,20 @@ pub enum Cmd {
     Env {
         #[command(subcommand)]
         cmd: EnvCmd,
+    },
+    /// Inspect local package and interoperability state without changing it.
+    Inspect {
+        /// Stable machine-readable output format.
+        #[arg(
+            long,
+            value_enum,
+            env = "ZED_PKG_INSPECT_FORMAT",
+            default_value = "json"
+        )]
+        format: InspectFormat,
+        /// Project root to inspect; defaults to the current directory.
+        #[arg(long, env = "ZED_PKG_INSPECT_ROOT")]
+        root: Option<PathBuf>,
     },
     /// Generate a completion script from the same typed command model used at runtime
     Completions {
@@ -643,7 +662,7 @@ mod tests {
             ["zed", "install", "--git-submodules", "acme/http-kit@^1"],
         ] {
             let cli = Cli::try_parse_from(args).unwrap();
-            assert!(cli.globals.git_submodules, "{args:?}");
+            assert_eq!(cli.globals.git_submodules, Some(true), "{args:?}");
             match cli.cmd {
                 Cmd::Install { specs, .. } => {
                     assert_eq!(specs, ["acme/http-kit@^1"]);
@@ -659,7 +678,7 @@ mod tests {
             "acme/http-kit@^1",
         ])
         .unwrap();
-        assert!(!cli.globals.git_submodules);
+        assert_eq!(cli.globals.git_submodules, Some(false));
         assert!(matches!(cli.cmd, Cmd::Install { .. }));
     }
 

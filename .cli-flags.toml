@@ -116,8 +116,7 @@ help = "Do not create a new .zpkg.toml when installing into a project without on
 env = "ZED_PKG_GIT_SUBMODULES"
 aliases = ["git-submodules"]
 type = "bool"
-default = "false"
-help = "Enable global Git submodule compatibility for install and overtake; accepts explicit true/false."
+help = "Override manifest-declared Git submodule compatibility for install and overtake; accepts explicit true/false."
 
 [flags.allow_ecosystem_mismatch]
 env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH"
@@ -300,6 +299,22 @@ help = "Import manager-native state as a normalized EnvironmentPlan."
 
 [commands.env.commands.verify]
 help = "Verify config/lock coverage and normalized environment identity."
+
+[commands.inspect]
+help = "Inspect local package and interoperability state without mutation."
+
+[commands.inspect.flags.inspect_format]
+env = "ZED_PKG_INSPECT_FORMAT"
+aliases = ["format"]
+type = "string"
+default = "json"
+help = "Machine-readable inspection output format."
+
+[commands.inspect.flags.inspect_root]
+env = "ZED_PKG_INSPECT_ROOT"
+aliases = ["root"]
+type = "string"
+help = "Project root to inspect."
 
 [commands.completions]
 help = "Generate Bash or Zsh completion from the typed CLI model."

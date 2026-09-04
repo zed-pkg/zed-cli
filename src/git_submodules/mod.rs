@@ -40,6 +40,196 @@ pub struct OvertakeReport {
     pub adopted: usize,
 }
 
+/// Declarative `.zpkg.toml` policy for cooperative Git-submodule handling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestGitSubmodules {
+    Undeclared,
+    Enabled,
+    Disabled,
+}
+
+/// Location and value of the manifest's `[interop].git-submodules` switch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManifestGitSubmodulesDeclaration {
+    pub root: PathBuf,
+    pub manifest: PathBuf,
+    pub value: ManifestGitSubmodules,
+    pub line: Option<usize>,
+}
+
+/// One validated declaration read from `.gitmodules` without changing Git
+/// configuration or checkout state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSubmoduleDeclaration {
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    pub branch: Option<String>,
+}
+
+/// Read-only `.gitmodules` inventory for diagnostics and editor integrations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSubmoduleInventory {
+    pub root: PathBuf,
+    pub declarations: Vec<GitSubmoduleDeclaration>,
+}
+
+/// Refuse repository transports that could leak credentials into editor JSON
+/// or delegate checkout to Git's command-executing `ext` transport.
+pub(crate) fn validate_repository_url_for_interop(value: &str) -> Result<()> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.starts_with('-')
+        || value.starts_with("ext::")
+        || value.chars().any(char::is_control)
+    {
+        bail!("submodule repository URL uses an unsafe transport or encoding");
+    }
+
+    if let Ok(parsed) = reqwest::Url::parse(value) {
+        let username_is_credential =
+            !parsed.username().is_empty() && !matches!(parsed.scheme(), "ssh" | "git+ssh");
+        if username_is_credential || parsed.password().is_some() {
+            bail!("submodule repository URL must not embed credentials");
+        }
+        if parsed.fragment().is_some() {
+            bail!("submodule repository URL must not contain a fragment");
+        }
+        for (key, _) in parsed.query_pairs() {
+            if is_secret_query_key(&key) {
+                bail!("submodule repository URL contains a secret-bearing query parameter");
+            }
+        }
+    } else {
+        if value.contains('#') {
+            bail!("submodule repository URL must not contain a fragment");
+        }
+        if let Some((_, query)) = value.split_once('?') {
+            for pair in query.split('&') {
+                let key = pair.split_once('=').map_or(pair, |(key, _)| key);
+                if is_secret_query_key(key) {
+                    bail!("submodule repository URL contains a secret-bearing query parameter");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_secret_query_key(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "access_token"
+            | "api_key"
+            | "apikey"
+            | "auth"
+            | "authorization"
+            | "key"
+            | "password"
+            | "secret"
+            | "sig"
+            | "signature"
+            | "token"
+            | "x-amz-credential"
+            | "x-amz-signature"
+            | "x-amz-security-token"
+            | "x-goog-credential"
+            | "x-goog-signature"
+    )
+}
+
+fn has_manifest_entry(candidate: &Path) -> bool {
+    match fs::symlink_metadata(candidate.join(MANIFEST_FILE)) {
+        Ok(_) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+fn manifest_git_submodules_line(text: &str) -> Option<usize> {
+    let mut in_interop = false;
+    for (index, line) in text.lines().enumerate() {
+        let content = line.split('#').next().unwrap_or_default().trim();
+        if content.starts_with('[') {
+            in_interop = content == "[interop]";
+            continue;
+        }
+        if in_interop
+            && content
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "git-submodules")
+        {
+            return Some(index + 1);
+        }
+    }
+    None
+}
+
+/// Read the nearest manifest's explicit Git-submodule policy. Unknown
+/// manifest fields remain the shared interface parser's responsibility; this
+/// helper reads only the additive interop table so older interface crates can
+/// safely consume the new declaration.
+pub fn manifest_git_submodules(
+    requested: &Path,
+) -> Result<Option<ManifestGitSubmodulesDeclaration>> {
+    let Some(root) = requested
+        .ancestors()
+        .find(|candidate| has_manifest_entry(candidate))
+    else {
+        return Ok(None);
+    };
+    let manifest = root.join(MANIFEST_FILE);
+    let metadata = fs::symlink_metadata(&manifest)
+        .with_context(|| format!("inspecting manifest interop policy {}", manifest.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "{} must be a regular file before it can enable Git-submodule interoperability",
+            manifest.display()
+        );
+    }
+    let text = fs::read_to_string(&manifest)
+        .with_context(|| format!("reading manifest interop policy {}", manifest.display()))?;
+    let document: toml::Value = toml::from_str(&text)
+        .with_context(|| format!("parsing manifest interop policy {}", manifest.display()))?;
+    let value = match document.get("interop") {
+        None => ManifestGitSubmodules::Undeclared,
+        Some(interop) => {
+            let interop = interop
+                .as_table()
+                .context("[interop] must be a TOML table")?;
+            match interop.get("git-submodules") {
+                None => ManifestGitSubmodules::Undeclared,
+                Some(value) => match value.as_bool() {
+                    Some(true) => ManifestGitSubmodules::Enabled,
+                    Some(false) => ManifestGitSubmodules::Disabled,
+                    None => bail!("[interop].git-submodules must be true or false"),
+                },
+            }
+        }
+    };
+    Ok(Some(ManifestGitSubmodulesDeclaration {
+        root: root.to_path_buf(),
+        manifest,
+        value,
+        line: manifest_git_submodules_line(&text),
+    }))
+}
+
+/// Manifest-level default used only when neither the CLI nor environment
+/// supplied an explicit true/false override.
+pub fn manifest_consumes_gitmodules(requested: &Path) -> Result<bool> {
+    Ok(manifest_git_submodules(requested)?
+        .is_some_and(|declaration| declaration.value == ManifestGitSubmodules::Enabled))
+}
+
+/// Resolve the cooperative-mode switch with stable precedence: an explicit
+/// CLI/environment value wins, then the manifest declaration, then off.
+pub fn consumes_gitmodules(requested: &Path, explicit: Option<bool>) -> Result<bool> {
+    match explicit {
+        Some(value) => Ok(value),
+        None => manifest_consumes_gitmodules(requested),
+    }
+}
+
 fn has_gitmodules_entry(candidate: &Path) -> bool {
     match fs::symlink_metadata(candidate.join(".gitmodules")) {
         Ok(_) => true,
@@ -53,6 +243,59 @@ pub fn find_root(requested: &Path) -> Option<PathBuf> {
         .ancestors()
         .find(|candidate| has_gitmodules_entry(candidate))
         .map(Path::to_path_buf)
+}
+
+/// Parse and path-validate the nearest `.gitmodules` file without running any
+/// synchronizing or update command.
+pub fn inspect_inventory(requested: &Path) -> Result<Option<GitSubmoduleInventory>> {
+    let Some(root) = find_root(requested) else {
+        return Ok(None);
+    };
+    preflight_gitmodules_metadata(&root)?;
+    let declarations = configured_submodules(&root)?
+        .into_iter()
+        .map(|module| GitSubmoduleDeclaration {
+            name: module.name,
+            path: module.path,
+            url: module.url,
+            branch: module.branch,
+        })
+        .collect();
+    Ok(Some(GitSubmoduleInventory { root, declarations }))
+}
+
+/// Verify that the metadata an editor inspected is part of the superproject's
+/// immutable state. This is read-only and never synchronizes submodules.
+pub fn inspect_gitmodules_provenance(project: &Path) -> Result<()> {
+    checked_git(project, &["cat-file", "-e", "HEAD:.gitmodules"])
+        .context(".gitmodules is not committed at superproject HEAD")?;
+    verify_gitmodules_committed(project)
+}
+
+/// Verify one configured checkout using the same exact-commit, dirty-tree,
+/// nested-submodule, and containment checks used by takeover and packaging.
+pub fn inspect_checkout(project: &Path, relative: &str) -> Result<String> {
+    git::validate_relative_path(relative)?;
+    let canonical_root = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing Git superproject {}", project.display()))?;
+    let configured_child = project.join(relative);
+    let marker = configured_child.join(".git");
+    let marker_metadata = fs::symlink_metadata(&marker).with_context(|| {
+        format!("submodule `{relative}` is not initialized; run `zed install --git-submodules`")
+    })?;
+    if marker_metadata.file_type().is_symlink() {
+        bail!("submodule `{relative}` has a symlinked .git control path");
+    }
+    let child = fs::canonicalize(&configured_child)
+        .with_context(|| format!("canonicalizing submodule `{relative}`"))?;
+    if !child.starts_with(&canonical_root) {
+        bail!(
+            "submodule `{relative}` resolves outside superproject {}: {}",
+            project.display(),
+            child.display()
+        );
+    }
+    verify_checkout(project, relative, &child)
 }
 
 fn verify_gitmodules_worktree_regular(project: &Path) -> Result<()> {

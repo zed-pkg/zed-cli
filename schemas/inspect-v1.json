@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zpkg.tech/schemas/inspect-v1.json",
+  "title": "Zed local inspection report v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "root",
+    "package",
+    "interop",
+    "summary",
+    "diagnostics"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "root": {
+      "$ref": "#/$defs/path"
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["materialization_dir"],
+      "properties": {
+        "manifest": {
+          "$ref": "#/$defs/path"
+        },
+        "lockfile": {
+          "$ref": "#/$defs/path"
+        },
+        "materialization_dir": {
+          "$ref": "#/$defs/path"
+        }
+      }
+    },
+    "interop": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["git_submodules"],
+      "properties": {
+        "git_submodules": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "manifest_declared",
+            "effective_default",
+            "entries"
+          ],
+          "properties": {
+            "manifest_declared": {
+              "type": ["boolean", "null"]
+            },
+            "effective_default": {
+              "type": "boolean"
+            },
+            "gitmodules": {
+              "$ref": "#/$defs/path"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/git_submodule"
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["health", "errors", "warnings"],
+      "properties": {
+        "health": {
+          "enum": ["ok", "warning", "error"]
+        },
+        "errors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warnings": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/diagnostic"
+      }
+    }
+  },
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "git_submodule": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "path",
+        "url",
+        "initialized",
+        "workspace_adopted"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "initialized": {
+          "type": "boolean"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{7,128}$"
+        },
+        "zed_package": {
+          "type": "string",
+          "pattern": "^[^/]+/[^/]+$"
+        },
+        "workspace_adopted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["code", "severity", "message", "detail", "location"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]+$"
+        },
+        "severity": {
+          "enum": ["error", "warning", "info"]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "detail": {
+          "type": "string"
+        },
+        "location": {
+          "$ref": "#/$defs/location"
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/action"
+          }
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["path"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "title",
+        "kind",
+        "mutates_project",
+        "requires_network",
+        "executes_package_code"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["zed-command", "open-file"]
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        },
+        "mutates_project": {
+          "type": "boolean"
+        },
+        "requires_network": {
+          "type": "boolean"
+        },
+        "executes_package_code": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "zed-command"
+              }
+            }
+          },
+          "then": {
+            "required": ["argv"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "open-file"
+              }
+            }
+          },
+          "then": {
+            "required": ["path"]
+          }
+        }
+      ]
+    }
+  }
+}

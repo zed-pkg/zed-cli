@@ -116,6 +116,8 @@ registry hosts both on S3/Cloudflare R2.
 | `zed remove <org>/<name>` | Remove a dependency |
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
+| `zed inspect --format json [--root PATH]` | Emit deterministic, credential-free, non-mutating package and Git-submodule compatibility diagnostics for editors and CI |
+| `zed overtake --git-submodules` | Adopt compatible Zed package submodules into exact workspace and lock authority while retaining Git transport |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
 | `zed env verify mise [--config PATH] [--lock PATH] --frozen [--json]` | Fail closed on missing lock coverage, drift, malformed checksums, unsupported semantics, or non-portable frozen state and report the stable plan digest |
@@ -473,6 +475,11 @@ If the smoke test passes here, it will pass for your users.
 | hg | yes | yes |
 | fossil | yes | not yet (`--skip-vcs-checks`) |
 | pijul | not yet | not yet (`--skip-vcs-checks`) |
+
+Repositories that want Zed to consume `.gitmodules` declare
+`[interop] git-submodules = true`; explicit CLI/environment booleans override
+that default. See [Git-submodule interoperability](docs/git-submodules.md) and
+the editor-neutral [local inspection contract](docs/inspect.md).
 
 ## Concurrency
 

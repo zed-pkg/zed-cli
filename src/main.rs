@@ -13,6 +13,7 @@ use zed_cli::environment;
 use zed_cli::fetch;
 use zed_cli::git_submodules as submodules;
 use zed_cli::global;
+use zed_cli::inspect;
 use zed_cli::managed_install;
 use zed_cli::nix_bundle_write;
 use zed_cli::nix_export_plan;
@@ -158,9 +159,12 @@ fn root_global_option_takes_value(token: &str) -> bool {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    let cfg = Config::from_globals(&cli.globals)?;
-    let git_submodules = cli.globals.git_submodules;
     let cwd = std::env::current_dir()?;
+    if let Cmd::Inspect { format, root } = &cli.cmd {
+        return inspect::print(root.as_deref().unwrap_or(&cwd), *format);
+    }
+    let cfg = Config::from_globals(&cli.globals)?;
+    let git_submodules_override = cli.globals.git_submodules;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Every live project transaction already owns this kernel-backed
         // install lock. Recover under the same lock so a concurrent process
@@ -183,6 +187,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
+            let git_submodules = submodules::consumes_gitmodules(&cwd, git_submodules_override)?;
             if git_submodules {
                 submodules::sync(&cwd)?;
             }
@@ -247,6 +252,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
             },
         },
+        Cmd::Inspect { .. } => unreachable!("inspect returns before mutable startup handling"),
         Cmd::Completions { shell } => {
             completion::print(shell.into());
             Ok(())

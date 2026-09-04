@@ -106,6 +106,10 @@ url = "{repo_url}"
 [dependencies]
 # "acme/http-kit" = "^1"
 
+# Uncomment when Zed should consume and validate the committed .gitmodules graph:
+# [interop]
+# git-submodules = true
+
 [publish]
 # Extra globs to strip beyond the defaults (tests, CI, .github, READMEs):
 exclude = []

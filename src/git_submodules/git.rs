@@ -235,6 +235,8 @@ pub(super) fn configured_submodules(project: &Path) -> Result<Vec<SubmoduleConfi
             .url
             .filter(|url| !url.trim().is_empty())
             .with_context(|| format!("submodule `{name}` is missing `url`"))?;
+        super::validate_repository_url_for_interop(&url)
+            .with_context(|| format!("submodule `{name}` has an unsafe `url`"))?;
         modules.push(SubmoduleConfig {
             name,
             path,
