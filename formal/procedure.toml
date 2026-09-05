@@ -31,10 +31,19 @@ review_triggers = ["root discovery", "adapter inference", "interactive confirmat
 [[machine]]
 id = "resolve-lock-store-install"
 risk = "critical"
-status = "planned"
-backend = "quint+property-tests+itf-rust-replay"
+status = "modeling"
+backend = "python-bounded-state-machine"
 owner = "zed-resolver-store"
 source_paths = ["src/ops.rs", "src/store.rs", "src/config.rs", "src/registry.rs"]
+model_paths = ["formal/review-procedure/model.py"]
+model_scope = [
+  "one package identity with three immutable version identities",
+  "resolve, download, hash verification, immutable store insertion, and project link",
+  "frozen-install and publish admission with rejected-artifact witnesses",
+]
+model_limits = [
+  "dependency graphs, cycles, concurrent installers, and filesystem crash points remain unmodeled",
+]
 safety = [
   "one lock entry identifies one exact version, artifact hash, source revision, and provenance anchor",
   "only a verified complete artifact becomes visible in the immutable store",
@@ -45,7 +54,7 @@ safety = [
 ]
 liveness = ["for a finite satisfiable graph with terminating registry and filesystem operations, resolution and install eventually complete"]
 faults = ["download truncated", "hash mismatch", "rename crash", "two installers", "dependency cycle", "registry response lost", "workspace member disappears"]
-bounds = ["four packages", "two versions each", "semver/calver/opaque", "two concurrent installers", "finite crash points"]
+bounds = ["one package identity", "three version identities", "one downloaded artifact", "one immutable store entry", "one project link"]
 review_triggers = ["range algebra", "resolver choice", "lock schema", "content hash", "store atomicity", "project link", "workspace resolution"]
 
 [[machine]]
