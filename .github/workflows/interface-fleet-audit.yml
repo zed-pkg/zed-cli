@@ -1,0 +1,89 @@
+name: GitHub interface fleet audit
+
+on:
+  pull_request:
+    paths:
+      - "tools/role-contract/github_interface_fleet.py"
+      - "tests/role-contract/test_github_interface_fleet.py"
+      - "docs/github-interface-fleet-audit.md"
+      - ".github/workflows/interface-fleet-audit.yml"
+  workflow_dispatch:
+    inputs:
+      organizations:
+        description: "Comma-separated GitHub organizations to audit"
+        required: true
+        type: string
+      strict:
+        description: "Fail when any interface family is incomplete"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  scanner-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Run deterministic fleet scanner tests
+        run: >-
+          python -m unittest
+          tests/role-contract/test_github_interface_fleet.py
+          -v
+
+  fleet-audit:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ secrets.INTERFACE_FLEET_READ_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - name: Audit every requested organization deeply
+        shell: bash
+        env:
+          ORGANIZATIONS: ${{ inputs.organizations }}
+          STRICT: ${{ inputs.strict }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -r -a organizations <<< "$ORGANIZATIONS"
+          arguments=()
+          for organization in "${organizations[@]}"; do
+            organization="${organization//[[:space:]]/}"
+            if [[ -n "$organization" ]]; then
+              arguments+=(--org "$organization")
+            fi
+          done
+          if [[ ${#arguments[@]} -eq 0 ]]; then
+            echo "no valid organizations were supplied" >&2
+            exit 2
+          fi
+          if [[ "$STRICT" == "true" ]]; then
+            arguments+=(--strict)
+          fi
+          python3 tools/role-contract/github_interface_fleet.py \
+            "${arguments[@]}" \
+            --deep \
+            --output interface-fleet-audit.json
+          python3 -m json.tool interface-fleet-audit.json
+      - name: Upload the deterministic audit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: interface-fleet-audit
+          path: interface-fleet-audit.json
+          if-no-files-found: error
+          retention-days: 7
