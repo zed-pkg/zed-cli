@@ -96,6 +96,7 @@ fn locked_package(
         download_url: "ignored-by-file-registry".to_string(),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+        mirrors: Vec::new(),
     };
     let locked = LockedPackage {
         org: org.to_string(),
@@ -115,6 +116,7 @@ fn write_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
     let lock = Lockfile {
         version: Lockfile::CURRENT_VERSION,
         packages,
+        tools: Vec::new(),
         native_dependencies: Vec::new(),
         nix_adapters: Vec::new(),
     };

@@ -22,7 +22,8 @@ name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "60a8ab55f8a55eb212a72dcb334c1c118047c7ef" }
+# Local checkout until the GitHub/R2 locator contract is on origin/main.
+zed-interfaces = { path = "../zed-interfaces/src/rust" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
