@@ -1,0 +1,360 @@
+# One-shot branch-only materializer. Removed after source and lock are committed.
+name: materialize merged zed-client runtime
+
+on:
+  push:
+    branches: [den-3214/zed-cli-use-shared-clients]
+    paths:
+      - ".github/workflows/materialize-zed-client-runtime-v3.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-merged-zed-client-runtime
+  cancel-in-progress: true
+
+env:
+  ZED_INTERFACES_SHA: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
+  ZED_CLIENT_SHA: b32e089caea772f166204fb1c7bcaad6f56942fe
+
+jobs:
+  rewrite-test-and-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Route shared registry operations through merged zed-client
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          interface_sha = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e"
+          old_revision = "0c51d732cb01a377b2bc00e8d945b355e41961c1"
+
+          registry = Path("src/registry.rs")
+          text = registry.read_text()
+
+          old_struct = '''pub struct HttpRegistry {
+              base: String,
+              client: reqwest::blocking::Client,
+              download_client: reqwest::blocking::Client,
+          }
+          '''
+          new_struct = '''pub struct HttpRegistry {
+              base: String,
+              shared: zed_client::Client,
+              // CLI-only transport remains for multipart publication, binary
+              // artifacts, audit reads, and the stricter 1 GiB download path.
+              client: reqwest::blocking::Client,
+              download_client: reqwest::blocking::Client,
+          }
+          '''
+          assert text.count(old_struct) == 1
+          text = text.replace(old_struct, new_struct, 1)
+
+          base_line = '''        let base = parsed.as_str().trim_end_matches('/').to_string();
+                  let redirect_base = parsed.clone();
+          '''
+          assert text.count(base_line) == 1
+          text = text.replace(
+              base_line,
+              '''        let base = parsed.as_str().trim_end_matches('/').to_string();
+                  let shared = zed_client::Client::new(base.clone()).map_err(anyhow::Error::new)?;
+                  let redirect_base = parsed.clone();
+          ''',
+              1,
+          )
+
+          self_start = '''        Ok(Self {
+                      base,
+                      client: reqwest::blocking::Client::builder()
+          '''
+          assert text.count(self_start) == 1
+          text = text.replace(
+              self_start,
+              '''        Ok(Self {
+                      base,
+                      shared,
+                      client: reqwest::blocking::Client::builder()
+          ''',
+              1,
+          )
+
+          url_method = '''    fn url(&self, path: &str) -> String {
+                  format!("{}{path}", self.base)
+              }
+          '''
+          assert text.count(url_method) == 1
+          text = text.replace(
+              url_method,
+              '''    fn shared_with_token(&self, token: Option<&str>) -> Result<zed_client::Client> {
+                  let client =
+                      zed_client::Client::new(self.base.clone()).map_err(anyhow::Error::new)?;
+                  Ok(match token {
+                      Some(token) => client.with_token(token),
+                      None => client,
+                  })
+              }
+
+              fn url(&self, path: &str) -> String {
+                  format!("{}{path}", self.base)
+              }
+          ''',
+              1,
+          )
+
+          old_gets = '''    fn get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
+                  let response = self
+                      .client
+                      .get(self.url(&registry::package_path(org, name)))
+                      .send()?;
+                  Ok(Self::check(response)?.json()?)
+              }
+
+              fn get_version(&self, org: &str, name: &str, version: &str) -> Result<VersionMetadata> {
+                  let response = self
+                      .client
+                      .get(self.url(&registry::version_path(org, name, version)))
+                      .send()?;
+                  Ok(Self::check(response)?.json()?)
+              }
+          '''
+          new_gets = '''    fn get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
+                  self.shared
+                      .get_package(org, name)
+                      .map_err(anyhow::Error::new)
+              }
+
+              fn get_version(&self, org: &str, name: &str, version: &str) -> Result<VersionMetadata> {
+                  self.shared
+                      .get_version(org, name, version)
+                      .map_err(anyhow::Error::new)
+              }
+          '''
+          assert text.count(old_gets) == 1
+          text = text.replace(old_gets, new_gets, 1)
+
+          old_claim = '''    fn claim_org(&self, slug: &str, token: Option<&str>) -> Result<ClaimOrgResponse> {
+                  let mut request =
+                      self.client
+                          .post(self.url(&registry::orgs_path()))
+                          .json(&ClaimOrgRequest {
+                              slug: slug.to_string(),
+                          });
+                  if let Some(token) = token {
+                      request = request.bearer_auth(token);
+                  }
+                  Ok(Self::check(request.send()?)?.json()?)
+              }
+          '''
+          new_claim = '''    fn claim_org(&self, slug: &str, token: Option<&str>) -> Result<ClaimOrgResponse> {
+                  self.shared_with_token(token)?
+                      .claim_org(slug)
+                      .map_err(anyhow::Error::new)
+              }
+          '''
+          assert text.count(old_claim) == 1
+          text = text.replace(old_claim, new_claim, 1)
+
+          old_search = '''    fn search(&self, query: &str) -> Result<SearchResponse> {
+                  let response = self
+                      .client
+                      .get(self.url(&registry::search_path()))
+                      .query(&[("q", query)])
+                      .send()?;
+                  Ok(Self::check(response)?.json()?)
+              }
+          '''
+          new_search = '''    fn search(&self, query: &str) -> Result<SearchResponse> {
+                  self.shared.search(query).map_err(anyhow::Error::new)
+              }
+          '''
+          assert text.count(old_search) == 1
+          text = text.replace(old_search, new_search, 1)
+
+          old_yank = '''    fn yank(
+                  &self,
+                  org: &str,
+                  name: &str,
+                  version: &str,
+                  yanked: bool,
+                  token: Option<&str>,
+              ) -> Result<YankResponse> {
+                  let mut request = self
+                      .client
+                      .post(self.url(&registry::yank_path(org, name, version)))
+                      .json(&YankRequest { yanked });
+                  if let Some(token) = token {
+                      request = request.bearer_auth(token);
+                  }
+                  Ok(Self::check(request.send()?)?.json()?)
+              }
+          '''
+          new_yank = '''    fn yank(
+                  &self,
+                  org: &str,
+                  name: &str,
+                  version: &str,
+                  yanked: bool,
+                  token: Option<&str>,
+              ) -> Result<YankResponse> {
+                  self.shared_with_token(token)?
+                      .set_yanked(org, name, version, yanked)
+                      .map_err(anyhow::Error::new)
+              }
+          '''
+          assert text.count(old_yank) == 1
+          text = text.replace(old_yank, new_yank, 1)
+
+          old_redirect_assert = '''        assert!(format!("{error:#}").contains("307 Temporary Redirect"));
+          '''
+          new_redirect_assert = '''        let rendered = format!("{error:#}");
+                  assert!(rendered.contains("registry error 307: http_307"));
+                  assert!(!rendered.contains("do-not-forward"));
+          '''
+          assert text.count(old_redirect_assert) == 1
+          text = text.replace(old_redirect_assert, new_redirect_assert, 1)
+
+          test_anchor = '''    #[test]
+              fn qualified_binary_route_keeps_target_out_of_semver() {
+          '''
+          shared_transport_test = '''    #[test]
+              fn package_reads_use_the_shared_zed_client_transport() {
+                  let server = TcpListener::bind("127.0.0.1:0").unwrap();
+                  let address = server.local_addr().unwrap();
+                  let response_body = serde_json::json!({
+                      "org": "acme",
+                      "name": "tool",
+                      "vcs": "git",
+                      "repo_url": "https://github.com/acme/tool",
+                      "description": null,
+                      "latest": "1.0.0",
+                      "versions": ["1.0.0"],
+                      "version_scheme": "semver",
+                      "tags": []
+                  })
+                  .to_string();
+                  let thread = std::thread::spawn(move || {
+                      let (mut stream, _) = server.accept().unwrap();
+                      let mut request = [0_u8; 8192];
+                      let read = stream.read(&mut request).unwrap();
+                      let request = String::from_utf8_lossy(&request[..read]);
+                      assert!(request.starts_with("GET /v1/packages/acme/tool "));
+                      assert!(
+                          request
+                              .to_ascii_lowercase()
+                              .contains("user-agent: zed-client-rust/0.1.0")
+                      );
+                      write!(
+                          stream,
+                          "HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\nContent-Length: {}\\r\\nConnection: close\\r\\n\\r\\n{}",
+                          response_body.len(),
+                          response_body
+                      )
+                      .unwrap();
+                  });
+
+                  let registry = HttpRegistry::new(format!("http://{address}")).unwrap();
+                  let metadata = registry.get_package("acme", "tool").unwrap();
+                  assert_eq!(metadata.latest.as_deref(), Some("1.0.0"));
+                  thread.join().unwrap();
+              }
+
+          '''
+          assert text.count(test_anchor) == 1
+          text = text.replace(test_anchor, shared_transport_test + test_anchor, 1)
+
+          old_imports = "self, AuditLogResponse, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,\n    PublishResponse, SearchResponse, VersionMetadata, YankRequest, YankResponse,"
+          new_imports = "self, AuditLogResponse, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,\n    SearchResponse, VersionMetadata, YankResponse,"
+          assert text.count(old_imports) == 1
+          text = text.replace(old_imports, new_imports, 1)
+          registry.write_text(text)
+
+          solver = Path("src/install_graph/solver.rs")
+          text = solver.read_text()
+          import_anchor = "use zed_interfaces::version::VersionScheme;\n"
+          assert text.count(import_anchor) == 1
+          text = text.replace(import_anchor, import_anchor + "use zed_lib::requirement_matches;\n", 1)
+          local_matcher = '''fn requirement_matches(scheme: VersionScheme, requirement: &str, published: &str) -> bool {
+              match scheme {
+                  VersionScheme::Opaque => requirement == published,
+                  VersionScheme::Semver | VersionScheme::Calver => {
+                      Requirement::parse(requirement).matches(published)
+                  }
+              }
+          }
+
+          '''
+          assert text.count(local_matcher) == 1
+          solver.write_text(text.replace(local_matcher, "", 1))
+
+          install_graph = Path("src/install_graph.rs")
+          text = install_graph.read_text()
+          assert text.count("use zed_interfaces::version::{self, Requirement};") == 1
+          install_graph.write_text(text.replace(
+              "use zed_interfaces::version::{self, Requirement};",
+              "use zed_interfaces::version;",
+              1,
+          ))
+
+          validation = Path("src/validation.rs")
+          text = validation.read_text()
+          assert text.count(old_revision) == 1
+          validation.write_text(text.replace(old_revision, interface_sha, 1))
+
+          validate_cli = Path("tests/validate_cli.rs")
+          text = validate_cli.read_text()
+          assert text.count(old_revision) == 1
+          validate_cli.write_text(text.replace(old_revision, interface_sha, 1))
+
+          readme = Path("schemas/zed-interfaces/README.md")
+          text = readme.read_text()
+          assert text.count(old_revision) >= 1
+          readme.write_text(text.replace(old_revision, interface_sha))
+          PY
+
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/zed-pkg/zed-interfaces/$ZED_INTERFACES_SHA/schemas/manifest.json" \
+            --output schemas/zed-interfaces/manifest.json
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/zed-pkg/zed-interfaces/$ZED_INTERFACES_SHA/schemas/lockfile.json" \
+            --output schemas/zed-interfaces/lockfile.json
+
+          grep -F "rev = \"$ZED_CLIENT_SHA\"" Cargo.toml
+          cargo fmt --all
+          cargo generate-lockfile
+          cargo test --locked registry::tests::package_reads_use_the_shared_zed_client_transport
+          cargo test --locked validation::tests::checked_in_schemas_are_pinned_to_the_dependency_revision
+          cargo test --locked --test validate_cli
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo tree --locked -i zed-client | grep -F "zed-cli v0.3.0"
+          cargo tree --locked -i zed-lib | grep -F "zed-cli v0.3.0"
+
+      - name: Commit source, schemas, tests, and exact lock
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            Cargo.lock \
+            src/registry.rs \
+            src/install_graph.rs \
+            src/install_graph/solver.rs \
+            src/validation.rs \
+            tests/validate_cli.rs \
+            schemas/zed-interfaces/README.md \
+            schemas/zed-interfaces/manifest.json \
+            schemas/zed-interfaces/lockfile.json
+          git diff --cached --check
+          git commit -m "feat(DEN-3214): route shared operations through zed-client"
+          git push origin HEAD:den-3214/zed-cli-use-shared-clients
