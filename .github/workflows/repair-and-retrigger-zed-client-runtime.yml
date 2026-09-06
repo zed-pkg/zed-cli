@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           count="$(grep -o "$OLD_SHA" tests/validate_cli.rs | wc -l | tr -d ' ')"
-          test "$count" = "3"
+          test "$count" = "1"
           sed -i "s/$OLD_SHA/$NEW_SHA/g" tests/validate_cli.rs
           printf '\n# retrigger after validation-fixture repair\n' >> .github/workflows/materialize-zed-client-runtime.yml
           git diff --check
