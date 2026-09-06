@@ -1,0 +1,40 @@
+# One-shot branch verification; removed after the permanent guard passes.
+name: verify permanent zed-client ownership guard
+
+on:
+  push:
+    branches: [den-3214/zed-cli-use-shared-clients]
+    paths:
+      - ".github/workflows/verify-zed-client-runtime-v4.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-zed-client-runtime-v4
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - name: Verify formatting and permanent ownership assertions
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked --test shared_client_ownership
+          cargo clippy --locked --test shared_client_ownership -- -D warnings
+      - name: Re-prove runtime delegation and dependency identity
+        run: |
+          set -euo pipefail
+          cargo test --locked registry::tests::package_reads_use_the_shared_zed_client_transport
+          cargo tree --locked -i zed-client | grep -F "zed-cli v0.3.0"
+          cargo tree --locked -i zed-lib | grep -F "zed-cli v0.3.0"
