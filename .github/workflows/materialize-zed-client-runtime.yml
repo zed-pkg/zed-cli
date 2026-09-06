@@ -3,7 +3,7 @@ name: materialize zed-client runtime adapter
 
 on:
   push:
-    branches: [feat/use-zed-clients-runtime]
+    branches: [den-3214/zed-cli-use-shared-clients]
     paths:
       - ".github/workflows/materialize-zed-client-runtime.yml"
 
@@ -11,8 +11,11 @@ permissions:
   contents: write
 
 concurrency:
-  group: materialize-zed-client-runtime
+  group: materialize-zed-client-runtime-den-3214
   cancel-in-progress: true
+
+env:
+  ZED_INTERFACES_SHA: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
 
 jobs:
   rewrite-test-and-commit:
@@ -29,8 +32,11 @@ jobs:
           components: rustfmt, clippy
       - name: Route shared registry operations through zed-client
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
+
+          interface_sha = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e"
 
           registry = Path("src/registry.rs")
           text = registry.read_text()
@@ -263,6 +269,11 @@ jobs:
           '''
           assert text.count(test_anchor) == 1
           text = text.replace(test_anchor, shared_transport_test + test_anchor, 1)
+          text = text.replace(
+              "self, AuditLogResponse, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,\n    PublishResponse, SearchResponse, VersionMetadata, YankRequest, YankResponse,",
+              "self, AuditLogResponse, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,\n    SearchResponse, VersionMetadata, YankResponse,",
+              1,
+          )
           registry.write_text(text)
 
           solver = Path("src/install_graph/solver.rs")
@@ -287,19 +298,60 @@ jobs:
           assert text.count(local_matcher) == 1
           text = text.replace(local_matcher, "", 1)
           solver.write_text(text)
+
+          install_graph = Path("src/install_graph.rs")
+          text = install_graph.read_text()
+          assert "use zed_interfaces::version::{self, Requirement};" in text
+          install_graph.write_text(
+              text.replace(
+                  "use zed_interfaces::version::{self, Requirement};",
+                  "use zed_interfaces::version;",
+                  1,
+              )
+          )
+
+          validation = Path("src/validation.rs")
+          text = validation.read_text()
+          old_revision = "0c51d732cb01a377b2bc00e8d945b355e41961c1"
+          assert text.count(old_revision) == 1
+          validation.write_text(text.replace(old_revision, interface_sha, 1))
+
+          readme = Path("schemas/zed-interfaces/README.md")
+          text = readme.read_text()
+          assert old_revision in text
+          readme.write_text(text.replace(old_revision, interface_sha))
           PY
+
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/zed-pkg/zed-interfaces/$ZED_INTERFACES_SHA/schemas/manifest.json" \
+            --output schemas/zed-interfaces/manifest.json
+          curl --fail --silent --show-error --location \
+            "https://raw.githubusercontent.com/zed-pkg/zed-interfaces/$ZED_INTERFACES_SHA/schemas/lockfile.json" \
+            --output schemas/zed-interfaces/lockfile.json
 
           cargo fmt --all
           cargo generate-lockfile
+          cargo test --locked registry::tests::package_reads_use_the_shared_zed_client_transport
+          cargo test --locked validation::tests::checked_in_schemas_are_pinned_to_the_dependency_revision
           cargo test --locked --all-targets
           cargo clippy --locked --all-targets -- -D warnings
+          cargo tree --locked -i zed-client | grep -F "zed-cli v0.3.0"
+          cargo tree --locked -i zed-lib | grep -F "zed-cli v0.3.0"
 
       - name: Commit runtime adapter and exact lock
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock src/registry.rs src/install_graph/solver.rs
+          git add \
+            Cargo.lock \
+            src/registry.rs \
+            src/install_graph.rs \
+            src/install_graph/solver.rs \
+            src/validation.rs \
+            schemas/zed-interfaces/README.md \
+            schemas/zed-interfaces/manifest.json \
+            schemas/zed-interfaces/lockfile.json
           git diff --cached --check
-          git commit -m "feat(registry): route shared operations through zed-client"
-          git push origin HEAD:feat/use-zed-clients-runtime
+          git commit -m "feat(DEN-3214): route shared operations through zed-client"
+          git push origin HEAD:den-3214/zed-cli-use-shared-clients
