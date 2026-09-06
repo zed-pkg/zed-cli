@@ -1,0 +1,63 @@
+name: versioned circular dependencies
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/graph_export.rs
+      - src/versioned_graph.rs
+      - tests/versioned_dependency_cycles.rs
+      - docs/versioned-circular-dependencies.md
+      - .github/workflows/versioned-circular-dependencies.yml
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/graph_export.rs
+      - src/versioned_graph.rs
+      - tests/versioned_dependency_cycles.rs
+      - docs/versioned-circular-dependencies.md
+      - .github/workflows/versioned-circular-dependencies.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-graph:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Exact-node detection, ORE logging, and platform safety
+        run: cargo test --locked --lib versioned_graph -- --nocapture
+      - name: Public graph command parsing
+        run: cargo test --locked --lib graph_export::tests::materialize_requires_exactly_one_graph_input
+      - name: Finite symlink graph through the public executable
+        if: runner.os != 'Windows'
+        run: cargo test --locked --test versioned_dependency_cycles -- --nocapture
+      - name: Lint exact graph implementation
+        if: runner.os == 'Linux'
+        # These three repository-wide lints were reproduced on the PR base in
+        # the pre-PR validation run. Every other warning remains denied.
+        run: |
+          cargo clippy --locked --all-targets -- \
+            -D warnings \
+            -A clippy::large-enum-variant \
+            -A clippy::too-many-arguments \
+            -A clippy::type-complexity

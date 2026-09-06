@@ -1,8 +1,12 @@
-//! Immutable package dependency-graph downloads.
+//! Immutable package dependency-graph downloads and finite exact-graph materialization.
 //!
 //! `zed graph package <org>/<name>@<version>` is a byte-preserving client for
 //! the registry graph endpoints. It never resolves a mutable version, rewrites
 //! a graph, or treats a convenience projection as lockfile authority.
+//!
+//! `zed graph materialize` projects a complete exact-version graph into one
+//! finite symlink forest. Back edges reuse existing exact nodes; no dependency
+//! subtree is recursively copied into another dependency subtree.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -13,6 +17,11 @@ use serde::Serialize;
 
 use crate::cli::Globals;
 use crate::config::Config;
+use crate::store::Store;
+use crate::versioned_graph::{
+    VersionedMaterializationMode, materialize_graph_file_from_store, materialize_plan_file,
+    terminal_cycle_logger,
+};
 
 mod coordinate;
 mod download;
@@ -61,6 +70,38 @@ pub struct PackageGraphArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct MaterializeGraphArgs {
+    /// Canonical digest-verified resolved graph. Every artifact must already
+    /// exist in the configured content-addressed Zed store.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "plan",
+        required_unless_present = "plan"
+    )]
+    pub graph: Option<PathBuf>,
+
+    /// Development/test plan containing the exact graph plus explicit local
+    /// payload sources. This path may finalize a graph that has no digest yet.
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with = "graph",
+        required_unless_present = "graph"
+    )]
+    pub plan: Option<PathBuf>,
+
+    /// Project whose `zed_modules/` root will be atomically replaced.
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    pub project: PathBuf,
+
+    /// Exact-graph projection mode. Circular or parallel-version graphs are
+    /// symlink-only; copy mode fails closed instead of mirroring forever.
+    #[arg(long, value_name = "MODE", default_value = "symlink")]
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Args)]
 struct GraphArgs {
     #[command(subcommand)]
     command: GraphSubcommand,
@@ -70,6 +111,8 @@ struct GraphArgs {
 enum GraphSubcommand {
     /// Download one immutable package-version dependency graph.
     Package(PackageGraphArgs),
+    /// Materialize a finite exact-version graph with reusable symlink nodes.
+    Materialize(MaterializeGraphArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -88,7 +131,7 @@ struct GraphCli {
 
 #[derive(Debug, Subcommand)]
 enum GraphCommand {
-    /// Inspect and export dependency graphs.
+    /// Inspect, export, and materialize dependency graphs.
     Graph(GraphArgs),
 }
 
@@ -115,8 +158,8 @@ struct DownloadMetadata {
 }
 
 /// Route only `zed graph ...`; established commands remain on the ordinary
-/// CLI parser. This modular boundary leaves `zed graph github` available as a
-/// sibling command without coupling package downloads to GitHub inventory.
+/// CLI parser. This modular boundary leaves future graph providers available
+/// without coupling them to the main command model.
 pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     match route(&args) {
         Route::Graph => Some(run_cli(args)),
@@ -130,8 +173,7 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     }
 }
 
-/// Add the graph namespace and immutable package downloader to root help and
-/// shell completion generation.
+/// Add the graph namespace to root help and shell completion generation.
 pub fn augment_root_command(command: clap::Command) -> clap::Command {
     if command
         .get_subcommands()
@@ -143,12 +185,17 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
         clap::Command::new("package")
             .about("Download one immutable package-version dependency graph"),
     );
+    let materialize = <MaterializeGraphArgs as Args>::augment_args(
+        clap::Command::new("materialize")
+            .about("Materialize one finite exact-version dependency graph"),
+    );
     command.subcommand(
         clap::Command::new("graph")
-            .about("Inspect and export dependency graphs")
+            .about("Inspect, export, and materialize dependency graphs")
             .subcommand_required(true)
             .arg_required_else_help(true)
-            .subcommand(package),
+            .subcommand(package)
+            .subcommand(materialize),
     )
 }
 
@@ -166,6 +213,9 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
         GraphCommand::Graph(GraphArgs {
             command: GraphSubcommand::Package(options),
         }) => run_package(&config, options),
+        GraphCommand::Graph(GraphArgs {
+            command: GraphSubcommand::Materialize(options),
+        }) => run_materialize(&config, options),
     }
 }
 
@@ -218,6 +268,26 @@ fn run_package(config: &Config, options: PackageGraphArgs) -> Result<i32> {
     } else if metadata.not_modified {
         eprintln!("dependency graph not modified: {}", metadata.package);
     }
+    Ok(0)
+}
+
+fn run_materialize(config: &Config, options: MaterializeGraphArgs) -> Result<i32> {
+    let mode = options.mode.parse::<VersionedMaterializationMode>()?;
+    let logger = terminal_cycle_logger();
+    let result = if let Some(graph) = options.graph {
+        let store = Store::new(&config.home);
+        materialize_graph_file_from_store(&graph, &store, &options.project, mode, &logger)
+    } else if let Some(plan) = options.plan {
+        materialize_plan_file(&plan, &options.project, mode, &logger)
+    } else {
+        unreachable!("clap requires either --graph or --plan")
+    };
+    logger.close().context("closing ORE graph logger")?;
+    let report = result?;
+    println!(
+        "{}",
+        serde_json::to_string(&report).context("serializing materialization report")?
+    );
     Ok(0)
 }
 
@@ -290,9 +360,12 @@ fn global_option_takes_value(token: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn argv(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
     #[test]
     fn route_detects_graph_and_help_without_stealing_existing_commands() {
-        let argv = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(
             route(&argv(&["zed", "graph", "package", "acme/pkg@1.0.0"])),
             Route::Graph
@@ -309,5 +382,42 @@ mod tests {
             Route::GraphHelp { help_index: 3 }
         );
         assert_eq!(route(&argv(&["zed", "task", "graph"])), Route::Existing);
+    }
+
+    #[test]
+    fn materialize_requires_exactly_one_graph_input() {
+        assert!(
+            GraphCli::try_parse_from(argv(&[
+                "zed",
+                "graph",
+                "materialize",
+                "--graph",
+                "graph.json"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            GraphCli::try_parse_from(argv(&[
+                "zed",
+                "graph",
+                "materialize",
+                "--plan",
+                "plan.json"
+            ]))
+            .is_ok()
+        );
+        assert!(GraphCli::try_parse_from(argv(&["zed", "graph", "materialize"])).is_err());
+        assert!(
+            GraphCli::try_parse_from(argv(&[
+                "zed",
+                "graph",
+                "materialize",
+                "--graph",
+                "graph.json",
+                "--plan",
+                "plan.json"
+            ]))
+            .is_err()
+        );
     }
 }

@@ -148,5 +148,6 @@ pub mod transaction;
 pub mod update;
 pub mod validation;
 pub mod vcs;
+pub mod versioned_graph;
 
 pub mod tool_versions;
