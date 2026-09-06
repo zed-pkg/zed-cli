@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Manifest",
-  "description": "The `.zpkg.toml` manifest at the root of every package repository.\nTOML only — never YAML or JSON.\n\n```toml\n[package]\norg = \"acme\"\nname = \"http-kit\"\nversion = \"1.2.0\"\ndescription = \"Tiny HTTP helpers\"\nlicense = \"MIT\"\n\n[package.repository]\nvcs = \"git\"\nurl = \"https://github.com/acme/http-kit\"\n\n[dependencies]\n\"acme/logkit\" = \"^0.3\"\n\n[publish]\nexclude = [\"benches/**\"]\nsmoke_test = \"sh scripts/smoke.sh\"\n```",
+  "description": "The `.zpkg.toml` manifest at the root of every package repository.\nTOML only \u2014 never YAML or JSON.\n\n```toml\n[package]\norg = \"acme\"\nname = \"http-kit\"\nversion = \"1.2.0\"\ndescription = \"Tiny HTTP helpers\"\nlicense = \"MIT\"\n\n[package.repository]\nvcs = \"git\"\nurl = \"https://github.com/acme/http-kit\"\n\n[dependencies]\n\"acme/logkit\" = \"^0.3\"\n\n[publish]\nexclude = [\"benches/**\"]\nsmoke_test = \"sh scripts/smoke.sh\"\n```",
   "type": "object",
   "properties": {
     "bin": {
@@ -12,7 +12,7 @@
       }
     },
     "build": {
-      "description": "This package's own post-extract build step (compiled extensions,\ncodegen), run when the package ships source that needs compiling.\nBuilds run in an isolated staging copy — never inside the immutable\nsource store — and results are cached per (sha256, target, command).",
+      "description": "This package's own post-extract build step (compiled extensions,\ncodegen), run when the package ships source that needs compiling.\nBuilds run in an isolated staging copy \u2014 never inside the immutable\nsource store \u2014 and results are cached per (sha256, target, command).",
       "anyOf": [
         {
           "$ref": "#/$defs/BuildSection"
@@ -41,7 +41,7 @@
       "$ref": "#/$defs/InstallHooksSection"
     },
     "install": {
-      "description": "Where zed materializes the (few, hand-picked) dependencies it sources —\nzed complements npm/maven/etc. rather than replacing them, so this dir\nsits alongside the native one and the ecosystem adapter wires it into\nthe toolchain (NODE_PATH / node_modules, the JVM classpath, …). `dir`\ndefaults to `zed_modules`; relocate it with e.g. `.vendor/.zed` or\n`.deps/.zed`.",
+      "description": "Where zed materializes the (few, hand-picked) dependencies it sources \u2014\nzed complements npm/maven/etc. rather than replacing them, so this dir\nsits alongside the native one and the ecosystem adapter wires it into\nthe toolchain (NODE_PATH / node_modules, the JVM classpath, \u2026). `dir`\ndefaults to `zed_modules`; relocate it with e.g. `.vendor/.zed` or\n`.deps/.zed`.",
       "$ref": "#/$defs/InstallSection"
     },
     "interop": {
@@ -85,14 +85,14 @@
       }
     },
     "targets": {
-      "description": "Language subtrees for a **polyglot package** — one repo shipping the\nsame library for several ecosystems (e.g. `node/`, `python/`, `go/`).\nKeyed by ecosystem name; the value says which subdirectory is that\necosystem's package root. On install the consumer resolves one target\nand only that subtree is materialized, so a Python project gets the\nPython source at its import root rather than a tree it has to reach\ninto. Absent (the common case) = single-language package, whole tree.",
+      "description": "Language subtrees for a **polyglot package** \u2014 one repo shipping the\nsame library for several ecosystems (e.g. `node/`, `python/`, `go/`).\nKeyed by ecosystem name; the value says which subdirectory is that\necosystem's package root. On install the consumer resolves one target\nand only that subtree is materialized, so a Python project gets the\nPython source at its import root rather than a tree it has to reach\ninto. Absent (the common case) = single-language package, whole tree.",
       "type": "object",
       "additionalProperties": {
         "$ref": "#/$defs/TargetSection"
       }
     },
     "workspace": {
-      "description": "Monorepo workspace declaration (zed-docs issue #7); only meaningful in\na workspace root manifest. When present, `zed install` at this root\nresolves every member against one store and writes one `.zpkg.lock`;\nmember→member dependencies link by path instead of going through the\nregistry.",
+      "description": "Monorepo workspace declaration (zed-docs issue #7); only meaningful in\na workspace root manifest. When present, `zed install` at this root\nresolves every member against one store and writes one `.zpkg.lock`;\nmember\u2192member dependencies link by path instead of going through the\nregistry.",
       "anyOf": [
         {
           "$ref": "#/$defs/WorkspaceSection"
@@ -149,7 +149,7 @@
       }
     },
     "BuildSection": {
-      "description": "A post-extract build step. Because compiled output is OS/arch-specific,\nzed-pkg runs `command` via `sh -c` inside a sandboxed staging copy of the\nsource and caches the result in a build cache keyed by\n`(source sha256, target triple, command)` — separate from the universal,\nplatform-independent source store (zed-docs issue #5).",
+      "description": "A post-extract build step. Because compiled output is OS/arch-specific,\nzed-pkg runs `command` via `sh -c` inside a sandboxed staging copy of the\nsource and caches the result in a build cache keyed by\n`(source sha256, target triple, command)` \u2014 separate from the universal,\nplatform-independent source store (zed-docs issue #5).",
       "type": "object",
       "properties": {
         "command": {
@@ -219,7 +219,7 @@
       ]
     },
     "ForgeRegistry": {
-      "description": "A multi-format registry that re-serves a canonical registry's wire protocol\nat its own base URL: a source forge's package registry, or an enterprise\nbinary repository that proxies public registries and hosts private ones.\n\nThese add no protocol of their own, which is why they are a separate axis\nfrom [`NativeRegistry`] — an org proxying npm through Artifactory needs a\ndifferent URL and credential, not a different client.",
+      "description": "A multi-format registry that re-serves a canonical registry's wire protocol\nat its own base URL: a source forge's package registry, or an enterprise\nbinary repository that proxies public registries and hosts private ones.\n\nThese add no protocol of their own, which is why they are a separate axis\nfrom [`NativeRegistry`] \u2014 an org proxying npm through Artifactory needs a\ndifferent URL and credential, not a different client.",
       "type": "string",
       "enum": [
         "github-packages",
@@ -279,7 +279,7 @@
           ]
         },
         "target": {
-          "description": "Which language subtree to take from **polyglot** dependencies (see\n[`TargetSection`]). Omitted = infer from the project (`package.json` →\n`node`, `go.mod` → `go`, `pyproject.toml` → `python`, …). Naming a\ntarget a dependency does not publish is an error rather than a silent\nfallback: the consumer asked for something specific.",
+          "description": "Which language subtree to take from **polyglot** dependencies (see\n[`TargetSection`]). Omitted = infer from the project (`package.json` \u2192\n`node`, `go.mod` \u2192 `go`, `pyproject.toml` \u2192 `python`, \u2026). Naming a\ntarget a dependency does not publish is an error rather than a silent\nfallback: the consumer asked for something specific.",
           "type": [
             "string",
             "null"
@@ -297,7 +297,7 @@
       }
     },
     "Language": {
-      "description": "The language a package's code is written for. Names the published package\n(`<repo>-<language>`), and implies an [`Ecosystem`] via\n[`Language::ecosystem`].\n\nCanonical tokens are the colloquial names people search for — `nodejs`, not\n`node`; `golang`, not `go` — because that is what ends up in a package name\na human has to recall. Short spellings and ecosystem-specific source labels\nare accepted by [`Language::from_token`] and manifest decoding. For example,\n`typescript` and `astro` route to the Node.js package ecosystem, while a\nYAML-only data or infrastructure package remains ungated as `universal`.",
+      "description": "The language a package's code is written for. Names the published package\n(`<repo>-<language>`), and implies an [`Ecosystem`] via\n[`Language::ecosystem`].\n\nCanonical tokens are the colloquial names people search for \u2014 `nodejs`, not\n`node`; `golang`, not `go` \u2014 because that is what ends up in a package name\na human has to recall. Short spellings and ecosystem-specific source labels\nare accepted by [`Language::from_token`] and manifest decoding. For example,\n`typescript` and `astro` route to the Node.js package ecosystem, while a\nYAML-only data or infrastructure package remains ungated as `universal`.",
       "oneOf": [
         {
           "type": "string",
@@ -356,7 +356,7 @@
       ]
     },
     "NativeRegistry": {
-      "description": "The ecosystem registry a target is mirrored into.\n\nOne variant per registry zed can route to, including the three that store\nno artifact — Zig, plain VCS, and Go's proxy — because a release plan still\nhas to name where those packages come from.\n\nThis enum is the *manifest token*. Everything else about a registry — its\nURLs, wire protocol, auth scheme, and how it spells a release candidate —\nlives on [`crate::native_host::NativeHost`], reached through\n[`NativeRegistry::host`]. Keeping the token separate from the host facts is\nwhat lets the manifest spelling stay frozen while endpoints move.",
+      "description": "The ecosystem registry a target is mirrored into.\n\nOne variant per registry zed can route to, including the three that store\nno artifact \u2014 Zig, plain VCS, and Go's proxy \u2014 because a release plan still\nhas to name where those packages come from.\n\nThis enum is the *manifest token*. Everything else about a registry \u2014 its\nURLs, wire protocol, auth scheme, and how it spells a release candidate \u2014\nlives on [`crate::native_host::NativeHost`], reached through\n[`NativeRegistry::host`]. Keeping the token separate from the host facts is\nwhat lets the manifest spelling stay frozen while endpoints move.",
       "oneOf": [
         {
           "type": "string",
@@ -404,7 +404,7 @@
           "const": "zig"
         },
         {
-          "description": "A plain Git or Mercurial remote on GitHub, GitLab, or Bitbucket —\nfirst-class in zed, and a complete route on its own.",
+          "description": "A plain Git or Mercurial remote on GitHub, GitLab, or Bitbucket \u2014\nfirst-class in zed, and a complete route on its own.",
           "type": "string",
           "const": "vcs"
         }
@@ -414,7 +414,7 @@
       "type": "object",
       "properties": {
         "channel": {
-          "description": "Default release track for this route. Overridden per release by\n`zed release --channel`; declared here when a target is *only* ever\npublished to a pre-release track — a client generated from an unstable\nAPI surface, say.\n\nThe version is not spelled here. How a channel becomes a version string\nis the host's business and differs per ecosystem, so it is resolved by\n[`crate::native_host::NativeHost::channel_route`] at plan time.",
+          "description": "Default release track for this route. Overridden per release by\n`zed release --channel`; declared here when a target is *only* ever\npublished to a pre-release track \u2014 a client generated from an unstable\nAPI surface, say.\n\nThe version is not spelled here. How a channel becomes a version string\nis the host's business and differs per ecosystem, so it is resolved by\n[`crate::native_host::NativeHost::channel_route`] at plan time.",
           "$ref": "#/$defs/ReleaseChannel"
         },
         "forge": {
@@ -510,7 +510,7 @@
           ]
         },
         "ecosystem": {
-          "description": "How consumers take this package in: `jvm`, `npm`, `gomod`, … Drives the\ninstall-time guard that refuses to drop a Java client into a Node\nproject, and picks the toolchain wiring `zed install` writes.\n\nOmit it and it is derived from `language` (see\n[`Language::ecosystem`]) — declare it only when the language does not\ndetermine consumption. Read through [`PackageSection::ecosystem`]\nrather than touching this field, so the fallback always applies.",
+          "description": "How consumers take this package in: `jvm`, `npm`, `gomod`, \u2026 Drives the\ninstall-time guard that refuses to drop a Java client into a Node\nproject, and picks the toolchain wiring `zed install` writes.\n\nOmit it and it is derived from `language` (see\n[`Language::ecosystem`]) \u2014 declare it only when the language does not\ndetermine consumption. Read through [`PackageSection::ecosystem`]\nrather than touching this field, so the fallback always applies.",
           "$ref": "#/$defs/Ecosystem"
         },
         "keywords": {
@@ -520,7 +520,7 @@
           }
         },
         "language": {
-          "description": "The language this package's code targets. A multi-language repository\npublishes one package per language, all at one version, and each names\nits own — `acme-clients-java`, `acme-clients-nodejs`. Defaults to\n`universal` (language-agnostic), which is never subject to the install\necosystem guard.",
+          "description": "The language this package's code targets. A multi-language repository\npublishes one package per language, all at one version, and each names\nits own \u2014 `acme-clients-java`, `acme-clients-nodejs`. Defaults to\n`universal` (language-agnostic), which is never subject to the install\necosystem guard.",
           "$ref": "#/$defs/Language"
         },
         "license": {
@@ -551,6 +551,10 @@
         "version_scheme": {
           "description": "How `version` (and published tags) should be interpreted. Semver by\ndefault; `calver` for calendar versions, `opaque` for arbitrary tags.",
           "$ref": "#/$defs/VersionScheme"
+        },
+        "artifacts": {
+          "description": "Public artifact locations used when `registry.zpkg.net` is unreachable.\nOmit the table and clients guess GitHub Release / R2 paths from\n`[package.repository]` and `org`/`name`. Declare `r2_key` only when\nthe object is not at a standard guessed path.",
+          "$ref": "#/$defs/ArtifactsSection"
         }
       },
       "required": [
@@ -826,7 +830,7 @@
           "const": "nightly"
         },
         {
-          "description": "Deliberately **mutable**: one coordinate, republished repeatedly.\nMaven `-SNAPSHOT`, Packagist `dev-*`, LuaRocks `dev`. The release\ninvariant that rejects same-version/different-content output has to be\nrelaxed here — see [`ReleaseChannel::is_mutable`].",
+          "description": "Deliberately **mutable**: one coordinate, republished repeatedly.\nMaven `-SNAPSHOT`, Packagist `dev-*`, LuaRocks `dev`. The release\ninvariant that rejects same-version/different-content output has to be\nrelaxed here \u2014 see [`ReleaseChannel::is_mutable`].",
           "type": "string",
           "const": "snapshot"
         }
@@ -862,7 +866,7 @@
       }
     },
     "TargetSection": {
-      "description": "One ecosystem's slice of a polyglot package — and, on publish, its own\nindependently installable package.\n\nA repo like `fiducia-clients` carrying `clients/ts`, `clients/java`, and\n`clients/go` declares one target each. `zed publish` then emits **one\nartifact per target**, named `<name>-<target>` by default:\n\n```text\nfiducia/fiducia-clients-nodejs@1.1.2   <- clients/ts only\nfiducia/fiducia-clients-java@1.1.2     <- clients/java only\nfiducia/fiducia-clients-golang@1.1.2   <- clients/go only\n```\n\nOne source of truth and one version in the repo; N packages on the wire.\nA Java consumer downloads only Java bytes — the decisive advantage over\nshipping one fat artifact and slicing it at install time.",
+      "description": "One ecosystem's slice of a polyglot package \u2014 and, on publish, its own\nindependently installable package.\n\nA repo like `fiducia-clients` carrying `clients/ts`, `clients/java`, and\n`clients/go` declares one target each. `zed publish` then emits **one\nartifact per target**, named `<name>-<target>` by default:\n\n```text\nfiducia/fiducia-clients-nodejs@1.1.2   <- clients/ts only\nfiducia/fiducia-clients-java@1.1.2     <- clients/java only\nfiducia/fiducia-clients-golang@1.1.2   <- clients/go only\n```\n\nOne source of truth and one version in the repo; N packages on the wire.\nA Java consumer downloads only Java bytes \u2014 the decisive advantage over\nshipping one fat artifact and slicing it at install time.",
       "type": "object",
       "properties": {
         "adapter": {
@@ -877,7 +881,7 @@
           "type": "string"
         },
         "ecosystem": {
-          "description": "Override the ecosystem this target publishes into. Omit it (the normal\ncase) and it is derived from the target key via [`Language::ecosystem`].\nDeclare it when the key does not determine consumption — a `rust-wasm`\ntarget is consumed by a JS bundler, not by Cargo.",
+          "description": "Override the ecosystem this target publishes into. Omit it (the normal\ncase) and it is derived from the target key via [`Language::ecosystem`].\nDeclare it when the key does not determine consumption \u2014 a `rust-wasm`\ntarget is consumed by a JS bundler, not by Cargo.",
           "$ref": "#/$defs/Ecosystem"
         },
         "hooks": {
@@ -892,7 +896,7 @@
           ]
         },
         "native": {
-          "description": "Optional routing to this target's native ecosystem registry. This is\ndeclarative metadata only: the native manifest remains authoritative,\nand arbitrary commands are intentionally not representable here.\n\nNote the difference from [`TargetSection::ecosystem`]: `native` is\n**outbound** (where this slice is mirrored to — npm, crates.io), while\n`ecosystem` is **inbound** (what toolchain a consumer must have to\ninstall it from zed). They describe the same ecosystem from two sides,\nso when both are set they must agree — see\n[`NativeRegistry::ecosystem`] and the check in [`Manifest::validate`].",
+          "description": "Optional routing to this target's native ecosystem registry. This is\ndeclarative metadata only: the native manifest remains authoritative,\nand arbitrary commands are intentionally not representable here.\n\nNote the difference from [`TargetSection::ecosystem`]: `native` is\n**outbound** (where this slice is mirrored to \u2014 npm, crates.io), while\n`ecosystem` is **inbound** (what toolchain a consumer must have to\ninstall it from zed). They describe the same ecosystem from two sides,\nso when both are set they must agree \u2014 see\n[`NativeRegistry::ecosystem`] and the check in [`Manifest::validate`].",
           "anyOf": [
             {
               "$ref": "#/$defs/NativeReleaseSection"
@@ -970,6 +974,47 @@
           "items": {
             "type": "string"
           }
+        }
+      }
+    },
+    "ArtifactsSection": {
+      "description": "Optional `[package.artifacts]` table. Omit the whole table and clients\nguess GitHub + R2 paths from `[package.repository]` and `org`/`name`.",
+      "type": "object",
+      "properties": {
+        "github_packages": {
+          "description": "Push (and later fetch) a packed OCI artifact on GitHub Packages / GHCR.\nDefaults to true when `repository.url` is a github.com repo. This is\nwhat makes a Zed package show up on github.com/orgs/{org}/packages\nuntil GitHub hosts a native Zed registry there.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "github_release": {
+          "description": "Attach (and later fetch) a packed GitHub Release asset. Defaults to\ntrue when `repository.url` is a github.com repo.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "r2_key": {
+          "description": "Full object key, possibly with `{org}`, `{name}`, `{version}`, `{tag}`,\n`{sha256}`, `{ext}`, `{github_owner}`, `{github_repo}` placeholders.\nUse this when the artifact is not at a standard guessed path.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "r2_prefix": {
+          "description": "Directory prefix in the bucket; the file name\n`{name}-{version}.{ext}` is appended. Ignored when `r2_key` is set.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "r2_public_base": {
+          "description": "Public HTTPS origin for this package's R2/CDN objects. When omitted,\nclients use `ZED_PKG_R2_PUBLIC_BASE`, then `ZED_PKG_R2_PUBLIC_KEY`,\nthen [`DEFAULT_R2_PUBLIC_BASE`].",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     }

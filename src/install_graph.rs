@@ -20,7 +20,7 @@ use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::manifest::{Manifest, is_slug};
 use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 use zed_interfaces::registry::VersionMetadata;
-use zed_interfaces::version::{self, Requirement};
+use zed_interfaces::version;
 use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::config::{Config, read_manifest};

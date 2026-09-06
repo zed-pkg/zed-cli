@@ -2,6 +2,7 @@ use super::artifact::{split_key, validate_version_identity};
 use super::*;
 use zed_interfaces::registry::PackageMetadata;
 use zed_interfaces::version::VersionScheme;
+use zed_lib::requirement_matches;
 
 /// Registry-controlled dependency graphs must not grow provenance paths until
 /// recursive solving exhausts the process stack or memory.
@@ -456,15 +457,6 @@ fn exact_requirement(scheme: VersionScheme, raw: &str) -> String {
             .map(|normalized| format!("={normalized}"))
             .unwrap_or_else(|| raw.to_string()),
         VersionScheme::Opaque => raw.to_string(),
-    }
-}
-
-fn requirement_matches(scheme: VersionScheme, requirement: &str, published: &str) -> bool {
-    match scheme {
-        VersionScheme::Opaque => requirement == published,
-        VersionScheme::Semver | VersionScheme::Calver => {
-            Requirement::parse(requirement).matches(published)
-        }
     }
 }
 
