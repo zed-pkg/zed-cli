@@ -17,7 +17,7 @@
         "frozen-install transaction tests"
       ],
       "commands": [
-        "python3 formal/review-procedure/model.py",
+        "python3 -O formal/review-procedure/model.py",
         "cargo test --all-targets --locked"
       ],
       "assumptions": [
@@ -38,7 +38,7 @@
         "digest and store immutability tests"
       ],
       "commands": [
-        "python3 formal/review-procedure/model.py",
+        "python3 -O formal/review-procedure/model.py",
         "cargo test --all-targets --locked"
       ],
       "assumptions": [
@@ -59,7 +59,7 @@
         "dirty-tree and mismatched-tag tests"
       ],
       "commands": [
-        "python3 formal/review-procedure/model.py",
+        "python3 -O formal/review-procedure/model.py",
         "cargo test --all-targets --locked"
       ],
       "assumptions": [

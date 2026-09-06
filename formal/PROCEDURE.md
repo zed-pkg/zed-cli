@@ -1,8 +1,27 @@
 # Formal-methods change procedure
 
-`zed` resolves versions, writes lockfiles, installs content-addressed artifacts, links project trees, executes opt-in builds, publishes provenance-bound releases, and rotates credentials. Failures can corrupt reproducibility, execute unintended code, or publish the wrong source. This procedure defines how those state machines are modeled and reviewed; it does **not** claim the planned models already exist.
+`zed` resolves versions, writes lockfiles, installs content-addressed artifacts, links project trees, executes opt-in builds, publishes provenance-bound releases, and rotates credentials. Failures can corrupt reproducibility, execute unintended code, or publish the wrong source. This procedure defines how those state machines are modeled and reviewed; it does not claim that every planned machine or unbounded production behavior is already proved.
 
 The checked inventory is [`procedure.toml`](procedure.toml).
+
+## Current executable model
+
+`formal/review-procedure/model.py` is the first executable slice of the
+resolve-lock-store-install machine. It exhaustively explores a finite one-
+package lifecycle and requires the following transition boundary:
+
+`resolve → download → verify → store → install`
+
+Frozen install and publish can only proceed from the verified immutable store
+identity. A mismatched downloaded artifact, a blocked install, a blocked frozen
+install, and a blocked publish are all required negative witnesses. The model
+also checks deterministic archive hashing and command-alias normalization.
+
+The run is bounded to one package, three version identities, one store entry,
+and one project link. It is not a proof of dependency cycles, concurrent
+installers, filesystem crash recovery, archive parser behavior, or the complete
+VCS/registry protocol; those remain explicit follow-up obligations in the
+inventory.
 
 ## Change procedure
 
