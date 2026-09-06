@@ -6,11 +6,13 @@ cd "$root"
 interfaces_manifest="${1:-}"
 clients_manifest="${2:-}"
 lock_manifest="${3:-}"
+lib_core_manifest="${4:-}"
 
 [[ -f .zpkg.toml ]] || { echo 'missing .zpkg.toml' >&2; exit 1; }
 for dependency in \
   '"zed-pkg/zed-clients" = "^0.1.0"' \
   '"zed-pkg/zed-interfaces" = "^0.1.0"' \
+  '"zed-pkg/zed-lib-core" = "^0.1.0"' \
   '"zed-pkg/zed-lock" = "^0.1.1"'; do
   grep -Fq "$dependency" .zpkg.toml || { printf 'missing canonical Zed dependency: %s\n' "$dependency" >&2; exit 1; }
 done
@@ -31,11 +33,11 @@ if [[ -d crates/zed-lock ]]; then
 fi
 
 if grep -Fq '"zed-pkg/zed-lib"' .zpkg.toml || grep -Fq '"zed-pkg/zed-libs"' .zpkg.toml; then
-  echo 'do not reference a canonical lib coordinate until that repository and package exist' >&2
+  echo 'legacy zed-lib coordinates are forbidden; use zed-pkg/zed-lib-core' >&2
   exit 1
 fi
 
-python3 - "$interfaces_manifest" "$clients_manifest" "$lock_manifest" <<'PY'
+python3 - "$interfaces_manifest" "$clients_manifest" "$lock_manifest" "$lib_core_manifest" <<'PY'
 from __future__ import annotations
 
 import pathlib
@@ -47,47 +49,47 @@ manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
-expected_interfaces_revision = "0c51d732cb01a377b2bc00e8d945b355e41961c1"
-expected_interfaces_source = (
-    "git+https://github.com/zed-pkg/zed-interfaces.git?"
-    f"rev={expected_interfaces_revision}#{expected_interfaces_revision}"
-)
-expected_lock_revision = "1db0da00d30fcf2e0762f50eedb1f88458020b52"
-expected_lock_source = (
-    "git+https://github.com/zed-pkg/zed-lock.git?"
-    f"rev={expected_lock_revision}#{expected_lock_revision}"
-)
+
+expected_sources = {
+    "zed-interfaces": (
+        "https://github.com/zed-pkg/zed-interfaces.git",
+        "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e",
+    ),
+    "zed-client": (
+        "https://github.com/zed-pkg/zed-clients.git",
+        "b32e089caea772f166204fb1c7bcaad6f56942fe",
+    ),
+    "zed-lib": (
+        "https://github.com/zed-pkg/zed-lib-core.git",
+        "eac0878750332b031bc12f6040b6a795a17e7417",
+    ),
+    "zed-lock": (
+        "https://github.com/zed-pkg/zed-lock.git",
+        "1db0da00d30fcf2e0762f50eedb1f88458020b52",
+    ),
+}
 
 repository = manifest.get("package", {}).get("repository", {})
 if repository.get("url") != "https://github.com/zed-pkg/zed-cli":
     errors.append("package.repository.url must point at zed-pkg/zed-cli")
 
 cargo_dependencies = cargo.get("dependencies", {})
-native_interfaces = cargo_dependencies.get("zed-interfaces")
-if not isinstance(native_interfaces, dict):
-    errors.append("Cargo.toml must retain the native zed-interfaces Git dependency")
-else:
-    if native_interfaces.get("git") != "https://github.com/zed-pkg/zed-interfaces.git":
-        errors.append("zed-interfaces Cargo dependency must use the canonical repository")
-    if native_interfaces.get("rev") != expected_interfaces_revision:
-        errors.append("zed-interfaces Cargo dependency must pin the graph response contract")
+for dependency, (repository_url, revision) in expected_sources.items():
+    native = cargo_dependencies.get(dependency)
+    if not isinstance(native, dict):
+        errors.append(f"Cargo.toml must retain the native {dependency} Git dependency")
+        continue
+    if native.get("git") != repository_url:
+        errors.append(f"{dependency} Cargo dependency must use {repository_url}")
+    if native.get("rev") != revision:
+        errors.append(f"{dependency} Cargo dependency must pin {revision}")
 
-if expected_interfaces_source not in cargo_lock:
-    errors.append("Cargo.lock must resolve the exact graph response contract revision")
-
-native_lock = cargo_dependencies.get("zed-lock")
-if not isinstance(native_lock, dict):
-    errors.append("Cargo.toml must use the independently owned zed-lock Git dependency")
-else:
-    if native_lock.get("git") != "https://github.com/zed-pkg/zed-lock.git":
-        errors.append("zed-lock Cargo dependency must use the canonical repository")
-    if native_lock.get("rev") != expected_lock_revision:
-        errors.append("zed-lock Cargo dependency must pin the certified Windows contention revision")
+    source = f"git+{repository_url}?rev={revision}#{revision}"
+    if source not in cargo_lock:
+        errors.append(f"Cargo.lock must resolve the exact {dependency} revision")
 
 if 'name = "zed-lock"\nversion = "0.1.1"' not in cargo_lock:
     errors.append("Cargo.lock must resolve zed-lock version 0.1.1")
-if expected_lock_source not in cargo_lock:
-    errors.append("Cargo.lock must resolve the exact certified zed-lock revision")
 
 for name in manifest.get("dependencies", {}):
     package = name.lower().split("/", 1)[-1]
@@ -97,6 +99,7 @@ for name in manifest.get("dependencies", {}):
 interfaces_path = pathlib.Path(sys.argv[1]) if sys.argv[1] else None
 clients_path = pathlib.Path(sys.argv[2]) if sys.argv[2] else None
 lock_path = pathlib.Path(sys.argv[3]) if sys.argv[3] else None
+lib_core_path = pathlib.Path(sys.argv[4]) if sys.argv[4] else None
 
 if interfaces_path:
     interfaces = tomllib.loads(interfaces_path.read_text(encoding="utf-8"))
@@ -112,6 +115,16 @@ if clients_path:
         errors.append("zed-clients must itself depend on zed-interfaces")
     if "rust" not in clients.get("targets", {}):
         errors.append("zed-clients must retain its Rust SDK target")
+
+if lib_core_path:
+    lib_core = tomllib.loads(lib_core_path.read_text(encoding="utf-8"))
+    package = lib_core.get("package", {})
+    if package.get("org") != "zed-pkg" or package.get("name") != "zed-lib-core":
+        errors.append("sibling lib-core manifest must provide zed-pkg/zed-lib-core")
+    if "zed-pkg/zed-interfaces" not in lib_core.get("dependencies", {}):
+        errors.append("zed-lib-core must itself depend on zed-interfaces")
+    if "rust" not in lib_core.get("targets", {}):
+        errors.append("zed-lib-core must retain its Rust behavior target")
 
 if lock_path:
     lock_package = tomllib.loads(lock_path.read_text(encoding="utf-8"))
@@ -143,4 +156,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph validated with the exact zed-interfaces graph response contract, canonical zed-lock v0.1.1 ownership, independent crates.io release, and DEN-3167 contention semantics\n'
+printf 'zed-cli package graph validated across exact zed-client, zed-interfaces, zed-lib-core, and zed-lock revisions\n'
