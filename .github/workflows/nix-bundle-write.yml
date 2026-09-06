@@ -42,7 +42,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ZED_INTERFACES_SHA: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+  ZED_INTERFACES_SHA: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
 
 jobs:
   command:
