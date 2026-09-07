@@ -1,0 +1,307 @@
+name: DEN-2050 flags-2-env CLI runtime binding retry
+
+on:
+  push:
+    branches: [DEN-2050-flags2env-cli-install]
+    paths:
+      - '.github/workflows/den-2050-flags2env-cli-install-retry.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-2050-flags2env-cli-install-retry
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: DEN-2050-flags2env-cli-install
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Apply package-owned flags-2-env binding implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          bootstrap = Path('.github/workflows/den-2050-flags2env-cli-install-bootstrap.yml').read_text()
+          start = "          python3 - <<'PY'\n"
+          end = "\n          PY\n"
+          if start not in bootstrap:
+              raise SystemExit('embedded bootstrap patch start marker not found')
+          script = bootstrap.split(start, 1)[1].split(end, 1)[0]
+          try:
+              exec(compile(dedent(script), '<flags2env-cli-bootstrap>', 'exec'), {})
+          except SystemExit as error:
+              if str(error) != 'registry bin collection anchor not found':
+                  raise
+
+          def block(lines):
+              return '\n'.join(lines) + '\n'
+
+          def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected one source block, found {count}')
+              return text.replace(old, new, 1)
+
+          ops = Path('src/ops.rs')
+          text = ops.read_text()
+
+          import_anchor = 'use crate::config::{Config, Credentials, read_manifest, write_manifest};\n'
+          interop_import = block([
+              'use crate::flags2env_interop::{',
+              '    FLAGS2ENV_CONFIG_ENV, config_for_run, register_package_bins, write_bindings,',
+              '};',
+          ])
+          if 'use crate::flags2env_interop::' not in text:
+              text = replace_once(
+                  text,
+                  import_anchor,
+                  import_anchor + interop_import,
+                  'flags2env import',
+              )
+
+          install_declaration = '    let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();\n'
+          text = replace_once(
+              text,
+              install_declaration,
+              install_declaration
+              + '    let mut flags2env_bindings: BTreeMap<String, PathBuf> = BTreeMap::new();\n',
+              'install binding map',
+          )
+
+          registry_old = block([
+              '        if let Some(pm) = &pkg_manifest {',
+              '            for (bin_name, rel_target) in &pm.bin {',
+              '                bins.insert(bin_name.clone(), dest.join(rel_target));',
+              '            }',
+              '        }',
+          ])
+          registry_new = block([
+              '        if let Some(pm) = pkg_manifest {',
+              '            let relative_destination = PathBuf::from(modules_dir)',
+              '                .join(&vm.org)',
+              '                .join(&vm.name);',
+              '            register_package_bins(',
+              '                &key,',
+              '                &dest,',
+              '                &relative_destination,',
+              '                pm,',
+              '                &mut bins,',
+              '                &mut flags2env_bindings,',
+              '            )?;',
+              '        }',
+          ])
+          text = replace_once(text, registry_old, registry_new, 'registry bin collection')
+
+          workspace_old = block([
+              '        for (bin_name, rel_target) in &member_manifest.bin {',
+              '            bins.insert(bin_name.clone(), dest.join(rel_target));',
+              '        }',
+          ])
+          workspace_new = block([
+              '        let relative_destination = PathBuf::from(modules_dir)',
+              '            .join(&org)',
+              '            .join(&name);',
+              '        register_package_bins(',
+              '            key,',
+              '            &dest,',
+              '            &relative_destination,',
+              '            &member_manifest,',
+              '            &mut bins,',
+              '            &mut flags2env_bindings,',
+              '        )?;',
+          ])
+          text = replace_once(text, workspace_old, workspace_new, 'workspace bin collection')
+
+          install_hoist = '    hoist_bins(&modules, &bins, mode)?;\n'
+          text = replace_once(
+              text,
+              install_hoist,
+              install_hoist + '    write_bindings(&modules, &flags2env_bindings)?;\n',
+              'install binding publication',
+          )
+
+          uninstall_declaration = '        let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();\n'
+          text = replace_once(
+              text,
+              uninstall_declaration,
+              uninstall_declaration
+              + '        let mut flags2env_bindings: BTreeMap<String, PathBuf> = BTreeMap::new();\n',
+              'uninstall binding map',
+          )
+
+          remaining_registry_old = block([
+              '            if let Ok(package_manifest) = read_manifest(&installed) {',
+              '                for (name, target) in package_manifest.bin {',
+              '                    bins.insert(name, installed.join(target));',
+              '                }',
+              '            }',
+          ])
+          remaining_registry_new = block([
+              '            if let Ok(package_manifest) = read_manifest(&installed) {',
+              '                let relative_destination = PathBuf::from(&modules_dir)',
+              '                    .join(&package.org)',
+              '                    .join(&package.name);',
+              '                register_package_bins(',
+              '                    &package.full_name(),',
+              '                    &installed,',
+              '                    &relative_destination,',
+              '                    &package_manifest,',
+              '                    &mut bins,',
+              '                    &mut flags2env_bindings,',
+              '                )?;',
+              '            }',
+          ])
+          text = replace_once(
+              text,
+              remaining_registry_old,
+              remaining_registry_new,
+              'remaining registry bin reconstruction',
+          )
+
+          remaining_workspace_old = block([
+              '            if let Ok(package_manifest) = read_manifest(&installed) {',
+              '                for (bin_name, target) in package_manifest.bin {',
+              '                    bins.insert(bin_name, installed.join(target));',
+              '                }',
+              '            }',
+          ])
+          remaining_workspace_new = block([
+              '            if let Ok(package_manifest) = read_manifest(&installed) {',
+              '                let relative_destination = PathBuf::from(&modules_dir)',
+              '                    .join(&org)',
+              '                    .join(&name);',
+              '                register_package_bins(',
+              '                    key,',
+              '                    &installed,',
+              '                    &relative_destination,',
+              '                    &package_manifest,',
+              '                    &mut bins,',
+              '                    &mut flags2env_bindings,',
+              '                )?;',
+              '            }',
+          ])
+          text = replace_once(
+              text,
+              remaining_workspace_old,
+              remaining_workspace_new,
+              'remaining workspace bin reconstruction',
+          )
+
+          uninstall_hoist = '        hoist_bins(&modules, &bins, mode)?;\n'
+          text = replace_once(
+              text,
+              uninstall_hoist,
+              uninstall_hoist + '        write_bindings(&modules, &flags2env_bindings)?;\n',
+              'uninstall binding publication',
+          )
+
+          run_old = block([
+              '    let status = child',
+              '        .args(args)',
+              '        .env("PATH", &new_path)',
+              '        .current_dir(project)',
+              '        .status();',
+          ])
+          run_new = block([
+              '    child.args(args).env("PATH", &new_path).current_dir(project);',
+              '    if hoisted.is_some() {',
+              '        // A hoisted package must opt into flags-2-env explicitly. Clear',
+              '        // any caller-owned value first so one package cannot inherit a',
+              '        // different package contract through the ambient environment.',
+              '        child.env_remove(FLAGS2ENV_CONFIG_ENV);',
+              '        if let Some(config) = config_for_run(project, &modules_dir, command)? {',
+              '            child.env(FLAGS2ENV_CONFIG_ENV, config);',
+              '        }',
+              '    }',
+              '    let status = child.status();',
+          ])
+          text = replace_once(text, run_old, run_new, 'zed run process boundary')
+          ops.write_text(text)
+
+          docs = Path('docs/cli-tools.md')
+          docs_text = docs.read_text()
+          section = dedent('''
+
+          ## Package CLIs and flags-2-env
+
+          A normal Zed package exposes project-local commands through `[bin]`. A CLI
+          whose argv contract is owned by `flags-2-env` additionally retains and
+          declares its package-owned contract:
+
+          ```toml
+          [build]
+          command = "cargo build --release --locked --bins"
+          outputs = [".cli-flags.toml", "target/release/example"]
+
+          [bin]
+          example = "target/release/example"
+
+          [interop.flags-2-env]
+          config = ".cli-flags.toml"
+          bins = ["example"]
+          ```
+
+          Zed validates the declaration before install, audits the materialized
+          `.cli-flags.toml`, and records a project-relative binding beside the hoisted
+          binaries. `zed run example -- ...` resolves that installed file, audits it
+          again, clears any ambient `FLAGS2ENV_CONFIG`, and gives the child the exact
+          canonical path. An unbound hoisted command receives no inherited
+          `FLAGS2ENV_CONFIG`.
+
+          Directly invoking `<install.dir>/.bin/example` bypasses Zed's process
+          boundary and therefore cannot receive environment injection in this first
+          implementation. Use `zed run` for the package-owned flags contract; a later
+          native launcher can make direct `.bin` execution equivalent without adding
+          a shell dependency.
+          ''')
+          if '## Package CLIs and flags-2-env' not in docs_text:
+              docs.write_text(docs_text.rstrip() + section + '\n')
+          PY
+
+      - name: Update the exact interface lock and format
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p zed-interfaces --precise c964906d445a9b70973a2a84a7f5ffcdd1d96071
+          cargo fmt --all
+          cargo fmt --all --check
+
+      - name: Test and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --all-targets --locked
+          cargo test --doc --locked
+          cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Commit tested implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Cargo.toml Cargo.lock src/lib.rs src/ops.rs src/flags2env_interop.rs docs/cli-tools.md
+          if git diff --cached --quiet; then
+            echo 'No implementation changes remain.'
+            exit 0
+          fi
+          git diff --cached --stat
+          git commit -m 'feat(DEN-2050): bind installed CLI flags contracts'
+          git push origin HEAD:refs/heads/DEN-2050-flags2env-cli-install
