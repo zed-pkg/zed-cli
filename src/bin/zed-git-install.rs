@@ -76,7 +76,10 @@ fn run(cli: Cli) -> Result<()> {
     let repo = checkout.path().join("repo");
     fs::create_dir(&repo).context("creating checkout directory")?;
 
-    run_command(Command::new("git").arg("init").arg("--quiet").arg(&repo), "initializing Git checkout")?;
+    run_command(
+        Command::new("git").arg("init").arg("--quiet").arg(&repo),
+        "initializing Git checkout",
+    )?;
     run_command(
         Command::new("git")
             .arg("-C")
@@ -110,7 +113,11 @@ fn run(cli: Cli) -> Result<()> {
     )?;
 
     let actual_rev = command_stdout(
-        Command::new("git").arg("-C").arg(&repo).arg("rev-parse").arg("HEAD"),
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .arg("rev-parse")
+            .arg("HEAD"),
         "resolving checked-out Git revision",
     )?;
     ensure!(
@@ -156,8 +163,12 @@ fn run(cli: Cli) -> Result<()> {
     ensure!(status.success(), "Cargo build failed with {status}");
 
     let built = repo.join(&output);
-    let built_metadata = fs::symlink_metadata(&built)
-        .with_context(|| format!("declared binary output was not produced: {}", built.display()))?;
+    let built_metadata = fs::symlink_metadata(&built).with_context(|| {
+        format!(
+            "declared binary output was not produced: {}",
+            built.display()
+        )
+    })?;
     ensure!(
         built_metadata.is_file() && !built_metadata.file_type().is_symlink(),
         "declared binary output must be a regular file: {}",
@@ -205,8 +216,14 @@ fn validate_url(url: &str) -> Result<()> {
             || trimmed.starts_with("git@"),
         "--git must use an https://, ssh://, or git@ SSH source"
     );
-    if let Some(authority) = trimmed.strip_prefix("https://").and_then(|rest| rest.split('/').next()) {
-        ensure!(!authority.contains('@'), "credentials must not be embedded in --git URLs");
+    if let Some(authority) = trimmed
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split('/').next())
+    {
+        ensure!(
+            !authority.contains('@'),
+            "credentials must not be embedded in --git URLs"
+        );
     }
     Ok(())
 }
@@ -222,7 +239,8 @@ fn validate_revision(rev: &str) -> Result<()> {
 fn validate_bin_name(name: &str) -> Result<()> {
     ensure!(!name.is_empty() && name.len() <= 128, "invalid --bin name");
     ensure!(
-        name.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
+        name.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')),
         "--bin may contain only ASCII letters, digits, '-' and '_'"
     );
     Ok(())
@@ -242,7 +260,8 @@ fn safe_relative_path(value: &str, label: &str) -> Result<PathBuf> {
     let path = Path::new(value);
     ensure!(!path.is_absolute(), "{label} must be repository-relative");
     ensure!(
-        path.components().all(|component| matches!(component, Component::Normal(_) | Component::CurDir)),
+        path.components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir)),
         "{label} must not escape the source repository"
     );
     Ok(path.to_path_buf())
@@ -286,8 +305,13 @@ fn command_stdout(command: &mut Command, action: &str) -> Result<String> {
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("{action}: failed to start process"))?;
-    ensure!(output.status.success(), "{action}: process exited with {}", output.status);
-    let text = String::from_utf8(output.stdout).with_context(|| format!("{action}: stdout was not UTF-8"))?;
+    ensure!(
+        output.status.success(),
+        "{action}: process exited with {}",
+        output.status
+    );
+    let text = String::from_utf8(output.stdout)
+        .with_context(|| format!("{action}: stdout was not UTF-8"))?;
     Ok(text.trim().to_string())
 }
 
@@ -337,11 +361,17 @@ fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<
             destination.display()
         );
     }
-    let parent = destination.parent().context("global binary destination has no parent")?;
-    let mut staged = tempfile::NamedTempFile::new_in(parent).context("staging global executable")?;
+    let parent = destination
+        .parent()
+        .context("global binary destination has no parent")?;
+    let mut staged =
+        tempfile::NamedTempFile::new_in(parent).context("staging global executable")?;
     let mut input = fs::File::open(source).context("opening built executable")?;
     std::io::copy(&mut input, staged.as_file_mut()).context("copying built executable")?;
-    staged.as_file_mut().sync_all().context("syncing staged executable")?;
+    staged
+        .as_file_mut()
+        .sync_all()
+        .context("syncing staged executable")?;
 
     #[cfg(unix)]
     {
@@ -376,7 +406,8 @@ fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = fs::read(path).with_context(|| format!("reading {} for SHA-256", path.display()))?;
+    let bytes =
+        fs::read(path).with_context(|| format!("reading {} for SHA-256", path.display()))?;
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
@@ -384,8 +415,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path.parent().context("receipt path has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent).context("staging receipt")?;
     temporary.write_all(bytes).context("writing receipt")?;
-    temporary.as_file_mut().sync_all().context("syncing receipt")?;
-    temporary.persist(path).map_err(|error| error.error).context("activating receipt")?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .context("syncing receipt")?;
+    temporary
+        .persist(path)
+        .map_err(|error| error.error)
+        .context("activating receipt")?;
     Ok(())
 }
 
