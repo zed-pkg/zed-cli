@@ -4,7 +4,7 @@ use std::process::{Command, Output};
 
 const VALID: &str = "tests/fixtures/validate/valid";
 const SUBMODULE: &str = "tests/fixtures/validate/git-submodule";
-const INTERFACE_REVISION: &str = "0c51d732cb01a377b2bc00e8d945b355e41961c1";
+const INTERFACE_REVISION: &str = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e";
 
 fn zed() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_zed"))

@@ -26,8 +26,11 @@ name = "zed_cli"
 path = "src/lib.rs"
 
 [dependencies]
-# Union of GHCR/git-tag locators, public R2 fallback, and canonical lifecycle schema.
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c51d732cb01a377b2bc00e8d945b355e41961c1" }
+# One exact contract, behavior, and transport stack is shared with every Rust
+# SDK consumer. zed-cli keeps only CLI-only publication/binary/fallback edges.
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e" }
+zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "eac0878750332b031bc12f6040b6a795a17e7417" }
+zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "b32e089caea772f166204fb1c7bcaad6f56942fe" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"

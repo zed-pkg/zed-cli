@@ -11,8 +11,8 @@ use zed_interfaces::binary_artifact::{
 };
 use zed_interfaces::manifest::is_slug;
 use zed_interfaces::registry::{
-    self, AuditLogResponse, ClaimOrgRequest, ClaimOrgResponse, PackageMetadata, PublishMeta,
-    PublishResponse, SearchResponse, VersionMetadata, YankRequest, YankResponse,
+    self, AuditLogResponse, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
+    SearchResponse, VersionMetadata, YankResponse,
 };
 
 /// Hard ceiling on artifact download size (bytes); the registry-reported
@@ -733,6 +733,9 @@ fn redacted_url(url: &reqwest::Url) -> String {
 
 pub struct HttpRegistry {
     base: String,
+    shared: zed_client::Client,
+    // CLI-only transport remains for multipart publication, binary
+    // artifacts, audit reads, and the stricter 1 GiB download path.
     client: reqwest::blocking::Client,
     download_client: reqwest::blocking::Client,
 }
@@ -752,9 +755,11 @@ impl HttpRegistry {
             bail!("registry URL must not contain credentials, a query, or a fragment");
         }
         let base = parsed.as_str().trim_end_matches('/').to_string();
+        let shared = zed_client::Client::new(base.clone()).map_err(anyhow::Error::new)?;
         let redirect_base = parsed.clone();
         Ok(Self {
             base,
+            shared,
             client: reqwest::blocking::Client::builder()
                 .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
                 // Authenticated API requests must never replay bearer headers
@@ -794,6 +799,14 @@ impl HttpRegistry {
                     }
                 }))
                 .build()?,
+        })
+    }
+
+    fn shared_with_token(&self, token: Option<&str>) -> Result<zed_client::Client> {
+        let client = zed_client::Client::new(self.base.clone()).map_err(anyhow::Error::new)?;
+        Ok(match token {
+            Some(token) => client.with_token(token),
+            None => client,
         })
     }
 
@@ -909,19 +922,15 @@ impl HttpRegistry {
 
 impl Registry for HttpRegistry {
     fn get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
-        let response = self
-            .client
-            .get(self.url(&registry::package_path(org, name)))
-            .send()?;
-        Ok(Self::check(response)?.json()?)
+        self.shared
+            .get_package(org, name)
+            .map_err(anyhow::Error::new)
     }
 
     fn get_version(&self, org: &str, name: &str, version: &str) -> Result<VersionMetadata> {
-        let response = self
-            .client
-            .get(self.url(&registry::version_path(org, name, version)))
-            .send()?;
-        Ok(Self::check(response)?.json()?)
+        self.shared
+            .get_version(org, name, version)
+            .map_err(anyhow::Error::new)
     }
 
     fn download(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
@@ -1022,25 +1031,13 @@ impl Registry for HttpRegistry {
     }
 
     fn claim_org(&self, slug: &str, token: Option<&str>) -> Result<ClaimOrgResponse> {
-        let mut request =
-            self.client
-                .post(self.url(&registry::orgs_path()))
-                .json(&ClaimOrgRequest {
-                    slug: slug.to_string(),
-                });
-        if let Some(token) = token {
-            request = request.bearer_auth(token);
-        }
-        Ok(Self::check(request.send()?)?.json()?)
+        self.shared_with_token(token)?
+            .claim_org(slug)
+            .map_err(anyhow::Error::new)
     }
 
     fn search(&self, query: &str) -> Result<SearchResponse> {
-        let response = self
-            .client
-            .get(self.url(&registry::search_path()))
-            .query(&[("q", query)])
-            .send()?;
-        Ok(Self::check(response)?.json()?)
+        self.shared.search(query).map_err(anyhow::Error::new)
     }
 
     fn yank(
@@ -1051,14 +1048,9 @@ impl Registry for HttpRegistry {
         yanked: bool,
         token: Option<&str>,
     ) -> Result<YankResponse> {
-        let mut request = self
-            .client
-            .post(self.url(&registry::yank_path(org, name, version)))
-            .json(&YankRequest { yanked });
-        if let Some(token) = token {
-            request = request.bearer_auth(token);
-        }
-        Ok(Self::check(request.send()?)?.json()?)
+        self.shared_with_token(token)?
+            .set_yanked(org, name, version, yanked)
+            .map_err(anyhow::Error::new)
     }
 
     fn audit_log(
@@ -1105,6 +1097,48 @@ mod tests {
         ] {
             assert!(HttpRegistry::new(url.to_owned()).is_err(), "accepted {url}");
         }
+    }
+
+    #[test]
+    fn package_reads_use_the_shared_zed_client_transport() {
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = server.local_addr().unwrap();
+        let response_body = serde_json::json!({
+            "org": "acme",
+            "name": "tool",
+            "vcs": "git",
+            "repo_url": "https://github.com/acme/tool",
+            "description": null,
+            "latest": "1.0.0",
+            "versions": ["1.0.0"],
+            "version_scheme": "semver",
+            "tags": []
+        })
+        .to_string();
+        let thread = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut request = [0_u8; 8192];
+            let read = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.starts_with("GET /v1/packages/acme/tool "));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("user-agent: zed-client-rust/0.1.0")
+            );
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            )
+            .unwrap();
+        });
+
+        let registry = HttpRegistry::new(format!("http://{address}")).unwrap();
+        let metadata = registry.get_package("acme", "tool").unwrap();
+        assert_eq!(metadata.latest.as_deref(), Some("1.0.0"));
+        thread.join().unwrap();
     }
 
     #[test]
@@ -1268,7 +1302,9 @@ tool = "bin/tool"
         let error = registry
             .claim_org("acme", Some("do-not-forward"))
             .unwrap_err();
-        assert!(format!("{error:#}").contains("307 Temporary Redirect"));
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("registry error 307: http_307"));
+        assert!(!rendered.contains("do-not-forward"));
         server.join().unwrap();
         assert!(matches!(
             redirect_sink.accept(),
