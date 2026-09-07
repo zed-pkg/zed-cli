@@ -1,0 +1,657 @@
+name: DEN-2050 flags-2-env CLI runtime binding bootstrap
+
+on:
+  push:
+    branches: [DEN-2050-flags2env-cli-install]
+    paths:
+      - '.github/workflows/den-2050-flags2env-cli-install-bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-2050-flags2env-cli-install-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: DEN-2050-flags2env-cli-install
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+
+      - name: Implement package-owned flags-2-env bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          from textwrap import dedent
+
+          interface_revision = 'c964906d445a9b70973a2a84a7f5ffcdd1d96071'
+
+          cargo = Path('Cargo.toml')
+          cargo_text = cargo.read_text()
+          old_revision = '0c51d732cb01a377b2bc00e8d945b355e41961c1'
+          if old_revision not in cargo_text:
+              raise SystemExit('zed-interfaces revision anchor not found')
+          cargo.write_text(cargo_text.replace(old_revision, interface_revision, 1))
+
+          lib = Path('src/lib.rs')
+          lib_text = lib.read_text()
+          if 'mod flags2env_interop;' not in lib_text:
+              anchor = 'pub mod flags;\n'
+              if anchor not in lib_text:
+                  raise SystemExit('lib.rs flags module anchor not found')
+              lib_text = lib_text.replace(anchor, anchor + 'pub(crate) mod flags2env_interop;\n', 1)
+              lib.write_text(lib_text)
+
+          Path('src/flags2env_interop.rs').write_text(dedent(r'''
+          use std::collections::BTreeMap;
+          use std::fs;
+          use std::io::ErrorKind;
+          use std::path::{Component, Path, PathBuf};
+
+          use anyhow::{Context, Result, anyhow, bail};
+          use flags2env::BundledFlags2Env;
+          use serde::{Deserialize, Serialize};
+          use zed_interfaces::manifest::Manifest;
+          use zed_interfaces::paths::BIN_DIR;
+
+          pub(crate) const FLAGS2ENV_CONFIG_ENV: &str = "FLAGS2ENV_CONFIG";
+          const BINDINGS_FILE: &str = ".flags2env-bindings.json";
+          const BINDINGS_SCHEMA: &str = "zed.flags2env-bindings/v1";
+
+          #[derive(Debug, Default, Deserialize, Serialize)]
+          #[serde(deny_unknown_fields)]
+          struct BindingsDocument {
+              schema: String,
+              bins: BTreeMap<String, PathBuf>,
+          }
+
+          pub(crate) fn register_package_bins(
+              package_key: &str,
+              destination: &Path,
+              project_relative_destination: &Path,
+              manifest: &Manifest,
+              bins: &mut BTreeMap<String, PathBuf>,
+              bindings: &mut BTreeMap<String, PathBuf>,
+          ) -> Result<()> {
+              for (name, target) in &manifest.bin {
+                  bins.insert(name.clone(), destination.join(target));
+                  // The last package to own a colliding bin also owns whether it
+                  // has a flags contract. Never retain an older package's binding.
+                  bindings.remove(name);
+              }
+
+              let interop = &manifest.interop.flags_2_env;
+              if interop.is_empty() {
+                  return Ok(());
+              }
+              let config = interop
+                  .config
+                  .as_deref()
+                  .context("validated flags-2-env interop has no config")?;
+              let relative_config = Path::new(config);
+              if !is_safe_relative_path(relative_config) {
+                  bail!(
+                      "package `{package_key}` flags-2-env config `{config}` is not a safe relative path"
+                  );
+              }
+              if !is_safe_relative_path(project_relative_destination) {
+                  bail!(
+                      "package `{package_key}` materialized outside the project-owned package tree"
+                  );
+              }
+
+              let installed_config = destination.join(relative_config);
+              audit_installed_contract(package_key, &installed_config)?;
+              let project_relative_config = project_relative_destination.join(relative_config);
+              for name in &interop.bins {
+                  if !manifest.bin.contains_key(name) {
+                      bail!(
+                          "package `{package_key}` binds undeclared flags-2-env bin `{name}`"
+                      );
+                  }
+                  bindings.insert(name.clone(), project_relative_config.clone());
+              }
+              Ok(())
+          }
+
+          pub(crate) fn write_bindings(
+              modules: &Path,
+              bindings: &BTreeMap<String, PathBuf>,
+          ) -> Result<()> {
+              let bin_dir = modules.join(BIN_DIR);
+              let destination = bin_dir.join(BINDINGS_FILE);
+              if bindings.is_empty() {
+                  remove_owned_path(&destination)?;
+                  return Ok(());
+              }
+
+              fs::create_dir_all(&bin_dir)?;
+              for (name, path) in bindings {
+                  if name.is_empty() || !is_safe_relative_path(path) {
+                      bail!(
+                          "refusing to persist unsafe flags-2-env binding `{name}` -> `{}`",
+                          path.display()
+                      );
+                  }
+              }
+              let document = BindingsDocument {
+                  schema: BINDINGS_SCHEMA.to_owned(),
+                  bins: bindings.clone(),
+              };
+              let encoded = serde_json::to_vec_pretty(&document)?;
+              let temporary = bin_dir.join(format!(
+                  ".flags2env-bindings-{}.tmp",
+                  uuid::Uuid::new_v4()
+              ));
+              fs::write(&temporary, encoded)?;
+              remove_owned_path(&destination)?;
+              if let Err(error) = fs::rename(&temporary, &destination) {
+                  let _ = fs::remove_file(&temporary);
+                  return Err(error).context("committing flags-2-env bin bindings");
+              }
+              Ok(())
+          }
+
+          pub(crate) fn config_for_run(
+              project: &Path,
+              modules_dir: &str,
+              command: &str,
+          ) -> Result<Option<PathBuf>> {
+              let document_path = project
+                  .join(modules_dir)
+                  .join(BIN_DIR)
+                  .join(BINDINGS_FILE);
+              let metadata = match fs::symlink_metadata(&document_path) {
+                  Ok(metadata) => metadata,
+                  Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+                  Err(error) => return Err(error).context("reading flags-2-env bindings metadata"),
+              };
+              if metadata.file_type().is_symlink() || !metadata.is_file() {
+                  bail!(
+                      "flags-2-env bindings file {} must be a regular non-symlink file",
+                      document_path.display()
+                  );
+              }
+              let document: BindingsDocument = serde_json::from_slice(
+                  &fs::read(&document_path)
+                      .with_context(|| format!("reading {}", document_path.display()))?,
+              )
+              .with_context(|| format!("parsing {}", document_path.display()))?;
+              if document.schema != BINDINGS_SCHEMA {
+                  bail!(
+                      "unsupported flags-2-env bindings schema `{}` in {}",
+                      document.schema,
+                      document_path.display()
+                  );
+              }
+              let Some(relative_config) = document.bins.get(command) else {
+                  return Ok(None);
+              };
+              if !is_safe_relative_path(relative_config) {
+                  bail!(
+                      "flags-2-env binding for `{command}` escapes the project: {}",
+                      relative_config.display()
+                  );
+              }
+              let installed_config = project.join(relative_config);
+              audit_installed_contract(command, &installed_config)?;
+              Ok(Some(installed_config.canonicalize().with_context(|| {
+                  format!(
+                      "resolving flags-2-env contract for `{command}` at {}",
+                      installed_config.display()
+                  )
+              })?))
+          }
+
+          fn audit_installed_contract(owner: &str, path: &Path) -> Result<()> {
+              let metadata = fs::symlink_metadata(path).with_context(|| {
+                  format!(
+                      "package `{owner}` declares missing flags-2-env contract {}",
+                      path.display()
+                  )
+              })?;
+              if metadata.file_type().is_symlink() || !metadata.is_file() {
+                  bail!(
+                      "package `{owner}` flags-2-env contract {} must be a regular non-symlink file",
+                      path.display()
+                  );
+              }
+              let path_text = path.to_str().with_context(|| {
+                  format!(
+                      "package `{owner}` flags-2-env contract path is not valid UTF-8: {}",
+                      path.display()
+                  )
+              })?;
+              BundledFlags2Env::new()
+                  .audit_config(Some(path_text))
+                  .map_err(|error| anyhow!(error.to_string()))
+                  .with_context(|| {
+                      format!(
+                          "package `{owner}` flags-2-env contract failed audit: {}",
+                          path.display()
+                      )
+                  })
+          }
+
+          fn is_safe_relative_path(path: &Path) -> bool {
+              !path.as_os_str().is_empty()
+                  && !path.is_absolute()
+                  && path
+                      .components()
+                      .all(|component| matches!(component, Component::Normal(_)))
+          }
+
+          fn remove_owned_path(path: &Path) -> Result<()> {
+              match fs::symlink_metadata(path) {
+                  Ok(metadata) if metadata.file_type().is_symlink() || metadata.is_file() => {
+                      fs::remove_file(path)?;
+                  }
+                  Ok(metadata) if metadata.is_dir() => {
+                      fs::remove_dir_all(path)?;
+                  }
+                  Ok(_) => {
+                      fs::remove_file(path)?;
+                  }
+                  Err(error) if error.kind() == ErrorKind::NotFound => {}
+                  Err(error) => return Err(error.into()),
+              }
+              Ok(())
+          }
+
+          #[cfg(test)]
+          mod tests {
+              use super::*;
+
+              fn manifest() -> Manifest {
+                  Manifest::parse(
+                      r#"
+          [package]
+          org = "acme"
+          name = "tool"
+          version = "1.0.0"
+          license = "MIT"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/acme/tool"
+
+          [bin]
+          probe = "bin/probe"
+
+          [interop.flags-2-env]
+          config = ".cli-flags.toml"
+          bins = ["probe"]
+          "#,
+                  )
+                  .expect("valid manifest")
+              }
+
+              fn write_valid_contract(path: &Path) {
+                  fs::write(
+                      path,
+                      r#"
+          [env]
+          files = []
+
+          [parse]
+          allow_unknown = false
+
+          [flags.json]
+          env = "EXAMPLE_JSON"
+          aliases = ["json"]
+          type = "bool"
+          default = true
+          "#,
+                  )
+                  .expect("write valid contract");
+              }
+
+              #[test]
+              fn package_binding_round_trips_to_an_audited_canonical_path() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let project = temp.path();
+                  let relative_destination = PathBuf::from("zed_modules/acme/tool");
+                  let destination = project.join(&relative_destination);
+                  fs::create_dir_all(destination.join("bin")).unwrap();
+                  fs::write(destination.join("bin/probe"), b"probe").unwrap();
+                  write_valid_contract(&destination.join(".cli-flags.toml"));
+
+                  let mut bins = BTreeMap::new();
+                  let mut bindings = BTreeMap::new();
+                  register_package_bins(
+                      "acme/tool",
+                      &destination,
+                      &relative_destination,
+                      &manifest(),
+                      &mut bins,
+                      &mut bindings,
+                  )
+                  .unwrap();
+                  assert_eq!(
+                      bins.get("probe"),
+                      Some(&destination.join("bin/probe"))
+                  );
+                  assert_eq!(
+                      bindings.get("probe"),
+                      Some(&PathBuf::from("zed_modules/acme/tool/.cli-flags.toml"))
+                  );
+
+                  write_bindings(&project.join("zed_modules"), &bindings).unwrap();
+                  assert_eq!(
+                      config_for_run(project, "zed_modules", "probe").unwrap(),
+                      Some(destination.join(".cli-flags.toml").canonicalize().unwrap())
+                  );
+              }
+
+              #[test]
+              fn missing_or_invalid_package_contract_fails_closed() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let destination = temp.path().join("zed_modules/acme/tool");
+                  fs::create_dir_all(destination.join("bin")).unwrap();
+                  fs::write(destination.join("bin/probe"), b"probe").unwrap();
+                  let relative_destination = PathBuf::from("zed_modules/acme/tool");
+                  let mut bins = BTreeMap::new();
+                  let mut bindings = BTreeMap::new();
+                  assert!(
+                      register_package_bins(
+                          "acme/tool",
+                          &destination,
+                          &relative_destination,
+                          &manifest(),
+                          &mut bins,
+                          &mut bindings,
+                      )
+                      .is_err()
+                  );
+
+                  fs::write(
+                      destination.join(".cli-flags.toml"),
+                      r#"
+          [flags.one]
+          env = "ONE"
+          aliases = ["same"]
+          type = "string"
+
+          [flags.two]
+          env = "TWO"
+          aliases = ["same"]
+          type = "string"
+          "#,
+                  )
+                  .unwrap();
+                  assert!(
+                      register_package_bins(
+                          "acme/tool",
+                          &destination,
+                          &relative_destination,
+                          &manifest(),
+                          &mut bins,
+                          &mut bindings,
+                      )
+                      .is_err()
+                  );
+              }
+
+              #[test]
+              fn traversal_in_persisted_binding_is_rejected() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let bin_dir = temp.path().join("zed_modules").join(BIN_DIR);
+                  fs::create_dir_all(&bin_dir).unwrap();
+                  fs::write(
+                      bin_dir.join(BINDINGS_FILE),
+                      format!(
+                          r#"{{"schema":"{BINDINGS_SCHEMA}","bins":{{"probe":"../escape/.cli-flags.toml"}}}}"#
+                      ),
+                  )
+                  .unwrap();
+                  assert!(config_for_run(temp.path(), "zed_modules", "probe").is_err());
+              }
+
+              #[test]
+              fn empty_binding_set_removes_stale_metadata() {
+                  let temp = tempfile::tempdir().unwrap();
+                  let modules = temp.path().join("zed_modules");
+                  let binding_path = modules.join(BIN_DIR).join(BINDINGS_FILE);
+                  fs::create_dir_all(binding_path.parent().unwrap()).unwrap();
+                  fs::write(&binding_path, b"stale").unwrap();
+                  write_bindings(&modules, &BTreeMap::new()).unwrap();
+                  assert!(!binding_path.exists());
+              }
+          }
+          '''))
+
+          ops = Path('src/ops.rs')
+          text = ops.read_text()
+          import_anchor = 'use crate::config::{Config, Credentials, read_manifest, write_manifest};\n'
+          interop_import = '''use crate::flags2env_interop::{
+              FLAGS2ENV_CONFIG_ENV, config_for_run, register_package_bins, write_bindings,
+          };
+          '''
+          if 'crate::flags2env_interop' not in text:
+              if import_anchor not in text:
+                  raise SystemExit('ops import anchor not found')
+              text = text.replace(import_anchor, import_anchor + interop_import, 1)
+
+          declaration = '    let mut bins: BTreeMap<String, PathBuf> = BTreeMap::new();\n'
+          replacement = declaration + '    let mut flags2env_bindings: BTreeMap<String, PathBuf> = BTreeMap::new();\n'
+          if text.count(declaration) < 2:
+              raise SystemExit(f'expected at least two bin-map declarations, found {text.count(declaration)}')
+          text = text.replace(declaration, replacement, 2)
+
+          old_registry = '''        if let Some(pm) = &pkg_manifest {
+              for (bin_name, rel_target) in &pm.bin {
+                  bins.insert(bin_name.clone(), dest.join(rel_target));
+              }
+          }
+          '''
+          new_registry = '''        if let Some(pm) = &pkg_manifest {
+              let relative_destination = PathBuf::from(modules_dir)
+                  .join(&vm.org)
+                  .join(&vm.name);
+              register_package_bins(
+                  &key,
+                  &dest,
+                  &relative_destination,
+                  pm,
+                  &mut bins,
+                  &mut flags2env_bindings,
+              )?;
+          }
+          '''
+          if old_registry not in text:
+              raise SystemExit('registry bin collection anchor not found')
+          text = text.replace(old_registry, new_registry, 1)
+
+          old_workspace = '''        for (bin_name, rel_target) in &member_manifest.bin {
+              bins.insert(bin_name.clone(), dest.join(rel_target));
+          }
+          '''
+          new_workspace = '''        let relative_destination = PathBuf::from(modules_dir)
+              .join(&org)
+              .join(&name);
+          register_package_bins(
+              key,
+              &dest,
+              &relative_destination,
+              member_manifest,
+              &mut bins,
+              &mut flags2env_bindings,
+          )?;
+          '''
+          if old_workspace not in text:
+              raise SystemExit('workspace bin collection anchor not found')
+          text = text.replace(old_workspace, new_workspace, 1)
+
+          first_hoist = '    hoist_bins(&modules, &bins, mode)?;\n'
+          if text.count(first_hoist) < 2:
+              raise SystemExit(f'expected install and uninstall hoist calls, found {text.count(first_hoist)}')
+          text = text.replace(
+              first_hoist,
+              first_hoist + '    write_bindings(&modules, &flags2env_bindings)?;\n',
+              1,
+          )
+
+          old_remaining = '''            if let Ok(package_manifest) = read_manifest(&installed) {
+                  for (name, target) in package_manifest.bin {
+                      bins.insert(name, installed.join(target));
+                  }
+              }
+          '''
+          new_remaining = '''            if let Ok(package_manifest) = read_manifest(&installed) {
+                  let relative_destination = PathBuf::from(&modules_dir)
+                      .join(&package.org)
+                      .join(&package.name);
+                  register_package_bins(
+                      &package.full_name(),
+                      &installed,
+                      &relative_destination,
+                      &package_manifest,
+                      &mut bins,
+                      &mut flags2env_bindings,
+                  )?;
+              }
+          '''
+          if old_remaining not in text:
+              raise SystemExit('remaining registry bin reconstruction anchor not found')
+          text = text.replace(old_remaining, new_remaining, 1)
+
+          old_remaining_workspace = '''            if let Ok(package_manifest) = read_manifest(&installed) {
+                  for (bin_name, target) in package_manifest.bin {
+                      bins.insert(bin_name, installed.join(target));
+                  }
+              }
+          '''
+          new_remaining_workspace = '''            if let Ok(package_manifest) = read_manifest(&installed) {
+                  let relative_destination = PathBuf::from(&modules_dir)
+                      .join(&org)
+                      .join(&name);
+                  register_package_bins(
+                      key,
+                      &installed,
+                      &relative_destination,
+                      &package_manifest,
+                      &mut bins,
+                      &mut flags2env_bindings,
+                  )?;
+              }
+          '''
+          if old_remaining_workspace not in text:
+              raise SystemExit('remaining workspace bin reconstruction anchor not found')
+          text = text.replace(old_remaining_workspace, new_remaining_workspace, 1)
+
+          if text.count(first_hoist) != 1:
+              raise SystemExit(f'expected one remaining uninstall hoist call, found {text.count(first_hoist)}')
+          text = text.replace(
+              first_hoist,
+              first_hoist + '        write_bindings(&modules, &flags2env_bindings)?;\n',
+              1,
+          )
+
+          old_run = '''    let status = child
+              .args(args)
+              .env("PATH", &new_path)
+              .current_dir(project)
+              .status();
+          '''
+          new_run = '''    child.args(args).env("PATH", &new_path).current_dir(project);
+              if hoisted.is_some() {
+                  // A hoisted package must opt into flags-2-env explicitly. Clear
+                  // any caller-owned value first so one package cannot inherit a
+                  // different package's contract through the ambient environment.
+                  child.env_remove(FLAGS2ENV_CONFIG_ENV);
+                  if let Some(config) = config_for_run(project, &modules_dir, command)? {
+                      child.env(FLAGS2ENV_CONFIG_ENV, config);
+                  }
+              }
+              let status = child.status();
+          '''
+          if old_run not in text:
+              raise SystemExit('zed run spawn anchor not found')
+          text = text.replace(old_run, new_run, 1)
+          ops.write_text(text)
+
+          docs = Path('docs/cli-tools.md')
+          docs_text = docs.read_text()
+          section = dedent('''
+
+          ## Package CLIs and flags-2-env
+
+          A normal Zed package can expose project-local commands through `[bin]`. A CLI
+          whose argv contract is owned by `flags-2-env` must additionally retain and
+          declare its package-owned contract:
+
+          ```toml
+          [build]
+          command = "cargo build --release --locked --bins"
+          outputs = [".cli-flags.toml", "target/release/example"]
+
+          [bin]
+          example = "target/release/example"
+
+          [interop.flags-2-env]
+          config = ".cli-flags.toml"
+          bins = ["example"]
+          ```
+
+          Zed validates the declaration before install, audits the materialized
+          `.cli-flags.toml`, and records a project-relative binding beside the hoisted
+          binaries. `zed run example -- ...` resolves that installed file, audits it
+          again, clears any ambient `FLAGS2ENV_CONFIG`, and gives the child the exact
+          canonical path. An unbound hoisted command receives no inherited
+          `FLAGS2ENV_CONFIG`.
+
+          This first contract is intentionally attached to `zed run`; directly invoking
+          `<install.dir>/.bin/example` bypasses Zed's process boundary and therefore
+          cannot receive environment injection. Package binaries should still fail
+          closed when their required contract variable is absent. A future native
+          launcher may make direct `.bin` execution equivalent without adding a shell
+          dependency.
+          ''')
+          if '## Package CLIs and flags-2-env' not in docs_text:
+              docs.write_text(docs_text.rstrip() + section + '\n')
+          PY
+
+      - name: Update the exact interface lock and format
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p zed-interfaces --precise c964906d445a9b70973a2a84a7f5ffcdd1d96071
+          cargo fmt --all
+          cargo fmt --all --check
+
+      - name: Test and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --all-targets --locked
+          cargo test --doc --locked
+          cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Commit tested implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- Cargo.toml Cargo.lock src/lib.rs src/ops.rs src/flags2env_interop.rs docs/cli-tools.md
+          if git diff --cached --quiet; then
+            echo 'No implementation changes remain.'
+            exit 0
+          fi
+          git diff --cached --stat
+          git commit -m 'feat(DEN-2050): bind installed CLI flags contracts'
+          git push origin HEAD:refs/heads/DEN-2050-flags2env-cli-install
