@@ -16,8 +16,14 @@ for dependency in \
 done
 
 grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must be .vendor/.zed' >&2; exit 1; }
-grep -Fq 'outputs = ["target/release/zed", "target/release/zed-gitops"]' .zpkg.toml || { echo 'Zed package must publish both root and GitOps executables' >&2; exit 1; }
+for output in \
+  '"target/release/zed"' \
+  '"target/release/zed-gitops"' \
+  '"target/release/zed-git-install"'; do
+  grep -Fq "$output" .zpkg.toml || { printf 'Zed package must publish required executable output: %s\n' "$output" >&2; exit 1; }
+done
 grep -Fq '"zed-gitops" = "target/release/zed-gitops"' .zpkg.toml || { echo 'Zed package must install the sibling zed-gitops executable' >&2; exit 1; }
+grep -Fq '"zed-git-install" = "target/release/zed-git-install"' .zpkg.toml || { echo 'Zed package must install the sibling zed-git-install executable' >&2; exit 1; }
 grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
 
 if [[ -f .zpkg.lock ]] && [[ "$(wc -c < .zpkg.lock)" -le 12 ]]; then
