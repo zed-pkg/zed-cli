@@ -355,6 +355,8 @@ fn platform_bin_name(name: &str) -> String {
 }
 
 fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<()> {
+    // This is only an early diagnostic. Activation below enforces no-clobber
+    // even if another installer creates the destination after this check.
     if destination.exists() && !force {
         bail!(
             "{} already exists; pass --force to replace it after validation",
@@ -368,10 +370,6 @@ fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<
         tempfile::NamedTempFile::new_in(parent).context("staging global executable")?;
     let mut input = fs::File::open(source).context("opening built executable")?;
     std::io::copy(&mut input, staged.as_file_mut()).context("copying built executable")?;
-    staged
-        .as_file_mut()
-        .sync_all()
-        .context("syncing staged executable")?;
 
     #[cfg(unix)]
     {
@@ -381,27 +379,32 @@ fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<
         staged.as_file().set_permissions(permissions)?;
     }
 
-    let temporary = staged.into_temp_path();
-    let backup = destination.with_extension(format!("zed-backup-{}", std::process::id()));
-    if destination.exists() {
-        if backup.exists() {
-            fs::remove_file(&backup).context("removing stale executable backup")?;
-        }
-        fs::rename(destination, &backup).context("staging existing executable backup")?;
-    }
-    match temporary.persist(destination) {
-        Ok(()) => {
-            if backup.exists() {
-                fs::remove_file(&backup).context("removing replaced executable backup")?;
-            }
-            Ok(())
-        }
-        Err(error) => {
-            if backup.exists() {
-                let _ = fs::rename(&backup, destination);
-            }
-            Err(error).context("atomically activating global executable")
-        }
+    staged
+        .as_file_mut()
+        .sync_all()
+        .context("syncing staged executable")?;
+    activate_staged(staged.into_temp_path(), destination, force)
+}
+
+fn activate_staged(
+    temporary: tempfile::TempPath,
+    destination: &Path,
+    force: bool,
+) -> Result<()> {
+    // Never move the old executable aside: that creates an unavailable-path
+    // window and can destroy an unrelated PID-named backup. Persist replaces
+    // the destination atomically; on failure the original entry remains.
+    if force {
+        temporary
+            .persist(destination)
+            .context("atomically replacing global executable")
+    } else {
+        // The filesystem, not an earlier exists() check, decides the winner.
+        // This also rejects dangling symlinks at the destination. Some
+        // platforms may retain the temporary hard link, but never clobber.
+        temporary
+            .persist_noclobber(destination)
+            .context("activating global executable without overwriting an existing entry")
     }
 }
 
@@ -435,5 +438,114 @@ fn print_path_guidance(bin_dir: &Path) {
         println!("add {} to PATH", bin_dir.display());
         #[cfg(not(windows))]
         println!("export PATH=\"{}:$PATH\"", bin_dir.display());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{activate_staged, install_atomically};
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
+    use std::sync::{Arc, Barrier};
+
+    fn staged(directory: &Path, bytes: &[u8]) -> tempfile::TempPath {
+        let mut file = tempfile::NamedTempFile::new_in(directory).unwrap();
+        file.write_all(bytes).unwrap();
+        file.into_temp_path()
+    }
+
+    #[test]
+    fn installs_new_executable_without_force() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("cli");
+        fs::write(&source, b"new executable").unwrap();
+        install_atomically(&source, &destination, false).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"new executable");
+    }
+
+    #[test]
+    fn no_force_preserves_existing_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("cli");
+        fs::write(&source, b"new executable").unwrap();
+        fs::write(&destination, b"old executable").unwrap();
+        assert!(install_atomically(&source, &destination, false).is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"old executable");
+    }
+
+    #[test]
+    fn no_force_preserves_destination_created_after_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("cli");
+        let temporary = staged(directory.path(), b"new executable");
+        fs::write(&destination, b"concurrent winner").unwrap();
+        assert!(activate_staged(temporary, &destination, false).is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"concurrent winner");
+    }
+
+    #[test]
+    fn force_replaces_executable_without_touching_adjacent_backup() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("cli");
+        let backup = destination.with_extension(format!("zed-backup-{}", std::process::id()));
+        fs::write(&source, b"new executable").unwrap();
+        fs::write(&destination, b"old executable").unwrap();
+        fs::write(&backup, b"unrelated user data").unwrap();
+        install_atomically(&source, &destination, true).unwrap();
+        assert_eq!(fs::read(destination).unwrap(), b"new executable");
+        assert_eq!(fs::read(backup).unwrap(), b"unrelated user data");
+    }
+
+    #[test]
+    fn failed_force_activation_preserves_original_destination() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("cli");
+        let temporary = staged(directory.path(), b"new executable");
+        fs::write(&destination, b"old executable").unwrap();
+        // Inject failure after staging without relying on platform permissions.
+        fs::remove_file(&temporary).unwrap();
+        assert!(activate_staged(temporary, &destination, true).is_err());
+        assert_eq!(fs::read(destination).unwrap(), b"old executable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_force_preserves_dangling_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("cli");
+        fs::write(&source, b"new executable").unwrap();
+        std::os::unix::fs::symlink("missing-target", &destination).unwrap();
+        assert!(install_atomically(&source, &destination, false).is_err());
+        assert_eq!(fs::read_link(destination).unwrap(), Path::new("missing-target"));
+    }
+
+    #[test]
+    fn concurrent_non_force_installs_have_one_winner() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source");
+        let destination = directory.path().join("cli");
+        fs::write(&source, b"new executable").unwrap();
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let source = source.clone();
+            let destination = destination.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                install_atomically(&source, &destination, false).is_ok()
+            }));
+        }
+        let winners = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(winners, 1);
+        assert_eq!(fs::read(destination).unwrap(), b"new executable");
     }
 }
