@@ -53,7 +53,13 @@ The source revision, selected binary, installed path, flags contract, and SHA-25
 
 ## Replacement semantics
 
-Without `--force`, installation refuses to overwrite an existing executable. With `--force`, the newly built executable is completely fetched, revision-verified, manifest-validated, flags-contract-audited, built, and staged before Zed replaces the existing destination. A backup is retained until activation succeeds.
+Without `--force`, activation uses the filesystem's no-clobber operation, not only an earlier existence check. An existing destination, a dangling symlink, or an executable installed by a concurrent process must not be overwritten. Concurrent non-force installers have at most one successful activation.
+
+With `--force`, the newly built executable is completely fetched, revision-verified, manifest-validated, flags-contract-audited, built, and staged in the destination directory before a single atomic replacement. The old executable is never first renamed out of the way, and PID-named adjacent backup files are neither removed nor repurposed. An activation failure leaves the original destination intact.
+
+These are per-path activation guarantees, not a multi-file transaction or a power-loss recovery guarantee. The staged executable is synced before activation, but the containing directory is not explicitly synced. On some platforms a no-clobber operation can retain an additional temporary hard link; it still must not overwrite the destination. Receipt writing occurs after executable activation, so a later receipt error can leave the new binary installed without its receipt. Concurrent forced replacement and receipt coordination require separate acceptance coverage.
+
+The binary's Rust tests cover initial installation, existing-destination refusal, a destination appearing after staging, preservation of adjacent backup data, injected activation failure, Unix dangling symlinks, and concurrent non-force installers. Run them with `cargo test --bin zed-git-install`; the existing `cargo nextest run` CI also includes binary tests. A source change requires fresh exact-head CI rather than reusing an earlier green run.
 
 This source-install path is separate from `zed install --cli nodejs` / `python3`, which installs project-owned runtime toolchains rather than repository-owned application binaries.
 
