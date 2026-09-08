@@ -2,10 +2,8 @@
 /.zed
 
 # Local scratch and agent worktrees
-tmp
-temp
-tmp/worktrees
-temp/worktrees
+tmp/
+temp/
 
 # Local secrets. Credentials enter this repo only as sops ciphertext
 # under env/enc/*.env.enc. Plaintext never gets committed.
