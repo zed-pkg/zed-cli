@@ -386,11 +386,7 @@ fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<
     activate_staged(staged.into_temp_path(), destination, force)
 }
 
-fn activate_staged(
-    temporary: tempfile::TempPath,
-    destination: &Path,
-    force: bool,
-) -> Result<()> {
+fn activate_staged(temporary: tempfile::TempPath, destination: &Path, force: bool) -> Result<()> {
     // Never move the old executable aside: that creates an unavailable-path
     // window and can destroy an unrelated PID-named backup. Persist replaces
     // the destination atomically; on failure the original entry remains.
@@ -521,7 +517,10 @@ mod tests {
         fs::write(&source, b"new executable").unwrap();
         std::os::unix::fs::symlink("missing-target", &destination).unwrap();
         assert!(install_atomically(&source, &destination, false).is_err());
-        assert_eq!(fs::read_link(destination).unwrap(), Path::new("missing-target"));
+        assert_eq!(
+            fs::read_link(destination).unwrap(),
+            Path::new("missing-target")
+        );
     }
 
     #[test]
