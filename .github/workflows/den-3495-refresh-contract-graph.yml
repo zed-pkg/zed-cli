@@ -120,7 +120,8 @@ jobs:
           PY
           cargo fmt --all
           rust_changes="$(git diff --name-only -- '*.rs')"
-          test "$rust_changes" = "src/bin/zed-git-install.rs" || {
+          expected_rust_changes="$(printf '%s\n' src/bin/zed-git-install.rs tests/git_install_cli.rs)"
+          test "$rust_changes" = "$expected_rust_changes" || {
             echo "rustfmt touched unexpected Rust paths:" >&2
             printf '%s\n' "$rust_changes" >&2
             exit 1
@@ -136,7 +137,7 @@ jobs:
           set -euo pipefail
           git config user.name "ORESoftware automation"
           git config user.email "automation@oresoftware.com"
-          git add Cargo.lock .github/workflows src/bin/zed-git-install.rs
+          git add Cargo.lock .github/workflows src/bin/zed-git-install.rs tests/git_install_cli.rs
           git reset .github/workflows/den-3495-refresh-contract-graph.yml
           git diff --cached --quiet && exit 0
           git commit -m "chore(DEN-3495): refresh merged contract graph"
