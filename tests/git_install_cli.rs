@@ -294,7 +294,7 @@ fn missing_declared_flags_contract_fails_closed() {
     )
     .unwrap();
     fixture.commit(&[".zpkg.toml"]);
-    fixture.rejected(fixture.install(false), "declared flags contract is missing");
+    fixture.rejected(fixture.install(false), "flags contract is missing");
     assert!(!fixture.destination().exists());
 }
 
@@ -308,7 +308,7 @@ fn invalid_declared_flags_contract_fails_closed() {
     .unwrap();
     fs::write(fixture.repo.join("invalid.toml"), "[broken").unwrap();
     fixture.commit(&[".zpkg.toml", "invalid.toml"]);
-    fixture.rejected(fixture.install(false), "flags2env contract audit failed");
+    fixture.rejected(fixture.install(false), "flags2env target contract audit failed");
     assert!(!fixture.destination().exists());
 }
 
@@ -335,7 +335,7 @@ fn unknown_options_and_mutable_revisions_fail_closed() {
         .arg("--not-an-installer-option")
         .output()
         .unwrap();
-    fixture.rejected(output, "unexpected argument");
+    fixture.rejected(output, "flags2env rejected unknown Git install option(s)");
     let output = fixture.installer("main").output().unwrap();
     fixture.rejected(output, "--rev must be a full");
     assert!(!fixture.destination().exists());
