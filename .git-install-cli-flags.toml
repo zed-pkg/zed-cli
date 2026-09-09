@@ -1,0 +1,47 @@
+# Canonical argv/env contract for the revision-pinned source CLI installer.
+# Clap is only the typed projection after flags-2-env audits/parses this file.
+
+[parse]
+unknown_options_env = "ZED_PKG_GIT_INSTALL_UNKNOWN_OPTIONS"
+errors_env = "ZED_PKG_GIT_INSTALL_PARSE_ERRORS"
+allow_unknown = false
+
+[help]
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/git-revision-cli-install.md"
+
+[flags.git]
+env = "ZED_PKG_GIT_INSTALL_URL"
+aliases = ["git"]
+type = "string"
+help = "Git repository URL. HTTPS and SSH transports are accepted."
+
+[flags.rev]
+env = "ZED_PKG_GIT_INSTALL_REV"
+aliases = ["rev"]
+type = "string"
+help = "Full immutable 40-character SHA-1 or 64-character SHA-256 commit id."
+
+[flags.bin]
+env = "ZED_PKG_GIT_INSTALL_BIN"
+aliases = ["bin"]
+type = "string"
+help = "Executable name declared by the repository .zpkg.toml [bin] table."
+
+[flags.force]
+env = "ZED_PKG_GIT_INSTALL_FORCE"
+aliases = ["force"]
+type = "bool"
+default = "false"
+help = "Atomically replace an existing executable only after the candidate validates."
+
+[flags.global_bin_dir]
+env = "ZED_PKG_GLOBAL_BIN_DIR"
+aliases = ["global-bin-dir"]
+type = "string"
+help = "Override the user bin directory used for globally installed Zed executables."
+
+[flags.home]
+env = "ZED_PKG_HOME"
+aliases = ["home"]
+type = "string"
+help = "Override the Zed state directory; defaults to ~/.zed-pkg."
