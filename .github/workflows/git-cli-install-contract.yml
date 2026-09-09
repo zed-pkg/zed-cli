@@ -1,0 +1,142 @@
+name: Git CLI source-install contract
+
+on:
+  pull_request:
+    paths:
+      - "src/bin/zed-git-install.rs"
+      - "src/git_install_bridge.rs"
+      - "src/cli.rs"
+      - "src/main.rs"
+      - "src/lib.rs"
+      - ".cli-flags.toml"
+      - ".git-install-cli-flags.toml"
+      - ".zpkg.toml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/git-cli-install-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-cli-source-install-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZED_INTERFACES_SHA: d11322f06ca6930ddcc34a745b4ef01e0b2bddc1
+  ORES_CLI_SHA: 387bce152d9572c014710d68062f979c3614276d
+
+jobs:
+  peer-authority:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact zed-cli head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: zed-cli
+      - name: Check out merged interface authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: ${{ env.ZED_INTERFACES_SHA }}
+          persist-credentials: false
+          path: zed-interfaces
+      - name: Compare independent TypeSpec and JSON Schema authorities
+        uses: ORESoftware/typespec-json-schema-validator@2281843126ab644607b11cf8281d84f382d68dfc
+        with:
+          typespec: zed-interfaces/schema-authority-canary/git-cli-install-v1/main.tsp
+          schema: zed-interfaces/schema-authority-canary/git-cli-install-v1/authored.schema.json
+          instances: zed-interfaces/schema-authority-canary/git-cli-install-v1/instances
+          report: .typespec-json-schema-validator/git-cli-install/report.json
+          sarif: .typespec-json-schema-validator/git-cli-install/report.sarif
+          contract_ir: .typespec-json-schema-validator/git-cli-install/contract-ir.json
+          output_dir: .typespec-json-schema-validator/git-cli-install/generated
+          max_probes: "64"
+      - name: Require canonical consumer admission refusals
+        uses: ORESoftware/typespec-json-schema-validator/actions/test-consumer-admission@2281843126ab644607b11cf8281d84f382d68dfc
+        with:
+          contract_ir: .typespec-json-schema-validator/git-cli-install/contract-ir.json
+          report: .typespec-json-schema-validator/git-cli-install/report.json
+          typespec: zed-interfaces/schema-authority-canary/git-cli-install-v1/main.tsp
+          schema: zed-interfaces/schema-authority-canary/git-cli-install-v1/authored.schema.json
+          generated_schema: .typespec-json-schema-validator/git-cli-install/generated/typespec.generated.schema.json
+          expected_declarations: '["ZedGitCliInstall.GitCliInstallReceiptV1"]'
+          verification: .typespec-json-schema-validator/git-cli-install/consumer-verification.json
+      - name: Retain comparison evidence only
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: git-cli-source-contract-${{ github.run_id }}
+          path: .typespec-json-schema-validator/git-cli-install/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 30
+
+  rust-runtime:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          components: rustfmt,clippy
+      - name: Verify format
+        run: cargo fmt --all --check
+      - name: Verify complete CLI target set
+        run: cargo test --locked --all-targets
+
+  ores-cli-source-fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - name: Build complete zed binary set
+        run: cargo build --locked --bins
+      - name: Install the exact ores-cli revision through the public zed surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_dir="$RUNNER_TEMP/zed-global-bin"
+          zed_home="$RUNNER_TEMP/zed-home"
+          mkdir -p "$bin_dir" "$zed_home"
+          target/debug/zed install \
+            --git https://github.com/ORESoftware/ores-cli.git \
+            --rev "$ORES_CLI_SHA" \
+            --bin ores-cli \
+            --force \
+            --global-bin-dir "$bin_dir" \
+            --home "$zed_home"
+          test -x "$bin_dir/ores-cli"
+          receipt="$zed_home/global/git-installs/ores-cli-${ORES_CLI_SHA:0:12}.json"
+          test -f "$receipt"
+          python3 - "$receipt" "$ORES_CLI_SHA" <<'PY'
+          import json, re, sys
+          receipt, revision = sys.argv[1:]
+          data = json.load(open(receipt))
+          assert data["schema_version"] == 1
+          assert data["source"] == "https://github.com/ORESoftware/ores-cli.git"
+          assert data["revision"] == revision
+          assert data["binary"] == "ores-cli"
+          assert data["manifest"] == ".zpkg.toml"
+          assert data["flags_contract"] == ".cli-flags.toml"
+          assert re.fullmatch(r"[0-9a-f]{64}", data["sha256"])
+          PY
