@@ -6,6 +6,7 @@ on:
       - feat/DEN-3495-cargo-git-cli-install
     paths:
       - ".github/workflows/den-3495-refresh-contract-graph.yml"
+      - "tests/git_install_cli.rs"
 
 permissions:
   contents: write
