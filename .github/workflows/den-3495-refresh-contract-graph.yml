@@ -21,58 +21,49 @@ jobs:
           ref: feat/DEN-3495-cargo-git-cli-install
           fetch-depth: 1
           persist-credentials: true
-      - name: Refresh only reviewed dependency identities
+      - name: Refresh reviewed dependency and certification identities
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          replacements = {
+          migrations = {
               "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              "0c51d732cb01a377b2bc00e8d945b355e41961c1": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
               "eac0878750332b031bc12f6040b6a795a17e7417": "c8af76191f50ad7a177eb68740e69bdfaa652ff6",
               "b32e089caea772f166204fb1c7bcaad6f56942fe": "bc72c632c92b21032728f2c48a67cb4d73ee98ba",
           }
+
           lock = Path("Cargo.lock")
           text = lock.read_text()
-          for old, new in replacements.items():
+          for old in (
+              "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e",
+              "eac0878750332b031bc12f6040b6a795a17e7417",
+              "b32e089caea772f166204fb1c7bcaad6f56942fe",
+          ):
               count = text.count(old)
               if count != 2:
                   raise SystemExit(f"Cargo.lock: expected exactly 2 occurrences of {old}, found {count}")
-              text = text.replace(old, new)
+              text = text.replace(old, migrations[old])
           lock.write_text(text)
 
-          file_replacements = {
-              ".github/workflows/ci.yml": {
-                  "0c51d732cb01a377b2bc00e8d945b355e41961c1": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
-              },
-              ".github/workflows/frozen-lock-integrity.yml": {
-                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
-              },
-              ".github/workflows/nix-bundle-write.yml": {
-                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
-              },
-              ".github/workflows/nix-export-bundle.yml": {
-                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
-              },
-              ".github/workflows/nix-export-plan.yml": {
-                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
-              },
-              ".github/workflows/zed-package-graph.yml": {
-                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
-                  "eac0878750332b031bc12f6040b6a795a17e7417": "c8af76191f50ad7a177eb68740e69bdfaa652ff6",
-                  "b32e089caea772f166204fb1c7bcaad6f56942fe": "bc72c632c92b21032728f2c48a67cb4d73ee98ba",
-              },
-          }
-          for filename, mapping in file_replacements.items():
-              path = Path(filename)
+          helper = Path(".github/workflows/den-3495-refresh-contract-graph.yml")
+          changed_workflows = []
+          for path in sorted(Path(".github/workflows").glob("*.yml")):
+              if path == helper:
+                  continue
               text = path.read_text()
-              for old, new in mapping.items():
-                  count = text.count(old)
-                  if count < 1:
-                      raise SystemExit(f"{filename}: expected at least one occurrence of {old}, found {count}")
-                  text = text.replace(old, new)
-              path.write_text(text)
+              updated = text
+              for old, new in migrations.items():
+                  updated = updated.replace(old, new)
+              if updated != text:
+                  path.write_text(updated)
+                  changed_workflows.append(path.as_posix())
+          if not changed_workflows:
+              raise SystemExit("expected legacy workflow certification pins to migrate")
+          print("migrated workflows:")
+          print("\n".join(changed_workflows))
           PY
           git diff --check
       - name: Reject stale contract graph pins
@@ -81,9 +72,9 @@ jobs:
           set -euo pipefail
           for stale in \
             3c54298fc7a8c1b2f9c1d74f588c6118b38f197e \
+            0c51d732cb01a377b2bc00e8d945b355e41961c1 \
             eac0878750332b031bc12f6040b6a795a17e7417 \
-            b32e089caea772f166204fb1c7bcaad6f56942fe \
-            0c51d732cb01a377b2bc00e8d945b355e41961c1
+            b32e089caea772f166204fb1c7bcaad6f56942fe
           do
             if git grep -n "$stale" -- Cargo.toml Cargo.lock .github/workflows \
               ':(exclude).github/workflows/den-3495-refresh-contract-graph.yml'; then
@@ -136,14 +127,8 @@ jobs:
           set -euo pipefail
           git config user.name "ORESoftware automation"
           git config user.email "automation@oresoftware.com"
-          git add \
-            Cargo.lock \
-            .github/workflows/ci.yml \
-            .github/workflows/frozen-lock-integrity.yml \
-            .github/workflows/nix-bundle-write.yml \
-            .github/workflows/nix-export-bundle.yml \
-            .github/workflows/nix-export-plan.yml \
-            .github/workflows/zed-package-graph.yml
+          git add Cargo.lock .github/workflows
+          git reset .github/workflows/den-3495-refresh-contract-graph.yml
           git diff --cached --quiet && exit 0
           git commit -m "chore(DEN-3495): refresh merged contract graph"
           git push origin HEAD:feat/DEN-3495-cargo-git-cli-install
