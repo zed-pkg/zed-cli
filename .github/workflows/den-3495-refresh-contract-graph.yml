@@ -42,13 +42,35 @@ jobs:
               text = text.replace(old, new)
           lock.write_text(text)
 
-          ci = Path(".github/workflows/ci.yml")
-          ci_text = ci.read_text()
-          old_ci = "0c51d732cb01a377b2bc00e8d945b355e41961c1"
-          count = ci_text.count(old_ci)
-          if count < 1:
-              raise SystemExit(f"ci.yml: expected at least one legacy interface pin, found {count}")
-          ci.write_text(ci_text.replace(old_ci, "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1"))
+          file_replacements = {
+              ".github/workflows/ci.yml": {
+                  "0c51d732cb01a377b2bc00e8d945b355e41961c1": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              },
+              ".github/workflows/frozen-lock-integrity.yml": {
+                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              },
+              ".github/workflows/nix-bundle-write.yml": {
+                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              },
+              ".github/workflows/nix-export-bundle.yml": {
+                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              },
+              ".github/workflows/nix-export-plan.yml": {
+                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              },
+              ".github/workflows/zed-package-graph.yml": {
+                  "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+              },
+          }
+          for filename, mapping in file_replacements.items():
+              path = Path(filename)
+              text = path.read_text()
+              for old, new in mapping.items():
+                  count = text.count(old)
+                  if count < 1:
+                      raise SystemExit(f"{filename}: expected at least one occurrence of {old}, found {count}")
+                  text = text.replace(old, new)
+              path.write_text(text)
           PY
           git diff --check
       - name: Reject stale contract graph pins
@@ -61,7 +83,8 @@ jobs:
             b32e089caea772f166204fb1c7bcaad6f56942fe \
             0c51d732cb01a377b2bc00e8d945b355e41961c1
           do
-            if git grep -n "$stale" -- Cargo.toml Cargo.lock .github/workflows; then
+            if git grep -n "$stale" -- Cargo.toml Cargo.lock .github/workflows \
+              ':(exclude).github/workflows/den-3495-refresh-contract-graph.yml'; then
               echo "stale contract dependency identity remains: $stale" >&2
               exit 1
             fi
@@ -111,7 +134,14 @@ jobs:
           set -euo pipefail
           git config user.name "ORESoftware automation"
           git config user.email "automation@oresoftware.com"
-          git add Cargo.lock .github/workflows/ci.yml
+          git add \
+            Cargo.lock \
+            .github/workflows/ci.yml \
+            .github/workflows/frozen-lock-integrity.yml \
+            .github/workflows/nix-bundle-write.yml \
+            .github/workflows/nix-export-bundle.yml \
+            .github/workflows/nix-export-plan.yml \
+            .github/workflows/zed-package-graph.yml
           git diff --cached --quiet && exit 0
           git commit -m "chore(DEN-3495): refresh merged contract graph"
           git push origin HEAD:feat/DEN-3495-cargo-git-cli-install
