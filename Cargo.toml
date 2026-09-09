@@ -32,9 +32,9 @@ path = "src/lib.rs"
 [dependencies]
 # One exact contract, behavior, and transport stack is shared with every Rust
 # SDK consumer. zed-cli keeps only CLI-only publication/binary/fallback edges.
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e" }
-zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "eac0878750332b031bc12f6040b6a795a17e7417" }
-zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "b32e089caea772f166204fb1c7bcaad6f56942fe" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1" }
+zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "c8af76191f50ad7a177eb68740e69bdfaa652ff6" }
+zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "bc72c632c92b21032728f2c48a67cb4d73ee98ba" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
