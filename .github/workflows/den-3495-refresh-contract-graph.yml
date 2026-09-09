@@ -60,6 +60,8 @@ jobs:
               },
               ".github/workflows/zed-package-graph.yml": {
                   "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "d11322f06ca6930ddcc34a745b4ef01e0b2bddc1",
+                  "eac0878750332b031bc12f6040b6a795a17e7417": "c8af76191f50ad7a177eb68740e69bdfaa652ff6",
+                  "b32e089caea772f166204fb1c7bcaad6f56942fe": "bc72c632c92b21032728f2c48a67cb4d73ee98ba",
               },
           }
           for filename, mapping in file_replacements.items():
