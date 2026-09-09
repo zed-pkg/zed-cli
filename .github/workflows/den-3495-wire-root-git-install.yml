@@ -1,0 +1,113 @@
+name: DEN-3495 wire root Git install
+
+on:
+  push:
+    branches:
+      - feat/DEN-3495-cargo-git-cli-install
+    paths:
+      - ".github/workflows/den-3495-wire-root-git-install.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact feature branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: feat/DEN-3495-cargo-git-cli-install
+          fetch-depth: 1
+          persist-credentials: true
+      - name: Apply semantic source-install integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import tomllib
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one semantic anchor, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/cli.rs",
+              '''    /// zed home directory (store, cache, credentials); defaults to ~/.zed-pkg\n    #[arg(long, global = true, env = "ZED_PKG_HOME")]\n    pub home: Option<PathBuf>,\n''',
+              '''    /// zed home directory (store, cache, credentials); defaults to ~/.zed-pkg\n    #[arg(long, global = true, env = "ZED_PKG_HOME")]\n    pub home: Option<PathBuf>,\n\n    /// Stable per-user executable directory for globally installed CLI tools.\n    /// Defaults to ~/.local/bin on Unix and LocalAppData/zed-pkg/bin on Windows.\n    #[arg(long, global = true, env = "ZED_PKG_GLOBAL_BIN_DIR")]\n    pub global_bin_dir: Option<PathBuf>,\n''')
+
+          replace_once(
+              "src/cli.rs",
+              '''        #[arg(value_name = "PACKAGE")]\n        specs: Vec<String>,\n        /// Install a project-owned CLI runtime. Repeat for multiple tools;\n''',
+              '''        #[arg(value_name = "PACKAGE")]\n        specs: Vec<String>,\n        /// Install a repository-owned CLI directly from an immutable Git revision.\n        #[arg(long, value_name = "URL", env = "ZED_PKG_GIT_INSTALL_URL")]\n        git: Option<String>,\n        /// Full immutable 40-character SHA-1 or 64-character SHA-256 Git commit.\n        #[arg(long, value_name = "COMMIT", env = "ZED_PKG_GIT_INSTALL_REV")]\n        rev: Option<String>,\n        /// Executable name declared by the source repository's `.zpkg.toml` `[bin]`.\n        #[arg(long, value_name = "NAME", env = "ZED_PKG_GIT_INSTALL_BIN")]\n        bin: Option<String>,\n        /// Atomically replace an existing managed executable only after validation.\n        #[arg(\n            long,\n            env = "ZED_PKG_FORCE",\n            num_args = 0..=1,\n            default_missing_value = "true",\n            default_value = "false",\n            value_parser = clap::builder::BoolishValueParser::new(),\n            action = clap::ArgAction::Set\n        )]\n        force: bool,\n        /// Install a project-owned CLI runtime. Repeat for multiple tools;\n''')
+
+          replace_once(
+              "src/cli.rs",
+              '''    fn init_accepts_a_project_directory_and_cli_tools_are_repeatable() {\n''',
+              '''    fn install_accepts_revision_pinned_global_git_cli_source() {\n        let revision = "387bce152d9572c014710d68062f979c3614276d";\n        let cli = Cli::try_parse_from([\n            "zed",\n            "install",\n            "--git",\n            "https://github.com/ORESoftware/ores-cli.git",\n            "--rev",\n            revision,\n            "--bin",\n            "ores-cli",\n            "--force",\n            "--global-bin-dir",\n            "/tmp/zed-bin",\n        ])\n        .unwrap();\n        assert_eq!(\n            cli.globals.global_bin_dir.as_deref(),\n            Some(Path::new("/tmp/zed-bin"))\n        );\n        match cli.cmd {\n            Cmd::Install {\n                git: Some(git),\n                rev: Some(rev),\n                bin: Some(bin),\n                force,\n                specs,\n                ..\n            } => {\n                assert_eq!(git, "https://github.com/ORESoftware/ores-cli.git");\n                assert_eq!(rev, revision);\n                assert_eq!(bin, "ores-cli");\n                assert!(force);\n                assert!(specs.is_empty());\n            }\n            other => panic!("unexpected command: {other:?}"),\n        }\n    }\n\n    #[test]\n    fn init_accepts_a_project_directory_and_cli_tools_are_repeatable() {\n''')
+
+          replace_once(
+              "src/main.rs",
+              '''    let cfg = Config::from_globals(&cli.globals)?;\n    let git_submodules = cli.globals.git_submodules;\n''',
+              '''    let cfg = Config::from_globals(&cli.globals)?;\n    let git_submodules = cli.globals.git_submodules;\n    let global_bin_dir = cli.globals.global_bin_dir.clone();\n''')
+
+          replace_once(
+              "src/main.rs",
+              '''        Cmd::Install {\n            specs,\n            cli,\n''',
+              '''        Cmd::Install {\n            specs,\n            git,\n            rev,\n            bin,\n            force,\n            cli,\n''')
+
+          replace_once(
+              "src/main.rs",
+              '''        } => {\n            if !cli.is_empty() {\n''',
+              '''        } => {\n            let source_install_requested = git.is_some() || rev.is_some() || bin.is_some();\n            if source_install_requested {\n                anyhow::ensure!(\n                    specs.is_empty() && cli.is_empty(),\n                    "revision-pinned --git installation cannot be mixed with package operands or project-owned --cli runtimes"\n                );\n                anyhow::ensure!(\n                    !frozen\n                        && matches!(install_mode, zed_cli::cli::InstallMode::Symlink)\n                        && matches!(adapter, zed_cli::cli::Adapter::Auto)\n                        && !allow_build\n                        && !allow_native_deps\n                        && !allow_install_hooks\n                        && native_manager.is_none()\n                        && target.is_none()\n                        && !allow_no_manifest\n                        && !allow_ecosystem_mismatch\n                        && cli_target.is_none()\n                        && matches!(cli_install_mode, zed_cli::cli::InstallMode::Copy),\n                    "revision-pinned --git installation cannot be mixed with project dependency/runtime install controls"\n                );\n                let git = git.ok_or_else(|| anyhow::anyhow!("--git requires --rev and --bin"))?;\n                let revision = rev.ok_or_else(|| anyhow::anyhow!("--rev is required with --git"))?;\n                let binary = bin.ok_or_else(|| anyhow::anyhow!("--bin is required with --git"))?;\n                return zed_cli::git_install_bridge::install(\n                    &zed_cli::git_install_bridge::GitInstallRequest {\n                        git,\n                        revision,\n                        binary,\n                        force,\n                        global_bin_dir,\n                        home: cfg.home.clone(),\n                    },\n                );\n            }\n            anyhow::ensure!(\n                !force,\n                "--force on `zed install` is reserved for revision-pinned --git CLI installation"\n            );\n            if !cli.is_empty() {\n''')
+
+          replace_once(
+              ".cli-flags.toml",
+              '''[flags.home]\nenv = "ZED_PKG_HOME"\naliases = ["home"]\ntype = "string"\nhelp = "Zed home directory; defaults to ~/.zed-pkg."\n''',
+              '''[flags.home]\nenv = "ZED_PKG_HOME"\naliases = ["home"]\ntype = "string"\nhelp = "Zed home directory; defaults to ~/.zed-pkg."\n\n[flags.global_bin_dir]\nenv = "ZED_PKG_GLOBAL_BIN_DIR"\naliases = ["global-bin-dir"]\ntype = "string"\nhelp = "Stable per-user executable directory for global Zed CLI installs."\n''')
+
+          replace_once(
+              ".cli-flags.toml",
+              '''[commands.install]\naliases = ["i"]\nhelp = "Install dependencies."\n''',
+              '''[commands.install]\naliases = ["i"]\nhelp = "Install dependencies, project-owned runtimes, or one immutable repository CLI."\n\n[commands.install.flags.git]\nenv = "ZED_PKG_GIT_INSTALL_URL"\naliases = ["git"]\ntype = "string"\nhelp = "Git repository URL for an immutable global CLI source install."\n\n[commands.install.flags.rev]\nenv = "ZED_PKG_GIT_INSTALL_REV"\naliases = ["rev"]\ntype = "string"\nhelp = "Full immutable Git commit id for a global CLI source install."\n\n[commands.install.flags.bin]\nenv = "ZED_PKG_GIT_INSTALL_BIN"\naliases = ["bin"]\ntype = "string"\nhelp = "Executable declared by the source repository's .zpkg.toml [bin] table."\n''')
+
+          replace_once(
+              "Cargo.toml",
+              '''[[bin]]\nname = "zed-binary"\npath = "src/bin/zed-binary.rs"\n''',
+              '''[[bin]]\nname = "zed-binary"\npath = "src/bin/zed-binary.rs"\n\n[[bin]]\nname = "zed-git-install"\npath = "src/bin/zed-git-install.rs"\n''')
+
+          replace_once(
+              ".zpkg.toml",
+              '''outputs = ["target/release/zed", "target/release/zed-gitops"]\n''',
+              '''outputs = ["target/release/zed", "target/release/zed-gitops", "target/release/zed-git-install"]\n''')
+          replace_once(
+              ".zpkg.toml",
+              '''"zed-gitops" = "target/release/zed-gitops"\n''',
+              '''"zed-gitops" = "target/release/zed-gitops"\n"zed-git-install" = "target/release/zed-git-install"\n''')
+          replace_once(
+              ".zpkg.toml",
+              '''smoke_test = "test -x \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" && test -x \\"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\\" && \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" --version && \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" validate --manifest \\"$ZED_PKG_TEST_TARGET/.zpkg.toml\\" --lock \\"$ZED_PKG_TEST_TARGET/.zpkg.lock\\" --json >/dev/null && \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" gitops validate --help"\n''',
+              '''smoke_test = "test -x \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" && test -x \\"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\\" && test -x \\"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\\" && \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" --version && \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" validate --manifest \\"$ZED_PKG_TEST_TARGET/.zpkg.toml\\" --lock \\"$ZED_PKG_TEST_TARGET/.zpkg.lock\\" --json >/dev/null && \\"$ZED_PKG_TEST_TARGET/target/release/zed\\" gitops validate --help && \\"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\\" --help >/dev/null"\n''')
+
+          for path in [".cli-flags.toml", "Cargo.toml", ".zpkg.toml"]:
+              with open(path, "rb") as handle:
+                  tomllib.load(handle)
+          PY
+          cargo fmt --all
+          git diff --check
+      - name: Commit root source-install surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "ORESoftware automation"
+          git config user.email "automation@oresoftware.com"
+          git add src/cli.rs src/main.rs .cli-flags.toml Cargo.toml .zpkg.toml
+          git diff --cached --quiet && exit 0
+          git commit -m "feat(DEN-3495): expose Cargo-style Git CLI install"
+          git push origin HEAD:feat/DEN-3495-cargo-git-cli-install
