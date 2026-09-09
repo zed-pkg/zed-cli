@@ -1,9 +1,9 @@
 //! Cargo-style source installation for repository-owned CLI binaries.
 //!
-//! This executable is shipped beside `zed`, so the ordinary external-command
-//! dispatcher exposes it as `zed git-install`. It intentionally starts with a
-//! narrow, auditable contract equivalent to Cargo's immutable Git install path:
-//! `--git`, `--rev`, `--bin`, and `--force`.
+//! The installer is shipped beside `zed` and remains a separate executable so
+//! source-install failures cannot corrupt the project dependency lifecycle.
+//! Its argv/env boundary is owned by `.git-install-cli-flags.toml` through the
+//! official bundled flags-2-env runtime before clap projects typed values.
 
 use std::fs;
 use std::io::Write;
@@ -13,8 +13,12 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use flags2env::BundledFlags2Env;
-use serde::Serialize;
 use sha2::{Digest, Sha256};
+use zed_interfaces::{
+    GIT_CLI_INSTALL_RECEIPT_SCHEMA_VERSION_V1, GitCliInstallReceiptV1,
+};
+
+const CLI_CONTRACT: &str = include_str!("../../.git-install-cli-flags.toml");
 
 #[derive(Debug, Parser)]
 #[command(
@@ -36,7 +40,15 @@ struct Cli {
     bin: String,
 
     /// Replace an existing managed executable after the new binary validates.
-    #[arg(long, env = "ZED_PKG_GIT_INSTALL_FORCE")]
+    #[arg(
+        long,
+        env = "ZED_PKG_GIT_INSTALL_FORCE",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        action = clap::ArgAction::Set
+    )]
     force: bool,
 
     /// Override the user directory placed on PATH for global Zed executables.
@@ -48,23 +60,48 @@ struct Cli {
     home: Option<PathBuf>,
 }
 
-#[derive(Debug, Serialize)]
-struct Receipt<'a> {
-    schema_version: u32,
-    source: &'a str,
-    revision: &'a str,
-    binary: &'a str,
-    installed_path: String,
-    sha256: String,
-    manifest: String,
-    flags_contract: Option<String>,
-}
-
 fn main() {
-    if let Err(error) = run(Cli::parse()) {
+    let argv = std::env::args().collect::<Vec<_>>();
+    if let Err(error) = audit_and_parse_cli_contract(&argv) {
+        eprintln!("error: {error:#}");
+        std::process::exit(2);
+    }
+    if let Err(error) = run(Cli::parse_from(argv)) {
         eprintln!("error: {error:#}");
         std::process::exit(1);
     }
+}
+
+fn audit_and_parse_cli_contract(argv: &[String]) -> Result<()> {
+    let directory = tempfile::tempdir().context("creating embedded flags-2-env contract dir")?;
+    let path = directory.path().join(".git-install-cli-flags.toml");
+    fs::write(&path, CLI_CONTRACT).context("writing embedded Git install CLI contract")?;
+    let path = path
+        .to_str()
+        .context("embedded Git install CLI contract path is not UTF-8")?;
+    let parser = BundledFlags2Env::new();
+    parser
+        .audit_config(Some(path))
+        .map_err(|error| anyhow::anyhow!("flags2env Git install contract audit failed: {error}"))?;
+    let parser_argv = argv
+        .iter()
+        .filter(|token| !matches!(token.as_str(), "--help" | "-h" | "--version" | "-V"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let parsed = parser
+        .parse_structured(&parser_argv, Some(path))
+        .map_err(|error| anyhow::anyhow!("flags2env Git install parse failed: {error}"))?;
+    ensure!(
+        parsed.unknown_options.is_empty(),
+        "flags2env rejected unknown Git install option(s): {}",
+        parsed.unknown_options.join(", ")
+    );
+    ensure!(
+        parsed.errors.is_empty(),
+        "flags2env rejected invalid Git install value(s): {}",
+        parsed.errors.join("; ")
+    );
+    Ok(())
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -127,18 +164,12 @@ fn run(cli: Cli) -> Result<()> {
     );
 
     let manifest_path = repo.join(".zpkg.toml");
-    let manifest_metadata = fs::symlink_metadata(&manifest_path)
-        .with_context(|| format!("source repository is missing {}", manifest_path.display()))?;
-    ensure!(
-        manifest_metadata.is_file() && !manifest_metadata.file_type().is_symlink(),
-        "`.zpkg.toml` must be a regular repository-owned file"
-    );
+    require_regular_file(&manifest_path, "`.zpkg.toml`")?;
     let manifest_text = fs::read_to_string(&manifest_path).context("reading .zpkg.toml")?;
     let manifest: toml::Value = toml::from_str(&manifest_text).context("parsing .zpkg.toml")?;
 
-    let output = declared_bin(&manifest, &cli.bin)?;
-    let output = safe_relative_path(output, "[bin] output")?;
-    let flags_contract = audit_flags_contract(&repo, &manifest)?;
+    let output = safe_relative_path(declared_bin(&manifest, &cli.bin)?, "[bin] output")?;
+    let flags_contract = audit_target_flags_contract(&repo, &manifest)?;
 
     let language = manifest
         .get("package")
@@ -162,40 +193,32 @@ fn run(cli: Cli) -> Result<()> {
         .context("starting Cargo build")?;
     ensure!(status.success(), "Cargo build failed with {status}");
 
-    let built = repo.join(&output);
-    let built_metadata = fs::symlink_metadata(&built).with_context(|| {
-        format!(
-            "declared binary output was not produced: {}",
-            built.display()
-        )
-    })?;
-    ensure!(
-        built_metadata.is_file() && !built_metadata.file_type().is_symlink(),
-        "declared binary output must be a regular file: {}",
-        built.display()
-    );
+    let built = built_output_path(&repo, &output);
+    require_regular_file(&built, "declared binary output")?;
 
     let bin_dir = resolve_bin_dir(cli.global_bin_dir.as_deref())?;
-    fs::create_dir_all(&bin_dir)
-        .with_context(|| format!("creating global bin directory {}", bin_dir.display()))?;
+    ensure_real_directory(&bin_dir, "global bin directory")?;
     let destination = bin_dir.join(platform_bin_name(&cli.bin));
     install_atomically(&built, &destination, cli.force)?;
 
     let sha256 = sha256_file(&destination)?;
     let home = resolve_home(cli.home.as_deref())?;
     let receipts = home.join("global").join("git-installs");
-    fs::create_dir_all(&receipts).context("creating Git install receipt directory")?;
-    let receipt_path = receipts.join(format!("{}-{}.json", cli.bin, &cli.rev[..12]));
-    let receipt = Receipt {
-        schema_version: 1,
-        source: &cli.git,
-        revision: &actual_rev,
-        binary: &cli.bin,
+    ensure_real_directory(&receipts, "Git install receipt directory")?;
+    let receipt_path = receipts.join(format!("{}-{}.json", cli.bin, &actual_rev[..12]));
+    let receipt = GitCliInstallReceiptV1 {
+        schema_version: GIT_CLI_INSTALL_RECEIPT_SCHEMA_VERSION_V1,
+        source: cli.git.clone(),
+        revision: actual_rev.clone(),
+        binary: cli.bin.clone(),
         installed_path: destination.display().to_string(),
         sha256,
-        manifest: ".zpkg.toml".to_string(),
-        flags_contract: flags_contract.map(|path| path.display().to_string()),
+        manifest: ".zpkg.toml".to_owned(),
+        flags_contract,
     };
+    receipt
+        .validate()
+        .map_err(|error| anyhow::anyhow!("shared Git CLI install receipt rejected output: {error}"))?;
     let encoded = serde_json::to_vec_pretty(&receipt).context("encoding install receipt")?;
     write_atomic(&receipt_path, &encoded)?;
 
@@ -247,11 +270,11 @@ fn validate_bin_name(name: &str) -> Result<()> {
 }
 
 fn declared_bin<'a>(manifest: &'a toml::Value, name: &str) -> Result<&'a str> {
-    let bins = manifest
+    manifest
         .get("bin")
         .and_then(toml::Value::as_table)
-        .context(".zpkg.toml must declare a [bin] table for Git CLI installation")?;
-    bins.get(name)
+        .context(".zpkg.toml must declare a [bin] table for Git CLI installation")?
+        .get(name)
         .and_then(toml::Value::as_str)
         .with_context(|| format!("binary `{name}` is not declared in .zpkg.toml [bin]"))
 }
@@ -267,28 +290,64 @@ fn safe_relative_path(value: &str, label: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn audit_flags_contract(repo: &Path, manifest: &toml::Value) -> Result<Option<PathBuf>> {
+fn audit_target_flags_contract(repo: &Path, manifest: &toml::Value) -> Result<Option<String>> {
     let declared = manifest
         .get("cli")
         .and_then(|cli| cli.get("flags_contract"))
         .and_then(toml::Value::as_str);
-    let fallback = repo.join(".cli-flags.toml");
-    let path = match declared {
-        Some(path) => repo.join(safe_relative_path(path, "[cli].flags_contract")?),
-        None if fallback.exists() => fallback,
+    let relative = match declared {
+        Some(path) => safe_relative_path(path, "[cli].flags_contract")?,
+        None if repo.join(".cli-flags.toml").exists() => PathBuf::from(".cli-flags.toml"),
         None => return Ok(None),
     };
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("declared flags contract is missing: {}", path.display()))?;
-    ensure!(
-        metadata.is_file() && !metadata.file_type().is_symlink(),
-        "flags contract must be a regular repository-owned file"
-    );
+    let path = repo.join(&relative);
+    require_regular_file(&path, "flags contract")?;
     let path_str = path.to_str().context("flags contract path is not UTF-8")?;
     BundledFlags2Env::new()
         .audit_config(Some(path_str))
-        .map_err(|error| anyhow::anyhow!("flags2env contract audit failed: {error}"))?;
-    Ok(Some(path))
+        .map_err(|error| anyhow::anyhow!("flags2env target contract audit failed: {error}"))?;
+    Ok(Some(relative.to_string_lossy().replace('\\', "/")))
+}
+
+fn require_regular_file(path: &Path, label: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("{label} is missing: {}", path.display()))?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "{label} must be a regular repository-owned file: {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn ensure_real_directory(path: &Path, label: &str) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "{label} must be a real directory: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(path).with_context(|| format!("creating {label} {}", path.display()))?;
+            let metadata = fs::symlink_metadata(path)?;
+            ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "{label} became an unsafe path while being created: {}",
+                path.display()
+            );
+        }
+        Err(error) => return Err(error).with_context(|| format!("inspecting {label}")),
+    }
+    Ok(())
+}
+
+fn built_output_path(repo: &Path, output: &Path) -> PathBuf {
+    let path = repo.join(output);
+    #[cfg(windows)]
+    if path.extension().is_none() {
+        return path.with_extension("exe");
+    }
+    path
 }
 
 fn run_command(command: &mut Command, action: &str) -> Result<()> {
@@ -312,7 +371,7 @@ fn command_stdout(command: &mut Command, action: &str) -> Result<String> {
     );
     let text = String::from_utf8(output.stdout)
         .with_context(|| format!("{action}: stdout was not UTF-8"))?;
-    Ok(text.trim().to_string())
+    Ok(text.trim().to_owned())
 }
 
 fn resolve_home(explicit: Option<&Path>) -> Result<PathBuf> {
@@ -351,12 +410,10 @@ fn platform_bin_name(name: &str) -> String {
 
 #[cfg(not(windows))]
 fn platform_bin_name(name: &str) -> String {
-    name.to_string()
+    name.to_owned()
 }
 
 fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<()> {
-    // This is only an early diagnostic. Activation below enforces no-clobber
-    // even if another installer creates the destination after this check.
     if destination.exists() && !force {
         bail!(
             "{} already exists; pass --force to replace it after validation",
@@ -387,17 +444,11 @@ fn install_atomically(source: &Path, destination: &Path, force: bool) -> Result<
 }
 
 fn activate_staged(temporary: tempfile::TempPath, destination: &Path, force: bool) -> Result<()> {
-    // Never move the old executable aside: that creates an unavailable-path
-    // window and can destroy an unrelated PID-named backup. Persist replaces
-    // the destination atomically; on failure the original entry remains.
     if force {
         temporary
             .persist(destination)
             .context("atomically replacing global executable")
     } else {
-        // The filesystem, not an earlier exists() check, decides the winner.
-        // This also rejects dangling symlinks at the destination. Some
-        // platforms may retain the temporary hard link, but never clobber.
         temporary
             .persist_noclobber(destination)
             .context("activating global executable without overwriting an existing entry")
@@ -439,7 +490,9 @@ fn print_path_guidance(bin_dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::{activate_staged, install_atomically};
+    use super::{
+        CLI_CONTRACT, activate_staged, audit_and_parse_cli_contract, install_atomically,
+    };
     use std::fs;
     use std::io::Write;
     use std::path::Path;
@@ -449,6 +502,38 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new_in(directory).unwrap();
         file.write_all(bytes).unwrap();
         file.into_temp_path()
+    }
+
+    #[test]
+    fn embedded_flags_contract_audits_and_accepts_cargo_style_shape() {
+        let _: toml::Value = toml::from_str(CLI_CONTRACT).unwrap();
+        let args = vec![
+            "zed-git-install".to_owned(),
+            "--git".to_owned(),
+            "https://github.com/ORESoftware/ores-cli.git".to_owned(),
+            "--rev".to_owned(),
+            "387bce152d9572c014710d68062f979c3614276d".to_owned(),
+            "--bin".to_owned(),
+            "ores-cli".to_owned(),
+            "--force".to_owned(),
+        ];
+        audit_and_parse_cli_contract(&args).unwrap();
+    }
+
+    #[test]
+    fn embedded_flags_contract_rejects_unknown_options() {
+        let args = vec![
+            "zed-git-install".to_owned(),
+            "--git".to_owned(),
+            "https://github.com/ORESoftware/ores-cli.git".to_owned(),
+            "--rev".to_owned(),
+            "387bce152d9572c014710d68062f979c3614276d".to_owned(),
+            "--bin".to_owned(),
+            "ores-cli".to_owned(),
+            "--credential".to_owned(),
+            "forbidden".to_owned(),
+        ];
+        assert!(audit_and_parse_cli_contract(&args).is_err());
     }
 
     #[test]
@@ -502,7 +587,6 @@ mod tests {
         let destination = directory.path().join("cli");
         let temporary = staged(directory.path(), b"new executable");
         fs::write(&destination, b"old executable").unwrap();
-        // Inject failure after staging without relying on platform permissions.
         fs::remove_file(&temporary).unwrap();
         assert!(activate_staged(temporary, &destination, true).is_err());
         assert_eq!(fs::read(destination).unwrap(), b"old executable");
