@@ -19,6 +19,7 @@ pub mod external_subcommands;
 pub mod fetch;
 pub mod flags;
 pub mod forge_publish;
+pub mod git_install_bridge;
 pub mod git_submodules;
 pub mod global;
 pub mod graph_export;
