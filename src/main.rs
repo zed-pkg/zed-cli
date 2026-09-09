@@ -224,6 +224,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     let cfg = Config::from_globals(&cli.globals)?;
     let git_submodules = cli.globals.git_submodules;
+    let global_bin_dir = cli.globals.global_bin_dir.clone();
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
         // Recovery mutates the checkout and must use the same canonical
         // descriptor-lock boundary as every new lifecycle mutation. Unlike the
@@ -251,6 +252,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
             specs,
+            git,
+            rev,
+            bin,
+            force,
             cli,
             cli_target,
             cli_install_mode,
@@ -265,6 +270,46 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_no_manifest,
             allow_ecosystem_mismatch,
         } => {
+            let source_install_requested = git.is_some() || rev.is_some() || bin.is_some();
+            if source_install_requested {
+                anyhow::ensure!(
+                    specs.is_empty() && cli.is_empty(),
+                    "revision-pinned --git installation cannot be mixed with package operands or project-owned --cli runtimes"
+                );
+                anyhow::ensure!(
+                    !frozen
+                        && matches!(install_mode, zed_cli::cli::InstallMode::Symlink)
+                        && matches!(adapter, zed_cli::cli::Adapter::Auto)
+                        && !allow_build
+                        && !allow_native_deps
+                        && !allow_install_hooks
+                        && native_manager.is_none()
+                        && target.is_none()
+                        && !allow_no_manifest
+                        && !allow_ecosystem_mismatch
+                        && cli_target.is_none()
+                        && matches!(cli_install_mode, zed_cli::cli::InstallMode::Copy),
+                    "revision-pinned --git installation cannot be mixed with project dependency/runtime install controls"
+                );
+                let git = git.ok_or_else(|| anyhow::anyhow!("--git requires --rev and --bin"))?;
+                let revision =
+                    rev.ok_or_else(|| anyhow::anyhow!("--rev is required with --git"))?;
+                let binary = bin.ok_or_else(|| anyhow::anyhow!("--bin is required with --git"))?;
+                return zed_cli::git_install_bridge::install(
+                    &zed_cli::git_install_bridge::GitInstallRequest {
+                        git,
+                        revision,
+                        binary,
+                        force,
+                        global_bin_dir,
+                        home: cfg.home.clone(),
+                    },
+                );
+            }
+            anyhow::ensure!(
+                !force,
+                "--force on `zed install` is reserved for revision-pinned --git CLI installation"
+            );
             if !cli.is_empty() {
                 anyhow::ensure!(
                     specs.is_empty(),

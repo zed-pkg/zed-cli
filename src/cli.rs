@@ -32,6 +32,11 @@ pub struct Globals {
     #[arg(long, global = true, env = "ZED_PKG_HOME")]
     pub home: Option<PathBuf>,
 
+    /// Stable per-user executable directory for globally installed CLI tools.
+    /// Defaults to ~/.local/bin on Unix and LocalAppData/zed-pkg/bin on Windows.
+    #[arg(long, global = true, env = "ZED_PKG_GLOBAL_BIN_DIR")]
+    pub global_bin_dir: Option<PathBuf>,
+
     /// Registry auth token; overrides saved credentials
     #[arg(long, global = true, env = "ZED_PKG_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
@@ -314,6 +319,26 @@ pub enum Cmd {
         /// `zed add` to persist dependencies in an authored project.
         #[arg(value_name = "PACKAGE")]
         specs: Vec<String>,
+        /// Install a repository-owned CLI directly from an immutable Git revision.
+        #[arg(long, value_name = "URL", env = "ZED_PKG_GIT_INSTALL_URL")]
+        git: Option<String>,
+        /// Full immutable 40-character SHA-1 or 64-character SHA-256 Git commit.
+        #[arg(long, value_name = "COMMIT", env = "ZED_PKG_GIT_INSTALL_REV")]
+        rev: Option<String>,
+        /// Executable name declared by the source repository's `.zpkg.toml` `[bin]`.
+        #[arg(long, value_name = "NAME", env = "ZED_PKG_GIT_INSTALL_BIN")]
+        bin: Option<String>,
+        /// Atomically replace an existing managed executable only after validation.
+        #[arg(
+            long,
+            env = "ZED_PKG_FORCE",
+            num_args = 0..=1,
+            default_missing_value = "true",
+            default_value = "false",
+            value_parser = clap::builder::BoolishValueParser::new(),
+            action = clap::ArgAction::Set
+        )]
+        force: bool,
         /// Install a project-owned CLI runtime. Repeat for multiple tools;
         /// built-in aliases currently include nodejs and python3.
         #[arg(long, value_name = "TOOL", env = "ZED_PKG_CLI", action = clap::ArgAction::Append)]
@@ -1034,6 +1059,46 @@ mod tests {
                 }
                 other => panic!("unexpected command: {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn install_accepts_revision_pinned_global_git_cli_source() {
+        let revision = "387bce152d9572c014710d68062f979c3614276d";
+        let cli = Cli::try_parse_from([
+            "zed",
+            "install",
+            "--git",
+            "https://github.com/ORESoftware/ores-cli.git",
+            "--rev",
+            revision,
+            "--bin",
+            "ores-cli",
+            "--force",
+            "--global-bin-dir",
+            "/tmp/zed-bin",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.globals.global_bin_dir.as_deref(),
+            Some(Path::new("/tmp/zed-bin"))
+        );
+        match cli.cmd {
+            Cmd::Install {
+                git: Some(git),
+                rev: Some(rev),
+                bin: Some(bin),
+                force,
+                specs,
+                ..
+            } => {
+                assert_eq!(git, "https://github.com/ORESoftware/ores-cli.git");
+                assert_eq!(rev, revision);
+                assert_eq!(bin, "ores-cli");
+                assert!(force);
+                assert!(specs.is_empty());
+            }
+            other => panic!("unexpected command: {other:?}"),
         }
     }
 

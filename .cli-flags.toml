@@ -24,6 +24,12 @@ aliases = ["home"]
 type = "string"
 help = "Zed home directory; defaults to ~/.zed-pkg."
 
+[flags.global_bin_dir]
+env = "ZED_PKG_GLOBAL_BIN_DIR"
+aliases = ["global-bin-dir"]
+type = "string"
+help = "Stable per-user executable directory for global Zed CLI installs."
+
 [flags.token]
 env = "ZED_PKG_TOKEN"
 aliases = ["token"]
@@ -393,7 +399,25 @@ help = "Remove a dependency."
 
 [commands.install]
 aliases = ["i"]
-help = "Install dependencies."
+help = "Install dependencies, project-owned runtimes, or one immutable repository CLI."
+
+[commands.install.flags.git]
+env = "ZED_PKG_GIT_INSTALL_URL"
+aliases = ["git"]
+type = "string"
+help = "Git repository URL for an immutable global CLI source install."
+
+[commands.install.flags.rev]
+env = "ZED_PKG_GIT_INSTALL_REV"
+aliases = ["rev"]
+type = "string"
+help = "Full immutable Git commit id for a global CLI source install."
+
+[commands.install.flags.bin]
+env = "ZED_PKG_GIT_INSTALL_BIN"
+aliases = ["bin"]
+type = "string"
+help = "Executable declared by the source repository's .zpkg.toml [bin] table."
 
 [commands.overtake]
 help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
