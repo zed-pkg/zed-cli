@@ -1,7 +1,7 @@
 [package]
 org = "zed-pkg"
 name = "zed-cli"
-version = "0.1.0"
+version = "0.3.0"
 description = "The zed universal package-manager CLI"
 license = "MIT"
 keywords = ["package-manager", "cli", "polyglot", "vcs", "global-tools"]
@@ -16,18 +16,15 @@ command = "cargo build --release --locked --bins"
 outputs = [
   "target/release/zed",
   "target/release/zed-gitops",
+  "target/release/zed-binary",
   "target/release/zed-git-install",
 ]
 
 [bin]
 zed = "target/release/zed"
 "zed-gitops" = "target/release/zed-gitops"
+"zed-binary" = "target/release/zed-binary"
 "zed-git-install" = "target/release/zed-git-install"
-
-[cli]
-flags_contract = ".cli-flags.toml"
-flags_runtime = "flags-2-env"
-primary_bin = "zed"
 
 [install]
 adapter = "none"
@@ -42,7 +39,7 @@ dir = ".vendor/.zed"
 [publish]
 include_readme = true
 tag_format = "v{version}"
-smoke_test = "test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help && \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" --help >/dev/null"
+smoke_test = "test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-binary\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help && \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" --help >/dev/null"
 exclude = [
   ".env",
   ".env.*",
