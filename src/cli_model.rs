@@ -161,11 +161,27 @@ mod tests {
     fn a_global_option_value_named_inspect_is_not_early_dispatched() {
         let args = vec![
             OsString::from("zed"),
-            OsString::from("--token"),
+            OsString::from("--registry"),
             OsString::from("inspect"),
             OsString::from("--help"),
         ];
         assert!(crate::inspect::dispatch(&args).is_none());
+    }
+
+    #[test]
+    fn bearer_token_is_not_a_public_cli_option() {
+        assert!(
+            command()
+                .get_arguments()
+                .all(|arg| arg.get_long() != Some("token")),
+            "ZED_PKG_TOKEN must remain an env/session secret, not an argv option"
+        );
+        assert!(
+            command()
+                .try_get_matches_from(["zed", "--token", "secret", "find", "pkg"])
+                .is_err(),
+            "--token must be rejected by the typed public command model"
+        );
     }
 
     #[test]
