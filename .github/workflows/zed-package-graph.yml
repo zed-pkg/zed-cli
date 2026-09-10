@@ -5,8 +5,11 @@ on:
     paths:
       - ".zpkg.toml"
       - ".zpkg.lock"
+      - ".cli-flags.toml"
+      - ".*-cli-flags.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/validate-cli-flags-toml.py"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
@@ -15,8 +18,11 @@ on:
     paths:
       - ".zpkg.toml"
       - ".zpkg.lock"
+      - ".cli-flags.toml"
+      - ".*-cli-flags.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/validate-cli-flags-toml.py"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
@@ -37,8 +43,14 @@ jobs:
       - name: Check out exact CLI revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: zed-cli
           persist-credentials: false
+      - name: Verify exact reviewed CLI head
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out canonical interfaces package
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,6 +86,7 @@ jobs:
       - name: Validate native and Zed package edges
         working-directory: zed-cli
         run: |
+          python3 scripts/validate-cli-flags-toml.py
           bash scripts/validate-zed-package-graph.sh \
             ../zed-interfaces/.zpkg.toml \
             ../zed-clients/.zpkg.toml \
