@@ -64,10 +64,7 @@ fn all_checked_in_cli_flag_contracts_are_valid_toml() {
         Some(false),
         "the canonical CLI contract must fail closed on unknown options",
     );
-    assert_eq!(
-        string_at(&flags, &["help", "url"]),
-        "https://github.com/zed-pkg/zed-cli"
-    );
+    assert_eq!(string_at(&flags, &["help", "url"]), "https://github.com/zed-pkg/zed-cli");
 }
 
 #[test]
