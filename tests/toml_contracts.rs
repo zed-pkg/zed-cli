@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use flags2env::BundledFlags2Env;
 use walkdir::WalkDir;
