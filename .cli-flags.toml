@@ -747,6 +747,7 @@ long = "json"
 type = "bool"
 default = "false"
 help = "Emit deterministic machine-readable mirror output."
+
 [flags.mirror_package]
 env = "ZED_PKG_MIRROR_PACKAGE"
 long = "package"
