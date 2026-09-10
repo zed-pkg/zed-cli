@@ -1,6 +1,9 @@
 # Dedicated flags-2-env contract for the staged native task runtime. The
 # eventual `zed task` route must reuse these exact environment variables.
 
+[env]
+files = []
+
 [parse]
 command_env = "ZED_TASK_COMMAND"
 unknown_options_env = "ZED_TASK_UNKNOWN_OPTIONS"
