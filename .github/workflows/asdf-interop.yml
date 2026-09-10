@@ -15,6 +15,7 @@ on:
       - ".github/workflows/asdf-interop.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
   push:
     branches: [main]
     paths:
@@ -30,6 +31,7 @@ on:
       - ".github/workflows/asdf-interop.yml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "rust-toolchain.toml"
   workflow_dispatch:
 
 permissions:
@@ -63,11 +65,28 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Install Rust quality components
+      - name: Install repository-pinned Rust quality components
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          toolchain="$(python - <<'PY'
+          import tomllib
+          with open("rust-toolchain.toml", "rb") as source:
+              print(tomllib.load(source)["toolchain"]["channel"])
+          PY
+          )"
+          install_args=(toolchain install "$toolchain" --profile minimal --no-self-update)
+          while IFS= read -r component; do
+            [[ -n "$component" ]] && install_args+=(--component "$component")
+          done < <(python - <<'PY'
+          import tomllib
+          with open("rust-toolchain.toml", "rb") as source:
+              for component in tomllib.load(source)["toolchain"].get("components", []):
+                  print(component)
+          PY
+          )
+          rustup "${install_args[@]}"
+          rustup default "$toolchain"
+          test "$(rustup show active-toolchain | awk '{print $1}')" = "$toolchain-$(rustc -vV | sed -n 's/^host: //p')"
           rustc --version --verbose
           cargo --version --verbose
 
