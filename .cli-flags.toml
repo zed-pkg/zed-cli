@@ -3,6 +3,7 @@
 # github.com/flags-2-env/flags-2-env.
 
 [env]
+dotenv = false
 files = []
 
 [parse]
