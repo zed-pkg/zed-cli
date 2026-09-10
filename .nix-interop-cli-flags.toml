@@ -1,5 +1,8 @@
 # flags-2-env contract for modular `zed interop nix` commands.
 
+[env]
+files = []
+
 [parse]
 command_env = "ZED_PKG_COMMAND"
 unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
