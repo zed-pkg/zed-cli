@@ -5,6 +5,12 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - .cli-flags.toml
+      - '.*-cli-flags.toml'
+      - .zpkg.toml
+      - '**/*.toml'
+      - '**/*.toml.example'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -14,6 +20,12 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - .cli-flags.toml
+      - '.*-cli-flags.toml'
+      - .zpkg.toml
+      - '**/*.toml'
+      - '**/*.toml.example'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -33,6 +45,8 @@ jobs:
     with:
       language: rust
       working-directory: .
-      rust-toolchain: stable
+      # Keep this exact version synchronized with rust-toolchain.toml. Passing
+      # `stable` here would bypass the repository pin inside this reusable job.
+      rust-toolchain: '1.98.1'
       cargo-locked: true
       run-smoke: true

@@ -2,6 +2,10 @@
 # command. Runtime help and completions augment the established Clap command
 # with the same typed DevelopArgs definition used here.
 
+[env]
+dotenv = false
+files = []
+
 [parse]
 command_env = "ZED_PKG_COMMAND"
 unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"

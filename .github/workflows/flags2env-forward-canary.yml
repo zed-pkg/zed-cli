@@ -1,0 +1,77 @@
+name: flags2env forward compatibility
+
+on:
+  pull_request:
+    paths:
+      - '.cli-flags.toml'
+      - '.*-cli-flags.toml'
+      - 'Cargo.toml'
+      - '.github/workflows/flags2env-forward-canary.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.cli-flags.toml'
+      - '.*-cli-flags.toml'
+      - 'Cargo.toml'
+      - '.github/workflows/flags2env-forward-canary.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flags2env-forward-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit-latest-reviewed-flags2env:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact Zed candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: zed-cli
+
+      - name: Verify exact reviewed Zed head
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Check out latest reviewed flags2env compatibility target
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          repository: flags-2-env/flags-2-env
+          ref: 333c2ace93c362d274171ab0e0edf613d96a8e59
+          persist-credentials: false
+          path: flags-2-env
+
+      - name: Build latest reviewed native parser
+        working-directory: flags-2-env
+        run: make all
+
+      - name: Audit every repository-root Zed CLI contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' specs < <(
+            find zed-cli -maxdepth 1 -type f \
+              \( -name '.cli-flags.toml' -o -name '.*-cli-flags.toml' \) \
+              -print0 | sort -z
+          )
+          test "${#specs[@]}" -ge 6
+          for spec in "${specs[@]}"; do
+            echo "forward-auditing $spec"
+            flags-2-env/build/flags2env audit "$spec"
+          done
+
+      - name: Prove compatibility audit did not mutate source
+        run: |
+          set -euo pipefail
+          git -C zed-cli diff --exit-code HEAD
+          # `make all` deliberately refreshes tracked compatibility artifacts under build/.
+          # The canary is read-only with respect to source/config outside that build output.
+          git -C flags-2-env diff --exit-code HEAD -- . ':(exclude)build/**'

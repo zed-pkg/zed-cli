@@ -43,8 +43,14 @@ jobs:
       - name: Check out exact CLI revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: zed-cli
           persist-credentials: false
+      - name: Verify exact reviewed CLI head
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Check out canonical interfaces package
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

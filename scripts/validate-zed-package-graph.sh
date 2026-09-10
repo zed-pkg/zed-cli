@@ -19,6 +19,14 @@ for dependency in \
 done
 
 grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must be .vendor/.zed' >&2; exit 1; }
+for output in \
+  '"target/release/zed"' \
+  '"target/release/zed-gitops"' \
+  '"target/release/zed-git-install"'; do
+  grep -Fq "$output" .zpkg.toml || { printf 'Zed package must publish required executable output: %s\n' "$output" >&2; exit 1; }
+done
+grep -Fq '"zed-gitops" = "target/release/zed-gitops"' .zpkg.toml || { echo 'Zed package must install the sibling zed-gitops executable' >&2; exit 1; }
+grep -Fq '"zed-git-install" = "target/release/zed-git-install"' .zpkg.toml || { echo 'Zed package must install the sibling zed-git-install executable' >&2; exit 1; }
 grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
 
 if [[ -f .zpkg.lock ]] && [[ "$(wc -c < .zpkg.lock)" -le 12 ]]; then
@@ -47,8 +55,8 @@ import tomllib
 root = pathlib.Path.cwd()
 manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
-# Parse the contract with the standard TOML parser as an independent syntax
-# check. flags2env itself remains the semantic/audit authority in CI.
+# Parse the contract independently for syntax. The exact bundled flags2env
+# runtime remains the semantic/audit authority elsewhere in CI.
 flags_contract = tomllib.loads((root / ".cli-flags.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
@@ -85,6 +93,10 @@ if package.get("version") != cargo_package.get("version"):
     errors.append(
         f".zpkg.toml version {package.get('version')!r} must match Cargo.toml {cargo_package.get('version')!r}"
     )
+if "cli" in manifest:
+    errors.append(
+        ".zpkg.toml must not contain unsupported [cli] metadata; keep .cli-flags.toml as the separate executable contract"
+    )
 
 build = manifest.get("build", {})
 outputs = set(build.get("outputs", []))
@@ -94,32 +106,30 @@ cargo_bins = {
     for entry in cargo.get("bin", [])
     if isinstance(entry, dict) and isinstance(entry.get("name"), str)
 }
-if not cargo_bins:
-    errors.append("Cargo.toml must declare at least one [[bin]] target")
-for name in sorted(cargo_bins):
+required_public_bins = {"zed", "zed-gitops", "zed-git-install"}
+missing_public_bins = sorted(required_public_bins - set(manifest_bins))
+if missing_public_bins:
+    errors.append(
+        ".zpkg.toml is missing required public binaries: " + ", ".join(missing_public_bins)
+    )
+for name, target in sorted(manifest_bins.items()):
+    if name not in cargo_bins:
+        errors.append(f".zpkg.toml public binary {name!r} is not declared by Cargo.toml")
+        continue
     expected_output = f"target/release/{name}"
-    if manifest_bins.get(name) != expected_output:
-        errors.append(
-            f".zpkg.toml [bin].{name} must map to {expected_output} because Cargo.toml ships that binary"
-        )
+    if target != expected_output:
+        errors.append(f".zpkg.toml [bin].{name} must map to {expected_output}")
     if expected_output not in outputs:
-        errors.append(
-            f".zpkg.toml build.outputs must retain Cargo binary {expected_output}"
-        )
-
-cli = manifest.get("cli", {})
-flags_path = cli.get("flags_contract")
-if flags_path != ".cli-flags.toml":
-    errors.append(".zpkg.toml [cli].flags_contract must be .cli-flags.toml")
-if cli.get("flags_runtime") != "flags-2-env":
-    errors.append(".zpkg.toml [cli].flags_runtime must be flags-2-env")
-primary_bin = cli.get("primary_bin")
-if primary_bin not in manifest_bins:
-    errors.append(".zpkg.toml [cli].primary_bin must name a declared [bin] entry")
+        errors.append(f".zpkg.toml build.outputs must retain public binary {expected_output}")
 
 parse_contract = flags_contract.get("parse", {})
 if parse_contract.get("allow_unknown") is not False:
     errors.append(".cli-flags.toml must fail closed with parse.allow_unknown = false")
+env_contract = flags_contract.get("env", {})
+if env_contract.get("dotenv") is not False or env_contract.get("files") != []:
+    errors.append(
+        ".cli-flags.toml must disable caller dotenv loading with env.dotenv = false and env.files = []"
+    )
 for required_global in ("no_mirrors", "trust_mirror_metadata"):
     if required_global not in flags_contract.get("flags", {}):
         errors.append(f".cli-flags.toml is missing required global flag {required_global}")
@@ -217,4 +227,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph, Cargo binaries/version, and flags contract TOML validated\n'
+printf 'zed-cli package graph, public Cargo/Zed binaries, version, and flags contract TOML validated\n'

@@ -1410,6 +1410,7 @@ mod tests {
                 return;
             };
             if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
+                let mut scope_envs = BTreeSet::new();
                 for (name, flag) in flags {
                     let env = flag
                         .get("env")
@@ -1421,9 +1422,10 @@ mod tests {
                         name.replace('_', "-")
                     );
                     assert!(
-                        envs.insert(env.to_string()),
-                        "duplicate env `{env}` in .cli-flags.toml"
+                        scope_envs.insert(env.to_string()),
+                        "duplicate env `{env}` within one .cli-flags.toml flag scope"
                     );
+                    envs.insert(env.to_string());
                 }
             }
             for child in table.values() {
