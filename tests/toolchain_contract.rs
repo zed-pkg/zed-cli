@@ -41,3 +41,25 @@ fn release_and_portability_use_the_repository_toolchain_pin() {
         "release workflow must use rust-toolchain.toml channel {channel}"
     );
 }
+
+#[test]
+fn matrix_workflows_derive_components_portably_from_the_toolchain_manifest() {
+    for path in [
+        ".github/workflows/asdf-interop.yml",
+        ".github/workflows/task-runtime.yml",
+    ] {
+        let workflow = read(path);
+        assert!(
+            workflow.contains("with open(\"rust-toolchain.toml\", \"rb\") as source:"),
+            "{path} must derive Rust configuration from rust-toolchain.toml"
+        );
+        assert!(
+            workflow.contains("component=\"${component%$'\\r'}\""),
+            "{path} must strip Windows CRLF from Python-emitted component names before rustup"
+        );
+        assert!(
+            !workflow.contains("rustup toolchain install stable"),
+            "{path} must not bypass the repository toolchain pin with moving stable"
+        );
+    }
+}
