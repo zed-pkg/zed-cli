@@ -40,7 +40,10 @@ fn zpkg_points_to_the_repository_owned_flags2env_contract() {
         string_at(&zpkg, &["cli", "flags_contract"]),
         ".cli-flags.toml"
     );
-    assert_eq!(string_at(&zpkg, &["cli", "flags_runtime"]), "flags-2-env");
+    assert_eq!(
+        string_at(&zpkg, &["cli", "flags_runtime"]),
+        "flags-2-env"
+    );
     assert_eq!(string_at(&zpkg, &["cli", "primary_bin"]), "zed");
 }
 
