@@ -27,10 +27,9 @@ fn every_repository_toml_file_parses() {
     let mut checked = 0usize;
     let mut errors = Vec::new();
 
-    for entry in WalkDir::new(".")
-        .into_iter()
-        .filter_entry(|entry| !matches!(entry.file_name().to_str(), Some(".git" | "target" | ".zed")))
-    {
+    for entry in WalkDir::new(".").into_iter().filter_entry(|entry| {
+        !matches!(entry.file_name().to_str(), Some(".git" | "target" | ".zed"))
+    }) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -97,7 +96,10 @@ fn manifestless_environment_migration_remains_explicit() {
         "allow-no-manifest",
         "skip-manifest",
     ] {
-        assert!(aliases.contains(&spelling), "missing CLI spelling {spelling}");
+        assert!(
+            aliases.contains(&spelling),
+            "missing CLI spelling {spelling}"
+        );
     }
 
     assert_eq!(
