@@ -23,7 +23,9 @@ fn release_and_portability_use_the_repository_toolchain_pin() {
         "Rust toolchain pin must use an exact major.minor.patch version"
     );
     assert!(
-        components.iter().all(|component| component.parse::<u64>().is_ok()),
+        components
+            .iter()
+            .all(|component| component.parse::<u64>().is_ok()),
         "Rust toolchain pin must contain numeric major.minor.patch components"
     );
 
