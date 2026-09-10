@@ -21,10 +21,12 @@ grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must
 for output in \
   '"target/release/zed"' \
   '"target/release/zed-gitops"' \
+  '"target/release/zed-binary"' \
   '"target/release/zed-git-install"'; do
   grep -Fq "$output" .zpkg.toml || { printf 'Zed package must publish required executable output: %s\n' "$output" >&2; exit 1; }
 done
 grep -Fq '"zed-gitops" = "target/release/zed-gitops"' .zpkg.toml || { echo 'Zed package must install the sibling zed-gitops executable' >&2; exit 1; }
+grep -Fq '"zed-binary" = "target/release/zed-binary"' .zpkg.toml || { echo 'Zed package must install the sibling zed-binary executable' >&2; exit 1; }
 grep -Fq '"zed-git-install" = "target/release/zed-git-install"' .zpkg.toml || { echo 'Zed package must install the sibling zed-git-install executable' >&2; exit 1; }
 grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
 
@@ -56,6 +58,25 @@ cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
 
+# Every checked-in TOML contract used by the zed CLI must at least remain
+# syntactically valid. Semantic checks below cover the release/package edges.
+for relative in (
+    ".cli-flags.toml",
+    ".dev-cli-flags.toml",
+    ".fetch-cli-flags.toml",
+    ".nix-interop-cli-flags.toml",
+    ".task-cli-flags.toml",
+    ".tool-cli-flags.toml",
+):
+    path = root / relative
+    if not path.is_file():
+        errors.append(f"missing checked-in CLI TOML contract: {relative}")
+        continue
+    try:
+        tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as error:
+        errors.append(f"invalid TOML in {relative}: {error}")
+
 expected_sources = {
     "zed-interfaces": (
         "https://github.com/zed-pkg/zed-interfaces.git",
@@ -75,9 +96,49 @@ expected_sources = {
     ),
 }
 
-repository = manifest.get("package", {}).get("repository", {})
+package = manifest.get("package", {})
+cargo_package = cargo.get("package", {})
+repository = package.get("repository", {})
 if repository.get("url") != "https://github.com/zed-pkg/zed-cli":
     errors.append("package.repository.url must point at zed-pkg/zed-cli")
+if package.get("version") != cargo_package.get("version"):
+    errors.append(
+        ".zpkg.toml package.version must exactly match Cargo.toml package.version "
+        f"({package.get('version')!r} != {cargo_package.get('version')!r})"
+    )
+
+cli = manifest.get("cli", {})
+if cli.get("flags_contract") != ".cli-flags.toml":
+    errors.append(".zpkg.toml [cli].flags_contract must remain .cli-flags.toml")
+if cli.get("flags_runtime") != "flags-2-env":
+    errors.append(".zpkg.toml [cli].flags_runtime must remain flags-2-env")
+
+cargo_bins = {
+    item.get("name")
+    for item in cargo.get("bin", [])
+    if isinstance(item, dict) and isinstance(item.get("name"), str)
+}
+manifest_bins = manifest.get("bin", {})
+if not isinstance(manifest_bins, dict):
+    errors.append(".zpkg.toml [bin] must be a table")
+    manifest_bins = {}
+manifest_bin_names = set(manifest_bins)
+if cargo_bins != manifest_bin_names:
+    errors.append(
+        "Cargo.toml [[bin]] names and .zpkg.toml [bin] names must match exactly: "
+        f"cargo={sorted(cargo_bins)!r}, zpkg={sorted(manifest_bin_names)!r}"
+    )
+
+build_outputs = manifest.get("build", {}).get("outputs", [])
+if not isinstance(build_outputs, list):
+    errors.append(".zpkg.toml [build].outputs must be an array")
+    build_outputs = []
+for name in sorted(cargo_bins):
+    expected_path = f"target/release/{name}"
+    if manifest_bins.get(name) != expected_path:
+        errors.append(f".zpkg.toml [bin].{name} must install {expected_path}")
+    if expected_path not in build_outputs:
+        errors.append(f".zpkg.toml build outputs must include {expected_path}")
 
 cargo_dependencies = cargo.get("dependencies", {})
 for dependency, (repository_url, revision) in expected_sources.items():
@@ -98,8 +159,8 @@ if 'name = "zed-lock"\nversion = "0.1.1"' not in cargo_lock:
     errors.append("Cargo.lock must resolve zed-lock version 0.1.1")
 
 for name in manifest.get("dependencies", {}):
-    package = name.lower().split("/", 1)[-1]
-    if package.endswith("-infra"):
+    dependency_package = name.lower().split("/", 1)[-1]
+    if dependency_package.endswith("-infra"):
         errors.append(f"CLI must not import infrastructure package: {name}")
 
 interfaces_path = pathlib.Path(sys.argv[1]) if sys.argv[1] else None
@@ -124,8 +185,8 @@ if clients_path:
 
 if lib_core_path:
     lib_core = tomllib.loads(lib_core_path.read_text(encoding="utf-8"))
-    package = lib_core.get("package", {})
-    if package.get("org") != "zed-pkg" or package.get("name") != "zed-lib-core":
+    sibling_package = lib_core.get("package", {})
+    if sibling_package.get("org") != "zed-pkg" or sibling_package.get("name") != "zed-lib-core":
         errors.append("sibling lib-core manifest must provide zed-pkg/zed-lib-core")
     if "zed-pkg/zed-interfaces" not in lib_core.get("dependencies", {}):
         errors.append("zed-lib-core must itself depend on zed-interfaces")
@@ -134,12 +195,12 @@ if lib_core_path:
 
 if lock_path:
     lock_package = tomllib.loads(lock_path.read_text(encoding="utf-8"))
-    package = lock_package.get("package", {})
-    if package.get("org") != "zed-pkg" or package.get("name") != "zed-lock":
+    sibling_package = lock_package.get("package", {})
+    if sibling_package.get("org") != "zed-pkg" or sibling_package.get("name") != "zed-lock":
         errors.append("sibling lock manifest must provide zed-pkg/zed-lock")
-    if package.get("version") != "0.1.1":
+    if sibling_package.get("version") != "0.1.1":
         errors.append("sibling lock package must be hardened version 0.1.1")
-    if package.get("repository", {}).get("url") != "https://github.com/zed-pkg/zed-lock":
+    if sibling_package.get("repository", {}).get("url") != "https://github.com/zed-pkg/zed-lock":
         errors.append("sibling lock package must declare the canonical repository")
     rust_target = lock_package.get("targets", {}).get("rust", {})
     if rust_target.get("dir") != ".":
@@ -162,4 +223,4 @@ if errors:
     raise SystemExit(1)
 PY
 
-printf 'zed-cli package graph validated across exact zed-client, zed-interfaces, zed-lib-core, and zed-lock revisions\n'
+printf 'zed-cli package graph validated across TOML contracts, Cargo/Zed release parity, and exact shared dependency revisions\n'
