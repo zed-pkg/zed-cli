@@ -120,9 +120,21 @@ fn zpkg_manifest_matches_cargo_package_identity() {
 }
 
 #[test]
-fn every_public_zpkg_binary_survives_the_build_output_allowlist() {
+fn every_public_zpkg_binary_is_a_real_cargo_binary_and_build_output() {
     let zpkg = read_toml(".zpkg.toml");
+    let cargo = read_toml("Cargo.toml");
 
+    let cargo_bins = cargo["bin"]
+        .as_array()
+        .expect("Cargo.toml [[bin]] entries")
+        .iter()
+        .map(|entry| {
+            entry["name"]
+                .as_str()
+                .expect("Cargo.toml [[bin]].name")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
     let outputs = zpkg["build"]["outputs"]
         .as_array()
         .expect(".zpkg.toml build.outputs")
@@ -147,9 +159,18 @@ fn every_public_zpkg_binary_survives_the_build_output_allowlist() {
     );
 
     for (name, value) in bins {
+        assert!(
+            cargo_bins.contains(name),
+            ".zpkg.toml public bin `{name}` must correspond to a Cargo.toml [[bin]] target"
+        );
         let path = value
             .as_str()
             .unwrap_or_else(|| panic!(".zpkg.toml bin.{name} must be a string path"));
+        let expected = format!("target/release/{name}");
+        assert_eq!(
+            path, expected,
+            ".zpkg.toml [bin].{name} must install the Cargo release binary"
+        );
         assert!(
             outputs.contains(path),
             ".zpkg.toml public bin `{name}` points to `{path}`, but that artifact is stripped by build.outputs"
