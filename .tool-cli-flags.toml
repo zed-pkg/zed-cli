@@ -1,6 +1,9 @@
 # Dedicated flags-to-environment contract for the staged frozen tool-profile
 # CLI. Canonical `zed tool` routing must reuse these exact variable names.
 
+[env]
+files = []
+
 [parse]
 command_env = "ZED_TOOL_COMMAND"
 unknown_options_env = "ZED_TOOL_UNKNOWN_OPTIONS"
