@@ -2,6 +2,7 @@
 # CLI. Canonical `zed tool` routing must reuse these exact variable names.
 
 [env]
+dotenv = false
 files = []
 
 [parse]
