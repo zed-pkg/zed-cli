@@ -90,6 +90,38 @@ fn zpkg_manifest_matches_cargo_package_identity() {
 }
 
 #[test]
+fn zpkg_manifest_keeps_the_repository_owned_cli_contract() {
+    let zpkg = fs::read_to_string(".zpkg.toml").expect("read .zpkg.toml");
+    let zpkg: toml::Value = toml::from_str(&zpkg).expect("parse .zpkg.toml");
+
+    assert_eq!(
+        zpkg["cli"]["flags_contract"].as_str(),
+        Some(".cli-flags.toml")
+    );
+    assert_eq!(
+        zpkg["cli"]["flags_runtime"].as_str(),
+        Some("flags-2-env")
+    );
+    assert_eq!(zpkg["cli"]["primary_bin"].as_str(), Some("zed"));
+}
+
+#[test]
+fn canonical_cli_contract_remains_fail_closed() {
+    let contract = fs::read_to_string(".cli-flags.toml").expect("read .cli-flags.toml");
+    let contract: toml::Value = toml::from_str(&contract).expect("parse .cli-flags.toml");
+
+    assert_eq!(
+        contract["parse"]["allow_unknown"].as_bool(),
+        Some(false),
+        "the canonical CLI contract must reject unknown options"
+    );
+    assert_eq!(
+        contract["help"]["url"].as_str(),
+        Some("https://github.com/zed-pkg/zed-cli")
+    );
+}
+
+#[test]
 fn manifestless_environment_migration_remains_explicit() {
     let contract = fs::read_to_string(".cli-flags.toml").expect("read .cli-flags.toml");
     let contract: toml::Value = toml::from_str(&contract).expect("parse .cli-flags.toml");
