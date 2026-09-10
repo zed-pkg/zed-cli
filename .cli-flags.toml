@@ -2,6 +2,9 @@
 # file is the portable flag/env and nested-command description shared with
 # github.com/flags-2-env/flags-2-env.
 
+[env]
+files = []
+
 [parse]
 command_env = "ZED_PKG_COMMAND"
 unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
