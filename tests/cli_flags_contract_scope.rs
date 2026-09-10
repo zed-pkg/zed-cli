@@ -108,17 +108,11 @@ fn mirror_and_key_flags_match_clap_command_scopes() {
             "ZED_PKG_MIRROR_BOOTSTRAP_URL",
         ),
         (
-            [
-                "commands", "mirror", "commands", "sync", "flags", "output",
-            ]
-            .as_slice(),
+            ["commands", "mirror", "commands", "sync", "flags", "output"].as_slice(),
             "ZED_PKG_MIRROR_OUTPUT",
         ),
         (
-            [
-                "commands", "key", "commands", "generate", "flags", "key-id",
-            ]
-            .as_slice(),
+            ["commands", "key", "commands", "generate", "flags", "key-id"].as_slice(),
             "ZED_PKG_KEY_ID",
         ),
         (
@@ -126,10 +120,7 @@ fn mirror_and_key_flags_match_clap_command_scopes() {
             "ZED_PKG_KEY_ID",
         ),
         (
-            [
-                "commands", "key", "commands", "enroll", "flags", "key-id",
-            ]
-            .as_slice(),
+            ["commands", "key", "commands", "enroll", "flags", "key-id"].as_slice(),
             "ZED_PKG_KEY_ID",
         ),
     ] {
