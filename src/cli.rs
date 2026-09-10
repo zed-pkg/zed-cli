@@ -202,7 +202,8 @@ pub enum AuthProvider {
     Supabase,
 }
 
-/// OCI runtime used by `zed r2g`.
+/// OCI runtime used by `zed r2g --docker` to roundtrip-test the package
+/// inside a throwaway container. Auto-detected when unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ContainerRuntime {
     Docker,
@@ -418,7 +419,7 @@ pub enum Cmd {
         /// Project-local schema-v2 environment plan; conventional names are discovered when omitted.
         #[arg(long, env = "ZED_TASK_PLAN")]
         plan: Option<PathBuf>,
-        /// Emit stable machine-readable task output.
+        /// Emit stable machine-readable JSON. Live command execution requires human streaming output.
         #[arg(long, env = "ZED_TASK_JSON")]
         json: bool,
         #[command(subcommand)]
