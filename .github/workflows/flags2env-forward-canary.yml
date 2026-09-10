@@ -72,4 +72,6 @@ jobs:
         run: |
           set -euo pipefail
           git -C zed-cli diff --exit-code HEAD
-          git -C flags-2-env diff --exit-code HEAD
+          # `make all` deliberately refreshes tracked compatibility artifacts under build/.
+          # The canary is read-only with respect to source/config outside that build output.
+          git -C flags-2-env diff --exit-code HEAD -- . ':(exclude)build/**'
