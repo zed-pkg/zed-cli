@@ -76,6 +76,7 @@ jobs:
           )"
           install_args=(toolchain install "$toolchain" --profile minimal --no-self-update)
           while IFS= read -r component; do
+            component="${component%$'\r'}"
             [[ -n "$component" ]] && install_args+=(--component "$component")
           done < <(python - <<'PY'
           import tomllib
