@@ -1,7 +1,7 @@
 [package]
 org = "zed-pkg"
 name = "zed-cli"
-version = "0.1.0"
+version = "0.3.0"
 description = "The zed universal package-manager CLI"
 license = "MIT"
 keywords = ["package-manager", "cli", "polyglot", "vcs", "global-tools"]
