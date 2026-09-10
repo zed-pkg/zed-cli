@@ -32,9 +32,7 @@ fn working_directory_dotenv_is_ignored_by_primary_flags_contract() {
     let workdir = tempfile::tempdir().expect("create isolated dotenv probe directory");
     fs::write(
         workdir.path().join(".env"),
-        format!(
-            "ZED_PKG_REGISTRY={SENTINEL_REGISTRY}\nZED_PKG_TOKEN=dotenv-secret-sentinel\n"
-        ),
+        format!("ZED_PKG_REGISTRY={SENTINEL_REGISTRY}\nZED_PKG_TOKEN=dotenv-secret-sentinel\n"),
     )
     .expect("write hostile working-directory .env fixture");
 
