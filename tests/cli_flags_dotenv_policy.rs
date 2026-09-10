@@ -39,12 +39,17 @@ fn every_cli_contract_disables_implicit_working_directory_dotenv_loading() {
                     "{display} must declare [env] explicitly; flags2env otherwise reads ./.env from the caller working directory"
                 )
             });
+        assert_eq!(
+            env.get("dotenv").and_then(toml::Value::as_bool),
+            Some(false),
+            "{display} must set [env].dotenv = false so the currently pinned flags2env generation disables caller-directory dotenv loading",
+        );
         let files = env
             .get("files")
             .and_then(toml::Value::as_array)
             .unwrap_or_else(|| {
                 panic!(
-                    "{display} must set [env].files = [] to disable implicit working-directory dotenv loading"
+                    "{display} must set [env].files = [] so current flags2env generations also disable implicit working-directory dotenv loading"
                 )
             });
         assert!(
