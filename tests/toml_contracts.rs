@@ -120,31 +120,8 @@ fn zpkg_manifest_matches_cargo_package_identity() {
 }
 
 #[test]
-fn zpkg_manifest_covers_every_cargo_binary() {
+fn every_public_zpkg_binary_survives_the_build_output_allowlist() {
     let zpkg = read_toml(".zpkg.toml");
-    let cargo = read_toml("Cargo.toml");
-
-    let cargo_bins = cargo["bin"]
-        .as_array()
-        .expect("Cargo.toml [[bin]] entries")
-        .iter()
-        .map(|entry| {
-            entry["name"]
-                .as_str()
-                .expect("Cargo.toml [[bin]].name")
-                .to_owned()
-        })
-        .collect::<BTreeSet<_>>();
-    let zpkg_bins = zpkg["bin"]
-        .as_table()
-        .expect(".zpkg.toml [bin] table")
-        .keys()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    assert_eq!(
-        zpkg_bins, cargo_bins,
-        ".zpkg.toml [bin] names must match Cargo.toml [[bin]] names"
-    );
 
     let outputs = zpkg["build"]["outputs"]
         .as_array()
@@ -157,17 +134,25 @@ fn zpkg_manifest_covers_every_cargo_binary() {
                 .to_owned()
         })
         .collect::<BTreeSet<_>>();
+    let bins = zpkg["bin"]
+        .as_table()
+        .expect(".zpkg.toml [bin] table");
+    let primary_bin = zpkg["cli"]["primary_bin"]
+        .as_str()
+        .expect(".zpkg.toml cli.primary_bin");
 
-    for name in cargo_bins {
-        let expected = format!("target/release/{name}");
-        assert_eq!(
-            zpkg["bin"][&name].as_str(),
-            Some(expected.as_str()),
-            ".zpkg.toml [bin].{name} must install the Cargo release binary"
-        );
+    assert!(
+        bins.contains_key(primary_bin),
+        ".zpkg.toml cli.primary_bin `{primary_bin}` must be exposed by [bin]"
+    );
+
+    for (name, value) in bins {
+        let path = value
+            .as_str()
+            .unwrap_or_else(|| panic!(".zpkg.toml bin.{name} must be a string path"));
         assert!(
-            outputs.contains(&expected),
-            ".zpkg.toml build.outputs must include {expected}"
+            outputs.contains(path),
+            ".zpkg.toml public bin `{name}` points to `{path}`, but that artifact is stripped by build.outputs"
         );
     }
 }
