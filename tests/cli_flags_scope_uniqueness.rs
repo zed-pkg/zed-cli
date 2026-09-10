@@ -11,12 +11,9 @@ fn validate_flags_table(path: &Path, scope: &str, flags: &toml::map::Map<String,
     let mut spellings = BTreeSet::new();
 
     for (name, value) in flags {
-        let definition = value.as_table().unwrap_or_else(|| {
-            panic!(
-                "{}: {scope}.flags.{name} must be a table",
-                path.display()
-            )
-        });
+        let definition = value
+            .as_table()
+            .unwrap_or_else(|| panic!("{}: {scope}.flags.{name} must be a table", path.display()));
         let environment = definition
             .get("env")
             .and_then(Value::as_str)
