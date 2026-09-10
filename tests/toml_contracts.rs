@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fs, path::PathBuf};
+use std::{collections::BTreeSet, fs, path::{Path, PathBuf}};
 
 use flags2env::BundledFlags2Env;
 use walkdir::WalkDir;
@@ -147,13 +147,11 @@ fn every_public_zpkg_binary_is_a_real_cargo_binary_and_build_output() {
         })
         .collect::<BTreeSet<_>>();
     let bins = zpkg["bin"].as_table().expect(".zpkg.toml [bin] table");
-    let primary_bin = zpkg["cli"]["primary_bin"]
-        .as_str()
-        .expect(".zpkg.toml cli.primary_bin");
 
-    assert!(
-        bins.contains_key(primary_bin),
-        ".zpkg.toml cli.primary_bin `{primary_bin}` must be exposed by [bin]"
+    assert_eq!(
+        bins.get("zed").and_then(toml::Value::as_str),
+        Some("target/release/zed"),
+        "the public package must expose the primary `zed` executable"
     );
 
     for (name, value) in bins {
@@ -177,15 +175,17 @@ fn every_public_zpkg_binary_is_a_real_cargo_binary_and_build_output() {
 }
 
 #[test]
-fn zpkg_manifest_keeps_the_repository_owned_cli_contract() {
+fn zpkg_manifest_keeps_cli_contract_separate_from_manifest_schema() {
     let zpkg = read_toml(".zpkg.toml");
 
-    assert_eq!(
-        zpkg["cli"]["flags_contract"].as_str(),
-        Some(".cli-flags.toml")
+    assert!(
+        zpkg.get("cli").is_none(),
+        ".zpkg.toml must not invent an unsupported [cli] table; CLI/env ownership lives in .cli-flags.toml"
     );
-    assert_eq!(zpkg["cli"]["flags_runtime"].as_str(), Some("flags-2-env"));
-    assert_eq!(zpkg["cli"]["primary_bin"].as_str(), Some("zed"));
+    assert!(
+        Path::new(".cli-flags.toml").is_file(),
+        "repository-owned .cli-flags.toml must remain checked in beside the package manifest"
+    );
 }
 
 #[test]
