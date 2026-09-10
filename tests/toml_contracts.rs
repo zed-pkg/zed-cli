@@ -106,17 +106,22 @@ fn zpkg_manifest_keeps_the_repository_owned_cli_contract() {
 }
 
 #[test]
-fn canonical_cli_contract_remains_fail_closed() {
-    let contract = fs::read_to_string(".cli-flags.toml").expect("read .cli-flags.toml");
-    let contract: toml::Value = toml::from_str(&contract).expect("parse .cli-flags.toml");
+fn every_cli_contract_remains_fail_closed() {
+    for path in CLI_CONTRACTS {
+        let contract = fs::read_to_string(path).unwrap_or_else(|error| panic!("read {path}: {error}"));
+        let contract: toml::Value = toml::from_str(&contract)
+            .unwrap_or_else(|error| panic!("parse {path}: {error}"));
+        assert_eq!(
+            contract["parse"]["allow_unknown"].as_bool(),
+            Some(false),
+            "{path} must reject unknown options"
+        );
+    }
 
+    let canonical = fs::read_to_string(".cli-flags.toml").expect("read .cli-flags.toml");
+    let canonical: toml::Value = toml::from_str(&canonical).expect("parse .cli-flags.toml");
     assert_eq!(
-        contract["parse"]["allow_unknown"].as_bool(),
-        Some(false),
-        "the canonical CLI contract must reject unknown options"
-    );
-    assert_eq!(
-        contract["help"]["url"].as_str(),
+        canonical["help"]["url"].as_str(),
         Some("https://github.com/zed-pkg/zed-cli")
     );
 }
