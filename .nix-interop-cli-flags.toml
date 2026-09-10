@@ -1,6 +1,7 @@
 # flags-2-env contract for modular `zed interop nix` commands.
 
 [env]
+dotenv = false
 files = []
 
 [parse]
