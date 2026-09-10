@@ -24,11 +24,6 @@ zed = "target/release/zed"
 "zed-gitops" = "target/release/zed-gitops"
 "zed-git-install" = "target/release/zed-git-install"
 
-[cli]
-flags_contract = ".cli-flags.toml"
-flags_runtime = "flags-2-env"
-primary_bin = "zed"
-
 [install]
 adapter = "none"
 dir = ".vendor/.zed"
