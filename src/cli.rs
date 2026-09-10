@@ -259,7 +259,7 @@ pub enum EnvironmentExportManagerArg {
     Mise,
     /// Export deterministic Devbox JSON and a Zed-owned receipt.
     Devbox,
-    /// Export deterministic Flox manifest TOML and a Zed-owned receipt.
+    /// Export deterministic Flox manifest TOML from a schema-v2 plan.
     Flox,
 }
 
@@ -711,7 +711,7 @@ pub enum TaskCmd {
     },
     /// Show one task's aliases, dependencies, cache policy, and description.
     Info { task: String },
-    /// Print the validated task dependency and invocation graph.
+    /// Print the validated static task dependency and invocation graph.
     Graph { task: String },
     /// Execute one task and its validated dependency graph.
     Run {
@@ -746,7 +746,7 @@ pub enum ReleaseCmd {
         /// Emit machine-readable JSON rather than the human summary
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
-        /// Release track to resolve every native route against
+        /// Release track to resolve every native route's version
         #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
         channel: Option<ChannelArg>,
         /// Candidate number within a pre-release channel (rc.1, rc.2, ...)
@@ -1410,6 +1410,7 @@ mod tests {
                 return;
             };
             if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
+                let mut scope_envs = BTreeSet::new();
                 for (name, flag) in flags {
                     let env = flag
                         .get("env")
@@ -1421,9 +1422,10 @@ mod tests {
                         name.replace('_', "-")
                     );
                     assert!(
-                        envs.insert(env.to_string()),
-                        "duplicate env `{env}` in .cli-flags.toml"
+                        scope_envs.insert(env.to_string()),
+                        "duplicate env `{env}` within one .cli-flags.toml flag scope"
                     );
+                    envs.insert(env.to_string());
                 }
             }
             for child in table.values() {
