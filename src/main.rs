@@ -193,7 +193,6 @@ fn root_global_option_takes_value(token: &str) -> bool {
     const OPTIONS: &[&str] = &[
         "--registry",
         "--home",
-        "--token",
         "--auth-url",
         "--supabase-url",
         "--supabase-key",
