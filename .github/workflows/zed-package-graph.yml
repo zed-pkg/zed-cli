@@ -5,8 +5,11 @@ on:
     paths:
       - ".zpkg.toml"
       - ".zpkg.lock"
+      - ".cli-flags.toml"
+      - ".*-cli-flags.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/validate-cli-flags-toml.py"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
@@ -15,8 +18,11 @@ on:
     paths:
       - ".zpkg.toml"
       - ".zpkg.lock"
+      - ".cli-flags.toml"
+      - ".*-cli-flags.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "scripts/validate-cli-flags-toml.py"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
       - ".github/workflows/zed-package-graph.yml"
@@ -74,6 +80,7 @@ jobs:
       - name: Validate native and Zed package edges
         working-directory: zed-cli
         run: |
+          python3 scripts/validate-cli-flags-toml.py
           bash scripts/validate-zed-package-graph.sh \
             ../zed-interfaces/.zpkg.toml \
             ../zed-clients/.zpkg.toml \
