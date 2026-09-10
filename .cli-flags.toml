@@ -303,7 +303,7 @@ help = "Skip release checksum verification."
 [flags.limit]
 env = "ZED_PKG_AUDIT_LIMIT"
 aliases = ["limit"]
-type = "int"
+type = "integer"
 help = "Maximum audit entries."
 
 [flags.email]
@@ -498,7 +498,7 @@ help = "Approve explicit task confirmation requirements."
 [commands.task.commands.run.flags.jobs]
 env = "ZED_TASK_JOBS"
 aliases = ["jobs"]
-type = "int"
+type = "integer"
 default = "1"
 help = "Maximum concurrent task command processes."
 
@@ -548,7 +548,7 @@ help = "Release track: stable, rc, beta, alpha, nightly, or snapshot."
 [commands.release.flags.release_iteration]
 env = "ZED_PKG_RELEASE_ITERATION"
 aliases = ["iteration"]
-type = "int"
+type = "integer"
 default = "1"
 help = "Candidate number within a pre-release channel."
 
@@ -747,7 +747,6 @@ long = "json"
 type = "bool"
 default = "false"
 help = "Emit deterministic machine-readable mirror output."
-
 [flags.mirror_package]
 env = "ZED_PKG_MIRROR_PACKAGE"
 long = "package"
