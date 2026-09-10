@@ -27,12 +27,6 @@ aliases = ["home"]
 type = "string"
 help = "Zed home directory; defaults to ~/.zed-pkg."
 
-[flags.token]
-env = "ZED_PKG_TOKEN"
-aliases = ["token"]
-type = "string"
-help = "Explicit registry bearer token."
-
 [flags.auth_url]
 env = "ZED_PKG_AUTH_URL"
 aliases = ["auth-url"]
@@ -850,11 +844,6 @@ help = "Runtime environment key PYTHONPATH."
 env = "XDG_CONFIG_HOME"
 type = "string"
 help = "Runtime environment key XDG_CONFIG_HOME."
-
-[flags.zed-pkg-auth-password]
-env = "ZED_PKG_AUTH_PASSWORD"
-type = "string"
-help = "Runtime environment key ZED_PKG_AUTH_PASSWORD."
 
 [flags.zed-pkg-install-concurrency]
 env = "ZED_PKG_INSTALL_CONCURRENCY"
