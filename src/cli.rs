@@ -202,8 +202,7 @@ pub enum AuthProvider {
     Supabase,
 }
 
-/// OCI runtime used by `zed r2g --docker` to roundtrip-test the package
-/// inside a throwaway container. Auto-detected when unset.
+/// OCI runtime used by `zed r2g`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ContainerRuntime {
     Docker,
@@ -259,7 +258,7 @@ pub enum EnvironmentExportManagerArg {
     Mise,
     /// Export deterministic Devbox JSON and a Zed-owned receipt.
     Devbox,
-    /// Export deterministic Flox manifest TOML from a schema-v2 plan.
+    /// Export deterministic Flox manifest TOML and a Zed-owned receipt.
     Flox,
 }
 
@@ -419,7 +418,7 @@ pub enum Cmd {
         /// Project-local schema-v2 environment plan; conventional names are discovered when omitted.
         #[arg(long, env = "ZED_TASK_PLAN")]
         plan: Option<PathBuf>,
-        /// Emit stable machine-readable JSON. Live command execution requires human streaming output.
+        /// Emit stable machine-readable task output.
         #[arg(long, env = "ZED_TASK_JSON")]
         json: bool,
         #[command(subcommand)]
@@ -711,7 +710,7 @@ pub enum TaskCmd {
     },
     /// Show one task's aliases, dependencies, cache policy, and description.
     Info { task: String },
-    /// Print the validated static task dependency and invocation graph.
+    /// Print the validated task dependency and invocation graph.
     Graph { task: String },
     /// Execute one task and its validated dependency graph.
     Run {
@@ -746,7 +745,7 @@ pub enum ReleaseCmd {
         /// Emit machine-readable JSON rather than the human summary
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
-        /// Release track to resolve every native route's version
+        /// Release track to resolve every native route against
         #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
         channel: Option<ChannelArg>,
         /// Candidate number within a pre-release channel (rc.1, rc.2, ...)
