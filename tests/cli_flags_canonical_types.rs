@@ -1,13 +1,7 @@
 use std::{fs, path::Path};
 
 const CANONICAL_FLAG_TYPES: &[&str] = &[
-    "array",
-    "bool",
-    "double",
-    "integer",
-    "json",
-    "map",
-    "string",
+    "array", "bool", "double", "integer", "json", "map", "string",
 ];
 
 fn assert_canonical_types(path: &Path, value: &toml::Value, location: &str) {
