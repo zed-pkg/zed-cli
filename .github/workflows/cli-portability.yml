@@ -5,6 +5,9 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - '.cli-flags.toml'
+      - '.*-cli-flags.toml'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -14,6 +17,9 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - '.cli-flags.toml'
+      - '.*-cli-flags.toml'
       - build.rs
       - 'src/**'
       - 'tests/**'
