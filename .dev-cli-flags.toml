@@ -3,6 +3,7 @@
 # with the same typed DevelopArgs definition used here.
 
 [env]
+dotenv = false
 files = []
 
 [parse]
