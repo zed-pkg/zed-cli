@@ -40,10 +40,7 @@ fn zpkg_points_to_the_repository_owned_flags2env_contract() {
         string_at(&zpkg, &["cli", "flags_contract"]),
         ".cli-flags.toml"
     );
-    assert_eq!(
-        string_at(&zpkg, &["cli", "flags_runtime"]),
-        "flags-2-env"
-    );
+    assert_eq!(string_at(&zpkg, &["cli", "flags_runtime"]), "flags-2-env");
     assert_eq!(string_at(&zpkg, &["cli", "primary_bin"]), "zed");
 }
 
@@ -53,6 +50,9 @@ fn all_checked_in_cli_flag_contracts_are_valid_toml() {
         ".cli-flags.toml",
         ".dev-cli-flags.toml",
         ".fetch-cli-flags.toml",
+        ".nix-interop-cli-flags.toml",
+        ".task-cli-flags.toml",
+        ".tool-cli-flags.toml",
     ] {
         let document = parse_toml(path);
         assert!(document.is_table(), "{path} must have a TOML table root");
@@ -71,4 +71,12 @@ fn all_checked_in_cli_flag_contracts_are_valid_toml() {
         string_at(&flags, &["help", "url"]),
         "https://github.com/zed-pkg/zed-cli"
     );
+}
+
+#[test]
+fn production_toml_authorities_are_valid() {
+    for path in ["rust-toolchain.toml", "formal/procedure.toml"] {
+        let document = parse_toml(path);
+        assert!(document.is_table(), "{path} must have a TOML table root");
+    }
 }
