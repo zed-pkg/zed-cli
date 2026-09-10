@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-/// Every flag can also be set through a `ZED_PKG_*` environment variable,
-/// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
+/// Every user-facing flag can also be set through a `ZED_PKG_*` environment
+/// variable, following the flags-2-env convention
+/// (github.com/flags-2-env/flags-2-env). Secret-bearing values stay env-only.
 #[derive(Debug, Parser)]
 #[command(
     name = "zed",
@@ -32,8 +33,9 @@ pub struct Globals {
     #[arg(long, global = true, env = "ZED_PKG_HOME")]
     pub home: Option<PathBuf>,
 
-    /// Registry auth token; overrides saved credentials
-    #[arg(long, global = true, env = "ZED_PKG_TOKEN", hide_env_values = true)]
+    /// Registry auth token from the environment only; overrides saved credentials.
+    /// Secret values are deliberately not CLI options because argv is observable.
+    #[arg(skip = std::env::var("ZED_PKG_TOKEN").ok())]
     pub token: Option<String>,
 
     /// shared-auth base URL; defaults to <registry>/shared-auth
@@ -1298,7 +1300,7 @@ mod tests {
         };
         assert_eq!(env_of("registry").as_deref(), Some("ZED_PKG_REGISTRY"));
         assert_eq!(env_of("home").as_deref(), Some("ZED_PKG_HOME"));
-        assert_eq!(env_of("token").as_deref(), Some("ZED_PKG_TOKEN"));
+        assert_eq!(env_of("token"), None, "bearer token must remain env-only");
         assert_eq!(
             env_of("git-submodules").as_deref(),
             Some("ZED_PKG_GIT_SUBMODULES")
