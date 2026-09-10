@@ -74,6 +74,22 @@ fn every_repository_toml_file_parses() {
 }
 
 #[test]
+fn zpkg_manifest_matches_cargo_package_identity() {
+    let zpkg = fs::read_to_string(".zpkg.toml").expect("read .zpkg.toml");
+    let zpkg: toml::Value = toml::from_str(&zpkg).expect("parse .zpkg.toml");
+    let cargo = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let cargo: toml::Value = toml::from_str(&cargo).expect("parse Cargo.toml");
+
+    for field in ["name", "version"] {
+        assert_eq!(
+            zpkg["package"][field].as_str(),
+            cargo["package"][field].as_str(),
+            ".zpkg.toml package.{field} must match Cargo.toml package.{field}"
+        );
+    }
+}
+
+#[test]
 fn manifestless_environment_migration_remains_explicit() {
     let contract = fs::read_to_string(".cli-flags.toml").expect("read .cli-flags.toml");
     let contract: toml::Value = toml::from_str(&contract).expect("parse .cli-flags.toml");
