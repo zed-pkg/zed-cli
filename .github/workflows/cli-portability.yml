@@ -5,6 +5,12 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - .cli-flags.toml
+      - '.*-cli-flags.toml'
+      - .zpkg.toml
+      - '**/*.toml'
+      - '**/*.toml.example'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -14,6 +20,12 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - rust-toolchain.toml
+      - .cli-flags.toml
+      - '.*-cli-flags.toml'
+      - .zpkg.toml
+      - '**/*.toml'
+      - '**/*.toml.example'
       - build.rs
       - 'src/**'
       - 'tests/**'
