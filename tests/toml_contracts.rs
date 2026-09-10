@@ -1,4 +1,4 @@
-use std::fs;
+use std::{collections::BTreeSet, fs};
 
 use flags2env::BundledFlags2Env;
 use walkdir::WalkDir;
@@ -85,6 +85,61 @@ fn zpkg_manifest_matches_cargo_package_identity() {
             zpkg["package"][field].as_str(),
             cargo["package"][field].as_str(),
             ".zpkg.toml package.{field} must match Cargo.toml package.{field}"
+        );
+    }
+}
+
+#[test]
+fn zpkg_manifest_covers_every_cargo_binary() {
+    let zpkg = fs::read_to_string(".zpkg.toml").expect("read .zpkg.toml");
+    let zpkg: toml::Value = toml::from_str(&zpkg).expect("parse .zpkg.toml");
+    let cargo = fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    let cargo: toml::Value = toml::from_str(&cargo).expect("parse Cargo.toml");
+
+    let cargo_bins = cargo["bin"]
+        .as_array()
+        .expect("Cargo.toml [[bin]] entries")
+        .iter()
+        .map(|entry| {
+            entry["name"]
+                .as_str()
+                .expect("Cargo.toml [[bin]].name")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    let zpkg_bins = zpkg["bin"]
+        .as_table()
+        .expect(".zpkg.toml [bin] table")
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        zpkg_bins, cargo_bins,
+        ".zpkg.toml [bin] names must match Cargo.toml [[bin]] names"
+    );
+
+    let outputs = zpkg["build"]["outputs"]
+        .as_array()
+        .expect(".zpkg.toml build.outputs")
+        .iter()
+        .map(|output| {
+            output
+                .as_str()
+                .expect(".zpkg.toml build output must be a string")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+
+    for name in cargo_bins {
+        let expected = format!("target/release/{name}");
+        assert_eq!(
+            zpkg["bin"][&name].as_str(),
+            Some(expected.as_str()),
+            ".zpkg.toml [bin].{name} must install the Cargo release binary"
+        );
+        assert!(
+            outputs.contains(&expected),
+            ".zpkg.toml build.outputs must include {expected}"
         );
     }
 }
