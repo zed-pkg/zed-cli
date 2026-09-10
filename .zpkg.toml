@@ -1,7 +1,7 @@
 [package]
 org = "zed-pkg"
 name = "zed-cli"
-version = "0.1.0"
+version = "0.3.0"
 description = "The zed universal package-manager CLI"
 license = "MIT"
 keywords = ["package-manager", "cli", "polyglot", "vcs", "global-tools"]
@@ -61,4 +61,5 @@ registry = "crates-io"
 package = "zed-cli"
 
 [scripts]
-test = "bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
+toml-contract = "python3 scripts/check-toml-contracts.py"
+test = "python3 scripts/check-toml-contracts.py && bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
