@@ -146,9 +146,7 @@ fn every_public_zpkg_binary_is_a_real_cargo_binary_and_build_output() {
                 .to_owned()
         })
         .collect::<BTreeSet<_>>();
-    let bins = zpkg["bin"]
-        .as_table()
-        .expect(".zpkg.toml [bin] table");
+    let bins = zpkg["bin"].as_table().expect(".zpkg.toml [bin] table");
     let primary_bin = zpkg["cli"]["primary_bin"]
         .as_str()
         .expect(".zpkg.toml cli.primary_bin");
@@ -186,10 +184,7 @@ fn zpkg_manifest_keeps_the_repository_owned_cli_contract() {
         zpkg["cli"]["flags_contract"].as_str(),
         Some(".cli-flags.toml")
     );
-    assert_eq!(
-        zpkg["cli"]["flags_runtime"].as_str(),
-        Some("flags-2-env")
-    );
+    assert_eq!(zpkg["cli"]["flags_runtime"].as_str(), Some("flags-2-env"));
     assert_eq!(zpkg["cli"]["primary_bin"].as_str(), Some("zed"));
 }
 
@@ -208,7 +203,11 @@ fn flags2env_dependency_is_canonical_and_immutable() {
         .get("rev")
         .and_then(toml::Value::as_str)
         .expect("flags2env immutable Git revision");
-    assert_eq!(revision.len(), 40, "flags2env revision must be a full SHA-1");
+    assert_eq!(
+        revision.len(),
+        40,
+        "flags2env revision must be a full SHA-1"
+    );
     assert!(
         revision
             .bytes()
@@ -221,10 +220,10 @@ fn flags2env_dependency_is_canonical_and_immutable() {
 fn every_cli_contract_remains_fail_closed() {
     for path in cli_contract_paths() {
         let display = path.display().to_string();
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("read {display}: {error}"));
-        let contract: toml::Value = toml::from_str(&source)
-            .unwrap_or_else(|error| panic!("parse {display}: {error}"));
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {display}: {error}"));
+        let contract: toml::Value =
+            toml::from_str(&source).unwrap_or_else(|error| panic!("parse {display}: {error}"));
         assert_eq!(
             contract["parse"]["allow_unknown"].as_bool(),
             Some(false),
