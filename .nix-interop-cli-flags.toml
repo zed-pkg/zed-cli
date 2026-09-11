@@ -26,12 +26,6 @@ aliases = ["home"]
 type = "string"
 help = "Global Zed home setting; frozen Nix interop never reads or creates it."
 
-[flags.token]
-env = "ZED_PKG_TOKEN"
-aliases = ["token"]
-type = "string"
-help = "Global bearer token; frozen Nix interop never reads or emits it."
-
 [flags.auth_url]
 env = "ZED_PKG_AUTH_URL"
 aliases = ["auth-url"]
