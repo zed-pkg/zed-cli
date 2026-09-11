@@ -37,7 +37,7 @@ dir = ".vendor/.zed"
 [publish]
 include_readme = true
 tag_format = "v{version}"
-smoke_test = "test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help && \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" --help >/dev/null"
+smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/.auth-shared.toml\" && test ! -e \"$ZED_PKG_TEST_TARGET/.shared-auth.toml\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help && \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" --help >/dev/null"
 exclude = [
   ".env",
   ".env.*",

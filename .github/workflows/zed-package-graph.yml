@@ -3,12 +3,14 @@ name: Zed package graph
 on:
   pull_request:
     paths:
+      - ".auth-shared.toml"
       - ".zpkg.toml"
       - ".zpkg.lock"
       - ".cli-flags.toml"
       - ".*-cli-flags.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "src/cli_model/shared_auth_policy.rs"
       - "scripts/validate-cli-flags-toml.py"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"
@@ -16,12 +18,14 @@ on:
   push:
     branches: [main]
     paths:
+      - ".auth-shared.toml"
       - ".zpkg.toml"
       - ".zpkg.lock"
       - ".cli-flags.toml"
       - ".*-cli-flags.toml"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "src/cli_model/shared_auth_policy.rs"
       - "scripts/validate-cli-flags-toml.py"
       - "scripts/validate-zed-package-graph.sh"
       - "docs/package-dependency-graph.md"

@@ -4,6 +4,8 @@
 //! This module adds only process-startup environment compatibility so runtime
 //! parsing, help, and shell completion all consume the same command tree.
 
+mod shared_auth_policy;
+
 use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, FromArgMatches};
@@ -36,6 +38,11 @@ pub fn parse() -> Cli {
 /// registry/auth configuration, read saved credentials, or run transaction
 /// recovery before producing its JSON report.
 ///
+/// Every other command first admits zed-cli's embedded, secret-free Shared Auth
+/// consumer policy. A malformed, stale, ambiguous, or provenance-mismatched
+/// policy stops startup before terminal environment publication, network
+/// dispatch, project mutation, credential lookup, flags2env, or Clap config.
+///
 /// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` is canonical. The old environment key
 /// remains the embedded compatibility key for this migration window so older
 /// scripts continue to work without changing the typed `Cmd::Install` shape.
@@ -48,6 +55,11 @@ pub fn prepare_environment(args: &[OsString]) {
                 std::process::exit(1);
             }
         }
+    }
+
+    if let Err(error) = shared_auth_policy::admit_embedded() {
+        eprintln!("error: {error:#}");
+        std::process::exit(2);
     }
 
     crate::terminal_context::publish_process_environment();
