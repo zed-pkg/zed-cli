@@ -44,8 +44,9 @@ jobs:
           replacements = {
               "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c",
               "eac0878750332b031bc12f6040b6a795a17e7417": "4509f19e1d3242226f28f842f550085864582380",
-              "e53dca82e6c9d946a650bf453f48df0072221e10": "dd025059d8fb6e134c45cb21a394349ea25e7bb1",
-              "b32e089caea772f166204fb1c7bcaad6f56942fe": "dd025059d8fb6e134c45cb21a394349ea25e7bb1",
+              "e53dca82e6c9d946a650bf453f48df0072221e10": "6a046b0a5e262c0c6a23851b810d7fe7eda251c4",
+              "dd025059d8fb6e134c45cb21a394349ea25e7bb1": "6a046b0a5e262c0c6a23851b810d7fe7eda251c4",
+              "b32e089caea772f166204fb1c7bcaad6f56942fe": "6a046b0a5e262c0c6a23851b810d7fe7eda251c4",
           }
           paths = [
               pathlib.Path("Cargo.toml"),
@@ -65,7 +66,7 @@ jobs:
               if path == pathlib.Path("Cargo.toml"):
                   text = text.replace(
                       "# Advance to the current admitted clients main. b32e089.. -> e53dca8.. changes\n# only client dependency manifests/locks and contract-admission workflows; no\n# SDK source files change across that producer range.\n",
-                      "# Candidate graph admission: pair the exact client head with the same\n# zed-interfaces and zed-lib authorities used by that client. Final promotion\n# repins this edge to the immutable merged client revision after #70 lands.\n",
+                      "# Unified graph admission: the merged client, direct interfaces crate,\n# and direct behavior crate all resolve through one immutable Rust type authority.\n",
                   )
               if text == original:
                   raise SystemExit(f"expected graph rewrite made no change to {path}")
