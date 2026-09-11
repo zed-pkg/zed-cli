@@ -3,6 +3,7 @@
 [env]
 dotenv = false
 files = []
+ignore = ["ZED_PKG_TOKEN"]
 
 [parse]
 command_env = "ZED_PKG_COMMAND"
