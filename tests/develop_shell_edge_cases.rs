@@ -419,8 +419,7 @@ exit 23
         .env("PATH", prepend_path(&bin))
         .env("ZED_TEST_NIX_ARGS", &args_log)
         .env("ZED_TEST_NIX_ENV", &env_log)
-        .arg("--token")
-        .arg(token)
+        .env("ZED_PKG_TOKEN", token)
         .args([
             "dev",
             "--no-install",
