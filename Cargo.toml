@@ -21,10 +21,6 @@ path = "src/bin/zed-gitops.rs"
 name = "zed-binary"
 path = "src/bin/zed-binary.rs"
 
-[[bin]]
-name = "zed-git-install"
-path = "src/bin/zed-git-install.rs"
-
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"
