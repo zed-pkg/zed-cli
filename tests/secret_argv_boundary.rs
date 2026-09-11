@@ -1,4 +1,5 @@
 use std::fs;
+use std::process::Command;
 
 const CLI_CONTRACTS: &[&str] = &[
     ".cli-flags.toml",
@@ -74,4 +75,23 @@ fn stdin_boolean_controls_remain_public_without_exposing_secret_values() {
         password_stdin.get("type").and_then(toml::Value::as_str),
         Some("bool")
     );
+}
+
+#[test]
+fn root_help_does_not_bypass_rejected_bearer_token_argv() {
+    let secret = "SYNTHETIC_BEARER_MUST_NOT_ECHO";
+    let output = Command::new(env!("CARGO_BIN_EXE_zed"))
+        .args(["--token", secret, "--help"])
+        .env_remove("ZED_PKG_TOKEN")
+        .output()
+        .expect("run zed with rejected bearer-token argv");
+
+    assert!(
+        !output.status.success(),
+        "--token must be rejected before root help can return success"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stdout.contains(secret), "secret leaked to stdout: {stdout}");
+    assert!(!stderr.contains(secret), "secret leaked to stderr: {stderr}");
 }
