@@ -2,9 +2,12 @@
 
 Every `zed-cli` pull request and `main` commit runs the reusable
 `zed-pkg-test/zed-pkg-e2e` candidate smoke workflow from an exact harness
-commit. The caller passes the exact CLI commit under test; the harness then
-builds that commit once and runs the stateless package lifecycle against its
-reviewed, commit-pinned fixture matrix.
+commit. The caller passes the exact CLI commit under test and the exact
+interface commit that candidate declares. Before compilation, the caller guard
+and reusable harness both require that interface revision to match
+`Cargo.toml and Cargo.lock`; the harness then builds the candidate once and runs
+the stateless package lifecycle against its reviewed, commit-pinned fixture
+matrix.
 
 The smoke workflow has read-only repository permissions, receives no secrets,
 and fails closed when a root or transitive fixture dependency lacks an exact
@@ -12,6 +15,17 @@ commit. It is the fast pre-merge regression gate for release planning,
 deterministic packing, `r2g`, dry-run and file-registry publication, discovery,
 copy-mode installation, frozen replay, yank/undo behavior, package fan-out,
 workspaces, vendoring boundaries, and non-package refusal.
+
+The four independently reviewed identities are explicit:
+
+- the exact CLI commit selected from the pull-request head or `main` commit;
+- the exact interface commit required by that CLI's Cargo manifest and lockfile;
+- the exact harness commit used as the reusable-workflow pin and `harness_ref`;
+- every exact fixture commit in the bounded matrix.
+
+A mutable reference, duplicate pin, mismatched interface tuple, write permission,
+secret inheritance, or missing fixture revision fails before package lifecycle
+commands execute.
 
 This gate does not replace full candidate certification. Changes affecting
 resolution, manifests or lockfiles, publishing, installation, registry or UI
