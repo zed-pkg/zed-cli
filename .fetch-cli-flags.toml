@@ -3,6 +3,7 @@
 # same typed FetchArgs definition used here.
 
 [env]
+dotenv = false
 files = []
 
 [parse]
