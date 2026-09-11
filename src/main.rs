@@ -183,7 +183,6 @@ fn root_global_option_takes_value(token: &str) -> bool {
     const OPTIONS: &[&str] = &[
         "--registry",
         "--home",
-        "--token",
         "--auth-url",
         "--supabase-url",
         "--supabase-key",
@@ -287,11 +286,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 native_manager,
             };
             if sync_git_submodules {
-                // Git synchronization mutates the submodule worktrees and must
-                // share one descriptor lifetime with manifest/lock resolution,
-                // materialization, adapter wiring, and Git-lock finalization.
-                // Resolve the superproject first so nested invocations and root
-                // invocations converge on one checkout-local ownership path.
                 let project = submodules::find_root(&cwd).unwrap_or_else(|| cwd.clone());
                 let operation = if frozen {
                     "synchronize Git submodules and restore frozen Zed dependency graph"
@@ -299,8 +293,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "synchronize Git submodules and install Zed dependency graph"
                 };
                 let _guard = zed_cli::project_lock::acquire(&project, operation)?;
-                // Close the journal-created-between-startup-and-lock window and
-                // recover a superproject journal when invoked below the root.
                 zed_cli::transaction::recover_pending(&project)?;
                 submodules::sync(&project)?;
                 managed_install::install_with_permissions(
