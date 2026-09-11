@@ -5,6 +5,7 @@
 [env]
 dotenv = false
 files = []
+ignore = ["ZED_PKG_TOKEN"]
 
 [parse]
 command_env = "ZED_PKG_COMMAND"
@@ -27,12 +28,6 @@ env = "ZED_PKG_HOME"
 aliases = ["home"]
 type = "string"
 help = "Zed home directory."
-
-[flags.token]
-env = "ZED_PKG_TOKEN"
-aliases = ["token"]
-type = "string"
-help = "Registry bearer token."
 
 [flags.auth_url]
 env = "ZED_PKG_AUTH_URL"
