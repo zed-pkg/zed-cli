@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
+use flags2env::BundledFlags2Env;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zed_interfaces::lockfile::Lockfile;
@@ -33,6 +34,7 @@ const PROFILES_DIR: &str = "profiles";
 const PROFILE_FILE: &str = ".zed-global-profile.json";
 const STATE_FILE: &str = "managed-bins.json";
 const LOCK_FILE: &str = ".lock";
+const GLOBAL_CONTRACT: &str = include_str!("../.global-cli-flags.toml");
 
 #[derive(Debug, Args)]
 struct GlobalArgs {
@@ -248,7 +250,52 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
     command.subcommand(global)
 }
 
+fn utf8_args(args: &[OsString]) -> Result<Vec<String>> {
+    args.iter()
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .context("flags-2-env requires UTF-8 command-line arguments")
+        })
+        .collect()
+}
+
+fn validate_global_flags(argv: &[String]) -> Result<()> {
+    let parser_argv: Vec<String> = argv
+        .iter()
+        .filter(|token| !matches!(token.as_str(), "--help" | "-h" | "--version" | "-V"))
+        .cloned()
+        .collect();
+    let parsed = parse_global_contract(&parser_argv)?;
+    if !parsed.unknown_options.is_empty() {
+        bail!("flags2env rejected unknown zed global option(s)");
+    }
+    if !parsed.errors.is_empty() {
+        bail!("flags2env rejected invalid zed global value(s)");
+    }
+    Ok(())
+}
+
+fn parse_global_contract(argv: &[String]) -> Result<flags2env::StructuredParse> {
+    let contract_dir = tempfile::tempdir().context("creating zed global flags2env directory")?;
+    let contract_path = contract_dir.path().join(".cli-flags.toml");
+    fs::write(&contract_path, GLOBAL_CONTRACT).context("writing embedded zed global contract")?;
+    let contract_path = contract_path
+        .to_str()
+        .context("embedded zed global contract path is not valid UTF-8")?;
+    let parser = BundledFlags2Env::new();
+    parser
+        .audit_config(Some(contract_path))
+        .map_err(|error| anyhow!("zed global flags2env audit failed: {error}"))?;
+    parser
+        .parse_structured(argv, Some(contract_path))
+        .map_err(|error| anyhow!("zed global flags2env parse failed: {error}"))
+}
+
 fn run_cli(args: Vec<OsString>) -> Result<i32> {
+    let string_args = utf8_args(&args)?;
+    validate_global_flags(&string_args)?;
     let cli = match GlobalCli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
