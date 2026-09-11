@@ -1,0 +1,242 @@
+name: Harden GitHub fallback admission
+
+on:
+  pull_request:
+    paths:
+      - src/source_fallback.rs
+      - .github/workflows/harden-github-fallback-admission.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref == 'fix/DEN-390-github-repo-fallback-identity')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Check out exact candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/DEN-390-github-repo-fallback-identity
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify exact triggering head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test -z "$(git status --porcelain)"
+
+      - name: Apply fail-closed admission repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/source_fallback.rs')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str, label: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+          '''    fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
+              self.fetch_manifest(identity, default_branch)
+                  .or_else(|_| self.fetch_manifest(identity, "main"))
+                  .or_else(|_| self.fetch_manifest(identity, "master"))
+          }
+          ''',
+          '''    fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
+              // Admission is bound to the repository's declared default branch.
+              // A stale `main`/`master` branch must never be allowed to self-claim
+              // a package when GitHub reports another branch as authoritative.
+              self.fetch_manifest(identity, default_branch)
+          }
+          ''',
+          'default-branch-only manifest admission')
+
+          replace_once(
+          '''#[derive(Debug, Deserialize)]
+          struct GithubRepositorySearch {
+              #[serde(default)]
+              items: Vec<GithubRepo>,
+          }
+
+          #[derive(Debug, Deserialize)]
+          struct GithubRepo {
+              #[serde(default = "default_branch")]
+              default_branch: String,
+              #[serde(default)]
+              html_url: String,
+          }
+          ''',
+          '''#[derive(Debug, Deserialize)]
+          struct GithubRepositorySearch {
+              total_count: usize,
+              items: Vec<GithubRepo>,
+          }
+
+          #[derive(Debug, Deserialize)]
+          struct GithubRepo {
+              default_branch: String,
+              #[serde(default)]
+              html_url: String,
+          }
+          ''',
+          'search/repository decode contract')
+
+          replace_once(
+          '''        let search: GithubRepositorySearch = response
+              .json()
+              .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
+
+          let mut matches = Vec::new();
+          for repo in search.items.into_iter().take(MAX_GITHUB_REPO_CANDIDATES) {
+          ''',
+          '''        let search: GithubRepositorySearch = response
+              .json()
+              .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
+          if !github_search_result_is_complete(&search) {
+              bail!(
+                  "GitHub repository search for {org}/{name} returned total_count={} with {} item(s); bounded admission requires a complete result set of at most {} candidates",
+                  search.total_count,
+                  search.items.len(),
+                  MAX_GITHUB_REPO_CANDIDATES
+              );
+          }
+
+          let mut matches = Vec::new();
+          for repo in search.items {
+          ''',
+          'complete bounded search admission')
+
+          replace_once(
+          '''        let repo: GithubRepo = self.github_repo(&identity).unwrap_or(GithubRepo {
+              default_branch: "main".to_string(),
+              html_url: identity.web_url(),
+          });
+          ''',
+          '''        let repo = self.github_repo(&identity)?;
+          ''',
+          'repo metadata fail-closed')
+
+          replace_once(
+          '''fn default_branch() -> String {
+              "main".to_string()
+          }
+
+          ''',
+          '',
+          'remove synthetic default branch')
+
+          anchor = '''fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
+              left.owner.eq_ignore_ascii_case(&right.owner) && left.repo.eq_ignore_ascii_case(&right.repo)
+          }
+          '''
+          helper = '''fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
+              left.owner.eq_ignore_ascii_case(&right.owner) && left.repo.eq_ignore_ascii_case(&right.repo)
+          }
+
+          fn github_search_result_is_complete(search: &GithubRepositorySearch) -> bool {
+              search.total_count <= MAX_GITHUB_REPO_CANDIDATES
+                  && search.items.len() == search.total_count
+          }
+          '''
+          replace_once(anchor, helper, 'bounded search helper')
+
+          tests = r'''
+
+              #[test]
+              fn repository_search_admission_requires_complete_bounded_results() {
+                  let repo = |suffix: usize| GithubRepo {
+                      default_branch: "main".into(),
+                      html_url: format!("https://github.com/acme/http-kit-{suffix}"),
+                  };
+                  let complete = GithubRepositorySearch {
+                      total_count: MAX_GITHUB_REPO_CANDIDATES,
+                      items: (0..MAX_GITHUB_REPO_CANDIDATES).map(repo).collect(),
+                  };
+                  assert!(github_search_result_is_complete(&complete));
+
+                  let truncated = GithubRepositorySearch {
+                      total_count: MAX_GITHUB_REPO_CANDIDATES + 1,
+                      items: (0..MAX_GITHUB_REPO_CANDIDATES).map(repo).collect(),
+                  };
+                  assert!(!github_search_result_is_complete(&truncated));
+
+                  let incomplete = GithubRepositorySearch {
+                      total_count: 2,
+                      items: vec![repo(0)],
+                  };
+                  assert!(!github_search_result_is_complete(&incomplete));
+              }
+
+              #[test]
+              fn github_repo_decode_requires_reported_default_branch() {
+                  let missing = serde_json::from_str::<GithubRepo>(
+                      r#"{"html_url":"https://github.com/acme/http-kit"}"#,
+                  );
+                  assert!(missing.is_err());
+
+                  let present = serde_json::from_str::<GithubRepo>(
+                      r#"{"default_branch":"trunk","html_url":"https://github.com/acme/http-kit"}"#,
+                  )
+                  .unwrap();
+                  assert_eq!(present.default_branch, "trunk");
+              }
+          '''
+          pos = text.rfind('\n}')
+          if pos < 0:
+              raise SystemExit('could not find tests module closing brace')
+          text = text[:pos] + tests + text[pos:]
+          path.write_text(text)
+          PY
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt,clippy
+
+      - name: Prove focused and repository-wide Rust gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked source_fallback
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Require source-only repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          changed="$(git status --porcelain | awk '{print $2}')"
+          test "$changed" = "src/source_fallback.rs"
+          ! grep -F '.or_else(|_| self.fetch_manifest(identity, "main"))' src/source_fallback.rs >/dev/null
+          ! grep -F '.take(MAX_GITHUB_REPO_CANDIDATES)' src/source_fallback.rs >/dev/null
+          ! grep -F '#[serde(default = "default_branch")]' src/source_fallback.rs >/dev/null
+          grep -F 'total_count: usize' src/source_fallback.rs >/dev/null
+
+      - name: Commit reviewed admission repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/source_fallback.rs
+          git commit -m 'fix(DEN-390): fail closed on incomplete GitHub identity evidence'
+          git push origin HEAD:fix/DEN-390-github-repo-fallback-identity
