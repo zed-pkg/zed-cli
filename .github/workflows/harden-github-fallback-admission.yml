@@ -42,6 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import re
           from pathlib import Path
 
           path = Path("src/source_fallback.rs")
@@ -53,6 +54,12 @@ jobs:
               if count != 1:
                   raise SystemExit(f"{label}: expected exactly one match, found {count}")
               text = text.replace(old, new, 1)
+
+          def regex_once(pattern: str, new: str, label: str) -> None:
+              global text
+              text, count = re.subn(pattern, new, text, count=1, flags=re.MULTILINE)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
 
           replace_once(
               '''        self.fetch_manifest(identity, default_branch)
@@ -116,11 +123,8 @@ jobs:
               "complete bounded search admission",
           )
 
-          replace_once(
-              '''        let repo: GithubRepo = self.github_repo(&identity).unwrap_or(GithubRepo {
-              default_branch: "main".to_string(),
-              html_url: identity.web_url(),
-          });''',
+          regex_once(
+              r'''(?ms)^        let repo: GithubRepo = self\.github_repo\(&identity\)\.unwrap_or\(GithubRepo \{\s*default_branch: "main"\.to_string\(\),\s*html_url: identity\.web_url\(\),\s*\}\);''',
               '''        let repo = self.github_repo(&identity)?;''',
               "repo metadata fail-closed",
           )
@@ -180,12 +184,12 @@ jobs:
               #[test]
               fn github_repo_decode_requires_reported_default_branch() {
                   let missing = serde_json::from_str::<GithubRepo>(
-                      r#"{\"html_url\":\"https://github.com/acme/http-kit\"}"#,
+                      r#"{"html_url":"https://github.com/acme/http-kit"}"#,
                   );
                   assert!(missing.is_err());
 
                   let present = serde_json::from_str::<GithubRepo>(
-                      r#"{\"default_branch\":\"trunk\",\"html_url\":\"https://github.com/acme/http-kit\"}"#,
+                      r#"{"default_branch":"trunk","html_url":"https://github.com/acme/http-kit"}"#,
                   )
                   .unwrap();
                   assert_eq!(present.default_branch, "trunk");
