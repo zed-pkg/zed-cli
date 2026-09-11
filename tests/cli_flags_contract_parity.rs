@@ -136,10 +136,7 @@ fn scope_matching_accepts_ancestors_but_not_siblings() {
 
     assert!(scope_is_ancestor_or_same(&release, &release_plan));
     assert!(!scope_is_ancestor_or_same(&release_plan, &release));
-    assert!(!scope_is_ancestor_or_same(
-        &release_plan,
-        &release_publish
-    ));
+    assert!(!scope_is_ancestor_or_same(&release_plan, &release_publish));
 }
 
 #[test]
@@ -168,8 +165,8 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
     let mut contract_flags = Vec::new();
     for path in paths {
         let display = path.display().to_string();
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("read {display}: {error}"));
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {display}: {error}"));
         let document: Value =
             toml::from_str(&source).unwrap_or_else(|error| panic!("parse {display}: {error}"));
         let root = document
