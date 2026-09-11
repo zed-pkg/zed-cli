@@ -77,27 +77,69 @@ fn stdin_boolean_controls_remain_public_without_exposing_secret_values() {
     );
 }
 
-#[test]
-fn root_help_does_not_bypass_rejected_bearer_token_argv() {
-    let secret = "SYNTHETIC_BEARER_MUST_NOT_ECHO";
+fn assert_secret_argv_rejected(args: &[String], secret: &str, env: &str, option: &str) {
     let output = Command::new(env!("CARGO_BIN_EXE_zed"))
-        .args(["--token", secret, "--help"])
-        .env_remove("ZED_PKG_TOKEN")
+        .args(args)
+        .env_remove(env)
         .output()
-        .expect("run zed with rejected bearer-token argv");
+        .unwrap_or_else(|error| panic!("run zed with rejected {option} argv: {error}"));
 
     assert!(
         !output.status.success(),
-        "--token must be rejected before root help can return success"
+        "{option} must be rejected before an early dispatch can return success"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stdout.contains(secret),
-        "secret leaked to stdout: {stdout}"
+        "secret leaked to stdout for {option}: {stdout}"
     );
     assert!(
         !stderr.contains(secret),
-        "secret leaked to stderr: {stderr}"
+        "secret leaked to stderr for {option}: {stderr}"
     );
+}
+
+#[test]
+fn early_dispatch_does_not_bypass_rejected_secret_argv() {
+    let token = "SYNTHETIC_BEARER_MUST_NOT_ECHO";
+    let password = "SYNTHETIC_PASSWORD_MUST_NOT_ECHO";
+
+    let cases = [
+        (
+            vec!["--token".to_string(), token.to_string(), "--help".to_string()],
+            token,
+            "ZED_PKG_TOKEN",
+            "--token",
+        ),
+        (
+            vec![format!("--token={token}"), "--help".to_string()],
+            token,
+            "ZED_PKG_TOKEN",
+            "--token",
+        ),
+        (
+            vec![
+                "--zed-pkg-auth-password".to_string(),
+                password.to_string(),
+                "--help".to_string(),
+            ],
+            password,
+            "ZED_PKG_AUTH_PASSWORD",
+            "--zed-pkg-auth-password",
+        ),
+        (
+            vec![
+                format!("--zed-pkg-auth-password={password}"),
+                "--help".to_string(),
+            ],
+            password,
+            "ZED_PKG_AUTH_PASSWORD",
+            "--zed-pkg-auth-password",
+        ),
+    ];
+
+    for (args, secret, env, option) in cases {
+        assert_secret_argv_rejected(&args, secret, env, option);
+    }
 }
