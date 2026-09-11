@@ -92,8 +92,7 @@ fn collect_contract(
 fn contract_scope_applies(contract_path: &[String], clap_path: &[String]) -> bool {
     contract_path.is_empty()
         || contract_path == clap_path
-        || (contract_path.len() < clap_path.len()
-            && clap_path.starts_with(contract_path))
+        || (contract_path.len() < clap_path.len() && clap_path.starts_with(contract_path))
 }
 
 #[test]
