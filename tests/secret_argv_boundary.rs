@@ -107,7 +107,11 @@ fn early_dispatch_does_not_bypass_rejected_secret_argv() {
 
     let cases = [
         (
-            vec!["--token".to_string(), token.to_string(), "--help".to_string()],
+            vec![
+                "--token".to_string(),
+                token.to_string(),
+                "--help".to_string(),
+            ],
             token,
             "ZED_PKG_TOKEN",
             "--token",
