@@ -92,6 +92,12 @@ fn root_help_does_not_bypass_rejected_bearer_token_argv() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stdout.contains(secret), "secret leaked to stdout: {stdout}");
-    assert!(!stderr.contains(secret), "secret leaked to stderr: {stderr}");
+    assert!(
+        !stdout.contains(secret),
+        "secret leaked to stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains(secret),
+        "secret leaked to stderr: {stderr}"
+    );
 }
