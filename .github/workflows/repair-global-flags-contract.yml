@@ -1,0 +1,90 @@
+name: Wire global flags contract
+
+on:
+  pull_request:
+    paths:
+      - .global-cli-flags.toml
+      - src/global_flags.rs
+      - src/global.rs
+      - src/lib.rs
+      - .github/workflows/repair-global-flags-contract.yml
+  push:
+    branches:
+      - den-390-global-flags-contract-20260911
+
+# Temporary branch-only migration helper. Delete before merge.
+permissions:
+  contents: write
+
+jobs:
+  wire:
+    if: github.ref_name == 'den-390-global-flags-contract-20260911' || github.head_ref == 'den-390-global-flags-contract-20260911'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: den-390-global-flags-contract-20260911
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Wire admission at the modular boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          lib = Path('src/lib.rs')
+          text = lib.read_text()
+          old = 'pub mod global;\npub mod graph_export;'
+          new = 'pub mod global;\npub(crate) mod global_flags;\npub mod graph_export;'
+          if text.count(old) != 1:
+              raise SystemExit('expected one global module boundary in src/lib.rs')
+          lib.write_text(text.replace(old, new, 1))
+
+          global_rs = Path('src/global.rs')
+          text = global_rs.read_text()
+          old = 'fn run_cli(args: Vec<OsString>) -> Result<i32> {\n    let cli = match GlobalCli::try_parse_from(args) {'
+          new = 'fn run_cli(args: Vec<OsString>) -> Result<i32> {\n    crate::global_flags::validate(&args)?;\n\n    let cli = match GlobalCli::try_parse_from(args) {'
+          if text.count(old) != 1:
+              raise SystemExit('expected one global run_cli boundary')
+          global_rs.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Install exact repository Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(sed -n 's/^channel = "\([^"]*\)"/\1/p' rust-toolchain.toml)"
+          test -n "$toolchain"
+          rustup toolchain install "$toolchain" --component rustfmt --component clippy --profile minimal --no-self-update
+          rustup default "$toolchain"
+
+      - name: Certify contract and runtime wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          cargo test --locked global_flags
+          cargo test --locked global::tests
+          cargo clippy --locked --all-targets -- -D warnings
+          git diff --check
+          mapfile -t changed < <(git status --porcelain | awk '{print $2}' | sort)
+          expected=(src/global.rs src/lib.rs)
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for i in "${!expected[@]}"; do test "${changed[$i]}" = "${expected[$i]}"; done
+          grep -F 'crate::global_flags::validate(&args)?;' src/global.rs >/dev/null
+          grep -F 'pub(crate) mod global_flags;' src/lib.rs >/dev/null
+
+      - name: Commit reviewed runtime wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/global.rs src/lib.rs
+          git commit -m 'feat(DEN-390): enforce global flags contract before mutation'
+          git push origin HEAD:den-390-global-flags-contract-20260911
