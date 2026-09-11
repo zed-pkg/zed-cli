@@ -48,20 +48,44 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out exact export-plan candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          components: rustfmt,clippy
+      - name: Verify exact export-plan candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Verify immutable interface pin
+      - name: Resolve repository-declared Rust toolchain
+        id: rust-toolchain
         shell: bash
         run: |
           set -euo pipefail
-          grep -F 'rev = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c"' Cargo.toml
-          grep -F '#0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c' Cargo.lock
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          with open('rust-toolchain.toml', 'rb') as source:
+              channel = tomllib.load(source)['toolchain']['channel']
+          if not isinstance(channel, str) or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', channel) is None:
+              raise SystemExit(f'Rust toolchain must be an immutable version, got {channel!r}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'channel={channel}\n')
+          PY
+
+      - name: Install repository-declared Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: rustfmt,clippy
+
+      - name: Verify admitted package graph authorities
+        shell: bash
+        run: bash scripts/validate-zed-package-graph.sh
 
       - name: Check formatting and warnings
         run: |
