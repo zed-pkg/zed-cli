@@ -194,7 +194,11 @@ fn clap_and_cli_flags_contract_do_not_drift() {
             ));
             continue;
         }
-        if !flag.aliases.iter().any(|alias| clap_longs.contains(alias.as_str())) {
+        if !flag
+            .aliases
+            .iter()
+            .any(|alias| clap_longs.contains(alias.as_str()))
+        {
             failures.push(format!(
                 "contract flag `{}` at `{}` has aliases {:?}, none of which exist in the typed Clap model",
                 flag.name,
