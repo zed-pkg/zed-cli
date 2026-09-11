@@ -1944,7 +1944,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -2179,8 +2179,8 @@ dependencies = [
  "uuid",
  "walkdir",
  "zed-client",
- "zed-interfaces",
- "zed-lib",
+ "zed-interfaces 0.1.0 (git+https://github.com/zed-pkg/zed-interfaces.git?rev=3c54298fc7a8c1b2f9c1d74f588c6118b38f197e)",
+ "zed-lib 0.1.0 (git+https://github.com/zed-pkg/zed-lib-core.git?rev=eac0878750332b031bc12f6040b6a795a17e7417)",
  "zed-lock",
  "zip",
 ]
@@ -2188,7 +2188,7 @@ dependencies = [
 [[package]]
 name = "zed-client"
 version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-clients.git?rev=b32e089caea772f166204fb1c7bcaad6f56942fe#b32e089caea772f166204fb1c7bcaad6f56942fe"
+source = "git+https://github.com/zed-pkg/zed-clients.git?rev=e53dca82e6c9d946a650bf453f48df0072221e10#e53dca82e6c9d946a650bf453f48df0072221e10"
 dependencies = [
  "hex",
  "percent-encoding",
@@ -2197,8 +2197,8 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
- "zed-interfaces",
- "zed-lib",
+ "zed-interfaces 0.1.0 (git+https://github.com/zed-pkg/zed-interfaces.git?rev=d11322f06ca6930ddcc34a745b4ef01e0b2bddc1)",
+ "zed-lib 0.1.0 (git+https://github.com/zed-pkg/zed-lib-core.git?rev=c8af76191f50ad7a177eb68740e69bdfaa652ff6)",
 ]
 
 [[package]]
@@ -2218,12 +2218,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "zed-interfaces"
+version = "0.1.0"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=d11322f06ca6930ddcc34a745b4ef01e0b2bddc1#d11322f06ca6930ddcc34a745b4ef01e0b2bddc1"
+dependencies = [
+ "bs58",
+ "hex",
+ "schemars",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "toml",
+]
+
+[[package]]
+name = "zed-lib"
+version = "0.1.0"
+source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=c8af76191f50ad7a177eb68740e69bdfaa652ff6#c8af76191f50ad7a177eb68740e69bdfaa652ff6"
+dependencies = [
+ "thiserror 2.0.20",
+ "zed-interfaces 0.1.0 (git+https://github.com/zed-pkg/zed-interfaces.git?rev=d11322f06ca6930ddcc34a745b4ef01e0b2bddc1)",
+]
+
+[[package]]
 name = "zed-lib"
 version = "0.1.0"
 source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=eac0878750332b031bc12f6040b6a795a17e7417#eac0878750332b031bc12f6040b6a795a17e7417"
 dependencies = [
  "thiserror 2.0.20",
- "zed-interfaces",
+ "zed-interfaces 0.1.0 (git+https://github.com/zed-pkg/zed-interfaces.git?rev=3c54298fc7a8c1b2f9c1d74f588c6118b38f197e)",
 ]
 
 [[package]]
