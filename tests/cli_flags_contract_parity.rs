@@ -36,6 +36,14 @@ fn contract_paths() -> Vec<PathBuf> {
     paths
 }
 
+fn root_command_contract(root: &toml::map::Map<String, Value>) -> bool {
+    root.get("parse")
+        .and_then(Value::as_table)
+        .and_then(|parse| parse.get("command_env"))
+        .and_then(Value::as_str)
+        == Some("ZED_PKG_COMMAND")
+}
+
 fn collect_clap(
     command: &Command,
     path: &mut Vec<String>,
@@ -141,11 +149,11 @@ fn scope_matching_accepts_ancestors_but_not_siblings() {
 
 #[test]
 fn public_cli_is_owned_by_repository_flags_contracts() {
-    // The public CLI is intentionally composed from the core parser and
-    // modular command families. Some modules own dedicated flags2env contracts
-    // (`develop`, `fetch`, Nix interop, task/tool), so parity must be checked
-    // against the union of repository-owned contracts rather than forcing all
-    // surfaces into `.cli-flags.toml`.
+    // The public `zed` CLI is intentionally composed from the core parser and
+    // modular command families. Only contracts whose parser exports
+    // `ZED_PKG_COMMAND` belong to that root command namespace. Helper binaries
+    // such as `zed-task` and `zed-tool` own independent `ZED_TASK_COMMAND` /
+    // `ZED_TOOL_COMMAND` namespaces and must not be projected onto root `zed`.
     let mut clap_commands = BTreeSet::new();
     let mut clap_args = Vec::new();
     collect_clap(
@@ -163,6 +171,8 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
 
     let mut contract_commands = BTreeSet::new();
     let mut contract_flags = Vec::new();
+    let mut root_contract_count = 0usize;
+    let mut helper_contract_count = 0usize;
     for path in paths {
         let display = path.display().to_string();
         let source =
@@ -172,6 +182,11 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
         let root = document
             .as_table()
             .unwrap_or_else(|| panic!("{display} root must be a TOML table"));
+        if !root_command_contract(root) {
+            helper_contract_count += 1;
+            continue;
+        }
+        root_contract_count += 1;
         collect_contract(
             &display,
             root,
@@ -180,19 +195,27 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
             &mut contract_flags,
         );
     }
+    assert!(
+        root_contract_count >= 4,
+        "expected root plus modular ZED_PKG_COMMAND contracts"
+    );
+    assert!(
+        helper_contract_count >= 2,
+        "expected independent helper-binary flags2env namespaces"
+    );
 
     let mut failures = Vec::new();
 
-    // Every explicitly modeled contract command must still exist publicly.
+    // Every explicitly modeled root-contract command must still exist publicly.
     for command in &contract_commands {
         if !clap_commands.contains(command) {
             failures.push(format!(
-                "flags2env contract command `{command}` is not present in the complete public Clap model"
+                "root flags2env contract command `{command}` is not present in the complete public Clap model"
             ));
         }
     }
 
-    // A contract command owns its public subtree. This allows intentionally
+    // A root contract command owns its public subtree. This allows intentionally
     // coarser modular contracts such as `interop` to govern nested Nix command
     // paths without pretending the core root contract owns every public family.
     for command in &clap_commands {
@@ -203,7 +226,7 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
         });
         if !owned {
             failures.push(format!(
-                "public Clap command `{command}` has no repository-owned flags2env contract"
+                "public Clap command `{command}` has no repository-owned ZED_PKG_COMMAND flags2env contract"
             ));
         }
     }
@@ -234,7 +257,7 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
             })
             .collect::<Vec<_>>();
         failures.push(format!(
-            "public Clap option `--{}` at `{}` has no matching root/ancestor/same-scope repository flags2env spelling; elsewhere={same_spelling_elsewhere:?}",
+            "public Clap option `--{}` at `{}` has no matching root/ancestor/same-scope ZED_PKG_COMMAND flags2env spelling; elsewhere={same_spelling_elsewhere:?}",
             arg.long,
             if arg.path.is_empty() {
                 "<root>".to_owned()
