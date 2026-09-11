@@ -61,18 +61,33 @@ flags_contract = tomllib.loads((root / ".cli-flags.toml").read_text(encoding="ut
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
 
+# Public Rust model/behavior crates are nominal authorities. A lockfile that
+# resolves more than one Git source identity for either crate can compile deep
+# into the graph and then fail with misleading E0308 mismatched-type errors.
+lock_doc = tomllib.loads(cargo_lock)
+for public_crate in ("zed-interfaces", "zed-lib"):
+    sources = {
+        package.get("source")
+        for package in lock_doc.get("package", [])
+        if package.get("name") == public_crate and package.get("source")
+    }
+    if len(sources) != 1:
+        errors.append(
+            f"Cargo.lock must resolve exactly one {public_crate} Git source identity; got {sorted(sources)}"
+        )
+
 expected_sources = {
     "zed-interfaces": (
         "https://github.com/zed-pkg/zed-interfaces.git",
-        "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e",
+        "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c",
     ),
     "zed-client": (
         "https://github.com/zed-pkg/zed-clients.git",
-        "e53dca82e6c9d946a650bf453f48df0072221e10",
+        "6a046b0a5e262c0c6a23851b810d7fe7eda251c4",
     ),
     "zed-lib": (
         "https://github.com/zed-pkg/zed-lib-core.git",
-        "eac0878750332b031bc12f6040b6a795a17e7417",
+        "4509f19e1d3242226f28f842f550085864582380",
     ),
     "zed-lock": (
         "https://github.com/zed-pkg/zed-lock.git",
