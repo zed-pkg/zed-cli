@@ -129,6 +129,29 @@ fn flag_scope_applies(contract_path: &[String], clap_path: &[String]) -> bool {
         || (contract_path.len() < clap_path.len() && clap_path.starts_with(contract_path))
 }
 
+fn non_flags2env_top_level_commands() -> BTreeSet<String> {
+    // External sibling executables are rendered into root help/completions but
+    // own their own argv/parser process, so they are not part of the root
+    // ZED_PKG_COMMAND contract. Derive that set from the same augmentation API
+    // used by production help rather than hard-coding command names here.
+    let external = zed_cli::external_subcommands::augment_root_command(Command::new("zed"));
+    let mut commands = external
+        .get_subcommands()
+        .map(|command| command.get_name().to_owned())
+        .collect::<BTreeSet<_>>();
+
+    // Inspect is intentionally dispatched inside cli_model::prepare_environment
+    // before shared-auth, flags2env environment publication, or mutable project
+    // setup. Its read-only parser is therefore a distinct early-admission
+    // boundary, not a root flags2env-owned command family.
+    commands.insert(zed_cli::inspect::command().get_name().to_owned());
+    commands
+}
+
+fn path_is_outside_root_flags2env(path: &[String], excluded: &BTreeSet<String>) -> bool {
+    path.first().is_some_and(|name| excluded.contains(name))
+}
+
 #[test]
 fn scope_matching_accepts_ancestors_but_not_siblings() {
     let release = vec!["release".to_owned()];
@@ -162,6 +185,13 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
         &mut clap_commands,
         &mut clap_args,
     );
+
+    let excluded = non_flags2env_top_level_commands();
+    clap_commands.retain(|command| {
+        let path = command.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        !path_is_outside_root_flags2env(&path, &excluded)
+    });
+    clap_args.retain(|arg| !path_is_outside_root_flags2env(&arg.path, &excluded));
 
     let paths = contract_paths();
     assert!(
