@@ -4,11 +4,14 @@
 //! the registry graph endpoints. It never resolves a mutable version, rewrites
 //! a graph, or treats a convenience projection as lockfile authority.
 
+use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, Parser, Subcommand};
+use flags2env::BundledFlags2Env;
 use serde::Serialize;
 
 use crate::cli::Globals;
@@ -25,6 +28,7 @@ use format::GraphFormat;
 const DEFAULT_MAX_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ALLOWED_BYTES: u64 = 1024 * 1024 * 1024;
 const DOWNLOAD_SCHEMA: &str = "zed.graph-package-download/v1";
+const GRAPH_CONTRACT: &str = include_str!("../.graph-cli-flags.toml");
 
 #[derive(Debug, Clone, Args)]
 pub struct PackageGraphArgs {
@@ -153,6 +157,10 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
 }
 
 fn run_cli(args: Vec<OsString>) -> Result<i32> {
+    let string_args = utf8_args(&args)?;
+    normalize_boolean_environment()?;
+    validate_graph_flags(&string_args)?;
+
     let cli = match GraphCli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
@@ -286,9 +294,111 @@ fn global_option_takes_value(token: &str) -> bool {
     })
 }
 
+fn utf8_args(args: &[OsString]) -> Result<Vec<String>> {
+    args.iter()
+        .map(|value| {
+            value
+                .to_str()
+                .map(str::to_owned)
+                .context("flags-2-env requires UTF-8 command-line arguments")
+        })
+        .collect()
+}
+
+fn validate_graph_flags(argv: &[String]) -> Result<()> {
+    let parser_argv = argv
+        .iter()
+        .filter(|token| !matches!(token.as_str(), "--help" | "-h" | "--version" | "-V"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let parsed = parse_embedded(&parser_argv)?;
+    if !parsed.unknown_options.is_empty() {
+        bail!(
+            "flags2env rejected unknown zed graph option(s): {}",
+            parsed
+                .unknown_options
+                .iter()
+                .map(|value| redact_option_value(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if !parsed.errors.is_empty() {
+        bail!(
+            "flags2env rejected invalid zed graph value(s): {}",
+            parsed
+                .errors
+                .iter()
+                .map(|value| redact_option_value(value))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+    Ok(())
+}
+
+fn parse_embedded(argv: &[String]) -> Result<flags2env::StructuredParse> {
+    let contract_dir = tempfile::tempdir().context("creating zed graph flags2env directory")?;
+    let contract_path = contract_dir.path().join(".cli-flags.toml");
+    fs::write(&contract_path, GRAPH_CONTRACT).context("writing embedded zed graph contract")?;
+    let contract_path = contract_path
+        .to_str()
+        .context("embedded zed graph contract path is not valid UTF-8")?;
+
+    let parser = BundledFlags2Env::new();
+    parser
+        .audit_config(Some(contract_path))
+        .map_err(|error| anyhow::anyhow!("zed graph flags2env audit failed: {error}"))?;
+    parser
+        .parse_structured(argv, Some(contract_path))
+        .map_err(|error| anyhow::anyhow!("zed graph flags2env parse failed: {error}"))
+}
+
+fn normalize_boolean_environment() -> Result<()> {
+    for key in [
+        "ZED_PKG_INTERACTIVE",
+        "ZED_PKG_GIT_SUBMODULES",
+        "ZED_PKG_NO_MIRRORS",
+        "ZED_PKG_TRUST_MIRROR_METADATA",
+        "ZED_PKG_SOURCE_FALLBACK",
+        "ZED_PKG_GRAPH_METADATA_JSON",
+    ] {
+        let Some(raw) = env::var_os(key) else {
+            continue;
+        };
+        let raw = raw
+            .to_str()
+            .with_context(|| format!("boolean environment variable `{key}` is not UTF-8"))?;
+        let normalized = match raw.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" | "on" => "true",
+            "false" | "0" | "no" | "off" => "false",
+            _ => bail!(
+                "boolean environment variable `{key}` must be true/false, 1/0, yes/no, or on/off"
+            ),
+        };
+        if raw != normalized {
+            // SAFETY: modular graph dispatch runs at process startup before
+            // worker threads, matching the existing fetch/develop boundary.
+            unsafe { env::set_var(key, normalized) };
+        }
+    }
+    Ok(())
+}
+
+fn redact_option_value(value: &str) -> String {
+    match value.split_once('=') {
+        Some((option, _)) if option.starts_with('-') => format!("{option}=<redacted>"),
+        _ => value.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn string_argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
 
     #[test]
     fn route_detects_graph_and_help_without_stealing_existing_commands() {
@@ -309,5 +419,40 @@ mod tests {
             Route::GraphHelp { help_index: 3 }
         );
         assert_eq!(route(&argv(&["zed", "task", "graph"])), Route::Existing);
+    }
+
+    #[test]
+    fn embedded_graph_contract_is_fail_closed_and_accepts_public_options() {
+        let parsed = parse_embedded(&string_argv(&[
+            "zed",
+            "graph",
+            "package",
+            "acme/pkg@1.0.0",
+            "--format",
+            "json",
+            "--output",
+            "graph.json",
+            "--etag",
+            "\"abc\"",
+            "--max-bytes",
+            "4096",
+            "--metadata-json",
+        ]))
+        .expect("graph flags contract should parse its public command surface");
+        assert!(parsed.unknown_options.is_empty());
+        assert!(parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn embedded_graph_contract_rejects_unknown_options() {
+        let parsed = parse_embedded(&string_argv(&[
+            "zed",
+            "graph",
+            "package",
+            "acme/pkg@1.0.0",
+            "--not-a-graph-option",
+        ]))
+        .expect("flags2env should return structured rejection evidence");
+        assert!(!parsed.unknown_options.is_empty() || !parsed.errors.is_empty());
     }
 }
