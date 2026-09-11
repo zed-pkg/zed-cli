@@ -109,7 +109,10 @@ impl CommitRange {
 
 fn validate_sha(value: &str) -> Result<()> {
     ensure!(
-        value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+        value.len() == 40
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
         "Shared Auth compatibility revision must be a 40-character lowercase hexadecimal commit SHA"
     );
     Ok(())
@@ -148,7 +151,10 @@ struct TwoFactorPolicy {
 impl TwoFactorPolicy {
     fn validate(&self) -> Result<()> {
         if let Some(required) = self.required {
-            ensure!(required, "zed-cli Shared Auth policy may not disable required two-factor authentication");
+            ensure!(
+                required,
+                "zed-cli Shared Auth policy may not disable required two-factor authentication"
+            );
         }
         validate_unique_nonempty(self.methods.as_deref(), "two-factor methods")
     }
@@ -241,7 +247,9 @@ impl StylingPolicy {
             ensure!(
                 accent_color.len() == 7
                     && accent_color.starts_with('#')
-                    && accent_color[1..].bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    && accent_color[1..]
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit()),
                 "Shared Auth accent_color must be #RRGGBB"
             );
         }
@@ -266,7 +274,10 @@ where
     };
     ensure!(!values.is_empty(), "{label} may not be empty");
     let unique = values.iter().copied().collect::<BTreeSet<_>>();
-    ensure!(unique.len() == values.len(), "{label} may not contain duplicates");
+    ensure!(
+        unique.len() == values.len(),
+        "{label} may not contain duplicates"
+    );
     Ok(())
 }
 
@@ -295,7 +306,10 @@ mod tests {
 
     #[test]
     fn unknown_fields_fail_closed() {
-        let text = POLICY.replace("schema_version = 1", "schema_version = 1\nsecret = \"not-policy\"");
+        let text = POLICY.replace(
+            "schema_version = 1",
+            "schema_version = 1\nsecret = \"not-policy\"",
+        );
         assert!(toml::from_str::<SharedAuthPolicy>(&text).is_err());
     }
 
@@ -304,10 +318,16 @@ mod tests {
         let wrong_repo = POLICY.replace(INTERFACES_REPOSITORY, "https://github.com/example/other");
         assert!(parse(&wrong_repo).is_err());
 
-        let wrong_revision = POLICY.replace(INTERFACES_REVISION, "0123456789abcdef0123456789abcdef01234567");
+        let wrong_revision = POLICY.replace(
+            INTERFACES_REVISION,
+            "0123456789abcdef0123456789abcdef01234567",
+        );
         assert!(parse(&wrong_revision).is_err());
 
-        let uppercase_revision = POLICY.replace(INTERFACES_REVISION, &INTERFACES_REVISION.to_ascii_uppercase());
+        let uppercase_revision = POLICY.replace(
+            INTERFACES_REVISION,
+            &INTERFACES_REVISION.to_ascii_uppercase(),
+        );
         assert!(parse(&uppercase_revision).is_err());
     }
 
@@ -337,7 +357,8 @@ mod tests {
         let bad_color = POLICY.replace("#4F46E5", "purple");
         assert!(parse(&bad_color).is_err());
 
-        let empty_brand = POLICY.replace("brand_name = \"Zed Package Manager\"", "brand_name = \"\"");
+        let empty_brand =
+            POLICY.replace("brand_name = \"Zed Package Manager\"", "brand_name = \"\"");
         assert!(parse(&empty_brand).is_err());
     }
 }
