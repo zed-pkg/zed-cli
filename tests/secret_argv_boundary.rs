@@ -55,6 +55,40 @@ fn secret_values_are_not_public_flags_in_any_cli_contract() {
 }
 
 #[test]
+fn env_only_secret_names_remain_explicitly_auditable() {
+    let expected = [
+        (
+            ".cli-flags.toml",
+            &["ZED_PKG_TOKEN", "ZED_PKG_AUTH_PASSWORD"][..],
+        ),
+        (".dev-cli-flags.toml", &["ZED_PKG_TOKEN"][..]),
+        (".fetch-cli-flags.toml", &["ZED_PKG_TOKEN"][..]),
+        (".nix-interop-cli-flags.toml", &["ZED_PKG_TOKEN"][..]),
+    ];
+
+    for (file, required) in expected {
+        let text =
+            fs::read_to_string(file).unwrap_or_else(|error| panic!("reading {file}: {error}"));
+        let doc: toml::Value =
+            toml::from_str(&text).unwrap_or_else(|error| panic!("parsing {file}: {error}"));
+        let ignored = doc
+            .get("env")
+            .and_then(|env| env.get("ignore"))
+            .and_then(toml::Value::as_array)
+            .unwrap_or_else(|| panic!("{file} must declare [env].ignore for env-only secrets"));
+
+        for secret_env in required {
+            assert!(
+                ignored
+                    .iter()
+                    .any(|value| value.as_str() == Some(*secret_env)),
+                "{file} must inventory env-only secret name {secret_env} in [env].ignore"
+            );
+        }
+    }
+}
+
+#[test]
 fn stdin_boolean_controls_remain_public_without_exposing_secret_values() {
     let text = fs::read_to_string(".cli-flags.toml").expect("reading .cli-flags.toml");
     let doc: toml::Value = toml::from_str(&text).expect("parsing .cli-flags.toml");
