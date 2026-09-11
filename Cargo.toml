@@ -34,7 +34,10 @@ path = "src/lib.rs"
 # SDK consumer. zed-cli keeps only CLI-only publication/binary/fallback edges.
 zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e" }
 zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "eac0878750332b031bc12f6040b6a795a17e7417" }
-zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "b32e089caea772f166204fb1c7bcaad6f56942fe" }
+# Advance to the current admitted clients main. b32e089.. -> e53dca8.. changes
+# only client dependency manifests/locks and contract-admission workflows; no
+# SDK source files change across that producer range.
+zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "e53dca82e6c9d946a650bf453f48df0072221e10" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
