@@ -1,0 +1,74 @@
+name: Harden canonical GitHub fallback identity
+
+on:
+  push:
+    branches:
+      - fix/DEN-390-github-repo-fallback-identity
+    paths:
+      - .github/workflows/harden-github-fallback-identity.yml
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  harden:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Verify exact checkout and close cold-cache identity gap
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("src/source_fallback.rs")
+          text = path.read_text()
+          old = '''        let identity = self
+            .cached_github_identity(&version.org, &version.name)
+            .unwrap_or_else(|| GithubIdentity::guessed_from_package(&version.org, &version.name));
+'''
+          new = '''        // Artifact fallback must use the same manifest-validated canonical repository
+        // identity as metadata/version fallback. A cold cache is not permission to
+        // regress to the conventional org/name guess because valid repositories can
+        // carry suffixes such as `.rs`.
+        let identity = self.resolve_github_identity(&version.org, &version.name)?;
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"expected exactly one cold-cache identity fallback, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+
+      - name: Verify formatting and full locked Rust suite
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --locked --all-targets
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          git diff --check
+
+      - name: Fail closed on change scope and commit tested source
+        run: |
+          set -euo pipefail
+          actual="$(git status --porcelain | sed -E 's/^.. //' | sed '/^$/d' | sort)"
+          test "$actual" = 'src/source_fallback.rs' || {
+            printf 'unexpected changed paths:\n%s\n' "$actual" >&2
+            exit 1
+          }
+          grep -Fq 'let identity = self.resolve_github_identity(&version.org, &version.name)?;' src/source_fallback.rs
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/source_fallback.rs
+          git commit -m 'fix: resolve canonical GitHub identity for artifact fallback'
+          git push origin HEAD:fix/DEN-390-github-repo-fallback-identity
