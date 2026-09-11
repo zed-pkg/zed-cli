@@ -7,6 +7,8 @@ on:
       - .github/workflows/harden-github-fallback-admission.yml
   workflow_dispatch:
 
+# Temporary branch-only migration helper. This file is deleted after it emits
+# the reviewed source commit; it must never land on main.
 permissions:
   contents: write
 
@@ -42,35 +44,29 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('src/source_fallback.rs')
+          path = Path("src/source_fallback.rs")
           text = path.read_text()
 
           def replace_once(old: str, new: str, label: str) -> None:
               global text
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+                  raise SystemExit(f"{label}: expected exactly one match, found {count}")
               text = text.replace(old, new, 1)
 
           replace_once(
-          '''    fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
-              self.fetch_manifest(identity, default_branch)
-                  .or_else(|_| self.fetch_manifest(identity, "main"))
-                  .or_else(|_| self.fetch_manifest(identity, "master"))
-          }
-          ''',
-          '''    fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
-              // Admission is bound to the repository's declared default branch.
-              // A stale `main`/`master` branch must never be allowed to self-claim
-              // a package when GitHub reports another branch as authoritative.
-              self.fetch_manifest(identity, default_branch)
-          }
-          ''',
-          'default-branch-only manifest admission')
+              '''        self.fetch_manifest(identity, default_branch)
+                      .or_else(|_| self.fetch_manifest(identity, "main"))
+                      .or_else(|_| self.fetch_manifest(identity, "master"))''',
+              '''        // Admission is bound to GitHub's reported default branch. A stale
+                  // `main`/`master` branch must never be allowed to self-claim a package
+                  // when GitHub reports another branch as authoritative.
+                  self.fetch_manifest(identity, default_branch)''',
+              "default-branch-only manifest admission",
+          )
 
           replace_once(
-          '''#[derive(Debug, Deserialize)]
-          struct GithubRepositorySearch {
+              '''struct GithubRepositorySearch {
               #[serde(default)]
               items: Vec<GithubRepo>,
           }
@@ -81,10 +77,8 @@ jobs:
               default_branch: String,
               #[serde(default)]
               html_url: String,
-          }
-          ''',
-          '''#[derive(Debug, Deserialize)]
-          struct GithubRepositorySearch {
+          }''',
+              '''struct GithubRepositorySearch {
               total_count: usize,
               items: Vec<GithubRepo>,
           }
@@ -94,72 +88,71 @@ jobs:
               default_branch: String,
               #[serde(default)]
               html_url: String,
-          }
-          ''',
-          'search/repository decode contract')
+          }''',
+              "search/repository decode contract",
+          )
 
           replace_once(
-          '''        let search: GithubRepositorySearch = response
-              .json()
-              .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
+              '''        let search: GithubRepositorySearch = response
+                      .json()
+                      .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
 
-          let mut matches = Vec::new();
-          for repo in search.items.into_iter().take(MAX_GITHUB_REPO_CANDIDATES) {
-          ''',
-          '''        let search: GithubRepositorySearch = response
-              .json()
-              .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
-          if !github_search_result_is_complete(&search) {
-              bail!(
-                  "GitHub repository search for {org}/{name} returned total_count={} with {} item(s); bounded admission requires a complete result set of at most {} candidates",
-                  search.total_count,
-                  search.items.len(),
-                  MAX_GITHUB_REPO_CANDIDATES
-              );
-          }
+                  let mut matches = Vec::new();
+                  for repo in search.items.into_iter().take(MAX_GITHUB_REPO_CANDIDATES) {''',
+              '''        let search: GithubRepositorySearch = response
+                      .json()
+                      .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
+                  if !github_search_result_is_complete(&search) {
+                      bail!(
+                          "GitHub repository search for {org}/{name} returned total_count={} with {} item(s); bounded admission requires a complete result set of at most {} candidates",
+                          search.total_count,
+                          search.items.len(),
+                          MAX_GITHUB_REPO_CANDIDATES
+                      );
+                  }
 
-          let mut matches = Vec::new();
-          for repo in search.items {
-          ''',
-          'complete bounded search admission')
+                  let mut matches = Vec::new();
+                  for repo in search.items {''',
+              "complete bounded search admission",
+          )
 
           replace_once(
-          '''        let repo: GithubRepo = self.github_repo(&identity).unwrap_or(GithubRepo {
+              '''        let repo: GithubRepo = self.github_repo(&identity).unwrap_or(GithubRepo {
               default_branch: "main".to_string(),
               html_url: identity.web_url(),
-          });
-          ''',
-          '''        let repo = self.github_repo(&identity)?;
-          ''',
-          'repo metadata fail-closed')
+          });''',
+              '''        let repo = self.github_repo(&identity)?;''',
+              "repo metadata fail-closed",
+          )
 
           replace_once(
-          '''fn default_branch() -> String {
+              '''fn default_branch() -> String {
               "main".to_string()
           }
 
           ''',
-          '',
-          'remove synthetic default branch')
+              "",
+              "remove synthetic default branch",
+          )
 
-          anchor = '''fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
+          replace_once(
+              '''fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
               left.owner.eq_ignore_ascii_case(&right.owner) && left.repo.eq_ignore_ascii_case(&right.repo)
-          }
-          '''
-          helper = '''fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
+          }''',
+              '''fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
               left.owner.eq_ignore_ascii_case(&right.owner) && left.repo.eq_ignore_ascii_case(&right.repo)
           }
 
           fn github_search_result_is_complete(search: &GithubRepositorySearch) -> bool {
               search.total_count <= MAX_GITHUB_REPO_CANDIDATES
                   && search.items.len() == search.total_count
-          }
-          '''
-          replace_once(anchor, helper, 'bounded search helper')
+          }''',
+              "bounded search helper",
+          )
 
-          tests = r'''
-
-              #[test]
+          marker = '''    #[test]
+              fn r2_public_key_env_is_the_guessable_origin() {'''
+          tests = '''    #[test]
               fn repository_search_admission_requires_complete_bounded_results() {
                   let repo = |suffix: usize| GithubRepo {
                       default_branch: "main".into(),
@@ -187,21 +180,21 @@ jobs:
               #[test]
               fn github_repo_decode_requires_reported_default_branch() {
                   let missing = serde_json::from_str::<GithubRepo>(
-                      r#"{"html_url":"https://github.com/acme/http-kit"}"#,
+                      r#"{\"html_url\":\"https://github.com/acme/http-kit\"}"#,
                   );
                   assert!(missing.is_err());
 
                   let present = serde_json::from_str::<GithubRepo>(
-                      r#"{"default_branch":"trunk","html_url":"https://github.com/acme/http-kit"}"#,
+                      r#"{\"default_branch\":\"trunk\",\"html_url\":\"https://github.com/acme/http-kit\"}"#,
                   )
                   .unwrap();
                   assert_eq!(present.default_branch, "trunk");
               }
-          '''
-          pos = text.rfind('\n}')
-          if pos < 0:
-              raise SystemExit('could not find tests module closing brace')
-          text = text[:pos] + tests + text[pos:]
+
+              #[test]
+              fn r2_public_key_env_is_the_guessable_origin() {'''
+          replace_once(marker, tests, "insert fail-closed search tests")
+
           path.write_text(text)
           PY
 
@@ -210,6 +203,9 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt,clippy
+
+      - name: Format repaired source
+        run: cargo fmt --all
 
       - name: Prove focused and repository-wide Rust gates
         shell: bash
@@ -230,6 +226,7 @@ jobs:
           ! grep -F '.take(MAX_GITHUB_REPO_CANDIDATES)' src/source_fallback.rs >/dev/null
           ! grep -F '#[serde(default = "default_branch")]' src/source_fallback.rs >/dev/null
           grep -F 'total_count: usize' src/source_fallback.rs >/dev/null
+          grep -F 'let repo = self.github_repo(&identity)?;' src/source_fallback.rs >/dev/null
 
       - name: Commit reviewed admission repair
         shell: bash
