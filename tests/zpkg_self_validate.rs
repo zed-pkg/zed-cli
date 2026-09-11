@@ -32,8 +32,24 @@ fn repository_zpkg_manifest_is_accepted_by_built_validator() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let report: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|error| panic!("validator emitted invalid JSON: {error}; stdout: {}", String::from_utf8_lossy(&output.stdout)));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "validator emitted invalid JSON: {error}; stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
     assert_eq!(report["valid"], true);
     assert_eq!(report["manifest"]["package"], "zed-pkg/zed-cli");
+
+    // This repository currently has direct Zed dependencies but intentionally
+    // owns no .zpkg.lock. Keep that limitation explicit so schema self-checking
+    // cannot be mistaken for frozen dependency verification.
+    assert!(report["manifest"]["direct_requirements"]
+        .as_u64()
+        .is_some_and(|count| count > 0));
+    assert_eq!(report["lock"]["present"], false);
+    assert_eq!(report["direct_requirements_checked"], 0);
+    assert!(report["warnings"]
+        .as_array()
+        .is_some_and(|warnings| !warnings.is_empty()));
 }
