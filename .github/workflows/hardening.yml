@@ -36,10 +36,54 @@ jobs:
         with:
           path: zed-cli
           persist-credentials: false
+      - name: Resolve zed-interfaces checkout from Cargo.lock
+        id: zed-interfaces-lock
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+          from urllib.parse import parse_qs, urlsplit
+
+          with open("Cargo.lock", "rb") as handle:
+              lock = tomllib.load(handle)
+
+          sources = {
+              package.get("source")
+              for package in lock.get("package", [])
+              if package.get("name") == "zed-interfaces" and package.get("source")
+          }
+          if len(sources) != 1:
+              raise SystemExit(
+                  f"Cargo.lock must resolve exactly one zed-interfaces source; got {sorted(sources)}"
+              )
+
+          source = next(iter(sources))
+          expected_repo = "https://github.com/zed-pkg/zed-interfaces.git"
+          if not source.startswith(f"git+{expected_repo}?") or "#" not in source:
+              raise SystemExit(f"unexpected zed-interfaces Cargo source: {source}")
+
+          resolved = source.rsplit("#", 1)[1]
+          if re.fullmatch(r"[0-9a-f]{40}", resolved) is None:
+              raise SystemExit(f"zed-interfaces lock source is not pinned to a full commit: {source}")
+
+          parsed = urlsplit(source.removeprefix("git+"))
+          requested = parse_qs(parsed.query).get("rev", [])
+          if requested != [resolved]:
+              raise SystemExit(
+                  "zed-interfaces Cargo source must request and resolve the same immutable commit: "
+                  f"requested={requested!r} resolved={resolved}"
+              )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"sha={resolved}\n")
+          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ steps.zed-interfaces-lock.outputs.sha }}
           path: zed-interfaces
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
