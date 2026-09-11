@@ -42,9 +42,10 @@ impl SharedAuthPolicy {
         );
         self.compatibility.validate()?;
 
-        if let Some(factors) = &self.factors {
-            factors.validate()?;
-        }
+        self.factors
+            .as_ref()
+            .context("zed-cli Shared Auth policy must declare factors.two_factor")?
+            .validate()?;
         if let Some(pages) = &self.pages {
             pages.validate()?;
         }
@@ -129,9 +130,10 @@ struct FactorsPolicy {
 
 impl FactorsPolicy {
     fn validate(&self) -> Result<()> {
-        if let Some(two_factor) = &self.two_factor {
-            two_factor.validate()?;
-        }
+        self.two_factor
+            .as_ref()
+            .context("zed-cli Shared Auth policy must declare factors.two_factor")?
+            .validate()?;
         if let Some(three_factor) = &self.three_factor {
             three_factor.validate()?;
         }
@@ -150,13 +152,15 @@ struct TwoFactorPolicy {
 
 impl TwoFactorPolicy {
     fn validate(&self) -> Result<()> {
-        if let Some(required) = self.required {
-            ensure!(
-                required,
-                "zed-cli Shared Auth policy may not disable required two-factor authentication"
-            );
-        }
-        validate_unique_nonempty(self.methods.as_deref(), "two-factor methods")
+        ensure!(
+            self.required == Some(true),
+            "zed-cli Shared Auth policy must explicitly require two-factor authentication"
+        );
+        let methods = self
+            .methods
+            .as_deref()
+            .context("zed-cli Shared Auth two-factor policy must declare methods")?;
+        validate_unique_nonempty(Some(methods), "two-factor methods")
     }
 }
 
@@ -347,9 +351,19 @@ mod tests {
     }
 
     #[test]
-    fn local_policy_cannot_silently_disable_required_two_factor_authentication() {
+    fn local_policy_cannot_silently_disable_or_omit_required_two_factor_authentication() {
         let weakened = POLICY.replace("required = true", "required = false");
         assert!(parse(&weakened).is_err());
+
+        let omitted = POLICY.replace("required = true\n", "");
+        assert!(parse(&omitted).is_err());
+
+        let missing_methods = POLICY.replacen(
+            "methods = [\"totp\", \"passkey\", \"security-key\"]\n",
+            "",
+            1,
+        );
+        assert!(parse(&missing_methods).is_err());
     }
 
     #[test]
