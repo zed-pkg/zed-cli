@@ -34,38 +34,89 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  ZED_INTERFACES_SHA: 0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c
-
 jobs:
   integrity:
     name: Strict committed locks and content-addressed compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - name: Checkout zed-cli
+      - name: Checkout exact zed-cli candidate
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: zed-cli
           persist-credentials: false
+
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Resolve immutable graph and toolchain authorities
+        id: authorities
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          canonical_repo = "https://github.com/zed-pkg/zed-interfaces.git"
+          with open("Cargo.toml", "rb") as source:
+              manifest = tomllib.load(source)
+          with open("Cargo.lock", "rb") as source:
+              lock = tomllib.load(source)
+          with open("rust-toolchain.toml", "rb") as source:
+              toolchain = tomllib.load(source)["toolchain"]["channel"]
+
+          dependency = manifest.get("dependencies", {}).get("zed-interfaces")
+          if not isinstance(dependency, dict) or dependency.get("git") != canonical_repo:
+              raise SystemExit(f"unexpected zed-interfaces dependency authority: {dependency!r}")
+          rev = dependency.get("rev")
+          if not isinstance(rev, str) or re.fullmatch(r"[0-9a-f]{40}", rev) is None:
+              raise SystemExit(f"zed-interfaces rev must be a full immutable SHA: {rev!r}")
+          for forbidden in ("branch", "tag", "path"):
+              if forbidden in dependency:
+                  raise SystemExit(f"zed-interfaces dependency mixes rev with {forbidden}: {dependency!r}")
+
+          packages = [
+              package
+              for package in lock.get("package", [])
+              if package.get("name") == "zed-interfaces"
+          ]
+          expected_source = f"git+{canonical_repo}?rev={rev}#{rev}"
+          if len(packages) != 1 or packages[0].get("source") != expected_source:
+              raise SystemExit(
+                  "Cargo.lock must contain exactly one zed-interfaces package at the declared immutable source: "
+                  f"packages={packages!r} expected={expected_source!r}"
+              )
+
+          if not isinstance(toolchain, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain) is None:
+              raise SystemExit(f"Rust toolchain must be an immutable version: {toolchain!r}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"zed_interfaces_sha={rev}\n")
+              output.write(f"rust_toolchain={toolchain}\n")
+          PY
 
       - name: Checkout the exact merged strict and compatibility interface contract
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: zed-pkg/zed-interfaces
-          ref: ${{ env.ZED_INTERFACES_SHA }}
+          ref: ${{ steps.authorities.outputs.zed_interfaces_sha }}
           path: zed-interfaces
           persist-credentials: false
 
-      - name: Prove the CLI, lock, workflow, and sibling all use the reviewed merge
+      - name: Prove the CLI, lock, and sibling use the reviewed merge
         shell: bash
+        env:
+          ZED_INTERFACES_SHA: ${{ steps.authorities.outputs.zed_interfaces_sha }}
         run: |
           set -euo pipefail
           test "$(git -C zed-interfaces rev-parse HEAD)" = "$ZED_INTERFACES_SHA"
-          test "$(grep -c "$ZED_INTERFACES_SHA" zed-cli/Cargo.toml)" -eq 1
-          test "$(grep -c "$ZED_INTERFACES_SHA" zed-cli/Cargo.lock)" -eq 1
-          grep -F "ZED_INTERFACES_SHA: $ZED_INTERFACES_SHA" \
-            zed-cli/.github/workflows/frozen-lock-integrity.yml
           grep -F 'vcs_commit must be explicitly present' zed-interfaces/src/rust/lockfile.rs
           grep -F 'artifact-sha256:' zed-interfaces/src/rust/lockfile.rs
           grep -F 'normalize_missing_package_revisions' zed-interfaces/src/rust/lockfile.rs
@@ -82,10 +133,10 @@ jobs:
             ! grep -q "$old" zed-cli/Cargo.lock
           done
 
-      - name: Install pinned Rust toolchain
+      - name: Install repository-declared Rust toolchain
         uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
-          toolchain: stable
+          toolchain: ${{ steps.authorities.outputs.rust_toolchain }}
 
       - name: Restore bounded Rust cache
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
