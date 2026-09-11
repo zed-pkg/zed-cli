@@ -180,109 +180,69 @@ impl ThreeFactorPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
 enum FactorMethod {
-    #[serde(rename = "totp")]
     Totp,
-    #[serde(rename = "passkey")]
     Passkey,
-    #[serde(rename = "security-key")]
     SecurityKey,
-    #[serde(rename = "email-otp")]
-    EmailOtp,
-    #[serde(rename = "sms-otp")]
-    SmsOtp,
-    #[serde(rename = "backup-code")]
-    BackupCode,
+    RecoveryCode,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PagesPolicy {
-    #[serde(default)]
-    show: Option<Vec<AuthPage>>,
+    show: Vec<String>,
 }
 
 impl PagesPolicy {
     fn validate(&self) -> Result<()> {
-        validate_unique_nonempty(self.show.as_deref(), "Shared Auth pages")
+        validate_unique_nonempty(Some(&self.show), "Shared Auth pages")
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
-enum AuthPage {
-    #[serde(rename = "sign-in")]
-    SignIn,
-    #[serde(rename = "sign-up")]
-    SignUp,
-    #[serde(rename = "challenge")]
-    Challenge,
-    #[serde(rename = "recovery")]
-    Recovery,
-    #[serde(rename = "consent")]
-    Consent,
-    #[serde(rename = "error")]
-    Error,
-    #[serde(rename = "signed-out")]
-    SignedOut,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StylingPolicy {
-    #[serde(default)]
-    theme: Option<Theme>,
-    #[serde(default)]
-    brand_name: Option<String>,
-    #[serde(default)]
-    accent_color: Option<String>,
+    brand_name: String,
+    primary_color: String,
 }
 
 impl StylingPolicy {
     fn validate(&self) -> Result<()> {
-        let _theme = self.theme;
-        if let Some(brand_name) = &self.brand_name {
-            ensure!(
-                !brand_name.is_empty() && brand_name.chars().count() <= 80,
-                "Shared Auth brand_name must contain between 1 and 80 characters"
-            );
-        }
-        if let Some(accent_color) = &self.accent_color {
-            ensure!(
-                accent_color.len() == 7
-                    && accent_color.starts_with('#')
-                    && accent_color[1..]
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit()),
-                "Shared Auth accent_color must be #RRGGBB"
-            );
-        }
+        ensure!(
+            !self.brand_name.trim().is_empty() && self.brand_name.len() <= 80,
+            "Shared Auth brand name must be nonempty and bounded"
+        );
+        ensure!(
+            self.primary_color.len() == 7
+                && self.primary_color.starts_with('#')
+                && self.primary_color[1..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit()),
+            "Shared Auth primary color must be #RRGGBB"
+        );
         Ok(())
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Theme {
-    System,
-    Light,
-    Dark,
-}
-
-fn validate_unique_nonempty<T>(values: Option<&[T]>, label: &str) -> Result<()>
+fn validate_unique_nonempty<T>(items: Option<&[T]>, label: &str) -> Result<()>
 where
-    T: Copy + Ord,
+    T: Ord + std::fmt::Debug,
 {
-    let Some(values) = values else {
-        return Ok(());
-    };
-    ensure!(!values.is_empty(), "{label} may not be empty");
-    let unique = values.iter().copied().collect::<BTreeSet<_>>();
+    let items = items.with_context(|| format!("{label} must be declared"))?;
+    ensure!(!items.is_empty(), "{label} must not be empty");
+    let unique = items.iter().collect::<BTreeSet<_>>();
     ensure!(
-        unique.len() == values.len(),
-        "{label} may not contain duplicates"
+        unique.len() == items.len(),
+        "{label} must not contain duplicates"
     );
     Ok(())
+}
+
+fn parse(text: &str) -> Result<()> {
+    let policy: SharedAuthPolicy = toml::from_str(text).context("parsing Shared Auth policy")?;
+    policy.validate()
 }
 
 #[cfg(test)]
@@ -290,11 +250,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-
-    fn parse(text: &str) -> Result<()> {
-        let policy: SharedAuthPolicy = toml::from_str(text)?;
-        policy.validate()
-    }
 
     #[test]
     fn embedded_policy_is_admitted() {
@@ -355,14 +310,22 @@ mod tests {
         let weakened = POLICY.replace("required = true", "required = false");
         assert!(parse(&weakened).is_err());
 
-        let omitted = POLICY.replace("required = true\n", "");
+        let mut omitted: toml::Value = toml::from_str(POLICY).expect("parse embedded policy");
+        omitted["factors"]["two_factor"]
+            .as_table_mut()
+            .expect("factors.two_factor table")
+            .remove("required");
+        let omitted = toml::to_string(&omitted).expect("serialize policy without required");
         assert!(parse(&omitted).is_err());
 
-        let missing_methods = POLICY.replacen(
-            "methods = [\"totp\", \"passkey\", \"security-key\"]\n",
-            "",
-            1,
-        );
+        let mut missing_methods: toml::Value =
+            toml::from_str(POLICY).expect("parse embedded policy");
+        missing_methods["factors"]["two_factor"]
+            .as_table_mut()
+            .expect("factors.two_factor table")
+            .remove("methods");
+        let missing_methods =
+            toml::to_string(&missing_methods).expect("serialize policy without methods");
         assert!(parse(&missing_methods).is_err());
     }
 
