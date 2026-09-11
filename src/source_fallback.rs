@@ -198,9 +198,10 @@ impl FallbackRegistry {
     }
 
     fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
+        // Admission is bound to GitHub's reported default branch. A stale
+        // `main`/`master` branch must never be allowed to self-claim a package
+        // when GitHub reports another branch as authoritative.
         self.fetch_manifest(identity, default_branch)
-            .or_else(|_| self.fetch_manifest(identity, "main"))
-            .or_else(|_| self.fetch_manifest(identity, "master"))
     }
 
     fn resolve_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
@@ -258,9 +259,17 @@ impl FallbackRegistry {
         let search: GithubRepositorySearch = response
             .json()
             .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
+        if !github_search_result_is_complete(&search) {
+            bail!(
+                "GitHub repository search for {org}/{name} returned total_count={} with {} item(s); bounded admission requires a complete result set of at most {} candidates",
+                search.total_count,
+                search.items.len(),
+                MAX_GITHUB_REPO_CANDIDATES
+            );
+        }
 
         let mut matches = Vec::new();
-        for repo in search.items.into_iter().take(MAX_GITHUB_REPO_CANDIDATES) {
+        for repo in search.items {
             let Some(candidate) = parse_github_identity(&repo.html_url) else {
                 continue;
             };
@@ -309,10 +318,7 @@ impl FallbackRegistry {
 
     fn github_get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
         let identity = self.resolve_github_identity(org, name)?;
-        let repo: GithubRepo = self.github_repo(&identity).unwrap_or(GithubRepo {
-            default_branch: "main".to_string(),
-            html_url: identity.web_url(),
-        });
+        let repo = self.github_repo(&identity)?;
         let manifest = self.github_manifest(&identity, &repo.default_branch);
         let tags = self.github_tags(&identity)?;
         let versions = versions_from_tags(&tags);
@@ -727,13 +733,12 @@ impl Registry for FallbackRegistry {
 
 #[derive(Debug, Deserialize)]
 struct GithubRepositorySearch {
-    #[serde(default)]
+    total_count: usize,
     items: Vec<GithubRepo>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GithubRepo {
-    #[serde(default = "default_branch")]
     default_branch: String,
     #[serde(default)]
     html_url: String,
@@ -825,10 +830,6 @@ fn release_asset_metadata(
         }
     }
     None
-}
-
-fn default_branch() -> String {
-    "main".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -942,6 +943,10 @@ fn github_repository_search_query(org: &str, name: &str) -> String {
 
 fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
     left.owner.eq_ignore_ascii_case(&right.owner) && left.repo.eq_ignore_ascii_case(&right.repo)
+}
+
+fn github_search_result_is_complete(search: &GithubRepositorySearch) -> bool {
+    search.total_count <= MAX_GITHUB_REPO_CANDIDATES && search.items.len() == search.total_count
 }
 
 fn manifest_github_identity_for_package(
@@ -1128,6 +1133,45 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
         );
         assert!(github_guess_is_safe("ores-otel", "ores-otel-sidecar"));
         assert!(!github_guess_is_safe("ores-otel", "sidecar in:description"));
+    }
+
+    #[test]
+    fn repository_search_admission_requires_complete_bounded_results() {
+        let repo = |suffix: usize| GithubRepo {
+            default_branch: "main".into(),
+            html_url: format!("https://github.com/acme/http-kit-{suffix}"),
+        };
+        let complete = GithubRepositorySearch {
+            total_count: MAX_GITHUB_REPO_CANDIDATES,
+            items: (0..MAX_GITHUB_REPO_CANDIDATES).map(repo).collect(),
+        };
+        assert!(github_search_result_is_complete(&complete));
+
+        let truncated = GithubRepositorySearch {
+            total_count: MAX_GITHUB_REPO_CANDIDATES + 1,
+            items: (0..MAX_GITHUB_REPO_CANDIDATES).map(repo).collect(),
+        };
+        assert!(!github_search_result_is_complete(&truncated));
+
+        let incomplete = GithubRepositorySearch {
+            total_count: 2,
+            items: vec![repo(0)],
+        };
+        assert!(!github_search_result_is_complete(&incomplete));
+    }
+
+    #[test]
+    fn github_repo_decode_requires_reported_default_branch() {
+        let missing = serde_json::from_str::<GithubRepo>(
+            r#"{"html_url":"https://github.com/acme/http-kit"}"#,
+        );
+        assert!(missing.is_err());
+
+        let present = serde_json::from_str::<GithubRepo>(
+            r#"{"default_branch":"trunk","html_url":"https://github.com/acme/http-kit"}"#,
+        )
+        .unwrap();
+        assert_eq!(present.default_branch, "trunk");
     }
 
     #[test]
