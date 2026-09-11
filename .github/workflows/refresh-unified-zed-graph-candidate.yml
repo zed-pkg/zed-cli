@@ -1,4 +1,4 @@
-name: Refresh unified Zed graph candidate
+name: Materialize unified Zed graph candidate
 
 on:
   push:
@@ -6,40 +6,40 @@ on:
       - chore/repin-zed-clients-20260910
     paths:
       - .github/workflows/refresh-unified-zed-graph-candidate.yml
-  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  refresh:
-    if: github.actor != 'github-actions[bot]'
+  materialize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out exact candidate head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
 
-      - name: Verify exact head/ref and rewrite only admitted graph authorities
+      - name: Verify exact checkout and materialize admitted graph authorities
         shell: python
         run: |
           import os
           import pathlib
           import subprocess
+          import tomllib
 
           expected_branch = "chore/repin-zed-clients-20260910"
           expected_sha = os.environ["GITHUB_SHA"]
           actual_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
           assert actual_sha == expected_sha, (actual_sha, expected_sha)
-          ref_name = os.environ.get("GITHUB_REF_NAME", "")
-          assert ref_name == expected_branch, (ref_name, expected_branch)
-          remote_branch_sha = subprocess.check_output(
-              ["git", "rev-parse", f"refs/remotes/origin/{expected_branch}"], text=True
-          ).strip()
-          assert remote_branch_sha == expected_sha, (remote_branch_sha, expected_sha)
+          assert os.environ.get("GITHUB_REF_NAME") == expected_branch
 
           replacements = {
               "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c",
@@ -72,32 +72,55 @@ jobs:
                   raise SystemExit(f"expected graph rewrite made no change to {path}")
               path.write_text(text)
 
-      - name: Install minimum supported Rust toolchain
-        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
-        with:
-          toolchain: 1.88.0
+          toolchain = tomllib.loads(pathlib.Path("rust-toolchain.toml").read_text())["toolchain"]["channel"]
+          pathlib.Path(os.environ["RUNNER_TEMP"], "expected-rust-toolchain").write_text(toolchain + "\n")
 
-      - name: Let Cargo resolve and verify the unified graph
+      - name: Install and verify repository-declared Rust toolchain
+        run: |
+          set -euo pipefail
+          toolchain="$(cat "$RUNNER_TEMP/expected-rust-toolchain")"
+          rustup toolchain install "$toolchain" --profile minimal --no-self-update
+          rustup default "$toolchain"
+          actual="$(rustc --version | awk '{print $2}')"
+          test "$actual" = "$toolchain" || {
+            printf 'rustc mismatch: expected %s, got %s\n' "$toolchain" "$actual" >&2
+            exit 1
+          }
+
+      - name: Resolve and verify unified graph
         run: |
           set -euo pipefail
           cargo check --all-targets
           python3 scripts/validate-cli-flags-toml.py
           bash scripts/validate-zed-package-graph.sh
+          git diff --check
 
-      - name: Fail closed on unexpected generated changes
+      - name: Fail closed on unexpected materialized paths
         run: |
           set -euo pipefail
-          mapfile -t changed < <(git status --porcelain | sed -E 's/^.. //' | sort)
-          printf '%s\n' "${changed[@]}"
-          allowed=$'.github/workflows/zed-package-graph.yml\nCargo.lock\nCargo.toml\nscripts/validate-zed-package-graph.sh'
-          actual="$(printf '%s\n' "${changed[@]}" | sed '/^$/d')"
-          test "$actual" = "$allowed"
+          actual="$(git status --porcelain | sed -E 's/^.. //' | sed '/^$/d' | sort)"
+          expected=$'.github/workflows/zed-package-graph.yml\nCargo.lock\nCargo.toml\nscripts/validate-zed-package-graph.sh'
+          printf '%s\n' "$actual"
+          test "$actual" = "$expected"
 
-      - name: Commit generated graph candidate
+      - name: Stage tested graph as evidence
         run: |
           set -euo pipefail
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add Cargo.toml Cargo.lock scripts/validate-zed-package-graph.sh .github/workflows/zed-package-graph.yml
-          git commit -m "fix: unify CLI Rust dependency authority graph"
-          git push origin HEAD:chore/repin-zed-clients-20260910
+          evidence="$RUNNER_TEMP/unified-zed-graph"
+          mkdir -p "$evidence/.github/workflows" "$evidence/scripts"
+          cp Cargo.toml "$evidence/Cargo.toml"
+          cp Cargo.lock "$evidence/Cargo.lock"
+          cp scripts/validate-zed-package-graph.sh "$evidence/scripts/validate-zed-package-graph.sh"
+          cp .github/workflows/zed-package-graph.yml "$evidence/.github/workflows/zed-package-graph.yml"
+          git diff --binary -- Cargo.toml Cargo.lock scripts/validate-zed-package-graph.sh .github/workflows/zed-package-graph.yml > "$evidence/tested.patch"
+          sha256sum Cargo.toml Cargo.lock scripts/validate-zed-package-graph.sh .github/workflows/zed-package-graph.yml > "$evidence/SHA256SUMS"
+          cp "$RUNNER_TEMP/expected-rust-toolchain" "$evidence/rust-toolchain.txt"
+
+      - name: Upload tested graph materialization
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unified-zed-graph-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/unified-zed-graph
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: true
