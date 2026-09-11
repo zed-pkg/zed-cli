@@ -573,10 +573,10 @@ mod tests {
 
     #[test]
     fn long_inline_values_are_not_truncated() {
-        let token = format!("header.{}.signature", "a".repeat(240));
+        let value = format!("path.{}.suffix", "a".repeat(240));
         let argv = vec![
             "zed".to_string(),
-            format!("--token={token}"),
+            format!("--home={value}"),
             "find".to_string(),
             "http".to_string(),
         ];
@@ -584,8 +584,8 @@ mod tests {
         assert!(parsed.unknown_options.is_empty());
         assert!(parsed.errors.is_empty());
         assert_eq!(
-            parsed.flags.get("ZED_PKG_TOKEN").map(String::as_str),
-            Some(token.as_str())
+            parsed.flags.get("ZED_PKG_HOME").map(String::as_str),
+            Some(value.as_str())
         );
     }
 
