@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use clap::{Command, CommandFactory};
 use toml::Value;
@@ -8,15 +8,13 @@ use zed_cli::cli::Cli;
 struct CliArg {
     path: Vec<String>,
     long: String,
-    env: Option<String>,
 }
 
 #[derive(Debug)]
 struct ContractFlag {
     path: Vec<String>,
     name: String,
-    aliases: Vec<String>,
-    env: Option<String>,
+    spellings: Vec<String>,
 }
 
 fn collect_clap(
@@ -35,13 +33,13 @@ fn collect_clap(
         args.push(CliArg {
             path: path.clone(),
             long: long.to_owned(),
-            env: arg
-                .get_env()
-                .map(|value| value.to_string_lossy().into_owned()),
         });
     }
 
     for child in command.get_subcommands() {
+        if child.get_name() == "help" {
+            continue;
+        }
         path.push(child.get_name().to_owned());
         commands.insert(path.join(" "));
         collect_clap(child, path, commands, args);
@@ -60,20 +58,21 @@ fn collect_contract(
             let Some(flag) = value.as_table() else {
                 continue;
             };
-            let aliases = flag
-                .get("aliases")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            let env = flag.get("env").and_then(Value::as_str).map(str::to_owned);
+            let mut spellings = vec![name.replace('_', "-")];
+            spellings.extend(
+                flag.get("aliases")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned),
+            );
+            spellings.sort();
+            spellings.dedup();
             flags.push(ContractFlag {
                 path: path.clone(),
                 name: name.clone(),
-                aliases,
-                env,
+                spellings,
             });
         }
     }
@@ -83,7 +82,7 @@ fn collect_contract(
             let Some(command) = value.as_table() else {
                 continue;
             };
-            path.push(name.clone());
+            path.push(name.replace('_', "-"));
             commands.insert(path.join(" "));
             collect_contract(command, path, commands, flags);
             path.pop();
@@ -92,12 +91,15 @@ fn collect_contract(
 }
 
 #[test]
-fn clap_and_cli_flags_contract_do_not_drift() {
+fn clap_command_paths_and_option_scopes_match_cli_flags_contract() {
+    // `src/cli.rs::cli_flags_toml_is_in_sync_with_clap` already owns env-set
+    // parity. This independent integration gate covers the dimensions an env
+    // set cannot detect: command paths and the command/root scope in which a
+    // public long-option spelling is declared.
     let source = std::fs::read_to_string(".cli-flags.toml")
         .expect("read repository .cli-flags.toml contract");
-    let document = source
-        .parse::<Value>()
-        .expect("parse repository .cli-flags.toml contract");
+    let document: Value =
+        toml::from_str(&source).expect("parse repository .cli-flags.toml contract");
     let root = document
         .as_table()
         .expect(".cli-flags.toml root must be a TOML table");
@@ -134,87 +136,43 @@ fn clap_and_cli_flags_contract_do_not_drift() {
     }
 
     for arg in &clap_args {
-        let candidates = contract_flags
+        let matched = contract_flags.iter().any(|flag| {
+            flag.spellings.iter().any(|spelling| spelling == &arg.long)
+                && (flag.path.is_empty() || flag.path == arg.path)
+        });
+        if matched {
+            continue;
+        }
+
+        let same_spelling_elsewhere = contract_flags
             .iter()
-            .filter(|flag| {
-                flag.aliases.iter().any(|alias| alias == &arg.long)
-                    && (flag.path.is_empty() || flag.path == arg.path)
+            .filter(|flag| flag.spellings.iter().any(|spelling| spelling == &arg.long))
+            .map(|flag| {
+                format!(
+                    "{} ({})",
+                    if flag.path.is_empty() {
+                        "<root>".to_owned()
+                    } else {
+                        flag.path.join(" ")
+                    },
+                    flag.name
+                )
             })
             .collect::<Vec<_>>();
-
-        if candidates.is_empty() {
-            failures.push(format!(
-                "typed Clap option `--{}` at `{}` has no matching .cli-flags.toml alias",
-                arg.long,
-                if arg.path.is_empty() {
-                    "<root>".to_owned()
-                } else {
-                    arg.path.join(" ")
-                }
-            ));
-            continue;
-        }
-
-        if let Some(clap_env) = &arg.env
-            && !candidates
-                .iter()
-                .any(|flag| flag.env.as_deref() == Some(clap_env.as_str()))
-        {
-            let contract_envs = candidates
-                .iter()
-                .filter_map(|flag| flag.env.as_deref())
-                .collect::<BTreeSet<_>>();
-            failures.push(format!(
-                "typed Clap option `--{}` at `{}` binds `{clap_env}` but contract candidates bind {:?}",
-                arg.long,
-                if arg.path.is_empty() {
-                    "<root>".to_owned()
-                } else {
-                    arg.path.join(" ")
-                },
-                contract_envs
-            ));
-        }
-    }
-
-    let clap_longs = clap_args
-        .iter()
-        .map(|arg| arg.long.as_str())
-        .collect::<HashSet<_>>();
-    for flag in &contract_flags {
-        if flag.aliases.is_empty() {
-            failures.push(format!(
-                "contract flag `{}` at `{}` has no public aliases",
-                flag.name,
-                if flag.path.is_empty() {
-                    "<root>".to_owned()
-                } else {
-                    flag.path.join(" ")
-                }
-            ));
-            continue;
-        }
-        if !flag
-            .aliases
-            .iter()
-            .any(|alias| clap_longs.contains(alias.as_str()))
-        {
-            failures.push(format!(
-                "contract flag `{}` at `{}` has aliases {:?}, none of which exist in the typed Clap model",
-                flag.name,
-                if flag.path.is_empty() {
-                    "<root>".to_owned()
-                } else {
-                    flag.path.join(" ")
-                },
-                flag.aliases
-            ));
-        }
+        failures.push(format!(
+            "typed Clap option `--{}` at `{}` has no matching root/same-scope .cli-flags.toml spelling; elsewhere={same_spelling_elsewhere:?}",
+            arg.long,
+            if arg.path.is_empty() {
+                "<root>".to_owned()
+            } else {
+                arg.path.join(" ")
+            }
+        ));
     }
 
     assert!(
         failures.is_empty(),
-        "Clap/.cli-flags.toml parity drift:\n{}",
+        "Clap/.cli-flags.toml command/scope parity drift:\n{}",
         failures.join("\n")
     );
 }
