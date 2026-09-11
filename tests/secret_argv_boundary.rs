@@ -45,7 +45,8 @@ fn reject_secret_flag_envs(file: &str, value: &toml::Value, path: &str) {
 #[test]
 fn secret_values_are_not_public_flags_in_any_cli_contract() {
     for file in CLI_CONTRACTS {
-        let text = fs::read_to_string(file).unwrap_or_else(|error| panic!("reading {file}: {error}"));
+        let text =
+            fs::read_to_string(file).unwrap_or_else(|error| panic!("reading {file}: {error}"));
         let doc: toml::Value =
             toml::from_str(&text).unwrap_or_else(|error| panic!("parsing {file}: {error}"));
         reject_secret_flag_envs(file, &doc, "");
