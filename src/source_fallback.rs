@@ -214,7 +214,9 @@ impl FallbackRegistry {
         let guessed = GithubIdentity::guessed_from_package(org, name);
         let guessed_failure = match self.github_repo(&guessed) {
             Ok(repo) => match self.github_manifest(&guessed, &repo.default_branch) {
-                Ok(manifest) if manifest_self_claims_github_identity(&manifest, org, name, &guessed) => {
+                Ok(manifest)
+                    if manifest_self_claims_github_identity(&manifest, org, name, &guessed) =>
+                {
                     self.remember_github_identity(org, name, &guessed);
                     return Ok(guessed);
                 }
@@ -230,7 +232,9 @@ impl FallbackRegistry {
             Err(error) => format!("{} was unavailable: {error:#}", guessed.web_url()),
         };
 
-        let discovered = self.search_github_identity(org, name).with_context(|| guessed_failure)?;
+        let discovered = self
+            .search_github_identity(org, name)
+            .with_context(|| guessed_failure)?;
         self.remember_github_identity(org, name, &discovered);
         Ok(discovered)
     }
@@ -290,9 +294,7 @@ impl FallbackRegistry {
                 } else {
                     ""
                 };
-                bail!(
-                    "no manifest-validated GitHub repository was found for {org}/{name}{hint}"
-                )
+                bail!("no manifest-validated GitHub repository was found for {org}/{name}{hint}")
             }
             _ => bail!(
                 "multiple GitHub repositories claim package identity {org}/{name}: {}; refusing ambiguous fallback",
@@ -1089,12 +1091,9 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
 "#,
         )
         .unwrap();
-        let identity = manifest_github_identity_for_package(
-            &manifest,
-            "ores-otel",
-            "ores-otel-sidecar",
-        )
-        .unwrap();
+        let identity =
+            manifest_github_identity_for_package(&manifest, "ores-otel", "ores-otel-sidecar")
+                .unwrap();
         assert_eq!(identity.owner, "ores-otel");
         assert_eq!(identity.repo, "ores-otel-sidecar.rs");
         assert!(manifest_self_claims_github_identity(
