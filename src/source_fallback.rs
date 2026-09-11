@@ -578,9 +578,11 @@ impl FallbackRegistry {
     fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let mut errors = Vec::new();
         let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
-        let identity = self
-            .cached_github_identity(&version.org, &version.name)
-            .unwrap_or_else(|| GithubIdentity::guessed_from_package(&version.org, &version.name));
+        // Artifact fallback must use the same manifest-validated canonical repository
+        // identity as metadata/version fallback. A cold cache is not permission to
+        // regress to the conventional org/name guess because valid repositories can
+        // carry suffixes such as `.rs`.
+        let identity = self.resolve_github_identity(&version.org, &version.name)?;
         let repo_url = identity.web_url();
         let locators = artifact_locators(&ArtifactQuery {
             org: &version.org,
