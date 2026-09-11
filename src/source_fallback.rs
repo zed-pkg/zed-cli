@@ -24,9 +24,9 @@ use zed_interfaces::registry::{
 };
 use zed_interfaces::source::{
     ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity, artifact_locators,
-    github_api_release_url, github_api_repo_url, github_api_tags_url, github_identity_for,
-    github_raw_manifest_url, github_release_asset_names, github_release_sidecar_names,
-    parse_github_identity, version_from_git_tag,
+    github_api_release_url, github_api_repo_url, github_api_tags_url, github_raw_manifest_url,
+    github_release_asset_names, github_release_sidecar_names, parse_github_identity,
+    version_from_git_tag,
 };
 use zed_interfaces::vcs::Vcs;
 
@@ -212,30 +212,27 @@ impl FallbackRegistry {
         }
 
         let guessed = GithubIdentity::guessed_from_package(org, name);
-        match self.github_repo(&guessed) {
-            Ok(repo) => {
-                // Preserve the conventional path for legacy packages, but when
-                // its manifest declares a different canonical GitHub repository
-                // prefer that reviewed source-of-truth identity.
-                let identity = self
-                    .github_manifest(&guessed, &repo.default_branch)
-                    .ok()
-                    .and_then(|manifest| manifest_github_identity_for_package(&manifest, org, name))
-                    .unwrap_or(guessed);
-                self.remember_github_identity(org, name, &identity);
-                return Ok(identity);
-            }
-            Err(guessed_error) => {
-                let discovered = self.search_github_identity(org, name).with_context(|| {
-                    format!(
-                        "conventional GitHub repository {} was unavailable: {guessed_error:#}",
-                        guessed.web_url()
-                    )
-                })?;
-                self.remember_github_identity(org, name, &discovered);
-                Ok(discovered)
-            }
-        }
+        let guessed_failure = match self.github_repo(&guessed) {
+            Ok(repo) => match self.github_manifest(&guessed, &repo.default_branch) {
+                Ok(manifest) if manifest_self_claims_github_identity(&manifest, org, name, &guessed) => {
+                    self.remember_github_identity(org, name, &guessed);
+                    return Ok(guessed);
+                }
+                Ok(_) => format!(
+                    "{} exists but its committed {MANIFEST_FILE} does not self-claim package {org}/{name}",
+                    guessed.web_url()
+                ),
+                Err(error) => format!(
+                    "{} exists but has no admissible {MANIFEST_FILE}: {error:#}",
+                    guessed.web_url()
+                ),
+            },
+            Err(error) => format!("{} was unavailable: {error:#}", guessed.web_url()),
+        };
+
+        let discovered = self.search_github_identity(org, name).with_context(|| guessed_failure)?;
+        self.remember_github_identity(org, name, &discovered);
+        Ok(discovered)
     }
 
     fn search_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
@@ -269,10 +266,7 @@ impl FallbackRegistry {
             let Ok(manifest) = self.github_manifest(&candidate, &repo.default_branch) else {
                 continue;
             };
-            let Some(declared) = manifest_github_identity_for_package(&manifest, org, name) else {
-                continue;
-            };
-            if same_github_identity(&candidate, &declared) {
+            if manifest_self_claims_github_identity(&manifest, org, name, &candidate) {
                 matches.push(candidate);
             }
         }
@@ -485,7 +479,7 @@ impl FallbackRegistry {
             .github_headers(self.client.get(github_api_release_url(identity, tag)))
             .send()
             .ok()
-            .and_then(reqwest::blocking::Response::error_for_status)
+            .and_then(|response| response.error_for_status().ok())
             .and_then(|response| response.json::<GithubRelease>().ok());
         for sidecar in github_release_sidecar_names(org, name, version) {
             let url = zed_interfaces::source::github_release_download_url(identity, tag, &sidecar);
@@ -957,6 +951,16 @@ fn manifest_github_identity_for_package(
     parse_github_identity(&manifest.package.repository.url)
 }
 
+fn manifest_self_claims_github_identity(
+    manifest: &Manifest,
+    org: &str,
+    name: &str,
+    candidate: &GithubIdentity,
+) -> bool {
+    manifest_github_identity_for_package(manifest, org, name)
+        .is_some_and(|declared| same_github_identity(candidate, &declared))
+}
+
 pub fn is_loopback_registry(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
@@ -1093,6 +1097,22 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
         .unwrap();
         assert_eq!(identity.owner, "ores-otel");
         assert_eq!(identity.repo, "ores-otel-sidecar.rs");
+        assert!(manifest_self_claims_github_identity(
+            &manifest,
+            "ores-otel",
+            "ores-otel-sidecar",
+            &identity,
+        ));
+        let guessed = GithubIdentity::guessed_from_package("ores-otel", "ores-otel-sidecar");
+        assert!(
+            !manifest_self_claims_github_identity(
+                &manifest,
+                "ores-otel",
+                "ores-otel-sidecar",
+                &guessed,
+            ),
+            "a conventional org/name repo must not inherit a package claim whose manifest points at a different canonical repository"
+        );
         assert!(
             manifest_github_identity_for_package(&manifest, "ores-otel", "different-package")
                 .is_none()
