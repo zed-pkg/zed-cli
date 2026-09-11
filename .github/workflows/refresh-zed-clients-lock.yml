@@ -1,0 +1,51 @@
+name: Refresh zed-client lock
+
+on:
+  push:
+    branches:
+      - chore/repin-zed-clients-20260910
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/refresh-zed-clients-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out exact candidate branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: chore/repin-zed-clients-20260910
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: stable
+
+      - name: Regenerate the zed-client lock edge with Cargo
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p zed-client
+          cargo metadata --locked --format-version 1 >/dev/null
+          grep -Fq 'e53dca82e6c9d946a650bf453f48df0072221e10' Cargo.lock
+          git diff --check
+
+      - name: Commit generated Cargo.lock only
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Cargo.lock; then
+            echo 'Cargo.lock already matches the requested zed-clients revision.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.lock
+          git commit -m 'chore: refresh lock for zed-clients repin'
+          git push origin HEAD:chore/repin-zed-clients-20260910
