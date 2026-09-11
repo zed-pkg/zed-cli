@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use clap::Command;
 use toml::Value;
@@ -11,9 +11,29 @@ struct CliArg {
 
 #[derive(Debug)]
 struct ContractFlag {
+    contract: String,
     path: Vec<String>,
     name: String,
     spellings: Vec<String>,
+}
+
+fn contract_paths() -> Vec<PathBuf> {
+    let mut paths = fs::read_dir(".")
+        .expect("read repository root")
+        .map(|entry| entry.expect("read repository-root entry").path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name == ".cli-flags.toml"
+                            || (name.starts_with('.') && name.ends_with("-cli-flags.toml"))
+                    })
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
 }
 
 fn collect_clap(
@@ -47,6 +67,7 @@ fn collect_clap(
 }
 
 fn collect_contract(
+    contract: &str,
     node: &toml::map::Map<String, Value>,
     path: &mut Vec<String>,
     commands: &mut BTreeSet<String>,
@@ -69,6 +90,7 @@ fn collect_contract(
             spellings.sort();
             spellings.dedup();
             flags.push(ContractFlag {
+                contract: contract.to_owned(),
                 path: path.clone(),
                 name: name.clone(),
                 spellings,
@@ -83,13 +105,17 @@ fn collect_contract(
             };
             path.push(name.replace('_', "-"));
             commands.insert(path.join(" "));
-            collect_contract(command, path, commands, flags);
+            collect_contract(contract, command, path, commands, flags);
             path.pop();
         }
     }
 }
 
-fn contract_scope_applies(contract_path: &[String], clap_path: &[String]) -> bool {
+fn scope_is_ancestor_or_same(owner: &[String], public_path: &[String]) -> bool {
+    !owner.is_empty() && owner.len() <= public_path.len() && public_path.starts_with(owner)
+}
+
+fn flag_scope_applies(contract_path: &[String], clap_path: &[String]) -> bool {
     contract_path.is_empty()
         || contract_path == clap_path
         || (contract_path.len() < clap_path.len() && clap_path.starts_with(contract_path))
@@ -102,32 +128,27 @@ fn scope_matching_accepts_ancestors_but_not_siblings() {
     let release_publish = vec!["release".to_owned(), "publish".to_owned()];
     let root: Vec<String> = Vec::new();
 
-    assert!(contract_scope_applies(&root, &release_plan));
-    assert!(contract_scope_applies(&release, &release));
-    assert!(contract_scope_applies(&release, &release_plan));
-    assert!(!contract_scope_applies(&release_plan, &release_publish));
-    assert!(!contract_scope_applies(&release_publish, &release_plan));
+    assert!(flag_scope_applies(&root, &release_plan));
+    assert!(flag_scope_applies(&release, &release));
+    assert!(flag_scope_applies(&release, &release_plan));
+    assert!(!flag_scope_applies(&release_plan, &release_publish));
+    assert!(!flag_scope_applies(&release_publish, &release_plan));
+
+    assert!(scope_is_ancestor_or_same(&release, &release_plan));
+    assert!(!scope_is_ancestor_or_same(&release_plan, &release));
+    assert!(!scope_is_ancestor_or_same(
+        &release_plan,
+        &release_publish
+    ));
 }
 
 #[test]
-fn clap_command_paths_and_option_scopes_match_cli_flags_contract() {
-    // `src/cli.rs::cli_flags_toml_is_in_sync_with_clap` already owns env-set
-    // parity. This independent integration gate covers dimensions an env set
-    // cannot detect: public command paths and the root/ancestor scope in which
-    // a public long-option spelling is declared.
-    //
-    // Use the complete public root model rather than `Cli::command()` directly.
-    // The production CLI intentionally composes several modular command
-    // families (including OCI, overtake, graph/fetch/Nix/global, and external
-    // built-ins) into help/completion through this exact authority.
-    let source = std::fs::read_to_string(".cli-flags.toml")
-        .expect("read repository .cli-flags.toml contract");
-    let document: Value =
-        toml::from_str(&source).expect("parse repository .cli-flags.toml contract");
-    let root = document
-        .as_table()
-        .expect(".cli-flags.toml root must be a TOML table");
-
+fn public_cli_is_owned_by_repository_flags_contracts() {
+    // The public CLI is intentionally composed from the core parser and
+    // modular command families. Some modules own dedicated flags2env contracts
+    // (`develop`, `fetch`, Nix interop, task/tool), so parity must be checked
+    // against the union of repository-owned contracts rather than forcing all
+    // surfaces into `.cli-flags.toml`.
     let mut clap_commands = BTreeSet::new();
     let mut clap_args = Vec::new();
     collect_clap(
@@ -137,32 +158,63 @@ fn clap_command_paths_and_option_scopes_match_cli_flags_contract() {
         &mut clap_args,
     );
 
+    let paths = contract_paths();
+    assert!(
+        paths.len() >= 6,
+        "expected canonical plus modular flags2env contracts"
+    );
+
     let mut contract_commands = BTreeSet::new();
     let mut contract_flags = Vec::new();
-    collect_contract(
-        root,
-        &mut Vec::new(),
-        &mut contract_commands,
-        &mut contract_flags,
-    );
+    for path in paths {
+        let display = path.display().to_string();
+        let source = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {display}: {error}"));
+        let document: Value =
+            toml::from_str(&source).unwrap_or_else(|error| panic!("parse {display}: {error}"));
+        let root = document
+            .as_table()
+            .unwrap_or_else(|| panic!("{display} root must be a TOML table"));
+        collect_contract(
+            &display,
+            root,
+            &mut Vec::new(),
+            &mut contract_commands,
+            &mut contract_flags,
+        );
+    }
 
     let mut failures = Vec::new();
 
-    for command in contract_commands.difference(&clap_commands) {
-        failures.push(format!(
-            "contract command `{command}` is not present in the complete public Clap model"
-        ));
+    // Every explicitly modeled contract command must still exist publicly.
+    for command in &contract_commands {
+        if !clap_commands.contains(command) {
+            failures.push(format!(
+                "flags2env contract command `{command}` is not present in the complete public Clap model"
+            ));
+        }
     }
-    for command in clap_commands.difference(&contract_commands) {
-        failures.push(format!(
-            "public Clap command `{command}` is missing from .cli-flags.toml"
-        ));
+
+    // A contract command owns its public subtree. This allows intentionally
+    // coarser modular contracts such as `interop` to govern nested Nix command
+    // paths without pretending the core root contract owns every public family.
+    for command in &clap_commands {
+        let public_path = command.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        let owned = contract_commands.iter().any(|owner| {
+            let owner_path = owner.split(' ').map(str::to_owned).collect::<Vec<_>>();
+            scope_is_ancestor_or_same(&owner_path, &public_path)
+        });
+        if !owned {
+            failures.push(format!(
+                "public Clap command `{command}` has no repository-owned flags2env contract"
+            ));
+        }
     }
 
     for arg in &clap_args {
         let matched = contract_flags.iter().any(|flag| {
             flag.spellings.iter().any(|spelling| spelling == &arg.long)
-                && contract_scope_applies(&flag.path, &arg.path)
+                && flag_scope_applies(&flag.path, &arg.path)
         });
         if matched {
             continue;
@@ -173,7 +225,8 @@ fn clap_command_paths_and_option_scopes_match_cli_flags_contract() {
             .filter(|flag| flag.spellings.iter().any(|spelling| spelling == &arg.long))
             .map(|flag| {
                 format!(
-                    "{} ({})",
+                    "{}:{} ({})",
+                    flag.contract,
                     if flag.path.is_empty() {
                         "<root>".to_owned()
                     } else {
@@ -184,7 +237,7 @@ fn clap_command_paths_and_option_scopes_match_cli_flags_contract() {
             })
             .collect::<Vec<_>>();
         failures.push(format!(
-            "public Clap option `--{}` at `{}` has no matching root/ancestor/same-scope .cli-flags.toml spelling; elsewhere={same_spelling_elsewhere:?}",
+            "public Clap option `--{}` at `{}` has no matching root/ancestor/same-scope repository flags2env spelling; elsewhere={same_spelling_elsewhere:?}",
             arg.long,
             if arg.path.is_empty() {
                 "<root>".to_owned()
@@ -196,7 +249,7 @@ fn clap_command_paths_and_option_scopes_match_cli_flags_contract() {
 
     assert!(
         failures.is_empty(),
-        "Clap/.cli-flags.toml command/scope parity drift:\n{}",
+        "public CLI/flags2env ownership drift:\n{}",
         failures.join("\n")
     );
 }
