@@ -68,7 +68,7 @@ expected_sources = {
     ),
     "zed-client": (
         "https://github.com/zed-pkg/zed-clients.git",
-        "b32e089caea772f166204fb1c7bcaad6f56942fe",
+        "e53dca82e6c9d946a650bf453f48df0072221e10",
     ),
     "zed-lib": (
         "https://github.com/zed-pkg/zed-lib-core.git",
