@@ -1,0 +1,152 @@
+name: Harden global flags2env admission
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.head_ref == 'fix/DEN-390-clap-flags-contract-parity-current-main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact triggering head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Bind global runtime to its embedded flags2env contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/patch-global-contract.rs <<'RS'
+          use std::{fs, path::Path};
+
+          fn replace_once(source: String, needle: &str, replacement: &str) -> String {
+              let count = source.match_indices(needle).count();
+              assert_eq!(count, 1, "expected exactly one source fragment, found {count}");
+              source.replacen(needle, replacement, 1)
+          }
+
+          fn main() {
+              let path = Path::new("src/global.rs");
+              let source = fs::read_to_string(path).expect("read global.rs");
+              let source = replace_once(
+                  source,
+                  "use clap::{Args, Parser, Subcommand};\n",
+                  "use clap::{Args, Parser, Subcommand};\nuse flags2env::BundledFlags2Env;\n",
+              );
+              let source = replace_once(
+                  source,
+                  "const LOCK_FILE: &str = \".lock\";\n",
+                  "const LOCK_FILE: &str = \".lock\";\nconst GLOBAL_CONTRACT: &str = include_str!(\"../.global-cli-flags.toml\");\n",
+              );
+              let source = replace_once(
+                  source,
+                  "fn run_cli(args: Vec<OsString>) -> Result<i32> {\n    let cli = match GlobalCli::try_parse_from(args) {\n",
+                  "fn run_cli(args: Vec<OsString>) -> Result<i32> {\n    let string_args = utf8_args(&args)?;\n    validate_global_flags(&string_args)?;\n    let cli = match GlobalCli::try_parse_from(args) {\n",
+              );
+              let helpers = r#"
+          fn utf8_args(args: &[OsString]) -> Result<Vec<String>> {
+              args.iter()
+                  .map(|value| {
+                      value
+                          .to_str()
+                          .map(str::to_owned)
+                          .context("flags-2-env requires UTF-8 command-line arguments")
+                  })
+                  .collect()
+          }
+
+          fn validate_global_flags(argv: &[String]) -> Result<()> {
+              let parser_argv: Vec<String> = argv
+                  .iter()
+                  .filter(|token| !matches!(token.as_str(), "--help" | "-h" | "--version" | "-V"))
+                  .cloned()
+                  .collect();
+              let parsed = parse_global_contract(&parser_argv)?;
+              if !parsed.unknown_options.is_empty() {
+                  bail!("flags2env rejected unknown zed global option(s)");
+              }
+              if !parsed.errors.is_empty() {
+                  bail!("flags2env rejected invalid zed global value(s)");
+              }
+              Ok(())
+          }
+
+          fn parse_global_contract(argv: &[String]) -> Result<flags2env::StructuredParse> {
+              let contract_dir = tempfile::tempdir().context("creating zed global flags2env directory")?;
+              let contract_path = contract_dir.path().join(".cli-flags.toml");
+              fs::write(&contract_path, GLOBAL_CONTRACT)
+                  .context("writing embedded zed global contract")?;
+              let contract_path = contract_path
+                  .to_str()
+                  .context("embedded zed global contract path is not valid UTF-8")?;
+              let parser = BundledFlags2Env::new();
+              parser
+                  .audit_config(Some(contract_path))
+                  .map_err(|error| anyhow!("zed global flags2env audit failed: {error}"))?;
+              parser
+                  .parse_structured(argv, Some(contract_path))
+                  .map_err(|error| anyhow!("zed global flags2env parse failed: {error}"))
+          }
+
+          "#;
+              let source = replace_once(
+                  source,
+                  "\nfn run_cli(args: Vec<OsString>) -> Result<i32> {\n",
+                  &format!("{helpers}fn run_cli(args: Vec<OsString>) -> Result<i32> {{\n"),
+              );
+              fs::write(path, source).expect("write global.rs");
+          }
+          RS
+          rustc /tmp/patch-global-contract.rs -o /tmp/patch-global-contract
+          /tmp/patch-global-contract
+          cargo fmt --all
+          grep -Fq 'const GLOBAL_CONTRACT: &str = include_str!("../.global-cli-flags.toml")' src/global.rs
+          grep -Fq 'validate_global_flags(&string_args)?' src/global.rs
+          grep -Fq 'BundledFlags2Env::new()' src/global.rs
+
+      - name: Prove global ownership and runtime behavior
+        run: |
+          set -euo pipefail
+          cargo test --locked --test cli_flags_contract_parity
+          cargo test --locked --test global_cli
+          cargo test --locked global::tests
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Admit only global runtime source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t changed < <(git diff --name-only)
+          test "${#changed[@]}" -eq 1
+          test "${changed[0]}" = 'src/global.rs'
+
+      - name: Commit admitted runtime binding
+        env:
+          BRANCH: ${{ github.head_ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/global.rs
+          git commit -m 'feat: admit global flags through embedded flags2env contract'
+          git push origin "HEAD:${BRANCH}"
