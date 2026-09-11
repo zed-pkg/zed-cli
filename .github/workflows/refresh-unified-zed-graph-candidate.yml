@@ -23,15 +23,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Verify exact branch and rewrite only admitted graph authorities
+      - name: Verify exact head/ref and rewrite only admitted graph authorities
         shell: python
         run: |
+          import os
           import pathlib
           import subprocess
 
           expected_branch = "chore/repin-zed-clients-20260910"
-          actual = subprocess.check_output(["git", "branch", "--show-current"], text=True).strip()
-          assert actual == expected_branch, (actual, expected_branch)
+          expected_sha = os.environ["GITHUB_SHA"]
+          actual_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+          assert actual_sha == expected_sha, (actual_sha, expected_sha)
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          assert ref_name == expected_branch, (ref_name, expected_branch)
+          remote_branch_sha = subprocess.check_output(
+              ["git", "rev-parse", f"refs/remotes/origin/{expected_branch}"], text=True
+          ).strip()
+          assert remote_branch_sha == expected_sha, (remote_branch_sha, expected_sha)
 
           replacements = {
               "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e": "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c",
