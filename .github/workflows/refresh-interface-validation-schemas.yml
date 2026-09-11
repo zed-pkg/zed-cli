@@ -1,0 +1,112 @@
+name: Refresh interface validation schemas
+
+on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/validation.rs
+      - schemas/zed-interfaces/**
+      - .github/workflows/refresh-interface-validation-schemas.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.head_ref == 'salvage/DEN-390-graph-repin-current-main-20260911')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+      INTERFACE_REV: 0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c
+      OLD_INTERFACE_REV: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: salvage/DEN-390-graph-repin-current-main-20260911
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Verify exact triggering head and admitted graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          ./scripts/validate-zed-package-graph.sh
+          grep -F "$INTERFACE_REV" Cargo.toml >/dev/null
+          test -z "$(git status --porcelain)"
+
+      - name: Check out exact interface authority
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-interfaces
+          ref: 0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c
+          path: .schema-source/zed-interfaces
+          persist-credentials: false
+
+      - name: Verify source authority and copy exact schema bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C .schema-source/zed-interfaces rev-parse HEAD)" = "$INTERFACE_REV"
+          cp .schema-source/zed-interfaces/schemas/manifest.json schemas/zed-interfaces/manifest.json
+          cp .schema-source/zed-interfaces/schemas/lockfile.json schemas/zed-interfaces/lockfile.json
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/validation.rs')
+          text = path.read_text()
+          old = 'const INTERFACE_REVISION: &str = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e";'
+          new = 'const INTERFACE_REVISION: &str = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c";'
+          if text.count(old) != 1:
+              raise SystemExit('expected exactly one stale interface revision constant')
+          path.write_text(text.replace(old, new))
+          PY
+          cmp .schema-source/zed-interfaces/schemas/manifest.json schemas/zed-interfaces/manifest.json
+          cmp .schema-source/zed-interfaces/schemas/lockfile.json schemas/zed-interfaces/lockfile.json
+          rm -rf .schema-source
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt,clippy
+
+      - name: Prove validation/schema compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo test --locked --lib validation
+          cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Require provenance-only generated delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          mapfile -t changed < <(git status --porcelain | awk '{print $2}' | sort)
+          expected=(schemas/zed-interfaces/lockfile.json schemas/zed-interfaces/manifest.json src/validation.rs)
+          test "${#changed[@]}" -eq "${#expected[@]}"
+          for i in "${!expected[@]}"; do
+            test "${changed[$i]}" = "${expected[$i]}"
+          done
+          grep -F "const INTERFACE_REVISION: &str = \"$INTERFACE_REV\";" src/validation.rs >/dev/null
+          ! grep -F "$OLD_INTERFACE_REV" src/validation.rs >/dev/null
+
+      - name: Commit exact upstream schema evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add schemas/zed-interfaces/manifest.json schemas/zed-interfaces/lockfile.json src/validation.rs
+          git commit -m 'fix(DEN-390): refresh interface validation schemas'
+          git push origin HEAD:salvage/DEN-390-graph-repin-current-main-20260911
