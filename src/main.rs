@@ -71,16 +71,6 @@ fn main() {
             }
         }
     }
-    if let Some(result) = oci_command::dispatch(args.clone()) {
-        match result {
-            Ok(0) => return,
-            Ok(code) => std::process::exit(code),
-            Err(error) => {
-                eprintln!("error: {error:#}");
-                std::process::exit(1);
-            }
-        }
-    }
     if let Some(result) = submodules::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
