@@ -33,9 +33,6 @@ concurrency:
   group: nix-export-bundle-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ZED_INTERFACES_SHA: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
-
 jobs:
   bundle:
     name: Deterministic bundle on ${{ matrix.os }}
@@ -62,11 +59,38 @@ jobs:
             accept-flake-config = false
 
       - name: Verify immutable shared-contract pin
-        shell: bash
+        shell: python
         run: |
-          set -euo pipefail
-          grep -F "rev = \"$ZED_INTERFACES_SHA\"" Cargo.toml
-          grep -F "#$ZED_INTERFACES_SHA" Cargo.lock
+          import re
+          import tomllib
+          from pathlib import Path
+
+          canonical_repo = "https://github.com/zed-pkg/zed-interfaces.git"
+          with Path("Cargo.toml").open("rb") as source:
+              manifest = tomllib.load(source)
+          with Path("Cargo.lock").open("rb") as source:
+              lock = tomllib.load(source)
+
+          dependency = manifest.get("dependencies", {}).get("zed-interfaces")
+          assert isinstance(dependency, dict), dependency
+          assert dependency.get("git") == canonical_repo, dependency
+          rev = dependency.get("rev")
+          assert isinstance(rev, str) and re.fullmatch(r"[0-9a-f]{40}", rev), rev
+          for forbidden in ("branch", "tag", "path"):
+              assert forbidden not in dependency, (forbidden, dependency)
+
+          packages = [
+              package
+              for package in lock.get("package", [])
+              if package.get("name") == "zed-interfaces"
+          ]
+          assert len(packages) == 1, packages
+          expected_source = f"git+{canonical_repo}?rev={rev}#{rev}"
+          assert packages[0].get("source") == expected_source, (
+              packages[0].get("source"),
+              expected_source,
+          )
+          print(f"zed-interfaces authority admitted: {rev}")
 
       - name: Check formatting and warnings
         run: |
