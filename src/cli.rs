@@ -2,9 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-/// Every user-facing flag can also be set through a `ZED_PKG_*` environment
-/// variable, following the flags-2-env convention
-/// (github.com/flags-2-env/flags-2-env). Secret-bearing values stay env-only.
+/// Every flag can also be set through a `ZED_PKG_*` environment variable,
+/// following the flags-2-env convention (github.com/flags-2-env/flags-2-env).
 #[derive(Debug, Parser)]
 #[command(
     name = "zed",
@@ -33,9 +32,8 @@ pub struct Globals {
     #[arg(long, global = true, env = "ZED_PKG_HOME")]
     pub home: Option<PathBuf>,
 
-    /// Registry auth token from the environment only; overrides saved credentials.
-    /// Secret values are deliberately not CLI options because argv is observable.
-    #[arg(skip = std::env::var("ZED_PKG_TOKEN").ok())]
+    /// Registry auth token; overrides saved credentials
+    #[arg(long, global = true, env = "ZED_PKG_TOKEN", hide_env_values = true)]
     pub token: Option<String>,
 
     /// shared-auth base URL; defaults to <registry>/shared-auth
@@ -204,7 +202,8 @@ pub enum AuthProvider {
     Supabase,
 }
 
-/// OCI runtime used by `zed r2g`.
+/// OCI runtime used by `zed r2g --docker` to roundtrip-test the package
+/// inside a throwaway container. Auto-detected when unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ContainerRuntime {
     Docker,
@@ -420,7 +419,7 @@ pub enum Cmd {
         /// Project-local schema-v2 environment plan; conventional names are discovered when omitted.
         #[arg(long, env = "ZED_TASK_PLAN")]
         plan: Option<PathBuf>,
-        /// Emit stable machine-readable task output.
+        /// Emit stable machine-readable JSON. Live command execution requires human streaming output.
         #[arg(long, env = "ZED_TASK_JSON")]
         json: bool,
         #[command(subcommand)]
@@ -1300,7 +1299,7 @@ mod tests {
         };
         assert_eq!(env_of("registry").as_deref(), Some("ZED_PKG_REGISTRY"));
         assert_eq!(env_of("home").as_deref(), Some("ZED_PKG_HOME"));
-        assert_eq!(env_of("token"), None, "bearer token must remain env-only");
+        assert_eq!(env_of("token").as_deref(), Some("ZED_PKG_TOKEN"));
         assert_eq!(
             env_of("git-submodules").as_deref(),
             Some("ZED_PKG_GIT_SUBMODULES")
@@ -1411,7 +1410,6 @@ mod tests {
                 return;
             };
             if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
-                let mut scope_envs = BTreeSet::new();
                 for (name, flag) in flags {
                     let env = flag
                         .get("env")
@@ -1423,10 +1421,9 @@ mod tests {
                         name.replace('_', "-")
                     );
                     assert!(
-                        scope_envs.insert(env.to_string()),
-                        "duplicate env `{env}` within one .cli-flags.toml flag scope"
+                        envs.insert(env.to_string()),
+                        "duplicate env `{env}` in .cli-flags.toml"
                     );
-                    envs.insert(env.to_string());
                 }
             }
             for child in table.values() {

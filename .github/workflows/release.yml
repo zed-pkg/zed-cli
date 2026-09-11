@@ -54,8 +54,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          # Match rust-toolchain.toml so release artifacts use the reviewed compiler.
-          toolchain: '1.98.1'
+          toolchain: stable
           targets: ${{ matrix.target }}
       - name: Install pinned cross compiler driver
         if: contains(matrix.target, 'linux')
