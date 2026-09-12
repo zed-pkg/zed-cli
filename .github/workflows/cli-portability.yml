@@ -11,6 +11,9 @@ on:
       - .zpkg.toml
       - '**/*.toml'
       - '**/*.toml.example'
+      - rust-toolchain.toml
+      - '.cli-flags.toml'
+      - '.*-cli-flags.toml'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -26,6 +29,9 @@ on:
       - .zpkg.toml
       - '**/*.toml'
       - '**/*.toml.example'
+      - rust-toolchain.toml
+      - '.cli-flags.toml'
+      - '.*-cli-flags.toml'
       - build.rs
       - 'src/**'
       - 'tests/**'
