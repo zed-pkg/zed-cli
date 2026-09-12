@@ -157,7 +157,11 @@ mod tests {
             "rust",
         ]))
         .expect("global contract should parse canonical install argv");
-        assert!(parsed.unknown_options.is_empty(), "{:?}", parsed.unknown_options);
+        assert!(
+            parsed.unknown_options.is_empty(),
+            "{:?}",
+            parsed.unknown_options
+        );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     }
 

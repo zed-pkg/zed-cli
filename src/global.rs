@@ -249,6 +249,8 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
 }
 
 fn run_cli(args: Vec<OsString>) -> Result<i32> {
+    crate::global_flags::validate(&args)?;
+
     let cli = match GlobalCli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(error) => {
