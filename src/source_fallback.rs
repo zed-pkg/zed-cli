@@ -8,25 +8,29 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read as _;
-use std::path::Path;
+use std::io::{Read as _, Write as _};
+use std::path::{Component, Path};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use flate2::Compression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use serde::Deserialize;
 use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::manifest::{Manifest, is_slug};
-use zed_interfaces::paths::MANIFEST_FILE;
+use zed_interfaces::mirror::MirrorDescriptorV1;
+use zed_interfaces::paths::{ARCHIVE_ROOT, MANIFEST_FILE};
 use zed_interfaces::registry::{
     AuditLogResponse, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
     SearchResponse, VersionMetadata, YankResponse,
 };
 use zed_interfaces::source::{
-    ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity, artifact_locators,
-    github_api_release_url, github_api_repo_url, github_api_tags_url, github_raw_manifest_url,
-    github_release_asset_names, github_release_sidecar_names, parse_github_identity,
-    version_from_git_tag,
+    ArtifactLocator, ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity,
+    artifact_locators, github_api_release_url, github_api_repo_url, github_api_tags_url,
+    github_raw_manifest_url, github_release_asset_names, github_release_sidecar_names,
+    parse_github_identity, resolve_r2_public_base, version_from_git_tag,
 };
 use zed_interfaces::vcs::Vcs;
 
@@ -138,6 +142,39 @@ impl FallbackRegistry {
             }),
             Err(_) => Box::new(inner),
         }
+    }
+
+    fn r2_base(&self) -> String {
+        resolve_r2_public_base(
+            None,
+            self.config.r2_public_base.as_deref(),
+            self.config.r2_public_key.as_deref(),
+        )
+    }
+
+    /// Fetch a GitHub tag archive and repack it as a Zed artifact. The raw
+    /// archive's size is unrelated to the packed artifact's, so only the
+    /// global cap bounds the download; the caller verifies the packed digest.
+    fn download_tag_archive(
+        &self,
+        identity: &GithubIdentity,
+        url: &str,
+        version: &VersionMetadata,
+        dest: &Path,
+    ) -> Result<()> {
+        let raw = tempfile::NamedTempFile::new().context("tag archive tempfile")?;
+        match self.config.github_token.as_deref() {
+            // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
+            // private repository 404s there even with a token. The REST
+            // tarball endpoint honours the token and redirects to a signed
+            // codeload URL for the same tag.
+            Some(token) => {
+                let api_url = github_api_tarball_url(identity, &version.vcs_tag);
+                download_url(&self.client, &api_url, raw.path(), 0, Some(token))?;
+            }
+            None => download_url(&self.client, url, raw.path(), 0, None)?,
+        }
+        normalize_tag_archive(raw.path(), dest)
     }
 
     fn github_headers(
@@ -413,10 +450,7 @@ impl FallbackRegistry {
             download_url,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-            mirrors: locators
-                .iter()
-                .map(zed_interfaces::mirror::MirrorDescriptorV1::from_locator)
-                .collect(),
+            mirrors: fallback_mirrors(&locators, &self.r2_base()),
             signatures: Vec::new(),
         };
         self.fill_digest(&mut metadata)?;
@@ -603,10 +637,12 @@ impl FallbackRegistry {
             r2_public_base: self.config.r2_public_base.as_deref(),
             r2_public_key: self.config.r2_public_key.as_deref(),
         });
+        // The GitHub tag archive stays in the chain even when a digest is
+        // pinned. It is the last locator and is repacked deterministically, so
+        // a digest derived from it is reproducible, and every caller verifies
+        // the bytes against the pin. Skipping it broke installs whose digest
+        // had been derived from that same archive in another registry instance.
         for locator in locators {
-            if locator.kind == ArtifactSourceKind::GithubArchive && packed_digest {
-                continue;
-            }
             if locator.kind == ArtifactSourceKind::Registry {
                 continue;
             }
@@ -619,15 +655,8 @@ impl FallbackRegistry {
                     version.size,
                     max_artifact_bytes(),
                 )
-            } else if locator.kind == ArtifactSourceKind::GithubArchive
-                && let Some(token) = self.config.github_token.as_deref()
-            {
-                // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
-                // private repository 404s there even with a token. The REST
-                // tarball endpoint honours the token and redirects to a signed
-                // codeload URL for the same tag.
-                let api_url = github_api_tarball_url(&identity, &version.vcs_tag);
-                download_url(&self.client, &api_url, dest, version.size, Some(token))
+            } else if locator.kind == ArtifactSourceKind::GithubArchive {
+                self.download_tag_archive(&identity, &locator.url, version, dest)
             } else {
                 download_url(&self.client, &locator.url, dest, version.size, None)
             };
@@ -835,6 +864,130 @@ fn release_asset_metadata(
 #[derive(Debug, Deserialize)]
 struct GithubTag {
     name: String,
+}
+
+/// Ceiling on files taken from one GitHub tag archive (inode-exhaustion guard,
+/// matching the store's extraction bound).
+const MAX_TAG_ARCHIVE_FILES: usize = 200_000;
+
+/// Repack a GitHub tag archive into the deterministic Zed artifact layout.
+///
+/// `git archive` output has a `<repo>-<tag>/` root, a `pax_global_header`
+/// entry, and gzip bytes GitHub does not promise to keep stable; the store
+/// accepts none of that. The top-level directory is replaced by `pkg/`,
+/// metadata-only entries are dropped, and files are written sorted with the
+/// zeroed headers `pack` uses — so the digest names the tree, not GitHub's
+/// compressor, and every machine derives the same one. Links and specials
+/// fail closed, exactly as the store's extractor would.
+fn normalize_tag_archive(raw: &Path, dest: &Path) -> Result<()> {
+    let budget = max_artifact_bytes();
+    let mut total: u64 = 0;
+    let mut files: Vec<(String, u32, Vec<u8>)> = Vec::new();
+    let file = fs::File::open(raw).context("open GitHub tag archive")?;
+    let mut archive = tar::Archive::new(GzDecoder::new(file));
+    for entry in archive.entries().context("read GitHub tag archive")? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        match entry.header().entry_type() {
+            tar::EntryType::Regular => {}
+            tar::EntryType::Directory | tar::EntryType::XGlobalHeader | tar::EntryType::XHeader => {
+                continue;
+            }
+            other => bail!(
+                "GitHub tag archive entry `{}` has unsupported type {other:?} \
+                 (only files and directories are allowed)",
+                path.display()
+            ),
+        }
+        let mut components = path.components();
+        if !matches!(components.next(), Some(Component::Normal(_))) {
+            bail!(
+                "GitHub tag archive entry `{}` has no root directory",
+                path.display()
+            );
+        }
+        let rel = components.as_path();
+        if rel.as_os_str().is_empty()
+            || !rel.components().all(|c| matches!(c, Component::Normal(_)))
+        {
+            bail!(
+                "GitHub tag archive entry `{}` escapes the archive root",
+                path.display()
+            );
+        }
+        if files.len() >= MAX_TAG_ARCHIVE_FILES {
+            bail!("GitHub tag archive has more than {MAX_TAG_ARCHIVE_FILES} files; refusing");
+        }
+        let size = entry.header().size()?;
+        total = total.saturating_add(size);
+        if total > budget {
+            bail!("GitHub tag archive expands past the {budget}-byte cap; refusing");
+        }
+        let mode = if entry.header().mode()? & 0o111 != 0 {
+            0o755
+        } else {
+            0o644
+        };
+        let mut data = Vec::new();
+        (&mut entry).take(size).read_to_end(&mut data)?;
+        let rel = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        files.push((rel, mode, data));
+    }
+    if files.is_empty() {
+        bail!("GitHub tag archive contains no files");
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    if let Some(pair) = files.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+        bail!("GitHub tag archive repeats entry `{}`", pair[0].0);
+    }
+
+    let out = fs::File::create(dest)?;
+    let mut builder = tar::Builder::new(GzEncoder::new(out, Compression::default()));
+    for (rel, mode, data) in &files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mtime(0);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mode(*mode);
+        builder.append_data(
+            &mut header,
+            format!("{ARCHIVE_ROOT}/{rel}"),
+            data.as_slice(),
+        )?;
+    }
+    let mut out = builder.into_inner()?.finish()?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Mirrors recorded on fallback-derived version metadata. An R2 locator is a
+/// complete object URL, but an object-store mirror is a *base* that
+/// `artifact_urls` appends keys to, so every R2 locator collapses to the one
+/// public base. Registry locators are dropped: the registry already heads the
+/// mirror chain.
+fn fallback_mirrors(locators: &[ArtifactLocator], r2_base: &str) -> Vec<MirrorDescriptorV1> {
+    let mut mirrors: Vec<MirrorDescriptorV1> = Vec::new();
+    for locator in locators {
+        let mirror = match locator.kind {
+            ArtifactSourceKind::Registry => continue,
+            ArtifactSourceKind::R2 => {
+                MirrorDescriptorV1::object_store(r2_base.trim_end_matches('/'))
+            }
+            _ => MirrorDescriptorV1::from_locator(locator),
+        };
+        if !mirrors
+            .iter()
+            .any(|seen| seen.kind == mirror.kind && seen.url == mirror.url)
+        {
+            mirrors.push(mirror);
+        }
+    }
+    mirrors
 }
 
 fn versions_from_tags(tags: &[GithubTag]) -> Vec<String> {
@@ -1197,6 +1350,164 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
             r2_object_keys(&query)
                 .iter()
                 .any(|key| key == "github/zed-pkg/zed-cli/v0.1.0/zed-cli-0.1.0.tar.gz")
+        );
+    }
+
+    #[test]
+    fn pinned_downloads_try_the_tag_archive_last() {
+        let sha256 = "ab".repeat(32);
+        let query = ArtifactQuery {
+            org: "ores-wasm-loaders",
+            name: "owls-interfaces",
+            version: "0.1.1",
+            vcs_tag: "v0.1.1",
+            sha256: Some(&sha256),
+            format: ArtifactFormat::TarGz,
+            repo_url: Some("https://github.com/ores-wasm-loaders/owls-interfaces"),
+            artifacts: Some(&ArtifactsSection::EMPTY),
+            registry_base: None,
+            r2_public_base: Some("https://cdn.zpkg.net"),
+            r2_public_key: None,
+        };
+        let locators = artifact_locators(&query);
+        let archive = locators
+            .iter()
+            .position(|locator| locator.kind == ArtifactSourceKind::GithubArchive)
+            .expect("a pinned query still yields the GitHub tag archive");
+        assert_eq!(archive, locators.len() - 1);
+    }
+
+    /// A `git archive`-shaped tarball: pax global header, `<root>/` directory,
+    /// a nested file, and an executable, all with non-zero mtimes.
+    fn git_archive_fixture(root: &str, mtime: u64, level: u32) -> tempfile::NamedTempFile {
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        let encoder = GzEncoder::new(
+            fs::File::create(fixture.path()).unwrap(),
+            Compression::new(level),
+        );
+        let mut builder = tar::Builder::new(encoder);
+        let comment = b"52 comment=291406191b55606e34b7980b42112e9c77ab690b\n";
+        let mut pax = tar::Header::new_ustar();
+        pax.set_entry_type(tar::EntryType::XGlobalHeader);
+        pax.set_size(comment.len() as u64);
+        builder
+            .append_data(&mut pax, "pax_global_header", comment.as_slice())
+            .unwrap();
+        let mut dir = tar::Header::new_ustar();
+        dir.set_entry_type(tar::EntryType::Directory);
+        dir.set_size(0);
+        dir.set_mode(0o775);
+        dir.set_mtime(mtime);
+        builder
+            .append_data(&mut dir, format!("{root}/"), std::io::empty())
+            .unwrap();
+        for (path, mode, body) in [
+            ("rust/src/lib.rs", 0o664, b"pub fn owls() {}\n".as_slice()),
+            (".zpkg.toml", 0o664, b"[package]\n".as_slice()),
+            ("scripts/run.sh", 0o775, b"#!/bin/sh\n".as_slice()),
+        ] {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(body.len() as u64);
+            header.set_mode(mode);
+            header.set_mtime(mtime);
+            builder
+                .append_data(&mut header, format!("{root}/{path}"), body)
+                .unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        fixture
+    }
+
+    #[test]
+    fn tag_archives_repack_into_a_reproducible_pkg_artifact() {
+        let first = git_archive_fixture("owls-interfaces-0.1.1", 1_757_080_440, 9);
+        let second = git_archive_fixture("owls-interfaces-291406191b55", 42, 1);
+        let out = tempfile::tempdir().unwrap();
+        let (a, b) = (out.path().join("a.tar.gz"), out.path().join("b.tar.gz"));
+        normalize_tag_archive(first.path(), &a).unwrap();
+        normalize_tag_archive(second.path(), &b).unwrap();
+        assert_eq!(sha256_and_size(&a).unwrap(), sha256_and_size(&b).unwrap());
+
+        let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(&a).unwrap()));
+        let entries: Vec<(String, u32, u64)> = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let header = entry.header();
+                (
+                    entry.path().unwrap().to_string_lossy().into_owned(),
+                    header.mode().unwrap(),
+                    header.mtime().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            entries,
+            vec![
+                ("pkg/.zpkg.toml".to_string(), 0o644, 0),
+                ("pkg/rust/src/lib.rs".to_string(), 0o644, 0),
+                ("pkg/scripts/run.sh".to_string(), 0o755, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn tag_archive_links_fail_closed() {
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        let mut builder = tar::Builder::new(GzEncoder::new(
+            fs::File::create(fixture.path()).unwrap(),
+            Compression::default(),
+        ));
+        let mut link = tar::Header::new_ustar();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        builder
+            .append_link(&mut link, "repo-1.0.0/escape", "/etc/passwd")
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let error = normalize_tag_archive(fixture.path(), &out.path().join("a.tar.gz"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported type"), "{error}");
+    }
+
+    #[test]
+    fn fallback_mirrors_use_object_store_bases_not_object_urls() {
+        use zed_interfaces::mirror::MirrorKindV1;
+        let query = ArtifactQuery {
+            org: "ores-wasm-loaders",
+            name: "owls-interfaces",
+            version: "0.1.1",
+            vcs_tag: "v0.1.1",
+            sha256: None,
+            format: ArtifactFormat::TarGz,
+            repo_url: Some("https://github.com/ores-wasm-loaders/owls-interfaces"),
+            artifacts: None,
+            registry_base: None,
+            r2_public_base: Some("https://cdn.zpkg.net"),
+            r2_public_key: None,
+        };
+        let locators = artifact_locators(&query);
+        assert!(
+            locators
+                .iter()
+                .filter(|locator| locator.kind == ArtifactSourceKind::R2)
+                .count()
+                > 1
+        );
+        let mirrors = fallback_mirrors(&locators, "https://cdn.zpkg.net/");
+        let stores: Vec<_> = mirrors
+            .iter()
+            .filter(|mirror| mirror.kind == MirrorKindV1::ObjectStore)
+            .collect();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].url.as_deref(), Some("https://cdn.zpkg.net"));
+        assert!(
+            mirrors
+                .iter()
+                .all(|mirror| mirror.kind != MirrorKindV1::ZedRegistry)
         );
     }
 }
