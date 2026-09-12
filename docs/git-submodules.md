@@ -223,3 +223,30 @@ Zed refuses takeover or lock refresh when:
 
 These checks keep `zed install --frozen` reproducible without making Git and Zed
 mutually exclusive.
+
+## Git hooks: keep submodules and packages materialized automatically
+
+`hooks/` ships `post-checkout`, `post-merge` and `post-rewrite` hooks that run
+
+```sh
+zed install --git-submodules [--frozen]   # --frozen when .zpkg.lock exists
+```
+
+only when the checkout/merge changed `.gitmodules`, `.zpkg.toml` or
+`.zpkg.lock` (diffed between the previous and new `HEAD`). A repository that has
+neither file is ignored. The hook never fails the Git operation that already
+succeeded: if `zed` is not on `PATH` it prints the manual command and exits 0;
+if `zed install` fails it reports and leaves the working tree as Git left it.
+It never rebases, stashes, resets, or pushes.
+
+Install into a repository (idempotent; chains any pre-existing hook as
+`<name>.pre-zed`):
+
+```sh
+scripts/install-git-hooks.sh ~/codes/<org>/<repo>
+```
+
+Repositories that already keep hooks in `.githooks/` (the `k8s-cluster`
+convention) get the files there and `core.hooksPath = .githooks`; others get
+`.git/hooks/`. Set `ZED_SKIP_GIT_HOOK=1` to bypass, `ZED_GIT_HOOK_VERBOSE=1` to
+see every decision, `ZED_BIN` to point at a specific binary.
