@@ -133,6 +133,7 @@ pub mod pack;
 pub(crate) mod pack_guard;
 pub(crate) mod pack_inputs;
 pub mod preflight;
+pub mod provider_admission;
 pub mod project_lock;
 pub(crate) mod publish_ignore;
 pub mod publisher_keys;
