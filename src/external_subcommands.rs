@@ -18,10 +18,13 @@ const EXTERNAL_PREFIX: &str = "zed-";
 const KNOWN_EXTERNAL_COMMAND: &str = "gitops";
 const EXTERNAL_COMMAND_ENV: &str = "ZED_EXTERNAL_SUBCOMMAND";
 
+/// Root value options lifted into the child environment. Secret-bearing values
+/// (`ZED_PKG_TOKEN`, `ZED_PKG_AUTH_PASSWORD`) are deliberately absent: they are
+/// environment/session/stdin-only and are inherited from the parent process
+/// environment, never translated from argv.
 const ROOT_VALUE_OPTIONS: &[(&str, &str)] = &[
     ("--registry", "ZED_PKG_REGISTRY"),
     ("--home", "ZED_PKG_HOME"),
-    ("--token", "ZED_PKG_TOKEN"),
     ("--auth-url", "ZED_PKG_AUTH_URL"),
     ("--supabase-url", "ZED_PKG_SUPABASE_URL"),
     ("--supabase-key", "ZED_PKG_SUPABASE_KEY"),
@@ -32,6 +35,20 @@ const ROOT_BOOLEAN_OPTIONS: &[(&str, &str)] = &[
     ("--interactive", "ZED_PKG_INTERACTIVE"),
     ("--git-submodules", "ZED_PKG_GIT_SUBMODULES"),
 ];
+
+/// Removed secret-bearing spellings. Root startup already rejects these; the
+/// router independently refuses to build a route so a secret can never reach a
+/// child's argv or environment even if that ordering changes.
+const REJECTED_SECRET_OPTIONS: &[&str] = &["--token", "--zed-pkg-auth-password"];
+
+fn is_rejected_secret_spelling(token: &str) -> bool {
+    REJECTED_SECRET_OPTIONS.iter().any(|option| {
+        token == *option
+            || token
+                .strip_prefix(option)
+                .is_some_and(|tail| tail.starts_with('='))
+    })
+}
 
 type ExternalEnvironment = Vec<(OsString, OsString)>;
 type ParsedExternalArguments = (Vec<OsString>, ExternalEnvironment);
@@ -136,7 +153,9 @@ fn external_route(args: &[OsString]) -> Option<ExternalRoute> {
 
     while index < args.len() {
         let token = args[index].to_str()?;
-        if matches!(token, "--" | "--help" | "-h" | "--version" | "-V") {
+        if matches!(token, "--" | "--help" | "-h" | "--version" | "-V")
+            || is_rejected_secret_spelling(token)
+        {
             return None;
         }
 
@@ -225,6 +244,9 @@ fn extract_root_options(args: &[OsString]) -> Option<ParsedExternalArguments> {
         if token == "--" {
             arguments.extend_from_slice(&args[index..]);
             break;
+        }
+        if is_rejected_secret_spelling(token) {
+            return None;
         }
 
         if let Some((key, inline)) = root_value_option(token) {
@@ -486,8 +508,8 @@ mod tests {
             "zed",
             "gitops",
             "validate",
-            "--token",
-            "fixture-value",
+            "--registry",
+            "https://registry.example.invalid",
             "--offline",
             "--",
             "--home",
@@ -501,9 +523,45 @@ mod tests {
         assert_eq!(
             route.environment,
             vec![(
-                OsString::from("ZED_PKG_TOKEN"),
-                OsString::from("fixture-value")
+                OsString::from("ZED_PKG_REGISTRY"),
+                OsString::from("https://registry.example.invalid")
             )]
+        );
+    }
+
+    #[test]
+    fn secret_argv_spellings_never_become_a_route_or_child_environment() {
+        let secret = "SYNTHETIC_ROUTER_SECRET";
+        let inline_token = format!("--token={secret}");
+        let inline_password = format!("--zed-pkg-auth-password={secret}");
+        let cases: [&[&str]; 6] = [
+            &["zed", "--token", secret, "gitops", "validate"],
+            &["zed", inline_token.as_str(), "gitops", "validate"],
+            &["zed", "gitops", "validate", "--token", secret],
+            &["zed", "gitops", "validate", inline_token.as_str()],
+            &[
+                "zed",
+                "--zed-pkg-auth-password",
+                secret,
+                "gitops",
+                "validate",
+            ],
+            &["zed", "gitops", "validate", inline_password.as_str()],
+        ];
+        for case in cases {
+            assert!(external_route(&os_args(case)).is_none(), "routed {case:?}");
+        }
+        assert!(
+            ROOT_VALUE_OPTIONS
+                .iter()
+                .all(|(_, env)| !matches!(*env, "ZED_PKG_TOKEN" | "ZED_PKG_AUTH_PASSWORD")),
+            "secret-bearing env must never be lifted from argv"
+        );
+        // Child-owned arguments after `--` stay opaque to the router.
+        let route = external_route(&os_args(&["zed", "gitops", "validate", "--", "--token"]));
+        assert_eq!(
+            route.map(|route| (route.arguments, route.environment)),
+            Some((os_args(&["validate", "--", "--token"]), Vec::new()))
         );
     }
 
