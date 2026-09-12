@@ -24,8 +24,8 @@ use zed_interfaces::registry::{
 };
 use zed_interfaces::source::{
     ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity, artifact_locators,
-    github_api_release_url, github_api_repo_url, github_api_tags_url, github_identity_for,
-    github_raw_manifest_url, github_release_asset_names, github_release_sidecar_names,
+    github_api_release_url, github_api_repo_url, github_api_tags_url, github_raw_manifest_url,
+    github_release_asset_names, github_release_sidecar_names, parse_github_identity,
     version_from_git_tag,
 };
 use zed_interfaces::vcs::Vcs;
@@ -33,6 +33,8 @@ use zed_interfaces::vcs::Vcs;
 use crate::registry::{HttpRegistry, Registry};
 
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_GITHUB_REPO_CANDIDATES: usize = 12;
+const GITHUB_REPOSITORY_SEARCH_URL: &str = "https://api.github.com/search/repositories";
 
 thread_local! {
     static CLI_OVERRIDES: RefCell<Option<CliFallbackOverrides>> = const { RefCell::new(None) };
@@ -110,6 +112,7 @@ pub struct FallbackRegistry {
     config: SourceFallbackConfig,
     client: reqwest::blocking::Client,
     cache: Mutex<HashMap<String, VersionMetadata>>,
+    github_identities: Mutex<HashMap<String, GithubIdentity>>,
 }
 
 impl FallbackRegistry {
@@ -131,6 +134,7 @@ impl FallbackRegistry {
                 config,
                 client,
                 cache: Mutex::new(HashMap::new()),
+                github_identities: Mutex::new(HashMap::new()),
             }),
             Err(_) => Box::new(inner),
         }
@@ -163,21 +167,159 @@ impl FallbackRegistry {
         }
     }
 
-    fn github_get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
-        let identity = GithubIdentity::guessed_from_package(org, name);
-        let repo: GithubRepo = self
-            .github_headers(self.client.get(github_api_repo_url(&identity)))
+    fn cached_github_identity(&self, org: &str, name: &str) -> Option<GithubIdentity> {
+        self.github_identities
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&package_key(org, name)).cloned())
+    }
+
+    fn remember_github_identity(&self, org: &str, name: &str, identity: &GithubIdentity) {
+        if let Ok(mut guard) = self.github_identities.lock() {
+            guard.insert(package_key(org, name), identity.clone());
+        }
+    }
+
+    fn github_repo(&self, identity: &GithubIdentity) -> Result<GithubRepo> {
+        let response = self
+            .github_headers(self.client.get(github_api_repo_url(identity)))
             .send()
-            .and_then(reqwest::blocking::Response::error_for_status)
-            .and_then(|response| response.json())
-            .unwrap_or(GithubRepo {
-                default_branch: "main".to_string(),
-                html_url: identity.web_url(),
-            });
-        let manifest = self
-            .fetch_manifest(&identity, &repo.default_branch)
-            .or_else(|_| self.fetch_manifest(&identity, "main"))
-            .or_else(|_| self.fetch_manifest(&identity, "master"));
+            .with_context(|| format!("fetch GitHub repository {}", identity.web_url()))?;
+        if !response.status().is_success() {
+            bail!(
+                "GitHub repository {} returned {}",
+                identity.web_url(),
+                response.status()
+            );
+        }
+        response
+            .json()
+            .with_context(|| format!("decode GitHub repository {}", identity.web_url()))
+    }
+
+    fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
+        // Admission is bound to GitHub's reported default branch. A stale
+        // `main`/`master` branch must never be allowed to self-claim a package
+        // when GitHub reports another branch as authoritative.
+        self.fetch_manifest(identity, default_branch)
+    }
+
+    fn resolve_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
+        if !github_guess_is_safe(org, name) {
+            bail!("refusing unsafe GitHub fallback identity `{org}/{name}`");
+        }
+        if let Some(identity) = self.cached_github_identity(org, name) {
+            return Ok(identity);
+        }
+
+        let guessed = GithubIdentity::guessed_from_package(org, name);
+        let guessed_failure = match self.github_repo(&guessed) {
+            Ok(repo) => match self.github_manifest(&guessed, &repo.default_branch) {
+                Ok(manifest)
+                    if manifest_self_claims_github_identity(&manifest, org, name, &guessed) =>
+                {
+                    self.remember_github_identity(org, name, &guessed);
+                    return Ok(guessed);
+                }
+                Ok(_) => format!(
+                    "{} exists but its committed {MANIFEST_FILE} does not self-claim package {org}/{name}",
+                    guessed.web_url()
+                ),
+                Err(error) => format!(
+                    "{} exists but has no admissible {MANIFEST_FILE}: {error:#}",
+                    guessed.web_url()
+                ),
+            },
+            Err(error) => format!("{} was unavailable: {error:#}", guessed.web_url()),
+        };
+
+        let discovered = self
+            .search_github_identity(org, name)
+            .with_context(|| guessed_failure)?;
+        self.remember_github_identity(org, name, &discovered);
+        Ok(discovered)
+    }
+
+    fn search_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
+        let query = github_repository_search_query(org, name);
+        let response = self
+            .github_headers(
+                self.client
+                    .get(GITHUB_REPOSITORY_SEARCH_URL)
+                    .query(&[("q", query.as_str()), ("per_page", "20")]),
+            )
+            .send()
+            .with_context(|| format!("search GitHub repositories for {org}/{name}"))?;
+        if !response.status().is_success() {
+            bail!(
+                "GitHub repository search for {org}/{name} returned {}",
+                response.status()
+            );
+        }
+        let search: GithubRepositorySearch = response
+            .json()
+            .with_context(|| format!("decode GitHub repository search for {org}/{name}"))?;
+        if !github_search_result_is_complete(&search) {
+            bail!(
+                "GitHub repository search for {org}/{name} returned total_count={} with {} item(s); bounded admission requires a complete result set of at most {} candidates",
+                search.total_count,
+                search.items.len(),
+                MAX_GITHUB_REPO_CANDIDATES
+            );
+        }
+
+        let mut matches = Vec::new();
+        for repo in search.items {
+            let Some(candidate) = parse_github_identity(&repo.html_url) else {
+                continue;
+            };
+            if !candidate.owner.eq_ignore_ascii_case(org) {
+                continue;
+            }
+            let Ok(manifest) = self.github_manifest(&candidate, &repo.default_branch) else {
+                continue;
+            };
+            if manifest_self_claims_github_identity(&manifest, org, name, &candidate) {
+                matches.push(candidate);
+            }
+        }
+        matches.sort_by(|left, right| {
+            left.owner
+                .to_ascii_lowercase()
+                .cmp(&right.owner.to_ascii_lowercase())
+                .then_with(|| {
+                    left.repo
+                        .to_ascii_lowercase()
+                        .cmp(&right.repo.to_ascii_lowercase())
+                })
+        });
+        matches.dedup_by(|left, right| same_github_identity(left, right));
+
+        match matches.as_slice() {
+            [identity] => Ok(identity.clone()),
+            [] => {
+                let hint = if self.config.github_token.is_none() {
+                    "; private repositories also require ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN"
+                } else {
+                    ""
+                };
+                bail!("no manifest-validated GitHub repository was found for {org}/{name}{hint}")
+            }
+            _ => bail!(
+                "multiple GitHub repositories claim package identity {org}/{name}: {}; refusing ambiguous fallback",
+                matches
+                    .iter()
+                    .map(GithubIdentity::web_url)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
+
+    fn github_get_package(&self, org: &str, name: &str) -> Result<PackageMetadata> {
+        let identity = self.resolve_github_identity(org, name)?;
+        let repo = self.github_repo(&identity)?;
+        let manifest = self.github_manifest(&identity, &repo.default_branch);
         let tags = self.github_tags(&identity)?;
         let versions = versions_from_tags(&tags);
         let (description, vcs, repo_url, version_scheme, keywords) = match manifest {
@@ -215,7 +357,7 @@ impl FallbackRegistry {
         if let Some(cached) = self.cached(org, name, version) {
             return Ok(cached);
         }
-        let identity = github_identity_for(org, name, None);
+        let identity = self.resolve_github_identity(org, name)?;
         let tag = format!("v{version}");
         if let Some(metadata) = self.release_sidecar(&identity, org, name, version, &tag) {
             self.remember(metadata.clone());
@@ -320,7 +462,7 @@ impl FallbackRegistry {
             let hint = if self.config.github_token.is_none()
                 && response.status() == reqwest::StatusCode::NOT_FOUND
             {
-                " (private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN)"
+                " (repository may be private; private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN)"
             } else {
                 ""
             };
@@ -442,6 +584,12 @@ impl FallbackRegistry {
     fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
         let mut errors = Vec::new();
         let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
+        // Artifact fallback must use the same manifest-validated canonical repository
+        // identity as metadata/version fallback. A cold cache is not permission to
+        // regress to the conventional org/name guess because valid repositories can
+        // carry suffixes such as `.rs`.
+        let identity = self.resolve_github_identity(&version.org, &version.name)?;
+        let repo_url = identity.web_url();
         let locators = artifact_locators(&ArtifactQuery {
             org: &version.org,
             name: &version.name,
@@ -449,7 +597,7 @@ impl FallbackRegistry {
             vcs_tag: &version.vcs_tag,
             sha256: packed_digest.then_some(version.sha256.as_str()),
             format: version.format,
-            repo_url: None,
+            repo_url: Some(repo_url.as_str()),
             artifacts: Some(&ArtifactsSection::EMPTY),
             registry_base: None,
             r2_public_base: self.config.r2_public_base.as_deref(),
@@ -478,7 +626,6 @@ impl FallbackRegistry {
                 // private repository 404s there even with a token. The REST
                 // tarball endpoint honours the token and redirects to a signed
                 // codeload URL for the same tag.
-                let identity = github_identity_for(&version.org, &version.name, None);
                 let api_url = github_api_tarball_url(&identity, &version.vcs_tag);
                 download_url(&self.client, &api_url, dest, version.size, Some(token))
             } else {
@@ -585,8 +732,13 @@ impl Registry for FallbackRegistry {
 }
 
 #[derive(Debug, Deserialize)]
+struct GithubRepositorySearch {
+    total_count: usize,
+    items: Vec<GithubRepo>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GithubRepo {
-    #[serde(default = "default_branch")]
     default_branch: String,
     #[serde(default)]
     html_url: String,
@@ -678,10 +830,6 @@ fn release_asset_metadata(
         }
     }
     None
-}
-
-fn default_branch() -> String {
-    "main".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -783,6 +931,43 @@ fn sha256_and_size(path: &Path) -> Result<(String, u64)> {
 
 fn cache_key(org: &str, name: &str, version: &str) -> String {
     format!("{org}/{name}@{version}")
+}
+
+fn package_key(org: &str, name: &str) -> String {
+    format!("{org}/{name}")
+}
+
+fn github_repository_search_query(org: &str, name: &str) -> String {
+    format!("org:{org} {name} in:name fork:false")
+}
+
+fn same_github_identity(left: &GithubIdentity, right: &GithubIdentity) -> bool {
+    left.owner.eq_ignore_ascii_case(&right.owner) && left.repo.eq_ignore_ascii_case(&right.repo)
+}
+
+fn github_search_result_is_complete(search: &GithubRepositorySearch) -> bool {
+    search.total_count <= MAX_GITHUB_REPO_CANDIDATES && search.items.len() == search.total_count
+}
+
+fn manifest_github_identity_for_package(
+    manifest: &Manifest,
+    org: &str,
+    name: &str,
+) -> Option<GithubIdentity> {
+    if manifest.package.org != org || manifest.package.name != name {
+        return None;
+    }
+    parse_github_identity(&manifest.package.repository.url)
+}
+
+fn manifest_self_claims_github_identity(
+    manifest: &Manifest,
+    org: &str,
+    name: &str,
+    candidate: &GithubIdentity,
+) -> bool {
+    manifest_github_identity_for_package(manifest, org, name)
+        .is_some_and(|declared| same_github_identity(candidate, &declared))
 }
 
 pub fn is_loopback_registry(url: &str) -> bool {
@@ -896,6 +1081,97 @@ mod tests {
             github_api_tarball_url(&identity, "v1.2.0"),
             "https://api.github.com/repos/acme/http-kit/tarball/v1.2.0"
         );
+    }
+
+    #[test]
+    fn manifest_identity_preserves_repository_suffixes() {
+        let manifest = Manifest::parse(
+            r#"
+[package]
+org = "ores-otel"
+name = "ores-otel-sidecar"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
+"#,
+        )
+        .unwrap();
+        let identity =
+            manifest_github_identity_for_package(&manifest, "ores-otel", "ores-otel-sidecar")
+                .unwrap();
+        assert_eq!(identity.owner, "ores-otel");
+        assert_eq!(identity.repo, "ores-otel-sidecar.rs");
+        assert!(manifest_self_claims_github_identity(
+            &manifest,
+            "ores-otel",
+            "ores-otel-sidecar",
+            &identity,
+        ));
+        let guessed = GithubIdentity::guessed_from_package("ores-otel", "ores-otel-sidecar");
+        assert!(
+            !manifest_self_claims_github_identity(
+                &manifest,
+                "ores-otel",
+                "ores-otel-sidecar",
+                &guessed,
+            ),
+            "a conventional org/name repo must not inherit a package claim whose manifest points at a different canonical repository"
+        );
+        assert!(
+            manifest_github_identity_for_package(&manifest, "ores-otel", "different-package")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn repository_search_query_is_org_scoped_and_name_only() {
+        assert_eq!(
+            github_repository_search_query("ores-otel", "ores-otel-sidecar"),
+            "org:ores-otel ores-otel-sidecar in:name fork:false"
+        );
+        assert!(github_guess_is_safe("ores-otel", "ores-otel-sidecar"));
+        assert!(!github_guess_is_safe("ores-otel", "sidecar in:description"));
+    }
+
+    #[test]
+    fn repository_search_admission_requires_complete_bounded_results() {
+        let repo = |suffix: usize| GithubRepo {
+            default_branch: "main".into(),
+            html_url: format!("https://github.com/acme/http-kit-{suffix}"),
+        };
+        let complete = GithubRepositorySearch {
+            total_count: MAX_GITHUB_REPO_CANDIDATES,
+            items: (0..MAX_GITHUB_REPO_CANDIDATES).map(repo).collect(),
+        };
+        assert!(github_search_result_is_complete(&complete));
+
+        let truncated = GithubRepositorySearch {
+            total_count: MAX_GITHUB_REPO_CANDIDATES + 1,
+            items: (0..MAX_GITHUB_REPO_CANDIDATES).map(repo).collect(),
+        };
+        assert!(!github_search_result_is_complete(&truncated));
+
+        let incomplete = GithubRepositorySearch {
+            total_count: 2,
+            items: vec![repo(0)],
+        };
+        assert!(!github_search_result_is_complete(&incomplete));
+    }
+
+    #[test]
+    fn github_repo_decode_requires_reported_default_branch() {
+        let missing = serde_json::from_str::<GithubRepo>(
+            r#"{"html_url":"https://github.com/acme/http-kit"}"#,
+        );
+        assert!(missing.is_err());
+
+        let present = serde_json::from_str::<GithubRepo>(
+            r#"{"default_branch":"trunk","html_url":"https://github.com/acme/http-kit"}"#,
+        )
+        .unwrap();
+        assert_eq!(present.default_branch, "trunk");
     }
 
     #[test]
