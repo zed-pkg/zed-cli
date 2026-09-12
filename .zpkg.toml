@@ -56,4 +56,5 @@ registry = "crates-io"
 package = "zed-cli"
 
 [scripts]
-test = "bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
+toml-contract = "cargo test --test toml_contract --locked"
+test = "cargo test --test toml_contract --locked && bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
