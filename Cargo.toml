@@ -37,8 +37,8 @@ zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "4509f19e
 # Unified graph admission: the merged client, direct interfaces crate,
 # and direct behavior crate all resolve through one immutable Rust type authority.
 zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "6a046b0a5e262c0c6a23851b810d7fe7eda251c4" }
-# Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
-zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
+# Includes Windows ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION contention normalization.
+zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1a95bb87272ac7b08895cea1f61743cf40321213" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"

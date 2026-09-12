@@ -91,7 +91,7 @@ expected_sources = {
     ),
     "zed-lock": (
         "https://github.com/zed-pkg/zed-lock.git",
-        "1db0da00d30fcf2e0762f50eedb1f88458020b52",
+        "1a95bb87272ac7b08895cea1f61743cf40321213",
     ),
 }
 
