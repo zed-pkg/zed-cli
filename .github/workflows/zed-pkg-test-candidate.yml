@@ -14,12 +14,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  candidate-authority:
+    name: Derive immutable candidate authorities
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      zed_interfaces_ref: ${{ steps.authority.outputs.zed_interfaces_ref }}
+    steps:
+      - name: Check out exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Derive and verify zed-interfaces authority
+        id: authority
+        shell: bash
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          ref="$(python3 scripts/zed_pkg_test_caller_contract.py --root . --print-interface-revision)"
+          [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
+          printf 'zed_interfaces_ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
+
   candidate-smoke:
     name: Exact CLI against pinned fixture organization
+    needs: candidate-authority
     uses: zed-pkg-test/zed-pkg-e2e/.github/workflows/candidate-smoke.yml@31d22ea3b6bc3d54fc79343787727a05054535ce
     with:
       zed_cli_ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      zed_interfaces_ref: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
+      zed_interfaces_ref: ${{ needs.candidate-authority.outputs.zed_interfaces_ref }}
       harness_ref: 31d22ea3b6bc3d54fc79343787727a05054535ce
       # shared-schema remains the vendored payload for the submodule/subtree
       # fixtures, and its reviewed current commit is also a valid language-neutral

@@ -32,9 +32,11 @@ path = "src/lib.rs"
 [dependencies]
 # One exact contract, behavior, and transport stack is shared with every Rust
 # SDK consumer. zed-cli keeps only CLI-only publication/binary/fallback edges.
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e" }
-zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "eac0878750332b031bc12f6040b6a795a17e7417" }
-zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "b32e089caea772f166204fb1c7bcaad6f56942fe" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c" }
+zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "4509f19e1d3242226f28f842f550085864582380" }
+# Unified graph admission: the merged client, direct interfaces crate,
+# and direct behavior crate all resolve through one immutable Rust type authority.
+zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "6a046b0a5e262c0c6a23851b810d7fe7eda251c4" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"

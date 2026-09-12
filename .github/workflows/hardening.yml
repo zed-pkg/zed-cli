@@ -19,9 +19,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out exact policy candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify exact policy candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Run policy unit tests
         run: python3 -m unittest -v tests/workflow_policy_test.py
       - name: Audit every workflow
@@ -32,20 +38,85 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out exact Rust candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: zed-cli
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Verify exact Rust candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Validate graph and resolve immutable authorities
+        id: authorities
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/validate-zed-package-graph.sh
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          canonical_repo = "https://github.com/zed-pkg/zed-interfaces.git"
+          with open("Cargo.toml", "rb") as source:
+              manifest = tomllib.load(source)
+          with open("Cargo.lock", "rb") as source:
+              lock = tomllib.load(source)
+          with open("rust-toolchain.toml", "rb") as source:
+              toolchain = tomllib.load(source)["toolchain"]["channel"]
+
+          dependency = manifest.get("dependencies", {}).get("zed-interfaces")
+          if not isinstance(dependency, dict) or dependency.get("git") != canonical_repo:
+              raise SystemExit(f"unexpected zed-interfaces dependency authority: {dependency!r}")
+          rev = dependency.get("rev")
+          if not isinstance(rev, str) or re.fullmatch(r"[0-9a-f]{40}", rev) is None:
+              raise SystemExit(f"zed-interfaces rev must be a full immutable SHA: {rev!r}")
+
+          packages = [
+              package
+              for package in lock.get("package", [])
+              if package.get("name") == "zed-interfaces"
+          ]
+          expected_source = f"git+{canonical_repo}?rev={rev}#{rev}"
+          if len(packages) != 1 or packages[0].get("source") != expected_source:
+              raise SystemExit(
+                  "Cargo.lock must resolve exactly one zed-interfaces package at the declared immutable source: "
+                  f"packages={packages!r} expected={expected_source!r}"
+              )
+
+          if not isinstance(toolchain, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain) is None:
+              raise SystemExit(f"Rust toolchain must be an immutable version: {toolchain!r}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"zed_interfaces_sha={rev}\n")
+              output.write(f"rust_toolchain={toolchain}\n")
+          PY
+
+      - name: Check out lockfile-resolved zed-interfaces
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ steps.authorities.outputs.zed_interfaces_sha }}
           path: zed-interfaces
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+
+      - name: Verify exact interface fixture
+        env:
+          EXPECTED_SHA: ${{ steps.authorities.outputs.zed_interfaces_sha }}
+        run: test "$(git -C zed-interfaces rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install repository-declared Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: stable
+          toolchain: ${{ steps.authorities.outputs.rust_toolchain }}
           components: rustfmt,clippy
+
       - name: Verify lockfile-resolved metadata
         working-directory: zed-cli
         run: cargo metadata --locked --format-version 1 > /dev/null

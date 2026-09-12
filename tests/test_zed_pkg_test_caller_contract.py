@@ -33,6 +33,41 @@ jobs:
       harness_ref: {SHA}
 '''
 
+DERIVED_WORKFLOW = f'''name: zed-pkg-test candidate smoke
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  cancel-in-progress: true
+jobs:
+  candidate-authority:
+    outputs:
+      zed_interfaces_ref: ${{{{ steps.authority.outputs.zed_interfaces_ref }}}}
+    steps:
+      - uses: actions/checkout@{'d' * 40}
+        with:
+          ref: ${{{{ github.event.pull_request.head.sha || github.sha }}}}
+          persist-credentials: false
+      - id: authority
+        env:
+          EXPECTED_HEAD: ${{{{ github.event.pull_request.head.sha || github.sha }}}}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          ref="$(python3 scripts/zed_pkg_test_caller_contract.py --root . --print-interface-revision)"
+          printf 'zed_interfaces_ref=%s\\n' "$ref" >> "$GITHUB_OUTPUT"
+  candidate-smoke:
+    needs: candidate-authority
+    uses: zed-pkg-test/zed-pkg-e2e/.github/workflows/candidate-smoke.yml@{SHA}
+    with:
+      zed_cli_ref: ${{{{ github.event.pull_request.head.sha || github.sha }}}}
+      zed_interfaces_ref: ${{{{ needs.candidate-authority.outputs.zed_interfaces_ref }}}}
+      harness_ref: {SHA}
+'''
+
 VALID_DOCS = '''
 Every `zed-cli` pull request and `main` commit uses an exact harness, exact CLI commit, and exact interface commit.
 The interface pin is checked against Cargo.toml and Cargo.lock before compilation.
@@ -59,8 +94,31 @@ source = "git+{contract.CANONICAL_INTERFACES_GIT}?rev={INTERFACE_SHA}#{INTERFACE
 
 
 class CallerWorkflowTests(unittest.TestCase):
-    def test_valid_caller_returns_the_harness_and_interface_pins(self) -> None:
+    def test_valid_literal_caller_returns_the_harness_and_interface_pins(self) -> None:
         self.assertEqual(contract.audit_workflow(VALID_WORKFLOW), (SHA, INTERFACE_SHA))
+
+    def test_valid_derived_caller_uses_repository_authority(self) -> None:
+        self.assertEqual(
+            contract.audit_workflow(DERIVED_WORKFLOW, INTERFACE_SHA),
+            (SHA, INTERFACE_SHA),
+        )
+
+    def test_derived_caller_requires_checked_in_deriver(self) -> None:
+        with self.assertRaisesRegex(contract.ContractViolation, "checked-in policy script"):
+            contract.audit_workflow(
+                DERIVED_WORKFLOW.replace(contract.DERIVER_COMMAND, "python3 ad-hoc.py"),
+                INTERFACE_SHA,
+            )
+
+    def test_derived_caller_requires_exact_checkout_proof(self) -> None:
+        with self.assertRaisesRegex(contract.ContractViolation, "verify its exact checkout"):
+            contract.audit_workflow(
+                DERIVED_WORKFLOW.replace(
+                    'test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"',
+                    "git rev-parse HEAD",
+                ),
+                INTERFACE_SHA,
+            )
 
     def test_mutable_workflow_ref_is_rejected(self) -> None:
         with self.assertRaisesRegex(contract.ContractViolation, "exact-pinned"):
@@ -82,6 +140,10 @@ class CallerWorkflowTests(unittest.TestCase):
                     "zed_interfaces_ref: main",
                 )
             )
+
+    def test_literal_interface_ref_must_equal_repository_authority(self) -> None:
+        with self.assertRaisesRegex(contract.ContractViolation, "Cargo.toml/Cargo.lock"):
+            contract.audit_workflow(VALID_WORKFLOW, OTHER_SHA)
 
     def test_duplicate_interface_ref_is_rejected(self) -> None:
         with self.assertRaisesRegex(contract.ContractViolation, "exactly one"):
@@ -122,20 +184,22 @@ class CandidateInterfaceTests(unittest.TestCase):
         (root / "Cargo.lock").write_text(lock, encoding="utf-8")
         return root
 
-    def test_matching_manifest_and_lock_pass(self) -> None:
-        contract.audit_candidate_interface(self.write_candidate(), INTERFACE_SHA)
+    def test_matching_manifest_and_lock_derive_one_authority(self) -> None:
+        root = self.write_candidate()
+        self.assertEqual(contract.derive_candidate_interface(root), INTERFACE_SHA)
+        contract.audit_candidate_interface(root, INTERFACE_SHA)
 
     def test_manifest_revision_mismatch_is_rejected(self) -> None:
         root = self.write_candidate(
             cargo=VALID_CARGO.replace(INTERFACE_SHA, OTHER_SHA)
         )
-        with self.assertRaisesRegex(contract.ContractViolation, "Cargo.toml"):
-            contract.audit_candidate_interface(root, INTERFACE_SHA)
+        with self.assertRaisesRegex(contract.ContractViolation, "Cargo.lock"):
+            contract.derive_candidate_interface(root)
 
     def test_lock_revision_mismatch_is_rejected(self) -> None:
         root = self.write_candidate(lock=VALID_LOCK.replace(INTERFACE_SHA, OTHER_SHA))
         with self.assertRaisesRegex(contract.ContractViolation, "Cargo.lock"):
-            contract.audit_candidate_interface(root, INTERFACE_SHA)
+            contract.derive_candidate_interface(root)
 
     def test_noncanonical_interface_repository_is_rejected(self) -> None:
         root = self.write_candidate(
@@ -145,7 +209,14 @@ class CandidateInterfaceTests(unittest.TestCase):
             )
         )
         with self.assertRaisesRegex(contract.ContractViolation, "canonical"):
-            contract.audit_candidate_interface(root, INTERFACE_SHA)
+            contract.derive_candidate_interface(root)
+
+    def test_mutable_manifest_revision_is_rejected(self) -> None:
+        root = self.write_candidate(
+            cargo=VALID_CARGO.replace(f'rev = "{INTERFACE_SHA}"', 'rev = "main"')
+        )
+        with self.assertRaisesRegex(contract.ContractViolation, "40-hex"):
+            contract.derive_candidate_interface(root)
 
 
 class CallerDocumentationTests(unittest.TestCase):

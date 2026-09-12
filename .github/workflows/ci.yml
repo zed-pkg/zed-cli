@@ -19,7 +19,79 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  provenance:
+    name: Exact-head graph authority
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      zed_interfaces_sha: ${{ steps.authorities.outputs.zed_interfaces_sha }}
+      rust_toolchain: ${{ steps.authorities.outputs.rust_toolchain }}
+    steps:
+      - name: Check out exact zed-cli candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          path: zed-cli
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Validate admitted package graph
+        working-directory: zed-cli
+        run: bash scripts/validate-zed-package-graph.sh
+      - name: Resolve immutable graph and toolchain authorities
+        id: authorities
+        working-directory: zed-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          canonical_repo = "https://github.com/zed-pkg/zed-interfaces.git"
+          with open("Cargo.toml", "rb") as source:
+              manifest = tomllib.load(source)
+          with open("Cargo.lock", "rb") as source:
+              lock = tomllib.load(source)
+          with open("rust-toolchain.toml", "rb") as source:
+              toolchain = tomllib.load(source)["toolchain"]["channel"]
+
+          dependency = manifest.get("dependencies", {}).get("zed-interfaces")
+          if not isinstance(dependency, dict) or dependency.get("git") != canonical_repo:
+              raise SystemExit(f"unexpected zed-interfaces dependency authority: {dependency!r}")
+          revision = dependency.get("rev")
+          if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+              raise SystemExit(f"zed-interfaces rev must be a full immutable SHA: {revision!r}")
+          for forbidden in ("branch", "tag", "path"):
+              if forbidden in dependency:
+                  raise SystemExit(f"zed-interfaces mixes immutable rev with {forbidden}: {dependency!r}")
+
+          packages = [
+              package
+              for package in lock.get("package", [])
+              if package.get("name") == "zed-interfaces"
+          ]
+          expected_source = f"git+{canonical_repo}?rev={revision}#{revision}"
+          if len(packages) != 1 or packages[0].get("source") != expected_source:
+              raise SystemExit(
+                  "Cargo.lock must resolve exactly one zed-interfaces package at the declared immutable source: "
+                  f"packages={packages!r} expected={expected_source!r}"
+              )
+
+          if not isinstance(toolchain, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolchain) is None:
+              raise SystemExit(f"Rust toolchain must be an immutable version: {toolchain!r}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"zed_interfaces_sha={revision}\n")
+              output.write(f"rust_toolchain={toolchain}\n")
+          PY
+
   test:
+    needs: provenance
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -28,16 +100,27 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           path: zed-cli
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ needs.provenance.outputs.zed_interfaces_sha }}
           path: zed-interfaces
+      - name: Verify exact zed-interfaces fixture
+        env:
+          EXPECTED_SHA: ${{ needs.provenance.outputs.zed_interfaces_sha }}
+        run: test "$(git -C zed-interfaces rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
+          toolchain: ${{ needs.provenance.outputs.rust_toolchain }}
           components: rustfmt, clippy
       - name: Install mold (fast linker)
         if: runner.os == 'Linux'
@@ -64,20 +147,31 @@ jobs:
         working-directory: zed-cli
 
   docker-install:
+    needs: provenance
     name: Docker install boundaries
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           path: zed-cli
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ needs.provenance.outputs.zed_interfaces_sha }}
           path: zed-interfaces
+      - name: Verify exact zed-interfaces fixture
+        env:
+          EXPECTED_SHA: ${{ needs.provenance.outputs.zed_interfaces_sha }}
+        run: test "$(git -C zed-interfaces rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Build a container with the zed CLI
         run: |
           docker build \
@@ -253,6 +347,7 @@ jobs:
             | grep -Eq '[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
 
   cross-org-lifecycle:
+    needs: provenance
     name: zed-pkg-test ${{ matrix.ecosystem }} on ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -266,14 +361,24 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           path: zed-cli
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ needs.provenance.outputs.zed_interfaces_sha }}
           path: zed-interfaces
+      - name: Verify exact zed-interfaces fixture
+        env:
+          EXPECTED_SHA: ${{ needs.provenance.outputs.zed_interfaces_sha }}
+        run: test "$(git -C zed-interfaces rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
@@ -285,6 +390,8 @@ jobs:
           repository: zed-pkg-test/${{ matrix.ecosystem }}-app
           path: fixture-app
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ needs.provenance.outputs.rust_toolchain }}
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           workspaces: zed-cli
@@ -441,20 +548,31 @@ jobs:
           test ! -e "$GITHUB_WORKSPACE/fixture-app/.zpkg-staging"
 
   first-install-manifest:
+    needs: provenance
     name: Durable first-install manifest and explicit ephemeral mode
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           path: zed-cli
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ needs.provenance.outputs.zed_interfaces_sha }}
           path: zed-interfaces
+      - name: Verify exact zed-interfaces fixture
+        env:
+          EXPECTED_SHA: ${{ needs.provenance.outputs.zed_interfaces_sha }}
+        run: test "$(git -C zed-interfaces rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Build the real CLI container
         run: |
           docker build \
@@ -688,21 +806,34 @@ jobs:
           test -d "$root/apps/web/zed_modules/zed-pkg/docker-node-lib"
 
   shell-contract:
+    needs: provenance
     name: Bash, Zsh, and terminal help contracts
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           path: zed-cli
+      - name: Verify exact zed-cli candidate
+        working-directory: zed-cli
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
           repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
+          ref: ${{ needs.provenance.outputs.zed_interfaces_sha }}
           path: zed-interfaces
+      - name: Verify exact zed-interfaces fixture
+        env:
+          EXPECTED_SHA: ${{ needs.provenance.outputs.zed_interfaces_sha }}
+        run: test "$(git -C zed-interfaces rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ needs.provenance.outputs.rust_toolchain }}
       - name: Install Zsh
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends zsh
       - name: Verify the immutable parser lock and build the real executable

@@ -15,6 +15,11 @@ CALL_RE = re.compile(
     rf"candidate-smoke\.yml@(?P<sha>{FULL_SHA})\s*$"
 )
 CANONICAL_INTERFACES_GIT = "https://github.com/zed-pkg/zed-interfaces.git"
+DERIVED_INTERFACE_REF = "${{ needs.candidate-authority.outputs.zed_interfaces_ref }}"
+DERIVER_COMMAND = (
+    "python3 scripts/zed_pkg_test_caller_contract.py --root . "
+    "--print-interface-revision"
+)
 
 
 class ContractViolation(AssertionError):
@@ -26,7 +31,51 @@ def require(condition: bool, message: str) -> None:
         raise ContractViolation(message)
 
 
-def audit_workflow(text: str) -> tuple[str, str]:
+def derive_candidate_interface(root: Path) -> str:
+    """Return the one immutable canonical zed-interfaces revision owned by Cargo."""
+    cargo_path = root / "Cargo.toml"
+    lock_path = root / "Cargo.lock"
+    require(cargo_path.is_file(), "Cargo.toml is missing")
+    require(lock_path.is_file(), "Cargo.lock is missing")
+
+    cargo = tomllib.loads(cargo_path.read_text(encoding="utf-8"))
+    dependencies = cargo.get("dependencies")
+    require(isinstance(dependencies, dict), "Cargo.toml [dependencies] is missing")
+    interface = dependencies.get("zed-interfaces")
+    require(
+        isinstance(interface, dict),
+        "Cargo.toml must declare zed-interfaces as an exact Git dependency",
+    )
+    require(
+        interface.get("git") == CANONICAL_INTERFACES_GIT,
+        "Cargo.toml zed-interfaces must use the canonical Git repository",
+    )
+    revision = interface.get("rev")
+    require(
+        isinstance(revision, str) and re.fullmatch(FULL_SHA, revision) is not None,
+        "Cargo.toml zed-interfaces rev must be one immutable 40-hex commit",
+    )
+
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    packages = lock.get("package", [])
+    require(isinstance(packages, list), "Cargo.lock package entries are invalid")
+    locked = [
+        package
+        for package in packages
+        if isinstance(package, dict) and package.get("name") == "zed-interfaces"
+    ]
+    require(len(locked) == 1, "Cargo.lock must contain exactly one zed-interfaces package")
+    source = locked[0].get("source")
+    require(isinstance(source, str), "Cargo.lock zed-interfaces source is missing")
+    expected_source = f"git+{CANONICAL_INTERFACES_GIT}?rev={revision}#{revision}"
+    require(
+        source == expected_source,
+        "Cargo.lock zed-interfaces source must match Cargo.toml exactly",
+    )
+    return revision
+
+
+def audit_workflow(text: str, expected_interface_revision: str | None = None) -> tuple[str, str]:
     require("pull_request:" in text, "caller must run on pull requests")
     require("push:" in text and "branches: [main]" in text, "caller must run on main")
     require("workflow_dispatch:" in text, "caller must support manual replay")
@@ -58,59 +107,60 @@ def audit_workflow(text: str) -> tuple[str, str]:
         "reusable-workflow pin and harness_ref must be the same commit",
     )
 
-    interface_refs = re.findall(
-        rf"(?m)^\s*zed_interfaces_ref:\s*({FULL_SHA})\s*$", text
+    literal_refs = re.findall(rf"(?m)^\s*zed_interfaces_ref:\s*({FULL_SHA})\s*$", text)
+    derived_refs = re.findall(
+        r"(?m)^\s*zed_interfaces_ref:\s*\$\{\{\s*needs\.candidate-authority\.outputs\.zed_interfaces_ref\s*\}\}\s*$",
+        text,
     )
     require(
-        len(interface_refs) == 1,
-        "caller must pass exactly one exact zed_interfaces_ref",
+        len(literal_refs) + len(derived_refs) == 1,
+        "caller must pass exactly one immutable or graph-derived zed_interfaces_ref",
     )
+
+    if literal_refs:
+        interface_revision = literal_refs[0]
+        if expected_interface_revision is not None:
+            require(
+                interface_revision == expected_interface_revision,
+                "literal workflow zed_interfaces_ref must match Cargo.toml/Cargo.lock authority",
+            )
+    else:
+        require(
+            "needs: candidate-authority" in text,
+            "derived zed_interfaces_ref must depend on candidate-authority",
+        )
+        require(
+            "zed_interfaces_ref: ${{ steps.authority.outputs.zed_interfaces_ref }}" in text,
+            "candidate-authority must expose the derivation step output",
+        )
+        require(
+            DERIVER_COMMAND in text,
+            "candidate-authority must derive the interface revision with the checked-in policy script",
+        )
+        require(
+            "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in text,
+            "candidate-authority must inspect the exact PR head or main commit",
+        )
+        require(
+            "test \"$(git rev-parse HEAD)\" = \"$EXPECTED_HEAD\"" in text,
+            "candidate-authority must verify its exact checkout",
+        )
+        require(
+            expected_interface_revision is not None,
+            "derived zed_interfaces_ref requires repository Cargo authority evidence",
+        )
+        interface_revision = expected_interface_revision
 
     require("cancel-in-progress: true" in text, "superseded candidate runs must cancel")
     require("secrets:" not in text, "caller job must not pass a secrets map")
-    return harness_sha, interface_refs[0]
+    return harness_sha, interface_revision
 
 
 def audit_candidate_interface(root: Path, expected_revision: str) -> None:
-    cargo_path = root / "Cargo.toml"
-    lock_path = root / "Cargo.lock"
-    require(cargo_path.is_file(), "Cargo.toml is missing")
-    require(lock_path.is_file(), "Cargo.lock is missing")
-
-    cargo = tomllib.loads(cargo_path.read_text(encoding="utf-8"))
-    dependencies = cargo.get("dependencies")
-    require(isinstance(dependencies, dict), "Cargo.toml [dependencies] is missing")
-    interface = dependencies.get("zed-interfaces")
+    actual = derive_candidate_interface(root)
     require(
-        isinstance(interface, dict),
-        "Cargo.toml must declare zed-interfaces as an exact Git dependency",
-    )
-    require(
-        interface.get("git") == CANONICAL_INTERFACES_GIT,
-        "Cargo.toml zed-interfaces must use the canonical Git repository",
-    )
-    require(
-        interface.get("rev") == expected_revision,
-        "workflow zed_interfaces_ref must match Cargo.toml zed-interfaces rev",
-    )
-
-    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
-    packages = lock.get("package", [])
-    require(isinstance(packages, list), "Cargo.lock package entries are invalid")
-    locked = [
-        package
-        for package in packages
-        if isinstance(package, dict) and package.get("name") == "zed-interfaces"
-    ]
-    require(len(locked) == 1, "Cargo.lock must contain exactly one zed-interfaces package")
-    source = locked[0].get("source")
-    require(isinstance(source, str), "Cargo.lock zed-interfaces source is missing")
-    expected_source = (
-        f"git+{CANONICAL_INTERFACES_GIT}?rev={expected_revision}#{expected_revision}"
-    )
-    require(
-        source == expected_source,
-        "workflow zed_interfaces_ref must match Cargo.lock zed-interfaces source",
+        actual == expected_revision,
+        "workflow zed_interfaces_ref must match Cargo.toml and Cargo.lock authority",
     )
 
 
@@ -141,8 +191,14 @@ def audit_repository(root: Path) -> tuple[str, str]:
     documentation = root / "docs/zed-pkg-test.md"
     require(workflow.is_file(), "zed-pkg-test caller workflow is missing")
     require(documentation.is_file(), "zed-pkg-test caller documentation is missing")
-    harness_sha, interface_sha = audit_workflow(workflow.read_text(encoding="utf-8"))
-    audit_candidate_interface(root, interface_sha)
+    interface_sha = derive_candidate_interface(root)
+    harness_sha, workflow_interface_sha = audit_workflow(
+        workflow.read_text(encoding="utf-8"), interface_sha
+    )
+    require(
+        workflow_interface_sha == interface_sha,
+        "caller interface authority must equal the repository Cargo authority",
+    )
     audit_documentation(documentation.read_text(encoding="utf-8"))
     return harness_sha, interface_sha
 
@@ -150,13 +206,22 @@ def audit_repository(root: Path) -> tuple[str, str]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument(
+        "--print-interface-revision",
+        action="store_true",
+        help="print the canonical Cargo.toml/Cargo.lock zed-interfaces revision",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    root = args.root.resolve()
     try:
-        harness_sha, interface_sha = audit_repository(args.root.resolve())
+        if args.print_interface_revision:
+            print(derive_candidate_interface(root))
+            return 0
+        harness_sha, interface_sha = audit_repository(root)
     except (ContractViolation, tomllib.TOMLDecodeError) as error:
         print(f"zed-pkg-test caller contract failed: {error}", file=sys.stderr)
         return 1

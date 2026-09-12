@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
-const ZED_CLIENT_SHA: &str = "b32e089caea772f166204fb1c7bcaad6f56942fe";
-const ZED_INTERFACES_SHA: &str = "3c54298fc7a8c1b2f9c1d74f588c6118b38f197e";
+const ZED_CLIENT_SHA: &str = "6a046b0a5e262c0c6a23851b810d7fe7eda251c4";
+const ZED_INTERFACES_SHA: &str = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c";
 const RETIRED_INTERFACES_SHA: &str = "0c51d732cb01a377b2bc00e8d945b355e41961c1";
 
 fn repository_file(path: &str) -> String {

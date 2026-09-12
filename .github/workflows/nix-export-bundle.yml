@@ -33,9 +33,6 @@ concurrency:
   group: nix-export-bundle-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  ZED_INTERFACES_SHA: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
-
 jobs:
   bundle:
     name: Deterministic bundle on ${{ matrix.os }}
@@ -47,12 +44,39 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out exact export-bundle candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+      - name: Verify exact export-bundle candidate
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Resolve repository-declared Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          with open('rust-toolchain.toml', 'rb') as source:
+              channel = tomllib.load(source)['toolchain']['channel']
+          if not isinstance(channel, str) or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', channel) is None:
+              raise SystemExit(f'Rust toolchain must be an immutable version, got {channel!r}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'channel={channel}\n')
+          PY
+
+      - name: Install repository-declared Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: rustfmt,clippy
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342
@@ -61,12 +85,9 @@ jobs:
             experimental-features = nix-command flakes
             accept-flake-config = false
 
-      - name: Verify immutable shared-contract pin
+      - name: Verify admitted package graph authorities
         shell: bash
-        run: |
-          set -euo pipefail
-          grep -F "rev = \"$ZED_INTERFACES_SHA\"" Cargo.toml
-          grep -F "#$ZED_INTERFACES_SHA" Cargo.lock
+        run: bash scripts/validate-zed-package-graph.sh
 
       - name: Check formatting and warnings
         run: |
