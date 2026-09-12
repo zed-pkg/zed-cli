@@ -1,0 +1,145 @@
+# Dedicated flags-2-env contract for the modular `zed global` command family.
+# Clap remains the typed parser; this contract owns portable option/env
+# admission before global package-profile mutation begins.
+
+[env]
+dotenv = false
+files = []
+ignore = ["ZED_PKG_TOKEN"]
+
+[parse]
+command_env = "ZED_PKG_COMMAND"
+unknown_options_env = "ZED_PKG_UNKNOWN_OPTIONS"
+errors_env = "ZED_PKG_PARSE_ERRORS"
+allow_unknown = false
+
+[help]
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/global-packages.md"
+
+[flags.registry]
+env = "ZED_PKG_REGISTRY"
+aliases = ["registry"]
+type = "string"
+default = "https://registry.zpkg.net"
+help = "Registry base URL."
+
+[flags.home]
+env = "ZED_PKG_HOME"
+aliases = ["home"]
+type = "string"
+help = "Zed home directory."
+
+[flags.auth_url]
+env = "ZED_PKG_AUTH_URL"
+aliases = ["auth-url"]
+type = "string"
+help = "shared-auth base URL."
+
+[flags.supabase_url]
+env = "ZED_PKG_SUPABASE_URL"
+aliases = ["supabase-url"]
+type = "string"
+help = "Supabase project URL."
+
+[flags.supabase_key]
+env = "ZED_PKG_SUPABASE_KEY"
+aliases = ["supabase-key"]
+type = "string"
+help = "Supabase publishable/anon key."
+
+[flags.interactive]
+env = "ZED_PKG_INTERACTIVE"
+aliases = ["interactive"]
+type = "bool"
+default = "false"
+help = "Confirm mutating lifecycle steps in a real terminal."
+
+[flags.git_submodules]
+env = "ZED_PKG_GIT_SUBMODULES"
+aliases = ["git-submodules"]
+type = "bool"
+default = "false"
+help = "Global Git submodule compatibility mode."
+
+[flags.no_mirrors]
+env = "ZED_PKG_NO_MIRRORS"
+aliases = ["no-mirrors"]
+type = "bool"
+default = "false"
+help = "Disable mirror fallback."
+
+[flags.trust_mirror_metadata]
+env = "ZED_PKG_TRUST_MIRROR_METADATA"
+aliases = ["trust-mirror-metadata"]
+type = "bool"
+default = "false"
+help = "Allow signed mirror metadata to answer resolution requests."
+
+[flags.r2_public_base]
+env = "ZED_PKG_R2_PUBLIC_BASE"
+aliases = ["r2-public-base"]
+type = "string"
+help = "Public HTTPS origin for R2/CDN objects."
+
+[flags.r2_public_key]
+env = "ZED_PKG_R2_PUBLIC_KEY"
+aliases = ["r2-public-key"]
+type = "string"
+help = "Public R2 hostname, URL, or account subdomain."
+
+[flags.source_fallback]
+env = "ZED_PKG_SOURCE_FALLBACK"
+aliases = ["source-fallback"]
+type = "bool"
+default = "true"
+help = "Retry approved public fallback sources when the registry is unreachable."
+
+[flags.global_bin_dir]
+env = "ZED_PKG_GLOBAL_BIN_DIR"
+aliases = ["global-bin-dir"]
+type = "string"
+help = "Directory placed on PATH for globally managed package executables."
+
+[commands.global]
+help = "Install executable packages globally and manage their PATH entries."
+
+[commands.global.commands.install]
+help = "Install one or more executable packages into isolated global profiles."
+
+[commands.global.commands.install.flags.frozen]
+env = "ZED_PKG_FROZEN"
+aliases = ["frozen"]
+type = "bool"
+default = "false"
+help = "Restore exactly what selected global profile lockfiles pin."
+
+[commands.global.commands.install.flags.install_mode]
+env = "ZED_PKG_INSTALL_MODE"
+aliases = ["install-mode"]
+type = "string"
+default = "symlink"
+help = "Materialize profile package trees by symlink or copy."
+
+[commands.global.commands.install.flags.allow_build]
+env = "ZED_PKG_ALLOW_BUILD"
+aliases = ["allow-build"]
+type = "bool"
+default = "false"
+help = "Allow package-declared build hooks."
+
+[commands.global.commands.install.flags.target]
+env = "ZED_PKG_TARGET"
+aliases = ["target"]
+type = "string"
+help = "Select a specific polyglot target before exposing binaries."
+
+[commands.global.commands.uninstall]
+aliases = ["un"]
+help = "Remove global package profiles and their managed PATH entries."
+
+[commands.global.commands.list]
+help = "List globally installed top-level packages and exposed binaries."
+
+[commands.global.commands.bin_dir]
+aliases = ["bin-dir"]
+help = "Print the directory where global executable copies are managed."

@@ -21,6 +21,7 @@ pub mod flags;
 pub mod forge_publish;
 pub mod git_submodules;
 pub mod global;
+pub(crate) mod global_flags;
 pub mod graph_export;
 pub mod host_downloads;
 pub mod inspect;
