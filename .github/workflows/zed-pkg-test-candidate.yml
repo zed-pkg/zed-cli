@@ -37,11 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          pattern='^zed-interfaces = \{ git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "[0-9a-f]{40}" \}$'
-          test "$(grep -Ec "$pattern" Cargo.toml)" -eq 1
-          ref="$(grep -E "$pattern" Cargo.toml | sed -E 's/.*rev = "([0-9a-f]{40})".*/\1/')"
+          ref="$(python3 scripts/zed_pkg_test_caller_contract.py --root . --print-interface-revision)"
           [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
-          test "$(grep -Fc "source = \"git+https://github.com/zed-pkg/zed-interfaces.git?rev=${ref}#${ref}\"" Cargo.lock)" -eq 1
           printf 'zed_interfaces_ref=%s\n' "$ref" >> "$GITHUB_OUTPUT"
 
   candidate-smoke:
