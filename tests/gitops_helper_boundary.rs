@@ -78,7 +78,10 @@ fn secret_argv_is_rejected_before_external_gitops_dispatch() {
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("--token is not accepted"), "{stderr}");
-    assert!(!stderr.contains(secret), "secret value escaped rejection: {stderr}");
+    assert!(
+        !stderr.contains(secret),
+        "secret value escaped rejection: {stderr}"
+    );
     assert!(
         !stderr.contains("Usage: zed-gitops"),
         "external helper must not start after secret argv rejection: {stderr}"
