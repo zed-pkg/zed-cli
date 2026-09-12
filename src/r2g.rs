@@ -216,9 +216,11 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
             // the target/ecosystem it is testing through the install flags.
             language: Default::default(),
             ecosystem: Default::default(),
+            artifacts: Default::default(),
         },
         dependencies,
         build_dependencies: BTreeMap::new(),
+        tool_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),
         hooks: Default::default(),
         build: None,

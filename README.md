@@ -57,7 +57,7 @@ cd my-lib
 zed init --org acme
 git tag v0.1.0
 zed r2g               # consume your own artifact before shipping (add --docker for a container)
-zed publish
+zed publish           # registry + git tag on GitHub + Release + GHCR (org Packages page)
 
 # derive the exact immutable OCI identity without credentials or uploads
 zed oci plan oci://ghcr.io/acme/my-lib:0.1.0
@@ -237,6 +237,12 @@ accepts PyPI, Packagist/Composer, and Go module routes; Bitbucket Packages
 accepts npm and Maven routes. Cargo and pub.dev remain canonical-native plus
 Zed destinations because those forges do not expose matching registry
 protocols.
+
+The Zed tarball itself is a different GitHub Packages path: `zed publish`
+pushes it to GHCR (`ghcr.io/{owner}/{repo}:{tag}`) so it appears on
+`https://github.com/orgs/{owner}/packages` as a container package. GitHub
+has no native Zed package type; OCI artifacts are the supported surface
+until that exists. See zed-docs issue/doc 38.
 
 ### First install without `.zpkg.toml`
 
@@ -433,6 +439,10 @@ actual CLI never drift, so it is always authoritative:
 | Flag | Env var | Default |
 | --- | --- | --- |
 | `--registry` | `ZED_PKG_REGISTRY` | `https://registry.zpkg.net` |
+| `--r2-public-base` | `ZED_PKG_R2_PUBLIC_BASE` | `https://cdn.zpkg.net` (Cloudflare → R2; independent of the registry origin) |
+| `--r2-public-key` | `ZED_PKG_R2_PUBLIC_KEY` | optional hostname, `https://…`, or Cloudflare `pub-<id>` |
+| `--source-fallback` | `ZED_PKG_SOURCE_FALLBACK` | on; retry public R2 and GitHub when the HTTP registry is down (`file://` and loopback stay hermetic) |
+| (env only) | `ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK` | off; test-org canaries that bind mocks to `127.0.0.1` must set this |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |

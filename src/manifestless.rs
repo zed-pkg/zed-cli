@@ -327,10 +327,12 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
             // claim of its own, so nothing here is ecosystem-gated.
             language: Default::default(),
             ecosystem: Default::default(),
+            artifacts: Default::default(),
         },
         workspace: None,
         dependencies,
         build_dependencies: BTreeMap::new(),
+        tool_dependencies: BTreeMap::new(),
         native_dependencies: Default::default(),
         hooks: Default::default(),
         build: None,
