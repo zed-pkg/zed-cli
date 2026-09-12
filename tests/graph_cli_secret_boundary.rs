@@ -20,8 +20,8 @@ fn collect_flag_envs(value: &Value, envs: &mut Vec<String>) {
 
 #[test]
 fn graph_registry_token_is_environment_only() {
-    let source = std::fs::read_to_string(".graph-cli-flags.toml")
-        .expect("read .graph-cli-flags.toml");
+    let source =
+        std::fs::read_to_string(".graph-cli-flags.toml").expect("read .graph-cli-flags.toml");
     let document: Value = toml::from_str(&source).expect("parse graph flags contract");
 
     let ignored = document
