@@ -558,10 +558,11 @@ mod tests {
             "secret-bearing env must never be lifted from argv"
         );
         // Child-owned arguments after `--` stay opaque to the router.
-        let route = external_route(&os_args(&["zed", "gitops", "validate", "--", "--token"]))
-            .expect("child-owned literal");
-        assert_eq!(route.arguments, os_args(&["validate", "--", "--token"]));
-        assert!(route.environment.is_empty());
+        let route = external_route(&os_args(&["zed", "gitops", "validate", "--", "--token"]));
+        assert_eq!(
+            route.map(|route| (route.arguments, route.environment)),
+            Some((os_args(&["validate", "--", "--token"]), Vec::new()))
+        );
     }
 
     #[test]
