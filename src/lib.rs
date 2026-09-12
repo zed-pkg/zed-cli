@@ -134,6 +134,7 @@ pub(crate) mod pack_guard;
 pub(crate) mod pack_inputs;
 pub mod preflight;
 pub mod project_lock;
+pub mod provider_admission;
 pub(crate) mod publish_ignore;
 pub mod publisher_keys;
 pub mod r2g;

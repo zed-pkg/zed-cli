@@ -1451,6 +1451,27 @@ fn install_locked(
         workspace_manifests.insert(key.clone(), member);
     }
 
+    // Admit the complete resolved graph (including frozen and workspace
+    // sources) before any host manager, build hook, lockfile write or wiring.
+    // Provider declarations travel inside each separately packaged target.
+    let provider_root_key = manifest.full_name();
+    let provider_root = root_target
+        .and_then(|key| manifest.targets.get(key))
+        .map(|section| project.join(&section.dir))
+        .unwrap_or_else(|| project.to_path_buf());
+    let mut provider_sources = vec![(provider_root_key.as_str(), provider_root.as_path())];
+    provider_sources.extend(
+        package_sources
+            .iter()
+            .map(|(key, source)| (key.as_str(), source.dir.as_path())),
+    );
+    provider_sources.extend(
+        workspace_links
+            .iter()
+            .map(|(key, source)| (key.as_str(), source.as_path())),
+    );
+    crate::provider_admission::validate(provider_sources)?;
+
     // Consent and manager compatibility are checked in a stable order before
     // any host package manager runs: native prerequisites first, then all
     // package-authored hooks and builds.
