@@ -3669,7 +3669,7 @@ pub fn login(cfg: &Config) -> Result<()> {
         }
     };
     if token.is_empty() {
-        bail!("no token provided (pass --token, set ZED_PKG_TOKEN, or type one)");
+        bail!("no token provided (set ZED_PKG_TOKEN in the environment or type one)");
     }
     let mut credentials = Credentials::load(&cfg.home)?;
     credentials.set_token(&cfg.registry, token);
