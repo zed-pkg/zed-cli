@@ -2,6 +2,7 @@ use anyhow::anyhow;
 
 use super::*;
 use crate::pack::pack;
+use crate::registry::registry_for;
 
 fn manifest_text(org: &str, name: &str, version: &str) -> String {
     format!(

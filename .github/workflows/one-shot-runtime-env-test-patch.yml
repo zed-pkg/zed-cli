@@ -1,32 +1,21 @@
-# Managed by ores-otel source-policy fleet rollout.
-name: Pre-build source policy lint
+name: one-shot runtime env schema-test patch
 
 on:
-  pull_request:
   push:
-    branches: ["main"]
-  workflow_dispatch:
+    branches:
+      - fix/install-graph-registry-test-import
 
 permissions:
   contents: read
 
-concurrency:
-  group: source-policy-lint-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  source-policy:
-    uses: ores-otel/.github/.github/workflows/source-policy-lint.yml@c417efc488bb4ca84e078fad9626f55b374913dd
-    permissions:
-      contents: read
-
-  runtime-env-patch-artifact:
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/install-graph-registry-test-import'
+  patch:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: fix/install-graph-registry-test-import
           persist-credentials: false
       - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
         with:
