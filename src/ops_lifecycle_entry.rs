@@ -113,16 +113,31 @@ pub fn install(
         LifecyclePhase::PreInstall,
         LifecyclePhase::PostInstall,
         || {
-            core::install(
-                project,
-                cfg,
-                frozen,
-                mode,
-                adapter,
-                allow_build,
-                target,
-                allow_ecosystem_mismatch,
-            )
+            if !frozen && mode == InstallMode::Symlink && cfg!(unix) {
+                crate::local_dev::with_local_dev_resolution(project, cfg, || {
+                    core::install(
+                        project,
+                        cfg,
+                        false,
+                        mode,
+                        adapter,
+                        allow_build,
+                        target,
+                        allow_ecosystem_mismatch,
+                    )
+                })
+            } else {
+                core::install(
+                    project,
+                    cfg,
+                    frozen,
+                    mode,
+                    adapter,
+                    allow_build,
+                    target,
+                    allow_ecosystem_mismatch,
+                )
+            }
         },
     )
 }
@@ -143,16 +158,31 @@ pub fn install_with_permissions(
         LifecyclePhase::PreInstall,
         LifecyclePhase::PostInstall,
         || {
-            core::install_with_permissions(
-                project,
-                cfg,
-                frozen,
-                mode,
-                adapter,
-                permissions,
-                target,
-                allow_ecosystem_mismatch,
-            )
+            if !frozen && mode == InstallMode::Symlink && cfg!(unix) {
+                crate::local_dev::with_local_dev_resolution(project, cfg, || {
+                    core::install_with_permissions(
+                        project,
+                        cfg,
+                        false,
+                        mode,
+                        adapter,
+                        permissions,
+                        target,
+                        allow_ecosystem_mismatch,
+                    )
+                })
+            } else {
+                core::install_with_permissions(
+                    project,
+                    cfg,
+                    frozen,
+                    mode,
+                    adapter,
+                    permissions,
+                    target,
+                    allow_ecosystem_mismatch,
+                )
+            }
         },
     )
 }
