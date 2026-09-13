@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio_util::sync::CancellationToken;
@@ -16,6 +17,61 @@ use super::{DEFAULT_INSTALL_CONCURRENCY, FetchPool, MAX_INSTALL_CONCURRENCY, Pre
 use crate::config::{Config, read_manifest};
 use crate::registry::{Registry, registry_for};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateDecision {
+    Pending,
+    Continue,
+    Cancel,
+}
+
+/// One-shot boundary between speculative metadata work and artifact acquisition.
+///
+/// The remote resolver may issue cancellable Hyper package/version metadata
+/// requests while local checkout discovery is running. The first selected
+/// version cannot be returned to the solver until this gate opens, which means
+/// the solver cannot enqueue an artifact download before local discovery has
+/// decided whether remote work is actually needed.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolutionGate {
+    inner: Arc<(Mutex<GateDecision>, Condvar)>,
+}
+
+impl ResolutionGate {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new((Mutex::new(GateDecision::Pending), Condvar::new())),
+        }
+    }
+
+    pub(crate) fn continue_resolution(&self) {
+        self.set(GateDecision::Continue);
+    }
+
+    pub(crate) fn cancel_resolution(&self) {
+        self.set(GateDecision::Cancel);
+    }
+
+    fn set(&self, decision: GateDecision) {
+        let (lock, ready) = &*self.inner;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *state == GateDecision::Pending {
+            *state = decision;
+            ready.notify_all();
+        }
+    }
+
+    fn wait(&self) -> GateDecision {
+        let (lock, ready) = &*self.inner;
+        let mut state = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        while *state == GateDecision::Pending {
+            state = ready
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        *state
+    }
+}
+
 /// Resolution-only registry adapter whose canonical HTTP leg is truly async.
 ///
 /// The synchronous `Registry` trait remains the solver boundary for now, but
@@ -27,10 +83,11 @@ struct CancellableResolutionRegistry {
     async_client: zed_client_async::AsyncClient,
     legacy_fallback: Box<dyn Registry>,
     cancel: CancellationToken,
+    gate: ResolutionGate,
 }
 
 impl CancellableResolutionRegistry {
-    fn new(url: &str, cancel: CancellationToken) -> Result<Self> {
+    fn new(url: &str, cancel: CancellationToken, gate: ResolutionGate) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("zed-registry-async")
@@ -42,14 +99,23 @@ impl CancellableResolutionRegistry {
             runtime,
             async_client,
             // Compatibility bridge only. New resolution traffic uses Hyper;
-            // this old registry is entered only after an async primary error.
+            // this old registry is entered only after an async primary error
+            // and only after local discovery explicitly says to continue.
             legacy_fallback: registry_for(url)?,
             cancel,
+            gate,
         })
     }
 
     fn cancelled(&self) -> anyhow::Error {
         anyhow!("speculative registry resolution cancelled after local checkout win")
+    }
+
+    fn require_continue(&self) -> Result<()> {
+        match self.gate.wait() {
+            GateDecision::Continue => Ok(()),
+            GateDecision::Cancel | GateDecision::Pending => Err(self.cancelled()),
+        }
     }
 
     fn package_async(&self, org: &str, name: &str) -> Result<PackageMetadata> {
@@ -64,6 +130,9 @@ impl CancellableResolutionRegistry {
                 if self.cancel.is_cancelled() {
                     return Err(self.cancelled());
                 }
+                // A primary-metadata failure must not enter the legacy blocking
+                // fallback while local discovery might still win the race.
+                self.require_continue()?;
                 eprintln!(
                     "warning: async registry package read failed ({async_error}); using legacy source fallback"
                 );
@@ -79,11 +148,18 @@ impl CancellableResolutionRegistry {
         );
         match result {
             None => Err(self.cancelled()),
-            Some(Ok(metadata)) => Ok(metadata),
+            Some(Ok(metadata)) => {
+                // Critical race boundary: solve_install cannot enqueue the
+                // artifact corresponding to this metadata until local discovery
+                // has explicitly chosen remote continuation.
+                self.require_continue()?;
+                Ok(metadata)
+            }
             Some(Err(async_error)) => {
                 if self.cancel.is_cancelled() {
                     return Err(self.cancelled());
                 }
+                self.require_continue()?;
                 eprintln!(
                     "warning: async registry version read failed ({async_error}); using legacy source fallback"
                 );
@@ -176,19 +252,27 @@ pub(crate) fn prepare(
     project: &Path,
     cfg: &Config,
     cancel: CancellationToken,
+    gate: ResolutionGate,
 ) -> Result<PreparedInstall> {
     if !matches!(cfg.registry.as_str(), url if url.starts_with("http://") || url.starts_with("https://"))
     {
-        return super::resolver::prepare(project, cfg);
+        return match gate.wait() {
+            GateDecision::Continue => super::resolver::prepare(project, cfg),
+            GateDecision::Cancel | GateDecision::Pending => {
+                bail!("speculative registry resolution cancelled after local checkout win")
+            }
+        };
     }
 
     let concurrency = install_concurrency();
     let context = cfg.mirror_context(project_trust_anchors(project));
-    let registry = CancellableResolutionRegistry::new(&cfg.registry, cancel)?;
+    let registry = CancellableResolutionRegistry::new(&cfg.registry, cancel, gate)?;
     let manifest = read_manifest(project)?;
     let prepared = if manifest.dependencies.is_empty() {
         PreparedInstall::default()
     } else {
+        // Workers exist speculatively but receive no artifact task until a
+        // version metadata call passes ResolutionGate::Continue.
         let pool = FetchPool::new(concurrency, &context, &cfg.home)?;
         match solve_install(project, &manifest, &registry, &pool) {
             Ok(prepared) => {
@@ -223,11 +307,33 @@ fn report_prefetch(report: PrefetchReport, concurrency: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn install_concurrency_stays_within_global_bound() {
         let value = install_concurrency();
         assert!((1..=MAX_INSTALL_CONCURRENCY).contains(&value));
         assert!(DEFAULT_INSTALL_CONCURRENCY <= MAX_INSTALL_CONCURRENCY);
+    }
+
+    #[test]
+    fn resolution_gate_waits_for_continue() {
+        let gate = ResolutionGate::new();
+        let worker_gate = gate.clone();
+        let worker = thread::spawn(move || worker_gate.wait());
+        thread::sleep(Duration::from_millis(10));
+        assert!(!worker.is_finished());
+        gate.continue_resolution();
+        assert_eq!(worker.join().unwrap(), GateDecision::Continue);
+    }
+
+    #[test]
+    fn resolution_gate_cancels_waiter() {
+        let gate = ResolutionGate::new();
+        let worker_gate = gate.clone();
+        let worker = thread::spawn(move || worker_gate.wait());
+        gate.cancel_resolution();
+        assert_eq!(worker.join().unwrap(), GateDecision::Cancel);
     }
 }
