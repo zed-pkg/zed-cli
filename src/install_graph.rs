@@ -8,13 +8,14 @@
 //! Frozen replay remains lock-authoritative: it verifies and materializes the
 //! exact lock graph without solving or rewriting it.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, mpsc};
 use std::thread::{self, JoinHandle};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use globset::Glob;
 use zed_interfaces::lockfile::Lockfile;
 use zed_interfaces::manifest::{Manifest, is_slug};
@@ -227,4 +228,77 @@ mod tests;
 pub(crate) use artifact::ensure_artifact;
 use artifact::worker_loop;
 pub use resolver::prefetch;
-pub(crate) use resolver::prepare;
+pub(crate) use solver::PreparedInstall;
+
+#[derive(Debug)]
+struct PreparedOverride {
+    project: PathBuf,
+    prepared: PreparedInstall,
+}
+
+thread_local! {
+    static PREPARED_OVERRIDE: RefCell<Option<PreparedOverride>> = const { RefCell::new(None) };
+}
+
+struct PreparedOverrideGuard;
+
+impl Drop for PreparedOverrideGuard {
+    fn drop(&mut self) {
+        PREPARED_OVERRIDE.with(|slot| {
+            slot.borrow_mut().take();
+        });
+    }
+}
+
+fn normalized_project(project: &Path) -> PathBuf {
+    fs::canonicalize(project).unwrap_or_else(|_| project.to_path_buf())
+}
+
+/// Hand one already-solved graph to the established install facade exactly once.
+///
+/// This is intentionally thread-local: local checkout discovery can race a
+/// speculative canonical-registry solve on another thread, then transfer that
+/// exact result back to the installer without introducing a process-global cache
+/// or making unrelated installs observe it.
+pub(crate) fn with_prepared_override<T>(
+    project: &Path,
+    prepared: PreparedInstall,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let project = normalized_project(project);
+    PREPARED_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_some() {
+            return Err(anyhow!(
+                "a prepared install graph override is already active on this thread"
+            ));
+        }
+        *slot = Some(PreparedOverride { project, prepared });
+        Ok(())
+    })?;
+    let guard = PreparedOverrideGuard;
+    let result = operation();
+    drop(guard);
+    result
+}
+
+/// Solve a non-frozen install unless a local-dev race already prepared the exact
+/// graph for this project on the current thread.
+pub(crate) fn prepare(project: &Path, cfg: &Config) -> Result<PreparedInstall> {
+    let normalized = normalized_project(project);
+    let prepared = PREPARED_OVERRIDE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot
+            .as_ref()
+            .is_some_and(|override_| override_.project == normalized)
+        {
+            slot.take().map(|override_| override_.prepared)
+        } else {
+            None
+        }
+    });
+    match prepared {
+        Some(prepared) => Ok(prepared),
+        None => resolver::prepare(project, cfg),
+    }
+}
