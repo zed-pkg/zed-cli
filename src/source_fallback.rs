@@ -182,6 +182,29 @@ impl FallbackRegistry {
         )
     }
 
+    /// Record the commit a version's tag points at. Fallback metadata otherwise
+    /// carries no commit, and a frozen restore compares VCS provenance against
+    /// the lock exactly, so it would refuse a digest-identical artifact. The
+    /// commit comes from GitHub, never from the archive; if GitHub cannot say,
+    /// the field stays empty and that comparison fails closed as before.
+    fn fill_tag_commit(&self, identity: &GithubIdentity, metadata: &mut VersionMetadata) {
+        if metadata.vcs_commit.is_some() {
+            return;
+        }
+        let url = format!(
+            "{}/commits/{}",
+            github_api_repo_url(identity),
+            metadata.vcs_tag
+        );
+        metadata.vcs_commit = self
+            .github_headers(self.client.get(url))
+            .send()
+            .ok()
+            .filter(|response| response.status().is_success())
+            .and_then(|response| response.json::<GithubCommit>().ok())
+            .and_then(|commit| commit_sha(&commit.sha));
+    }
+
     fn github_headers(
         &self,
         request: reqwest::blocking::RequestBuilder,
@@ -401,11 +424,13 @@ impl FallbackRegistry {
         }
         let identity = self.resolve_github_identity(org, name)?;
         let tag = format!("v{version}");
-        if let Some(metadata) = self.release_sidecar(&identity, org, name, version, &tag) {
+        if let Some(mut metadata) = self.release_sidecar(&identity, org, name, version, &tag) {
+            self.fill_tag_commit(&identity, &mut metadata);
             self.remember(metadata.clone());
             return Ok(metadata);
         }
-        if let Some(metadata) = self.ghcr_version(&identity, org, name, version, &tag) {
+        if let Some(mut metadata) = self.ghcr_version(&identity, org, name, version, &tag) {
+            self.fill_tag_commit(&identity, &mut metadata);
             self.remember(metadata.clone());
             return Ok(metadata);
         }
@@ -458,6 +483,7 @@ impl FallbackRegistry {
             mirrors: fallback_mirrors(&locators, &self.r2_base()),
             signatures: Vec::new(),
         };
+        self.fill_tag_commit(&identity, &mut metadata);
         self.fill_digest(&mut metadata)?;
         self.remember(metadata.clone());
         Ok(metadata)
@@ -667,7 +693,7 @@ impl FallbackRegistry {
             };
             match result {
                 Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error}", locator.url)),
+                Err(error) => errors.push(format!("{}: {error:#}", locator.url)),
             }
         }
         bail!(
@@ -871,6 +897,21 @@ struct GithubTag {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubCommit {
+    sha: String,
+}
+
+/// A full lowercase 40-hex Git commit id, or nothing. Abbreviated or oddly
+/// cased ids would never compare equal to a lock's recorded commit anyway.
+fn commit_sha(value: &str) -> Option<String> {
+    (value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| value.to_owned())
+}
+
 /// Ceiling on files taken from one GitHub tag archive (inode-exhaustion guard,
 /// matching the store's extraction bound).
 const MAX_TAG_ARCHIVE_FILES: usize = 200_000;
@@ -915,6 +956,12 @@ fn repack_tag_archive(raw: &Path, org: &str, name: &str, version: &str, dest: &P
         .with_context(|| {
             format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
         })?;
+    // Callers hand over a store cache path whose directory may not exist yet
+    // (a frozen fetch uses a fresh isolated store); `download_url` creates it
+    // for the other locators, so this one must too.
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).context("create repacked artifact directory")?;
+    }
     fs::copy(&root.packed.path, dest).context("stage repacked GitHub tag archive")?;
     Ok(())
 }
@@ -1481,7 +1528,12 @@ dir = "."
         let first = git_archive_fixture("owls-interfaces-0.1.1", 1_757_080_440, 9);
         let second = git_archive_fixture("owls-interfaces-291406191b55", 42, 1);
         let out = tempfile::tempdir().unwrap();
-        let (a, b) = (out.path().join("a.tar.gz"), out.path().join("b.tar.gz"));
+        // `a` lands in a cache directory that does not exist yet, as in a
+        // frozen fetch's fresh isolated store.
+        let (a, b) = (
+            out.path().join("cache/artifacts/a.tar.gz"),
+            out.path().join("b.tar.gz"),
+        );
         repack(first.path(), "owls-interfaces", &a).unwrap();
         repack(second.path(), "owls-interfaces", &b).unwrap();
         assert_eq!(sha256_and_size(&a).unwrap(), sha256_and_size(&b).unwrap());
@@ -1524,6 +1576,19 @@ dir = "."
                 manifest.publish.exclude
             );
         }
+    }
+
+    #[test]
+    fn tag_commits_must_be_full_lowercase_git_ids() {
+        let sha = "291406191b55606e34b7980b42112e9c77ab690b";
+        assert_eq!(commit_sha(sha).as_deref(), Some(sha));
+        assert_eq!(commit_sha("2914061"), None);
+        assert_eq!(commit_sha(&sha.to_ascii_uppercase()), None);
+        assert_eq!(commit_sha(&format!("{sha}0")), None);
+        assert_eq!(
+            commit_sha("../../../etc/passwd-padding-to-forty-chars"),
+            None
+        );
     }
 
     #[test]
