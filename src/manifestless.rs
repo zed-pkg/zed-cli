@@ -72,6 +72,12 @@ struct ConsentPlan {
     source: String,
 }
 
+/// Install into whatever project `requested_root` belongs to.
+///
+/// The root is *discovered*: a directory inside a checkout resolves to the
+/// checkout, which is what a human running `zed install` in a subdirectory
+/// means. Use [`install_exact_root`] when the caller already knows the root
+/// and discovery would be wrong.
 #[allow(clippy::too_many_arguments)]
 pub fn install(
     requested_root: &Path,
@@ -88,7 +94,87 @@ pub fn install(
     allow_no_manifest: bool,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
-    let selection = select_project(requested_root);
+    install_selected(
+        select_project(requested_root),
+        cfg,
+        specs,
+        frozen,
+        mode,
+        adapter,
+        allow_build,
+        allow_native_deps,
+        allow_install_hooks,
+        native_manager,
+        target,
+        allow_no_manifest,
+        allow_ecosystem_mismatch,
+    )
+}
+
+/// Install into `root` exactly, with no project discovery at all.
+///
+/// zed's own profile trees (`zed global install`) live under
+/// `<ZED_PKG_HOME>`, where every ancestor is zed's own bookkeeping and none of
+/// it is a project. Discovery there is not merely unnecessary, it is unsound:
+/// [`select_project`] walks ancestors toward the filesystem root, so a
+/// `package.json`, `Gemfile`, `requirements.txt`, or `.zpkg.toml` sitting in
+/// the user's home directory would silently redirect a profile install into
+/// `$HOME` and write `zed_modules/` and a `.zpkg.lock` there. The directory zed
+/// created for the profile *is* the project, by construction, so it is passed
+/// in rather than looked for.
+///
+/// Package-authored code consent is unchanged: `allow_build` is the caller's,
+/// and native prerequisites and install hooks stay refused.
+pub fn install_exact_root(
+    root: &Path,
+    cfg: &Config,
+    specs: &[String],
+    frozen: bool,
+    mode: InstallMode,
+    allow_build: bool,
+    target: Option<&str>,
+) -> Result<ops::InstallOutcome> {
+    install_selected(
+        exact_selection(root),
+        cfg,
+        specs,
+        frozen,
+        mode,
+        Adapter::None,
+        allow_build,
+        false,
+        false,
+        None,
+        target,
+        true,
+        true,
+    )
+}
+
+/// The selection [`install_exact_root`] uses: this directory, no discovery.
+fn exact_selection(root: &Path) -> ProjectSelection {
+    ProjectSelection {
+        root: root.to_path_buf(),
+        has_manifest: false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_selected(
+    selection: ProjectSelection,
+    cfg: &Config,
+    specs: &[String],
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    allow_build: bool,
+    allow_native_deps: bool,
+    allow_install_hooks: bool,
+    native_manager: Option<&str>,
+    target: Option<&str>,
+    allow_no_manifest: bool,
+    allow_ecosystem_mismatch: bool,
+) -> Result<ops::InstallOutcome> {
     let permissions = ops::InstallPermissions {
         allow_build,
         allow_native_deps,
@@ -783,6 +869,38 @@ mod tests {
                 .unwrap_err()
                 .to_string();
         assert!(incompatible.contains("cannot be combined"));
+    }
+
+    /// Why [`install_exact_root`] exists. Ancestor discovery is right for a
+    /// human running `zed install` in a subdirectory and wrong for zed's own
+    /// profile trees: it climbs toward the filesystem root, and a home
+    /// directory with an ordinary `package.json` in it would capture a profile
+    /// install and get `zed_modules/` and `.zpkg.lock` written there.
+    #[test]
+    fn discovery_escapes_a_store_internal_directory_but_the_exact_root_does_not() {
+        let home = tempfile::tempdir().unwrap();
+        fs::write(home.path().join("package.json"), "{}").unwrap();
+        let profile = home
+            .path()
+            .join(".zed-pkg")
+            .join("global")
+            .join("profiles")
+            .join("acme")
+            .join("lint");
+        fs::create_dir_all(&profile).unwrap();
+
+        assert_eq!(
+            select_project(&profile).root,
+            home.path(),
+            "discovery walks out of the store and captures the home directory"
+        );
+
+        let exact = exact_selection(&profile);
+        assert_eq!(exact.root, profile);
+        assert!(
+            !exact.has_manifest,
+            "a profile directory zed just created has no authored manifest"
+        );
     }
 
     #[test]

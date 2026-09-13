@@ -24,7 +24,7 @@ use zed_interfaces::manifest::is_slug;
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MODULES_DIR};
 use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
-use crate::cli::{Adapter, Globals, InstallMode};
+use crate::cli::{Globals, InstallMode};
 use crate::config::Config;
 use crate::{interactive, manifestless};
 
@@ -459,20 +459,16 @@ fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i
             bail!("no global package profiles are installed");
         }
         for profile in &profiles {
-            manifestless::install(
+            // The profile directory is the project: never let ancestor
+            // discovery walk out of <ZED_PKG_HOME> into the user's home.
+            manifestless::install_exact_root(
                 &profile.root,
                 cfg,
                 &[],
                 true,
                 options.install_mode,
-                Adapter::None,
                 options.allow_build,
-                false,
-                false,
-                None,
                 options.target.as_deref(),
-                true,
-                true,
             )?;
         }
         let profiles = discover_profiles(cfg)?;
@@ -499,20 +495,16 @@ fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i
         for (spec, key) in &requested {
             let root = profile_root(cfg, key)?;
             staged_profiles.push(stage_profile_replacement(&root)?);
-            manifestless::install(
+            // Same as the frozen restore: install into the profile root
+            // exactly, never into whatever project an ancestor directory holds.
+            manifestless::install_exact_root(
                 &root,
                 cfg,
                 std::slice::from_ref(spec),
                 false,
                 options.install_mode,
-                Adapter::None,
                 options.allow_build,
-                false,
-                false,
-                None,
                 options.target.as_deref(),
-                true,
-                true,
             )?;
             write_metadata(
                 &root,
