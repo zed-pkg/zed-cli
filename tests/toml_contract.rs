@@ -9,8 +9,7 @@ fn root() -> PathBuf {
 fn parse_toml(path: &Path) -> toml::Value {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
-    toml::from_str(&text)
-        .unwrap_or_else(|error| panic!("invalid TOML {}: {error}", path.display()))
+    toml::from_str(&text).unwrap_or_else(|error| panic!("invalid TOML {}: {error}", path.display()))
 }
 
 fn string_at<'a>(value: &'a toml::Value, path: &[&str]) -> &'a str {
@@ -133,7 +132,10 @@ fn global_flags_do_not_reuse_environment_keys_or_public_aliases() {
                 if alias == canonical_alias {
                     continue;
                 }
-                assert!(aliases.insert(alias.to_owned()), "duplicate global flag alias: {alias}");
+                assert!(
+                    aliases.insert(alias.to_owned()),
+                    "duplicate global flag alias: {alias}"
+                );
             }
         }
     }
