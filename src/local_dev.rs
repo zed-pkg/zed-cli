@@ -68,12 +68,8 @@ impl Discovery {
         let workspace_root = effective_workspace_root(&project);
         let explicit = collect_explicit_workspace(&workspace_root);
         let index = build_local_index(&project, &workspace_root, &explicit);
-        let (selected, all_local) = resolve_local_closure(
-            &root_manifest.dependencies,
-            &explicit,
-            &index,
-            &project_key,
-        );
+        let (selected, all_local) =
+            resolve_local_closure(&root_manifest.dependencies, &explicit, &index, &project_key);
         Ok(Self {
             project,
             project_key,
@@ -192,8 +188,8 @@ impl Discovery {
         additions.dedup();
         members.extend(additions.into_iter().map(Value::String));
 
-        let rendered = toml::to_string_pretty(&document)
-            .context("serializing local workspace overlay")?;
+        let rendered =
+            toml::to_string_pretty(&document).context("serializing local workspace overlay")?;
         Ok(Some((self.workspace_root.clone(), rendered)))
     }
 }
@@ -264,9 +260,7 @@ pub(crate) fn with_local_dev_resolution<T>(
     })
 }
 
-fn join_remote(
-    remote: thread::JoinHandle<Result<PreparedInstall>>,
-) -> Result<PreparedInstall> {
+fn join_remote(remote: thread::JoinHandle<Result<PreparedInstall>>) -> Result<PreparedInstall> {
     remote
         .join()
         .map_err(|_| anyhow!("speculative registry resolution panicked"))?
@@ -380,13 +374,7 @@ fn build_local_index(
             if directories > MAX_DISCOVERED_DIRECTORIES {
                 break 'roots;
             }
-            if register_candidate(
-                &first,
-                &project,
-                &explicit_paths,
-                &mut visited,
-                &mut index,
-            ) {
+            if register_candidate(&first, &project, &explicit_paths, &mut visited, &mut index) {
                 continue;
             }
             for second in sorted_child_dirs(&first) {
@@ -394,13 +382,7 @@ fn build_local_index(
                 if directories > MAX_DISCOVERED_DIRECTORIES {
                     break 'roots;
                 }
-                register_candidate(
-                    &second,
-                    &project,
-                    &explicit_paths,
-                    &mut visited,
-                    &mut index,
-                );
+                register_candidate(&second, &project, &explicit_paths, &mut visited, &mut index);
             }
         }
     }
@@ -483,8 +465,8 @@ fn ignored_directory(name: &str) -> bool {
 
 fn local_rank(project: &Path, candidate: &Path) -> (u8, usize, String) {
     let same_parent = candidate.parent() == project.parent();
-    let same_grandparent = candidate.parent().and_then(Path::parent)
-        == project.parent().and_then(Path::parent);
+    let same_grandparent =
+        candidate.parent().and_then(Path::parent) == project.parent().and_then(Path::parent);
     let locality = if same_parent {
         0
     } else if same_grandparent {
@@ -580,13 +562,7 @@ mod tests {
         std::env::temp_dir().join(format!("zed-local-dev-{unique}-{}", std::process::id()))
     }
 
-    fn write_manifest(
-        path: &Path,
-        org: &str,
-        name: &str,
-        version: &str,
-        deps: &[(&str, &str)],
-    ) {
+    fn write_manifest(path: &Path, org: &str, name: &str, version: &str, deps: &[(&str, &str)]) {
         fs::create_dir_all(path).unwrap();
         let mut text = format!(
             "[package]\norg = \"{org}\"\nname = \"{name}\"\nversion = \"{version}\"\ndescription = \"fixture\"\nlicense = \"MIT\"\nlanguage = \"rust\"\n"
@@ -606,13 +582,7 @@ mod tests {
         let app = root.join("codes/app-org/app");
         let good = root.join("codes/lib-org/lib");
         let wrong = root.join("codes/aaa-shadow/lib");
-        write_manifest(
-            &app,
-            "app-org",
-            "app",
-            "1.0.0",
-            &[("lib-org/lib", "^1")],
-        );
+        write_manifest(&app, "app-org", "app", "1.0.0", &[("lib-org/lib", "^1")]);
         write_manifest(&good, "lib-org", "lib", "1.2.0", &[]);
         write_manifest(&wrong, "lib-org", "lib", "2.0.0", &[]);
         fs::create_dir_all(good.join(".git")).unwrap();
@@ -630,13 +600,7 @@ mod tests {
     fn local_miss_keeps_remote_resolution_required() {
         let root = fixture_root();
         let app = root.join("codes/app-org/app");
-        write_manifest(
-            &app,
-            "app-org",
-            "app",
-            "1.0.0",
-            &[("missing/lib", "^1")],
-        );
+        write_manifest(&app, "app-org", "app", "1.0.0", &[("missing/lib", "^1")]);
         let discovery = Discovery::scan(&app).unwrap();
         assert!(discovery.selected.is_empty());
         assert!(!discovery.all_local);
