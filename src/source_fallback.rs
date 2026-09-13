@@ -1,9 +1,10 @@
 //! Retry GitHub and public R2 when the configured HTTP registry is unreachable.
 //!
 //! Loopback `file://` and `http://127.0.0.1` registries stay hermetic: tests
-//! and air-gapped mirrors never leak to github.com. Production hosts such as
-//! `registry.zpkg.net` fall back to guessed public R2 keys and GitHub Release
-//! assets, then to a tagged source archive only when no packed digest is known.
+//! and air-gapped mirrors never leak to github.com. Production registry edges
+//! fall back to guessed public R2 keys and GitHub Release assets, then to a
+//! tagged source archive. GitHub source archives are normalized through the
+//! ordinary Zed packer before their digest is admitted to the store.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -604,9 +605,6 @@ impl FallbackRegistry {
             r2_public_key: self.config.r2_public_key.as_deref(),
         });
         for locator in locators {
-            if locator.kind == ArtifactSourceKind::GithubArchive && packed_digest {
-                continue;
-            }
             if locator.kind == ArtifactSourceKind::Registry {
                 continue;
             }
@@ -619,21 +617,41 @@ impl FallbackRegistry {
                     version.size,
                     max_artifact_bytes(),
                 )
-            } else if locator.kind == ArtifactSourceKind::GithubArchive
-                && let Some(token) = self.config.github_token.as_deref()
-            {
-                // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
-                // private repository 404s there even with a token. The REST
-                // tarball endpoint honours the token and redirects to a signed
-                // codeload URL for the same tag.
-                let api_url = github_api_tarball_url(&identity, &version.vcs_tag);
-                download_url(&self.client, &api_url, dest, version.size, Some(token))
+            } else if locator.kind == ArtifactSourceKind::GithubArchive {
+                // GitHub's automatic source archives are not Zed artifacts:
+                // they carry a synthetic repo/ref root rather than `pkg/`.
+                // Download to an isolated file, then feed the tagged source
+                // through the hardened extractor + deterministic Zed packer.
+                let raw = tempfile::NamedTempFile::new().context("GitHub source archive tempfile");
+                match raw {
+                    Ok(raw) => {
+                        let downloaded = if let Some(token) = self.config.github_token.as_deref() {
+                            // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
+                            // private repository 404s there even with a token. The REST
+                            // tarball endpoint honours the token and redirects to a signed
+                            // codeload URL for the same tag.
+                            let api_url = github_api_tarball_url(&identity, &version.vcs_tag);
+                            download_url(&self.client, &api_url, raw.path(), 0, Some(token))
+                        } else {
+                            download_url(&self.client, &locator.url, raw.path(), 0, None)
+                        };
+                        downloaded.and_then(|()| {
+                            crate::github_source_archive::repack_github_archive(
+                                raw.path(),
+                                dest,
+                                &identity,
+                                version,
+                            )
+                        })
+                    }
+                    Err(error) => Err(error.into()),
+                }
             } else {
                 download_url(&self.client, &locator.url, dest, version.size, None)
             };
             match result {
                 Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error}", locator.url)),
+                Err(error) => errors.push(format!("{}: {error:#}", locator.url)),
             }
         }
         bail!(
@@ -1015,6 +1033,7 @@ mod tests {
         assert!(is_loopback_registry("http://127.0.0.1:18080"));
         assert!(is_loopback_registry("http://localhost:8080"));
         assert!(!is_loopback_registry("https://registry.zpkg.net"));
+        assert!(!is_loopback_registry("https://zpkg.net"));
     }
 
     #[test]
