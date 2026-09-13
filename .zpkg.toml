@@ -11,11 +11,6 @@ language = "rust"
 vcs = "git"
 url = "https://github.com/zed-pkg/zed-cli"
 
-[cli]
-flags_contract = ".cli-flags.toml"
-flags_runtime = "flags-2-env"
-primary_bin = "zed"
-
 [build]
 command = "cargo build --release --locked --bins"
 outputs = [
