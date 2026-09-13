@@ -113,7 +113,7 @@ pub fn install(
         LifecyclePhase::PreInstall,
         LifecyclePhase::PostInstall,
         || {
-            if !frozen && mode == InstallMode::Symlink {
+            if !frozen && mode == InstallMode::Symlink && cfg!(unix) {
                 crate::local_dev::with_local_dev_resolution(project, cfg, || {
                     core::install(
                         project,
@@ -158,7 +158,7 @@ pub fn install_with_permissions(
         LifecyclePhase::PreInstall,
         LifecyclePhase::PostInstall,
         || {
-            if !frozen && mode == InstallMode::Symlink {
+            if !frozen && mode == InstallMode::Symlink && cfg!(unix) {
                 crate::local_dev::with_local_dev_resolution(project, cfg, || {
                     core::install_with_permissions(
                         project,
