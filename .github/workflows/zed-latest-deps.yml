@@ -18,15 +18,24 @@ jobs:
     timeout-minutes: 45
     env:
       ZED_PKG_INTERACTIVE: "false"
-      GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - name: Check out source
+      - name: Check out candidate source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          path: source
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Build exact Zed CLI under test
+      - name: Check out locked-build-compatible Zed CLI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: 70e02eb7dc9a423d4465fd421ce5b150b16451b6
+          path: zed-tool
+          persist-credentials: false
+
+      - name: Build exact Zed CLI toolchain pin
+        working-directory: zed-tool
         shell: bash
         run: |
           set -euo pipefail
@@ -39,8 +48,9 @@ jobs:
         shell: bash
         run: |
           zed --version
-          printf 'zed-source-sha=%s\n' "$GITHUB_SHA"
+          git -C zed-tool rev-parse HEAD
 
       - name: Resolve latest allowed dependencies, replay lock, and compile
+        working-directory: source
         shell: bash
         run: bash .githooks/pre-push --ci
