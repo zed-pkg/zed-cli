@@ -218,6 +218,7 @@ impl ArtifactProcessLock {
 }
 
 mod artifact;
+mod cancellable;
 #[cfg(test)]
 mod hardening_tests;
 mod resolver;
@@ -227,6 +228,7 @@ mod tests;
 
 pub(crate) use artifact::ensure_artifact;
 use artifact::worker_loop;
+pub(crate) use cancellable::prepare as prepare_cancellable;
 pub use resolver::prefetch;
 pub(crate) use solver::PreparedInstall;
 
