@@ -16,25 +16,55 @@ command -v zed >/dev/null 2>&1 || {
   echo 'zed CLI is required; install the pinned project/fleet version first' >&2
   exit 1
 }
-[[ -f .zpkg.lock ]] || {
-  echo '.zpkg.lock is required; run zed install and commit the resolved lock' >&2
-  exit 1
+
+pack_dir="${TMPDIR:-/tmp}/zed-latest-deps-pack-$$"
+ephemeral_lock=0
+cleanup() {
+  rm -rf "$pack_dir"
+  if [[ "$ephemeral_lock" == "1" ]]; then
+    rm -f .zpkg.lock
+  fi
 }
+trap cleanup EXIT
 
-# First prove that the authored manifest/lock parse before allowing a networked refresh.
-zed validate --require-lock
-
-# Resolve the newest published versions still allowed by the authored requirements.
-# If that changes the lock, the developer must review and commit the dependency update.
-zed install
-if ! git diff --quiet -- .zpkg.lock; then
-  echo 'Zed dependency lock is stale relative to the newest versions allowed by .zpkg.toml.' >&2
-  echo 'Run zed install, review the dependency update, commit .zpkg.lock, and retry.' >&2
-  git --no-pager diff -- .zpkg.lock >&2 || true
-  exit 1
+lock_existed=0
+lock_tracked=0
+if [[ -f .zpkg.lock ]]; then
+  lock_existed=1
+  if git ls-files --error-unmatch .zpkg.lock >/dev/null 2>&1; then
+    lock_tracked=1
+  fi
+  zed validate --require-lock
+else
+  # Package-author repositories may intentionally omit a committed lock.
+  # Validate the authored manifest first, then create an ephemeral latest lock.
+  zed validate
 fi
 
-# Prove the committed lock can be replayed exactly, then exercise dependency build contracts.
+# Resolve the newest published versions still allowed by the authored requirements.
+zed install
+
+[[ -f .zpkg.lock ]] || {
+  echo 'zed install did not produce .zpkg.lock; cannot prove a frozen replay' >&2
+  exit 1
+}
+zed validate --require-lock
+
+if [[ "$lock_tracked" == "1" ]]; then
+  # A repository that commits its lock owns a strict freshness contract.
+  if ! git diff --quiet HEAD -- .zpkg.lock; then
+    echo 'Zed dependency lock is stale relative to the newest versions allowed by .zpkg.toml.' >&2
+    echo 'Run zed install, review the dependency update, commit .zpkg.lock, and retry.' >&2
+    git --no-pager diff HEAD -- .zpkg.lock >&2 || true
+    exit 1
+  fi
+elif [[ "$lock_existed" == "0" ]]; then
+  # The generated lock exists only to prove current/latest resolution and replay.
+  # Do not impose a new lockfile policy on package-author repos as a side effect.
+  ephemeral_lock=1
+fi
+
+# Prove the just-resolved graph replays exactly before compiling against it.
 zed install --frozen
 zed build
 
@@ -89,8 +119,6 @@ if [[ -f gradlew ]]; then
   zed develop --no-install -c './gradlew --no-daemon classes'
 fi
 
-# Packaging is a final structural assertion over the same manifest and materialized graph.
-pack_dir="${TMPDIR:-/tmp}/zed-latest-deps-pack-$$"
-trap 'rm -rf "$pack_dir"' EXIT
+# Packaging is a final structural assertion over the same manifest/materialized graph.
 mkdir -p "$pack_dir"
 zed pack --out "$pack_dir"
