@@ -1,0 +1,44 @@
+name: DEN-3488 feature validation
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  rust-feature-validation:
+    if: github.head_ref == 'DEN-3488-local-dev-repo-race'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install repository Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Refresh stale generated lockfile in runner only
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p zed-lock
+
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test local checkout resolver
+        run: cargo test --lib local_dev
+
+      - name: Check every target
+        run: cargo check --all-targets
+
+      - name: Deny warnings
+        run: cargo clippy --all-targets -- -D warnings
