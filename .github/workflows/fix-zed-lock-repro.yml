@@ -26,6 +26,9 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt,clippy
 
+      - name: Normalize Rust formatting
+        run: cargo fmt --all
+
       - name: Refresh only the stale zed-lock pin
         run: cargo update -p zed-lock
 
@@ -34,18 +37,18 @@ jobs:
           cargo fmt --all -- --check
           cargo build --locked --release --bin zed
 
-      - name: Commit lock repair when required
+      - name: Commit deterministic repair when required
         shell: bash
         run: |
           set -euo pipefail
-          if git diff --quiet -- Cargo.lock; then
-            echo "Cargo.lock already reproducible"
+          if git diff --quiet; then
+            echo "Repository is already reproducible"
             exit 0
           fi
-          git diff --check -- Cargo.lock
-          git diff -- Cargo.lock
+          git diff --check
+          git diff -- Cargo.lock tests/toml_contract.rs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Cargo.lock
-          git commit -m "build: refresh zed-lock pin"
+          git add Cargo.lock tests/toml_contract.rs
+          git commit -m "build: repair locked zed-cli build"
           git push origin HEAD:fix-zed-lock-repro
