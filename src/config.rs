@@ -11,6 +11,7 @@ use zed_interfaces::paths::{MANIFEST_FILE, ZED_HOME_DIR_NAME};
 use zed_interfaces::mirror::{MirrorDescriptorV1, MirrorKindV1, default_public_mirrors};
 
 use crate::cli::Globals;
+use crate::local_registry::LocalPortability;
 use crate::mirrored_registry::{FallbackPolicy, MirrorContext, TrustAnchors};
 use crate::publisher_keys::TrustCache;
 use crate::registry::Registry;
@@ -30,6 +31,10 @@ pub struct Config {
     /// dependency's manifest.
     pub mirrors: Vec<MirrorDescriptorV1>,
     pub fallback: FallbackPolicy,
+    /// This machine's filesystem view for the local project registry: path
+    /// rewrites across a container boundary, and how registered checkouts are
+    /// materialized.
+    pub local: LocalPortability,
 }
 
 impl Config {
@@ -78,6 +83,11 @@ impl Config {
                 .map(str::to_owned),
             interactive: globals.interactive,
             mirrors,
+            local: LocalPortability {
+                path_map: globals.local_path_map.clone(),
+                link_policy: globals.local_link_policy.map(Into::into),
+                ephemeral: globals.local_ephemeral,
+            },
             fallback: if globals.no_mirrors {
                 FallbackPolicy::Disabled
             } else if globals.trust_mirror_metadata {
@@ -398,7 +408,11 @@ pub(crate) fn with_manifest_override<T>(
     let prefetch_cfg = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().clone());
     let result = match prefetch_cfg {
         Some(cfg) => {
-            let prepared = crate::install_graph::prepare(&project, &cfg)?;
+            let prepared = crate::install_graph::prepare(
+                &project,
+                &cfg,
+                crate::local_registry::LocalRegistryMode::from_env()?,
+            )?;
             with_resolved_requirements(&project, prepared.exact_requirements(), operation)
         }
         None => operation(),
@@ -593,6 +607,7 @@ url = "https://localhost/manifestless/consumer"
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         };
 
         with_install_prefetch(&cfg, || {
@@ -624,6 +639,9 @@ url = "https://localhost/manifestless/consumer"
             r2_public_base: None,
             r2_public_key: None,
             source_fallback: true,
+            local_path_map: None,
+            local_link_policy: None,
+            local_ephemeral: false,
         };
         let cfg = Config::from_globals(&globals).unwrap();
 
@@ -705,6 +723,7 @@ url = "https://localhost/manifestless/consumer"
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         };
         assert_eq!(
             explicit.resolve_token().unwrap().as_deref(),
@@ -730,6 +749,7 @@ url = "https://localhost/manifestless/consumer"
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         };
         assert_eq!(unknown_registry.resolve_token().unwrap(), None);
     }
@@ -748,6 +768,7 @@ url = "https://localhost/manifestless/consumer"
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         };
         // A corrupt file must degrade to "no saved token", not a panic/err.
         assert_eq!(cfg.resolve_token().unwrap(), None);

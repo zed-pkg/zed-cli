@@ -890,6 +890,7 @@ fn install_declared_tools(root: &Path, cfg: &Config, options: &DevelopArgs) -> R
             allow_native_deps: options.allow_native_deps,
             allow_install_hooks: options.allow_install_hooks,
             native_manager: options.native_manager.clone(),
+            local_registry: crate::local_registry::LocalRegistryMode::from_env()?,
         };
         ops::install_with_permissions(
             root,

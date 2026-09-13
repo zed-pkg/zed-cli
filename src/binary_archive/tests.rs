@@ -165,6 +165,7 @@ hello = "bin/hello"
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         };
 
         publish_binary_zip_with_route(

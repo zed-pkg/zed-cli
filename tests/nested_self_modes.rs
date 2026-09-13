@@ -146,6 +146,7 @@ fn test_config(root: &Path, registry: &Path) -> Config {
         interactive: false,
         mirrors: Vec::new(),
         fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
+        local: Default::default(),
     }
 }
 
