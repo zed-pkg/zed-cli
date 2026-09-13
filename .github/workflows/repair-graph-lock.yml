@@ -31,7 +31,7 @@ jobs:
           first = text.find(needle)
           second = text.find(needle, first + len(needle))
           text = text[:second] + text[second + len(needle):]
-          path.write_text(text)
+          path.write_text(text.rstrip() + "\n")
       - name: Verify scoped repair
         shell: bash
         run: |
