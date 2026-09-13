@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$repo_root"
+
+if [[ "${1:-}" == "--install" ]]; then
+  chmod +x .githooks/pre-push
+  git config core.hooksPath .githooks
+  printf 'installed Zed pre-push hook via core.hooksPath=.githooks\n'
+  exit 0
+fi
+
+[[ -f .zpkg.toml ]] || exit 0
+command -v zed >/dev/null 2>&1 || {
+  echo 'zed CLI is required; install the pinned project/fleet version first' >&2
+  exit 1
+}
+[[ -f .zpkg.lock ]] || {
+  echo '.zpkg.lock is required; run zed install and commit the resolved lock' >&2
+  exit 1
+}
+
+# First prove that the authored manifest/lock parse before allowing a networked refresh.
+zed validate --require-lock
+
+# Resolve the newest published versions still allowed by the authored requirements.
+# If that changes the lock, the developer must review and commit the dependency update.
+zed install
+if ! git diff --quiet -- .zpkg.lock; then
+  echo 'Zed dependency lock is stale relative to the newest versions allowed by .zpkg.toml.' >&2
+  echo 'Run zed install, review the dependency update, commit .zpkg.lock, and retry.' >&2
+  git --no-pager diff -- .zpkg.lock >&2 || true
+  exit 1
+fi
+
+# Prove the committed lock can be replayed exactly, then exercise dependency build contracts.
+zed install --frozen
+zed build
+
+# Compile the consuming repository while Zed's generated adapter environment is active.
+if [[ -f Cargo.toml ]]; then
+  if [[ -f Cargo.lock ]]; then
+    zed develop --no-install -c 'cargo check --locked --all-targets'
+  else
+    zed develop --no-install -c 'cargo check --all-targets'
+  fi
+fi
+
+if [[ -f go.mod ]]; then
+  zed develop --no-install -c 'go test ./...'
+fi
+
+if [[ -f package.json ]]; then
+  if [[ -f pnpm-lock.yaml ]]; then
+    pm='corepack pnpm'
+    install_cmd='corepack pnpm install --frozen-lockfile'
+  elif [[ -f package-lock.json ]]; then
+    pm='npm'
+    install_cmd='npm ci'
+  elif [[ -f yarn.lock ]]; then
+    pm='corepack yarn'
+    install_cmd='corepack yarn install --immutable'
+  else
+    pm='npm'
+    install_cmd='npm install --ignore-scripts'
+  fi
+
+  if node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts.typecheck ? 0 : 1)'; then
+    script=typecheck
+  elif node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts.build ? 0 : 1)'; then
+    script=build
+  else
+    echo 'package.json has neither a typecheck nor build script; refusing to claim Node compile coverage' >&2
+    exit 1
+  fi
+  zed develop --no-install -c "$install_cmd && $pm run $script"
+fi
+
+if [[ -f pyproject.toml || -f setup.py ]]; then
+  zed develop --no-install -c 'python3 -m compileall -q .'
+fi
+
+if [[ -f pom.xml ]]; then
+  zed develop --no-install -c 'mvn -B -DskipTests compile'
+fi
+
+if [[ -f gradlew ]]; then
+  zed develop --no-install -c './gradlew --no-daemon classes'
+fi
+
+# Packaging is a final structural assertion over the same manifest and materialized graph.
+pack_dir="${TMPDIR:-/tmp}/zed-latest-deps-pack-$$"
+trap 'rm -rf "$pack_dir"' EXIT
+mkdir -p "$pack_dir"
+zed pack --out "$pack_dir"
