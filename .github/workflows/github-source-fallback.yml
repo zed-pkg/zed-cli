@@ -5,6 +5,7 @@ on:
     paths:
       - "src/github_source_archive.rs"
       - "src/source_fallback.rs"
+      - "src/registry.rs"
       - "src/lib.rs"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -24,19 +25,35 @@ jobs:
         with:
           persist-credentials: false
 
-      # main currently carries an older zed-lock source in Cargo.lock than the
-      # immutable revision already required by Cargo.toml. Refresh that one
-      # package in-run so this focused job tests the fallback code instead of
-      # being masked by the unrelated graph-authority failure.
-      - name: Refresh declared zed-lock revision in runner
-        run: cargo update -p zed-lock
-
-      - name: Verify lock refresh is scoped
+      # main currently carries two unrelated baseline defects that stop an
+      # all-targets compile before this PR's code can be exercised: Cargo.lock
+      # resolves an older zed-lock revision than Cargo.toml requires, and one
+      # hardening test module imports registry_for twice. Repair those only in
+      # the ephemeral runner; the permanent cleanup is intentionally separate.
+      - name: Repair known main-branch graph/test drift in runner
         shell: bash
         run: |
           set -Eeuo pipefail
-          git diff -- Cargo.lock
+          cargo update -p zed-lock
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("src/install_graph/hardening_tests.rs")
+          text = path.read_text()
+          needle = "use crate::registry::registry_for;"
+          if text.count(needle) != 2:
+              raise SystemExit(f"expected known baseline duplicate import twice, found {text.count(needle)}")
+          first = text.find(needle)
+          second = text.find(needle, first + len(needle))
+          path.write_text((text[:second] + text[second + len(needle):]).rstrip() + "\n")
+          PY
+
+      - name: Verify baseline repair is scoped
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff -- Cargo.lock src/install_graph/hardening_tests.rs
           git diff --exit-code -- Cargo.toml
+          test "$(git diff --name-only | sort | tr '\n' ' ')" = "Cargo.lock src/install_graph/hardening_tests.rs "
 
       - name: Check candidate
         run: cargo check --all-targets
@@ -46,3 +63,6 @@ jobs:
 
       - name: Test source fallback
         run: cargo test --lib source_fallback -- --nocapture
+
+      - name: Test canonical zpkg edge alias
+        run: cargo test --lib legacy_public_registry_alias_uses_the_canonical_zpkg_edge -- --nocapture
