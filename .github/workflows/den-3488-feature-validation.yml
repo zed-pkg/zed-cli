@@ -6,19 +6,18 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   rust-feature-validation:
     if: github.head_ref == 'DEN-3488-local-dev-repo-race'
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out feature branch head
+      - name: Check out exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: DEN-3488-local-dev-repo-race
-          fetch-depth: 0
-          persist-credentials: true
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
 
       - name: Install repository Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -26,108 +25,11 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt, clippy
 
-      - name: Wire cancellable Hyper resolver in working tree
-        shell: python
-        run: |
-          from pathlib import Path
-
-          graph = Path('src/install_graph.rs')
-          text = graph.read_text()
-          needle = 'mod artifact;\n#[cfg(test)]\nmod hardening_tests;\nmod resolver;'
-          replacement = 'mod artifact;\nmod cancellable;\n#[cfg(test)]\nmod hardening_tests;\nmod resolver;'
-          if needle in text:
-              text = text.replace(needle, replacement)
-          elif 'mod cancellable;' not in text:
-              raise SystemExit('install_graph module insertion point not found')
-          export = 'pub(crate) use solver::PreparedInstall;'
-          if 'prepare_cancellable' not in text:
-              text = text.replace(
-                  export,
-                  export + '\npub(crate) use cancellable::prepare as prepare_cancellable;',
-              )
-          graph.write_text(text)
-
-          local = Path('src/local_dev.rs')
-          text = local.read_text()
-          if 'use tokio_util::sync::CancellationToken;' not in text:
-              text = text.replace(
-                  'use toml::Value;\n',
-                  'use toml::Value;\nuse tokio_util::sync::CancellationToken;\n',
-              )
-
-          old_docs = '''/// When the complete reachable graph exists locally, the speculative remote
-/// result is abandoned and the command does not wait for it. `reqwest::blocking`
-/// cannot safely interrupt an in-flight syscall, so dropping the join handle is
-/// intentionally an abandon/ignore operation rather than a claim of hard socket
-/// cancellation.
-///
-/// For mixed graphs, the already-running remote solve is joined and reused;'''
-          new_docs = '''/// When the complete reachable graph exists locally, the cancellation token
-/// drops the active Hyper request future and the remote resolver is joined only
-/// for deterministic cleanup. No blocking HTTP syscall is left detached.
-///
-/// For mixed graphs, the already-running remote solve is joined and reused;'''
-          text = text.replace(old_docs, new_docs)
-
-          old_spawn = '''    let remote_project = project.to_path_buf();
-    let remote_cfg = cfg.clone();
-    let remote = thread::Builder::new()
-        .name("zed-local-dev-remote-resolution".to_string())
-        .spawn(move || install_graph::prepare(&remote_project, &remote_cfg))
-        .context("starting speculative registry resolution")?;'''
-          new_spawn = '''    let remote_project = project.to_path_buf();
-    let remote_cfg = cfg.clone();
-    let cancel = CancellationToken::new();
-    let remote_cancel = cancel.clone();
-    let remote = thread::Builder::new()
-        .name("zed-local-dev-remote-resolution".to_string())
-        .spawn(move || {
-            install_graph::prepare_cancellable(&remote_project, &remote_cfg, remote_cancel)
-        })
-        .context("starting speculative registry resolution")?;'''
-          if old_spawn in text:
-              text = text.replace(old_spawn, new_spawn)
-          elif 'prepare_cancellable' not in text:
-              raise SystemExit('local_dev remote spawn insertion point not found')
-
-          old_local = '''    let prepared = if discovery.has_ambient_matches() && discovery.all_local {
-        drop(remote);
-        eprintln!(
-            "local-dev resolution: complete local graph found; abandoning speculative registry result"
-        );
-        PreparedInstall::default()
-    } else {'''
-          new_local = '''    let prepared = if discovery.has_ambient_matches() && discovery.all_local {
-        cancel.cancel();
-        if let Err(error) = join_remote(remote) {
-            let message = error.to_string();
-            if !message.contains("cancelled") {
-                eprintln!(
-                    "warning: speculative registry cleanup after local win returned: {}",
-                    message.lines().next().unwrap_or_default()
-                );
-            }
-        }
-        eprintln!(
-            "local-dev resolution: complete local graph found; cancelled speculative registry request"
-        );
-        PreparedInstall::default()
-    } else {'''
-          if old_local in text:
-              text = text.replace(old_local, new_local)
-          elif 'cancel.cancel();' not in text:
-              raise SystemExit('local_dev all-local insertion point not found')
-          local.write_text(text)
-
       - name: Refresh stale generated lockfile in runner only
         shell: bash
         run: |
           set -euo pipefail
           cargo update -p zed-lock
-          cargo update -p zed-client-async
-
-      - name: Format migrated Rust
-        run: cargo fmt --all
 
       - name: Verify formatting
         run: cargo fmt --all -- --check
@@ -158,26 +60,14 @@ jobs:
               )
           PY
 
-      - name: Test local checkout resolver and cancellable adapter
-        run: cargo test --lib local_dev install_graph::cancellable
+      - name: Test local checkout resolver
+        run: cargo test --lib local_dev
+
+      - name: Test cancellable registry adapter
+        run: cargo test --lib cancellable
 
       - name: Check CLI binary
         run: cargo check --bins
 
       - name: Clippy feature library
         run: cargo clippy --lib -- -A unsafe-code -D warnings
-
-      - name: Commit validated cancellation wiring
-        shell: bash
-        run: |
-          set -euo pipefail
-          git checkout -- src/install_graph/hardening_tests.rs Cargo.lock
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/install_graph.rs src/local_dev.rs
-          if git diff --cached --quiet; then
-            echo 'Cancellation wiring already committed.'
-            exit 0
-          fi
-          git commit -m 'DEN-3488 cancel speculative Hyper resolution on local hit'
-          git push origin HEAD:DEN-3488-local-dev-repo-race
