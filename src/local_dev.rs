@@ -1,16 +1,15 @@
 //! Local-checkout discovery for live symlink installs.
 //!
-//! A normal symlink install is allowed to prefer a compatible checkout that
-//! is already on the developer's machine. Frozen and copy installs never enter
-//! this module, so lock replay and container materialization remain registry /
-//! content-store authoritative.
+//! A normal symlink install may prefer a compatible checkout already on the
+//! developer's machine. Frozen and copy installs never enter this module, so
+//! lock replay and container materialization remain registry/store authoritative.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use globset::Glob;
 use toml::Value;
 use zed_interfaces::manifest::Manifest;
@@ -51,7 +50,6 @@ impl LocalPackage {
 
 #[derive(Debug)]
 struct Discovery {
-    project: PathBuf,
     project_key: String,
     workspace_root: PathBuf,
     explicit: BTreeMap<String, LocalPackage>,
@@ -71,7 +69,6 @@ impl Discovery {
         let (selected, all_local) =
             resolve_local_closure(&root_manifest.dependencies, &explicit, &index, &project_key);
         Ok(Self {
-            project,
             project_key,
             workspace_root,
             explicit,
@@ -85,10 +82,9 @@ impl Discovery {
         !self.selected.is_empty()
     }
 
-    /// In a mixed local/remote graph, keep the speculative remote solve as the
-    /// compatibility baseline. A local checkout may replace a remote coordinate
-    /// only when it satisfies the exact selected version. This avoids a local
-    /// checkout changing the selected version of an otherwise remote graph.
+    /// In a mixed graph, canonical remote resolution remains the version
+    /// authority. An ambient checkout may replace a remote coordinate only at
+    /// the exact version the remote solver already selected.
     fn constrain_selected_to_exact(&mut self, exact: &BTreeMap<String, String>) {
         self.selected.retain(|key, package| {
             exact
@@ -98,9 +94,9 @@ impl Discovery {
         });
     }
 
-    /// Once the remote solver has exposed the full coordinate set, local copies
-    /// of transitive dependencies can participate too. For those coordinates we
-    /// require the exact selected remote version in mixed graphs.
+    /// Remote solving exposes transitive coordinates the root manifest cannot
+    /// see. Admit compatible local copies of those coordinates at the exact
+    /// selected remote version as well.
     fn extend_from_exact_requirements(&mut self, requirements: &BTreeMap<String, String>) {
         let mut constraints: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (key, requirement) in requirements {
@@ -181,9 +177,9 @@ impl Discovery {
         let mut additions = self
             .selected
             .values()
-            .map(|package| package.path.to_string_lossy().into_owned())
-            .filter(|path| !existing.contains(path))
-            .collect::<Vec<_>>();
+            .map(|package| relative_member_pattern(&self.workspace_root, &package.path))
+            .collect::<Result<Vec<_>>>()?;
+        additions.retain(|path| !existing.contains(path));
         additions.sort();
         additions.dedup();
         members.extend(additions.into_iter().map(Value::String));
@@ -194,20 +190,17 @@ impl Discovery {
     }
 }
 
-/// Race canonical remote graph preparation against bounded local checkout
-/// discovery, then hand the already-prepared graph to the established install
-/// facade exactly once.
+/// Race canonical registry graph preparation against bounded local checkout
+/// discovery and reuse whichever work remains relevant.
 ///
-/// When every reachable dependency is represented by a compatible explicit or
-/// ambient local checkout, the remote result is abandoned and the installer
-/// proceeds immediately from a local-only prepared graph. Rust's blocking HTTP
-/// client cannot safely be interrupted mid-syscall, so "abandon" means we drop
-/// the join handle and never wait for or consume that speculative result.
+/// When the complete reachable graph exists locally, the speculative remote
+/// result is abandoned and the command does not wait for it. `reqwest::blocking`
+/// cannot safely interrupt an in-flight syscall, so dropping the join handle is
+/// intentionally an abandon/ignore operation rather than a claim of hard socket
+/// cancellation.
 ///
-/// For mixed graphs, the pending remote solve is joined and reused. Ambient
-/// local checkouts are then admitted only at the remote-selected exact version;
-/// the ordinary workspace precedence plus `InstallMode::Symlink` turns those
-/// coordinates into live links instead of store links.
+/// For mixed graphs, the already-running remote solve is joined and reused;
+/// ambient local copies are admitted only at exact remote-selected versions.
 pub(crate) fn with_local_dev_resolution<T>(
     project: &Path,
     cfg: &Config,
@@ -268,6 +261,43 @@ fn join_remote(remote: thread::JoinHandle<Result<PreparedInstall>>) -> Result<Pr
 
 fn normalized(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Render a checkout path in the relative syntax the existing workspace
+/// expander consumes. Absolute paths would be re-joined beneath the workspace
+/// root and therefore point at the wrong directory.
+fn relative_member_pattern(base: &Path, target: &Path) -> Result<String> {
+    let base = normalized(base);
+    let target = normalized(target);
+    let base_components = base.components().collect::<Vec<_>>();
+    let target_components = target.components().collect::<Vec<_>>();
+    let shared = base_components
+        .iter()
+        .zip(&target_components)
+        .take_while(|(left, right)| left == right)
+        .count();
+
+    if shared == 0 {
+        bail!(
+            "local checkout {} cannot be expressed relative to workspace {}",
+            target.display(),
+            base.display()
+        );
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in shared..base_components.len() {
+        relative.push("..");
+    }
+    for component in &target_components[shared..] {
+        relative.push(component.as_os_str());
+    }
+    let rendered = relative.to_string_lossy().replace('\\', "/");
+    Ok(if rendered.is_empty() {
+        ".".to_string()
+    } else {
+        rendered
+    })
 }
 
 fn effective_workspace_root(project: &Path) -> PathBuf {
@@ -577,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    fn discovers_compatible_cousin_repo_and_ignores_wrong_version() {
+    fn discovers_compatible_cousin_repo_and_renders_relative_workspace_member() {
         let root = fixture_root();
         let app = root.join("codes/app-org/app");
         let good = root.join("codes/lib-org/lib");
@@ -593,6 +623,19 @@ mod tests {
         assert_eq!(selected.version, "1.2.0");
         assert!(discovery.all_local);
         assert_eq!(selected.path, normalized(&good));
+
+        let (_, overlay) = discovery.render_workspace_overlay().unwrap().unwrap();
+        let document: Value = toml::from_str(&overlay).unwrap();
+        let members = document
+            .get("workspace")
+            .and_then(|value| value.get("members"))
+            .and_then(Value::as_array)
+            .unwrap();
+        assert!(members.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|path| path == "../../lib-org/lib")
+        }));
         let _ = fs::remove_dir_all(root);
     }
 
