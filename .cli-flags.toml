@@ -524,7 +524,7 @@ help = "Print the installed dependency graph as a tree."
 [commands.tree.flags.tree_depth]
 env = "ZED_PKG_TREE_DEPTH"
 aliases = ["depth"]
-type = "int"
+type = "integer"
 help = "Levels below the root to print; omit for the whole graph."
 
 [commands.tree.flags.tree_json]
