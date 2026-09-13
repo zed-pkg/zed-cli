@@ -228,7 +228,7 @@ mod tests;
 
 pub(crate) use artifact::ensure_artifact;
 use artifact::worker_loop;
-pub(crate) use cancellable::prepare as prepare_cancellable;
+pub(crate) use cancellable::{ResolutionGate, prepare as prepare_cancellable};
 pub use resolver::prefetch;
 pub(crate) use solver::PreparedInstall;
 
