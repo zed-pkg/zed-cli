@@ -11,6 +11,7 @@ use std::thread;
 
 use anyhow::{Context, Result, anyhow, bail};
 use globset::Glob;
+use tokio_util::sync::CancellationToken;
 use toml::Value;
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::MANIFEST_FILE;
@@ -193,11 +194,10 @@ impl Discovery {
 /// Race canonical registry graph preparation against bounded local checkout
 /// discovery and reuse whichever work remains relevant.
 ///
-/// When the complete reachable graph exists locally, the speculative remote
-/// result is abandoned and the command does not wait for it. `reqwest::blocking`
-/// cannot safely interrupt an in-flight syscall, so dropping the join handle is
-/// intentionally an abandon/ignore operation rather than a claim of hard socket
-/// cancellation.
+/// When the complete reachable graph exists locally, the cancellation token
+/// drops the active Hyper metadata request future and the remote resolver is
+/// joined for deterministic cleanup rather than detached. Artifact body fetches
+/// still have a legacy blocking compatibility path and are migrated separately.
 ///
 /// For mixed graphs, the already-running remote solve is joined and reused;
 /// ambient local copies are admitted only at exact remote-selected versions.
@@ -208,9 +208,13 @@ pub(crate) fn with_local_dev_resolution<T>(
 ) -> Result<T> {
     let remote_project = project.to_path_buf();
     let remote_cfg = cfg.clone();
+    let cancel = CancellationToken::new();
+    let remote_cancel = cancel.clone();
     let remote = thread::Builder::new()
         .name("zed-local-dev-remote-resolution".to_string())
-        .spawn(move || install_graph::prepare(&remote_project, &remote_cfg))
+        .spawn(move || {
+            install_graph::prepare_cancellable(&remote_project, &remote_cfg, remote_cancel)
+        })
         .context("starting speculative registry resolution")?;
 
     let mut discovery = match Discovery::scan(project) {
@@ -226,9 +230,18 @@ pub(crate) fn with_local_dev_resolution<T>(
     };
 
     let prepared = if discovery.has_ambient_matches() && discovery.all_local {
-        drop(remote);
+        cancel.cancel();
+        if let Err(error) = join_remote(remote) {
+            let message = error.to_string();
+            if !message.contains("cancelled") {
+                eprintln!(
+                    "warning: speculative registry cleanup after local win returned: {}",
+                    message.lines().next().unwrap_or_default()
+                );
+            }
+        }
         eprintln!(
-            "local-dev resolution: complete local graph found; abandoning speculative registry result"
+            "local-dev resolution: complete local graph found; cancelled speculative registry metadata request"
         );
         PreparedInstall::default()
     } else {
@@ -595,12 +608,22 @@ mod tests {
     fn write_manifest(path: &Path, org: &str, name: &str, version: &str, deps: &[(&str, &str)]) {
         fs::create_dir_all(path).unwrap();
         let mut text = format!(
-            "[package]\norg = \"{org}\"\nname = \"{name}\"\nversion = \"{version}\"\ndescription = \"fixture\"\nlicense = \"MIT\"\nlanguage = \"rust\"\n"
+            "[package]\
+org = \"{org}\"\
+name = \"{name}\"\
+version = \"{version}\"\
+description = \"fixture\"\
+license = \"MIT\"\
+language = \"rust\"\
+"
         );
         if !deps.is_empty() {
-            text.push_str("\n[dependencies]\n");
+            text.push_str("\
+[dependencies]\
+");
             for (key, requirement) in deps {
-                text.push_str(&format!("\"{key}\" = \"{requirement}\"\n"));
+                text.push_str(&format!("\"{key}\" = \"{requirement}\"\
+"));
             }
         }
         fs::write(path.join(MANIFEST_FILE), text).unwrap();
