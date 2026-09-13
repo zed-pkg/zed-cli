@@ -618,12 +618,16 @@ language = \"rust\"\
 "
         );
         if !deps.is_empty() {
-            text.push_str("\
+            text.push_str(
+                "\
 [dependencies]\
-");
+",
+            );
             for (key, requirement) in deps {
-                text.push_str(&format!("\"{key}\" = \"{requirement}\"\
-"));
+                text.push_str(&format!(
+                    "\"{key}\" = \"{requirement}\"\
+"
+                ));
             }
         }
         fs::write(path.join(MANIFEST_FILE), text).unwrap();
