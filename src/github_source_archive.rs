@@ -3,18 +3,32 @@
 //! GitHub's automatic tag archives are source archives: they are rooted under
 //! `<repo>-<ref>/` and are not directly installable by Zed, whose immutable
 //! store accepts only archives rooted under `pkg/`. This module deliberately
-//! reuses the hardened store extractor and the ordinary deterministic packer so
-//! direct GitHub fallback has exactly the same package layout, ignore rules,
-//! executable-bit normalization, and digest semantics as `zed pack`.
+//! keeps the hardened store extractor as the final extraction boundary and the
+//! ordinary deterministic packer as the output path, so direct GitHub fallback
+//! has the same package layout, ignore rules, executable-bit normalization, and
+//! digest semantics as `zed pack`.
 
 use std::fs;
+use std::io::{Read, sink};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, ensure};
+use flate2::Compression;
+use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use zed_interfaces::manifest::Manifest;
 use zed_interfaces::paths::MANIFEST_FILE;
 use zed_interfaces::registry::VersionMetadata;
 use zed_interfaces::source::{GithubIdentity, parse_github_identity};
+
+// GitHub's generated tarballs currently include a POSIX PAX global metadata
+// member before the repository tree. Canonical Zed artifacts intentionally
+// reject every non-file/non-directory member, so source fallback strips only
+// this metadata-only record into a temporary tarball and then still sends the
+// result through the ordinary hardened extractor. Keep preprocessing bounded so
+// it cannot become a decompression-bomb bypass around the store extractor.
+const MAX_GITHUB_SOURCE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_GITHUB_SOURCE_ENTRIES: usize = 200_000;
 
 /// Extract one GitHub-generated source archive, validate the tagged manifest,
 /// and deterministically repack it into the artifact format expected by the
@@ -30,10 +44,85 @@ pub(crate) fn repack_github_archive(
     version: &VersionMetadata,
 ) -> Result<()> {
     let extracted = tempfile::tempdir().context("create GitHub source extraction directory")?;
-    crate::store::extract_archive_for_update(source_archive, extracted.path())
+    let sanitized = strip_github_pax_global_headers(source_archive)?;
+    let archive_for_extract = sanitized
+        .as_ref()
+        .map(tempfile::NamedTempFile::path)
+        .unwrap_or(source_archive);
+    crate::store::extract_archive_for_update(archive_for_extract, extracted.path())
         .context("extract GitHub source archive")?;
 
     repack_extracted_root(extracted.path(), destination, identity, version)
+}
+
+/// GitHub/codeload tarballs may carry a metadata-only POSIX PAX global header
+/// (`typeflag = 'g'`). `tar` deliberately exposes global headers as entries,
+/// while it consumes local PAX/GNU long-name records as metadata for the file
+/// they describe. Iterate raw entries here so every other header is preserved
+/// byte-for-byte semantically; remove only the global record, then let the
+/// strict store extractor perform path/type/size validation on the result.
+fn strip_github_pax_global_headers(
+    source_archive: &Path,
+) -> Result<Option<tempfile::NamedTempFile>> {
+    let mut magic = [0u8; 2];
+    let read = {
+        let mut file = fs::File::open(source_archive)?;
+        file.read(&mut magic).unwrap_or(0)
+    };
+    if read < 2 || magic != [0x1f, 0x8b] {
+        return Ok(None);
+    }
+
+    let input = fs::File::open(source_archive)?;
+    let mut archive = tar::Archive::new(GzDecoder::new(input));
+    let sanitized = tempfile::NamedTempFile::new()
+        .context("create sanitized GitHub source archive")?;
+    let output = sanitized
+        .reopen()
+        .context("reopen sanitized GitHub source archive")?;
+    let encoder = GzEncoder::new(output, Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+
+    let mut bytes = 0u64;
+    let mut count = 0usize;
+    for raw_entry in archive.entries()?.raw(true) {
+        let mut entry = raw_entry.context("read GitHub source tar entry")?;
+        count += 1;
+        ensure!(
+            count <= MAX_GITHUB_SOURCE_ENTRIES,
+            "GitHub source archive has more than {MAX_GITHUB_SOURCE_ENTRIES} raw entries; refusing"
+        );
+        let size = entry.header().size().context("read GitHub tar entry size")?;
+        bytes = bytes.saturating_add(size);
+        ensure!(
+            bytes <= MAX_GITHUB_SOURCE_BYTES,
+            "GitHub source archive expands past the {MAX_GITHUB_SOURCE_BYTES}-byte preprocessing cap; refusing"
+        );
+
+        if entry.header().entry_type() == tar::EntryType::XGlobalHeader {
+            // Drain the record so malformed/truncated metadata still fails the
+            // source read instead of being silently accepted.
+            let copied = std::io::copy(&mut entry, &mut sink())?;
+            ensure!(
+                copied == size,
+                "GitHub PAX global header is truncated: declared {size} bytes, read {copied}"
+            );
+            continue;
+        }
+
+        let header = entry.header().clone();
+        builder
+            .append(&header, &mut entry)
+            .context("copy GitHub source tar entry into sanitized archive")?;
+    }
+
+    let encoder = builder
+        .into_inner()
+        .context("finish sanitized GitHub source tar")?;
+    encoder
+        .finish()
+        .context("finish sanitized GitHub source gzip stream")?;
+    Ok(Some(sanitized))
 }
 
 fn repack_extracted_root(
@@ -198,6 +287,47 @@ url = "https://github.com/acme/http-kit"
         extracted
     }
 
+    fn pax_record(key: &str, value: &str) -> Vec<u8> {
+        let payload = format!("{key}={value}\n");
+        let mut digits = 1usize;
+        loop {
+            let len = digits + 1 + payload.len();
+            let next_digits = len.to_string().len();
+            if next_digits == digits {
+                return format!("{len} {payload}").into_bytes();
+            }
+            digits = next_digits;
+        }
+    }
+
+    fn github_style_tar_with_global_pax() -> tempfile::NamedTempFile {
+        let source = extracted_source();
+        let root = source.path().join("http-kit-deadbeef");
+        let archive = tempfile::NamedTempFile::new().unwrap();
+        let file = archive.reopen().unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+
+        let pax = pax_record("comment", "deadbeef");
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::XGlobalHeader);
+        header.set_mode(0o644);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        header.set_size(pax.len() as u64);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, "pax_global_header", pax.as_slice())
+            .unwrap();
+        builder
+            .append_dir_all("http-kit-deadbeef", &root)
+            .unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+        archive
+    }
+
     #[test]
     fn github_source_tree_becomes_store_compatible_tar_and_zip() {
         for format in [ArtifactFormat::TarGz, ArtifactFormat::Zip] {
@@ -213,6 +343,35 @@ url = "https://github.com/acme/http-kit"
             assert!(package.join(MANIFEST_FILE).is_file());
             assert!(package.join("src/lib.rs").is_file());
         }
+    }
+
+    #[test]
+    fn github_pax_global_header_is_stripped_before_strict_extraction() {
+        let source = github_style_tar_with_global_pax();
+
+        // The canonical artifact/update extractor remains strict: raw GitHub
+        // metadata is not silently admitted into the immutable package format.
+        let strict_dest = tempfile::tempdir().unwrap();
+        let strict_error = crate::store::extract_archive_for_update(source.path(), strict_dest.path())
+            .unwrap_err()
+            .to_string();
+        assert!(strict_error.contains("XGlobalHeader"));
+
+        let output = tempfile::NamedTempFile::new().unwrap();
+        repack_github_archive(
+            source.path(),
+            output.path(),
+            &identity(),
+            &version(ArtifactFormat::TarGz),
+        )
+        .unwrap();
+
+        let (sha256, _) = crate::pack::sha256_file(output.path()).unwrap();
+        let store_home = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::new(store_home.path());
+        let package = store.add_artifact(output.path(), &sha256).unwrap();
+        assert!(package.join(MANIFEST_FILE).is_file());
+        assert!(package.join("src/lib.rs").is_file());
     }
 
     #[test]
