@@ -3,25 +3,24 @@
 //! Loopback `file://` and `http://127.0.0.1` registries stay hermetic: tests
 //! and air-gapped mirrors never leak to github.com. Production hosts such as
 //! `registry.zpkg.net` fall back to guessed public R2 keys and GitHub Release
-//! assets, then to a tagged source archive only when no packed digest is known.
+//! assets, then to the GitHub tag archive, repacked exactly as `zed publish`
+//! would pack that tag.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::Read as _;
 use std::path::{Component, Path};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use flate2::Compression;
 use flate2::read::GzDecoder;
-use flate2::write::GzEncoder;
 use serde::Deserialize;
 use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::manifest::{Manifest, is_slug};
 use zed_interfaces::mirror::MirrorDescriptorV1;
-use zed_interfaces::paths::{ARCHIVE_ROOT, MANIFEST_FILE};
+use zed_interfaces::paths::MANIFEST_FILE;
 use zed_interfaces::registry::{
     AuditLogResponse, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
     SearchResponse, VersionMetadata, YankResponse,
@@ -174,7 +173,13 @@ impl FallbackRegistry {
             }
             None => download_url(&self.client, url, raw.path(), 0, None)?,
         }
-        normalize_tag_archive(raw.path(), dest)
+        repack_tag_archive(
+            raw.path(),
+            &version.org,
+            &version.name,
+            &version.version,
+            dest,
+        )
     }
 
     fn github_headers(
@@ -870,34 +875,75 @@ struct GithubTag {
 /// matching the store's extraction bound).
 const MAX_TAG_ARCHIVE_FILES: usize = 200_000;
 
-/// Repack a GitHub tag archive into the deterministic Zed artifact layout.
+/// Rebuild, from a GitHub tag archive, the artifact `zed publish` would have
+/// produced for that tag.
 ///
 /// `git archive` output has a `<repo>-<tag>/` root, a `pax_global_header`
 /// entry, and gzip bytes GitHub does not promise to keep stable; the store
-/// accepts none of that. The top-level directory is replaced by `pkg/`,
-/// metadata-only entries are dropped, and files are written sorted with the
-/// zeroed headers `pack` uses — so the digest names the tree, not GitHub's
-/// compressor, and every machine derives the same one. Links and specials
-/// fail closed, exactly as the store's extractor would.
-fn normalize_tag_archive(raw: &Path, dest: &Path) -> Result<()> {
+/// accepts none of that, and a raw polyglot manifest still declares targets
+/// the published artifact does not. The tree is extracted and packed with the
+/// same [`crate::pack::pack_all`] publish uses, keeping the root package.
+/// Packing is deterministic, so the digest names the tree rather than
+/// GitHub's compressor, and it equals the published digest for a tag packed
+/// by this packer — a pinned lockfile can be satisfied from github.com alone.
+fn repack_tag_archive(raw: &Path, org: &str, name: &str, version: &str, dest: &Path) -> Result<()> {
+    let staging = tempfile::tempdir().context("tag archive staging directory")?;
+    let tree = staging.path().join("tree");
+    extract_tag_archive(raw, &tree)?;
+    let manifest = crate::config::read_manifest(&tree)
+        .context("GitHub tag archive has no valid package manifest")?;
+    let declared = &manifest.package;
+    if declared.org != org || declared.name != name || declared.version != version {
+        bail!(
+            "GitHub tag archive declares {}/{}@{}, expected {org}/{name}@{version}",
+            declared.org,
+            declared.name,
+            declared.version
+        );
+    }
+    // The same manifest hardening `zed pack` / `zed publish` apply before
+    // packing; without it the derived `.zpkg.toml` — and so the digest —
+    // differs from the published artifact. Their preflights guard a local
+    // checkout's untracked inputs, which a tag archive cannot contain.
+    let manifest =
+        crate::pack_inputs::harden_manifest(crate::pack_guard::harden_manifest(manifest));
+    let packages = crate::pack::pack_all(&tree, &manifest, Some(&staging.path().join("out")))
+        .context("repack GitHub tag archive")?;
+    let root = packages
+        .into_iter()
+        .find(|package| package.manifest.package.name == name)
+        .with_context(|| {
+            format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
+        })?;
+    fs::copy(&root.packed.path, dest).context("stage repacked GitHub tag archive")?;
+    Ok(())
+}
+
+/// Extract a GitHub tag archive's tree, without its `<repo>-<tag>/` root, into
+/// `tree`. Links, specials, and escaping paths fail closed and sizes are
+/// capped, exactly as in the store's extractor: the bytes come from the network.
+fn extract_tag_archive(raw: &Path, tree: &Path) -> Result<()> {
     let budget = max_artifact_bytes();
     let mut total: u64 = 0;
-    let mut files: Vec<(String, u32, Vec<u8>)> = Vec::new();
+    let mut files = 0usize;
     let file = fs::File::open(raw).context("open GitHub tag archive")?;
     let mut archive = tar::Archive::new(GzDecoder::new(file));
     for entry in archive.entries().context("read GitHub tag archive")? {
         let mut entry = entry?;
         let path = entry.path()?.into_owned();
-        match entry.header().entry_type() {
-            tar::EntryType::Regular => {}
-            tar::EntryType::Directory | tar::EntryType::XGlobalHeader | tar::EntryType::XHeader => {
-                continue;
-            }
-            other => bail!(
-                "GitHub tag archive entry `{}` has unsupported type {other:?} \
+        let kind = entry.header().entry_type();
+        if matches!(
+            kind,
+            tar::EntryType::Directory | tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+        ) {
+            continue;
+        }
+        if kind != tar::EntryType::Regular {
+            bail!(
+                "GitHub tag archive entry `{}` has unsupported type {kind:?} \
                  (only files and directories are allowed)",
                 path.display()
-            ),
+            );
         }
         let mut components = path.components();
         if !matches!(components.next(), Some(Component::Normal(_))) {
@@ -915,7 +961,8 @@ fn normalize_tag_archive(raw: &Path, dest: &Path) -> Result<()> {
                 path.display()
             );
         }
-        if files.len() >= MAX_TAG_ARCHIVE_FILES {
+        files += 1;
+        if files > MAX_TAG_ARCHIVE_FILES {
             bail!("GitHub tag archive has more than {MAX_TAG_ARCHIVE_FILES} files; refusing");
         }
         let size = entry.header().size()?;
@@ -923,45 +970,32 @@ fn normalize_tag_archive(raw: &Path, dest: &Path) -> Result<()> {
         if total > budget {
             bail!("GitHub tag archive expands past the {budget}-byte cap; refusing");
         }
-        let mode = if entry.header().mode()? & 0o111 != 0 {
-            0o755
-        } else {
-            0o644
-        };
-        let mut data = Vec::new();
-        (&mut entry).take(size).read_to_end(&mut data)?;
-        let rel = rel
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
-        files.push((rel, mode, data));
+        let target = tree.join(rel);
+        if target.exists() {
+            bail!("GitHub tag archive repeats entry `{}`", path.display());
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out = fs::File::create(&target)?;
+        let copied = std::io::copy(&mut (&mut entry).take(size), &mut out)?;
+        if copied != size {
+            bail!("GitHub tag archive entry `{}` is truncated", path.display());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if entry.header().mode()? & 0o111 != 0 {
+                0o755
+            } else {
+                0o644
+            };
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+        }
     }
-    if files.is_empty() {
+    if files == 0 {
         bail!("GitHub tag archive contains no files");
     }
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    if let Some(pair) = files.windows(2).find(|pair| pair[0].0 == pair[1].0) {
-        bail!("GitHub tag archive repeats entry `{}`", pair[0].0);
-    }
-
-    let out = fs::File::create(dest)?;
-    let mut builder = tar::Builder::new(GzEncoder::new(out, Compression::default()));
-    for (rel, mode, data) in &files {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mtime(0);
-        header.set_uid(0);
-        header.set_gid(0);
-        header.set_mode(*mode);
-        builder.append_data(
-            &mut header,
-            format!("{ARCHIVE_ROOT}/{rel}"),
-            data.as_slice(),
-        )?;
-    }
-    let mut out = builder.into_inner()?.finish()?;
-    out.flush()?;
     Ok(())
 }
 
@@ -978,7 +1012,9 @@ fn fallback_mirrors(locators: &[ArtifactLocator], r2_base: &str) -> Vec<MirrorDe
             ArtifactSourceKind::R2 => {
                 MirrorDescriptorV1::object_store(r2_base.trim_end_matches('/'))
             }
-            _ => MirrorDescriptorV1::from_locator(locator),
+            ArtifactSourceKind::GithubRelease
+            | ArtifactSourceKind::GithubPackages
+            | ArtifactSourceKind::GithubArchive => MirrorDescriptorV1::from_locator(locator),
         };
         if !mirrors
             .iter()
@@ -1161,6 +1197,8 @@ pub fn github_guess_is_safe(org: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use zed_interfaces::source::{r2_object_keys, resolve_r2_public_base};
 
     #[test]
@@ -1377,8 +1415,24 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
         assert_eq!(archive, locators.len() - 1);
     }
 
-    /// A `git archive`-shaped tarball: pax global header, `<root>/` directory,
-    /// a nested file, and an executable, all with non-zero mtimes.
+    const FIXTURE_MANIFEST: &[u8] = br#"[package]
+org = "ores-wasm-loaders"
+name = "owls-interfaces"
+version = "0.1.1"
+description = "Release manifests and host contracts for shared WASM loaders"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/ores-wasm-loaders/owls-interfaces"
+
+[targets.repository]
+dir = "."
+"#;
+
+    /// A `git archive`-shaped tarball of a polyglot repository: pax global
+    /// header, `<root>/` directory, a nested file, and an executable, all
+    /// with non-zero mtimes.
     fn git_archive_fixture(root: &str, mtime: u64, level: u32) -> tempfile::NamedTempFile {
         let fixture = tempfile::NamedTempFile::new().unwrap();
         let encoder = GzEncoder::new(
@@ -1403,7 +1457,7 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
             .unwrap();
         for (path, mode, body) in [
             ("rust/src/lib.rs", 0o664, b"pub fn owls() {}\n".as_slice()),
-            (".zpkg.toml", 0o664, b"[package]\n".as_slice()),
+            (".zpkg.toml", 0o664, FIXTURE_MANIFEST),
             ("scripts/run.sh", 0o775, b"#!/bin/sh\n".as_slice()),
         ] {
             let mut header = tar::Header::new_ustar();
@@ -1418,37 +1472,70 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
         fixture
     }
 
+    fn repack(fixture: &Path, name: &str, dest: &Path) -> Result<()> {
+        repack_tag_archive(fixture, "ores-wasm-loaders", name, "0.1.1", dest)
+    }
+
     #[test]
-    fn tag_archives_repack_into_a_reproducible_pkg_artifact() {
+    fn tag_archives_repack_into_the_published_root_artifact() {
         let first = git_archive_fixture("owls-interfaces-0.1.1", 1_757_080_440, 9);
         let second = git_archive_fixture("owls-interfaces-291406191b55", 42, 1);
         let out = tempfile::tempdir().unwrap();
         let (a, b) = (out.path().join("a.tar.gz"), out.path().join("b.tar.gz"));
-        normalize_tag_archive(first.path(), &a).unwrap();
-        normalize_tag_archive(second.path(), &b).unwrap();
+        repack(first.path(), "owls-interfaces", &a).unwrap();
+        repack(second.path(), "owls-interfaces", &b).unwrap();
         assert_eq!(sha256_and_size(&a).unwrap(), sha256_and_size(&b).unwrap());
 
         let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(&a).unwrap()));
-        let entries: Vec<(String, u32, u64)> = archive
-            .entries()
-            .unwrap()
-            .map(|entry| {
-                let entry = entry.unwrap();
-                let header = entry.header();
-                (
-                    entry.path().unwrap().to_string_lossy().into_owned(),
-                    header.mode().unwrap(),
-                    header.mtime().unwrap(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            entries,
-            vec![
-                ("pkg/.zpkg.toml".to_string(), 0o644, 0),
-                ("pkg/rust/src/lib.rs".to_string(), 0o644, 0),
-                ("pkg/scripts/run.sh".to_string(), 0o755, 0),
-            ]
+        let mut manifest = None;
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            assert_eq!(entry.header().mtime().unwrap(), 0, "{path}");
+            if path == "pkg/scripts/run.sh" {
+                assert_eq!(entry.header().mode().unwrap(), 0o755);
+            }
+            if path == "pkg/.zpkg.toml" {
+                let mut text = String::new();
+                entry.read_to_string(&mut text).unwrap();
+                manifest = Some(Manifest::parse(&text).unwrap());
+            }
+            entries.push(path);
+        }
+        for expected in [
+            "pkg/.zpkg.toml",
+            "pkg/rust/src/lib.rs",
+            "pkg/scripts/run.sh",
+        ] {
+            assert!(entries.iter().any(|path| path == expected), "{entries:?}");
+        }
+        // The published root artifact carries a single-target manifest, so a
+        // consumer that requests `rust` is not refused over `[targets]`.
+        let manifest = manifest.expect("packed manifest");
+        assert_eq!(manifest.package.name, "owls-interfaces");
+        assert!(manifest.targets.is_empty());
+        // `zed pack` hardens the manifest before packing; skipping that changes
+        // the derived manifest bytes and so the digest a lockfile pins.
+        for hardened in [".zedinclude", "**/.git/**"] {
+            assert!(
+                manifest.publish.exclude.iter().any(|rule| rule == hardened),
+                "{:?}",
+                manifest.publish.exclude
+            );
+        }
+    }
+
+    #[test]
+    fn tag_archive_identity_must_match_the_request() {
+        let fixture = git_archive_fixture("other-0.1.1", 1, 6);
+        let out = tempfile::tempdir().unwrap();
+        let error = repack(fixture.path(), "other", &out.path().join("a.tar.gz"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("expected ores-wasm-loaders/other@0.1.1"),
+            "{error}"
         );
     }
 
@@ -1467,7 +1554,7 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
             .unwrap();
         builder.into_inner().unwrap().finish().unwrap();
         let out = tempfile::tempdir().unwrap();
-        let error = normalize_tag_archive(fixture.path(), &out.path().join("a.tar.gz"))
+        let error = repack(fixture.path(), "repo", &out.path().join("a.tar.gz"))
             .unwrap_err()
             .to_string();
         assert!(error.contains("unsupported type"), "{error}");
