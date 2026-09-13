@@ -12,9 +12,7 @@ use zed_interfaces::registry::{
 
 use super::resolver::project_trust_anchors;
 use super::solver::{PreparedInstall, solve_install};
-use super::{
-    DEFAULT_INSTALL_CONCURRENCY, FetchPool, MAX_INSTALL_CONCURRENCY, PrefetchReport,
-};
+use super::{DEFAULT_INSTALL_CONCURRENCY, FetchPool, MAX_INSTALL_CONCURRENCY, PrefetchReport};
 use crate::config::{Config, read_manifest};
 use crate::registry::{Registry, registry_for};
 
@@ -179,7 +177,8 @@ pub(crate) fn prepare(
     cfg: &Config,
     cancel: CancellationToken,
 ) -> Result<PreparedInstall> {
-    if !matches!(cfg.registry.as_str(), url if url.starts_with("http://") || url.starts_with("https://")) {
+    if !matches!(cfg.registry.as_str(), url if url.starts_with("http://") || url.starts_with("https://"))
+    {
         return super::resolver::prepare(project, cfg);
     }
 
@@ -208,9 +207,7 @@ pub(crate) fn prepare(
 
 fn install_concurrency() -> usize {
     super::resolver::normalize_concurrency(
-        std::env::var("ZED_PKG_INSTALL_CONCURRENCY")
-            .ok()
-            .as_deref(),
+        std::env::var("ZED_PKG_INSTALL_CONCURRENCY").ok().as_deref(),
     )
 }
 
