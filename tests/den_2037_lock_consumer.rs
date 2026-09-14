@@ -130,7 +130,10 @@ fn clean_home_bootstraps_lock_root_without_destroying_unrelated_content() {
     let lock_root = home.join("locks");
     assert!(lock_root.is_dir(), "lock root was not bootstrapped");
     assert!(lock_root.join("install.lock").is_file());
-    assert_eq!(fs::read(&unrelated).expect("read unrelated content"), b"keep");
+    assert_eq!(
+        fs::read(&unrelated).expect("read unrelated content"),
+        b"keep"
+    );
 
     #[cfg(unix)]
     {
