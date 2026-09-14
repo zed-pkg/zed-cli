@@ -78,7 +78,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
-      - name: Run 2/4/8/16 contention, bootstrap, legacy and alias regressions
+      - name: Run 1/2/4/8/16/32 contention, bootstrap, legacy and alias regressions
         run: cargo test --locked --test den_2037_lock_consumer -- --nocapture
 
       - name: Re-run native process queue, granularity and crash contracts
@@ -96,6 +96,82 @@ jobs:
       - name: Strict clippy on the new consumer suite
         run: cargo clippy --locked --test den_2037_lock_consumer -- -D warnings
 
+  zed-lock-version-skew:
+    name: zed-lock on-disk version skew
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Build v0.1.0 and production-revision helpers
+        run: |
+          set -euo pipefail
+          make_helper() {
+            dir="$1"
+            rev="$2"
+            mkdir -p "$dir/src"
+            cat > "$dir/Cargo.toml" <<EOF
+          [package]
+          name = "den2037-version-skew-helper"
+          version = "0.0.0"
+          edition = "2024"
+          [dependencies]
+          zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "$rev" }
+          EOF
+            cat > "$dir/src/main.rs" <<'EOF'
+          use std::fs;
+          use std::path::PathBuf;
+          use std::thread;
+          use std::time::Duration;
+          use zed_lock::{LockManager, LockRequest};
+
+          fn main() {
+              let mut args = std::env::args_os().skip(1);
+              let lock = PathBuf::from(args.next().expect("lock path"));
+              let ready = PathBuf::from(args.next().expect("ready path"));
+              let hold_ms = args
+                  .next()
+                  .expect("hold ms")
+                  .to_string_lossy()
+                  .parse::<u64>()
+                  .expect("numeric hold ms");
+              let _guard = LockManager::global()
+                  .acquire_blocking(LockRequest::exclusive(lock).operation("version skew"))
+                  .expect("acquire version-skew lock");
+              fs::write(ready, b"ready").expect("write readiness marker");
+              thread::sleep(Duration::from_millis(hold_ms));
+          }
+          EOF
+            cargo build --quiet --manifest-path "$dir/Cargo.toml"
+          }
+          old="$RUNNER_TEMP/zed-lock-old"
+          current="$RUNNER_TEMP/zed-lock-current"
+          make_helper "$old" 0fc100afc3cd60b5ce091b4207f910bf08f2cfb7
+          make_helper "$current" 1db0da00d30fcf2e0762f50eedb1f88458020b52
+
+      - name: Prove old owner excludes current binary and current reuses the same rendezvous
+        run: |
+          set -euo pipefail
+          lock="$RUNNER_TEMP/version-skew.lock"
+          old_ready="$RUNNER_TEMP/old.ready"
+          current_ready="$RUNNER_TEMP/current.ready"
+          "$RUNNER_TEMP/zed-lock-old/target/debug/den2037-version-skew-helper" "$lock" "$old_ready" 1200 &
+          old_pid=$!
+          trap 'kill "$old_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do
+            test -f "$old_ready" && break
+            sleep 0.02
+          done
+          test -f "$old_ready"
+          start=$(date +%s%N)
+          "$RUNNER_TEMP/zed-lock-current/target/debug/den2037-version-skew-helper" "$lock" "$current_ready" 0
+          end=$(date +%s%N)
+          wait "$old_pid"
+          trap - EXIT
+          test -f "$current_ready"
+          elapsed_ms=$(( (end - start) / 1000000 ))
+          printf 'version-skew wait_ms=%s\n' "$elapsed_ms"
+          test "$elapsed_ms" -ge 600
+          test -f "$lock"
+
   shared-polyglot-package-smoke:
     name: shared lock library packed consumers
     runs-on: ubuntu-24.04
@@ -108,7 +184,7 @@ jobs:
           persist-credentials: false
           show-progress: false
 
-      - name: Check out the exact shared lock-library evidence head
+      - name: Check out exact shared lock-library snapshot
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ORESoftware/ores-locks-and-leases
@@ -117,6 +193,14 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           show-progress: false
+
+      - name: Move shared checkout outside the zed-cli Cargo workspace
+        run: |
+          set -euo pipefail
+          shared="$RUNNER_TEMP/shared-locks"
+          rm -rf "$shared"
+          mv "$GITHUB_WORKSPACE/_shared-locks" "$shared"
+          echo "SHARED_LOCKS=$shared" >> "$GITHUB_ENV"
 
       - name: Install Rust, Go, Node and Gleam toolchains
         run: |
@@ -139,7 +223,7 @@ jobs:
       - name: Rust packaged-crate consumer
         run: |
           set -euo pipefail
-          cd _shared-locks/src/rust
+          cd "$SHARED_LOCKS/src/rust"
           cargo package --locked --allow-dirty --no-verify
           crate=$(find target/package -maxdepth 1 -name 'ores-locks-and-leases-*.crate' -print -quit)
           test -n "$crate"
@@ -153,6 +237,7 @@ jobs:
           name = "den2037-rust-packed-consumer"
           version = "0.0.0"
           edition = "2024"
+          [workspace]
           [dependencies]
           ores-locks-and-leases = { path = "$unpacked" }
           EOF
@@ -162,7 +247,7 @@ jobs:
       - name: TypeScript npm-pack consumer
         run: |
           set -euo pipefail
-          cd _shared-locks/src/ts
+          cd "$SHARED_LOCKS/src/ts"
           npm ci --no-audit --no-fund
           npm test
           tgz=$(npm pack --silent)
@@ -172,7 +257,7 @@ jobs:
           cd "$root"
           npm init -y >/dev/null
           npm pkg set type=module >/dev/null
-          npm install --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/_shared-locks/src/ts/$tgz"
+          npm install --ignore-scripts --no-audit --no-fund "$SHARED_LOCKS/src/ts/$tgz"
           node -e 'import("@oresoftware/locks-and-leases").then(m => { if (Object.keys(m).length === 0) process.exit(1); })'
 
       - name: Go external-module consumer
@@ -184,7 +269,7 @@ jobs:
           cd "$root"
           go mod init example.invalid/den2037-consumer
           go mod edit -require=github.com/ORESoftware/ores-locks-and-leases/src/go@v0.0.0
-          go mod edit -replace=github.com/ORESoftware/ores-locks-and-leases/src/go="$GITHUB_WORKSPACE/_shared-locks/src/go"
+          go mod edit -replace=github.com/ORESoftware/ores-locks-and-leases/src/go="$SHARED_LOCKS/src/go"
           cat > consumer_test.go <<'EOF'
           package consumer
           import _ "github.com/ORESoftware/ores-locks-and-leases/src/go"
@@ -196,7 +281,7 @@ jobs:
       - name: Gleam package and consumer build
         run: |
           set -euo pipefail
-          cd _shared-locks/src/gleam
+          cd "$SHARED_LOCKS/src/gleam"
           gleam deps download
           gleam test
           gleam hex build
@@ -204,15 +289,17 @@ jobs:
   evidence-summary:
     name: require every executable DEN-2037 lane
     if: always()
-    needs: [consumer-native, shared-polyglot-package-smoke]
+    needs: [consumer-native, zed-lock-version-skew, shared-polyglot-package-smoke]
     runs-on: ubuntu-24.04
     steps:
       - name: Enforce executable evidence
         env:
           NATIVE: ${{ needs.consumer-native.result }}
+          SKEW: ${{ needs.zed-lock-version-skew.result }}
           PACKED: ${{ needs.shared-polyglot-package-smoke.result }}
         run: |
           set -euo pipefail
-          printf 'consumer-native=%s\nshared-packed=%s\n' "$NATIVE" "$PACKED"
+          printf 'consumer-native=%s\nversion-skew=%s\nshared-packed=%s\n' "$NATIVE" "$SKEW" "$PACKED"
           test "$NATIVE" = success
+          test "$SKEW" = success
           test "$PACKED" = success
