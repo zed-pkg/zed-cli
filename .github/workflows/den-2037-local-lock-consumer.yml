@@ -1,0 +1,218 @@
+name: DEN-2037 local-lock consumer hardening
+
+on:
+  pull_request:
+    paths:
+      - 'conformance/den-2037-*.json'
+      - 'docs/locking.md'
+      - 'docs/lock-telemetry.md'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - 'tests/den_2037_lock_consumer.rs'
+      - 'tests/store_lock_evented.rs'
+      - 'tests/frozen_offline_prefetch.rs'
+      - 'src/store.rs'
+      - 'src/transaction.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/blocking-store-process-locks.yml'
+      - '.github/workflows/frozen-offline-prefetch.yml'
+      - '.github/workflows/den-2037-local-lock-consumer.yml'
+  push:
+    branches: [main, den-2037-consumer-local-lock-e2e-v1]
+    paths:
+      - 'conformance/den-2037-*.json'
+      - 'docs/locking.md'
+      - 'docs/lock-telemetry.md'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - 'tests/den_2037_lock_consumer.rs'
+      - 'tests/store_lock_evented.rs'
+      - 'tests/frozen_offline_prefetch.rs'
+      - 'src/store.rs'
+      - 'src/transaction.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/blocking-store-process-locks.yml'
+      - '.github/workflows/frozen-offline-prefetch.yml'
+      - '.github/workflows/den-2037-local-lock-consumer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: den-2037-consumer-lock-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  consumer-native:
+    name: consumer locks / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Admit the 15-task evidence manifest and exact dependency pins
+        run: python3 scripts/check-den-2037-local-lock-consumer.py
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run 2/4/8/16 contention, bootstrap, legacy and alias regressions
+        run: cargo test --locked --test den_2037_lock_consumer -- --nocapture
+
+      - name: Re-run native process queue, granularity and crash contracts
+        run: cargo test --locked --test store_lock_evented -- --nocapture
+
+      - name: Re-run staged-registry deletion and fully offline replay
+        run: cargo test --locked --test frozen_offline_prefetch -- --nocapture
+
+      - name: Re-run staged commit crash recovery
+        run: cargo test --locked -p zed-cli --lib transaction::tests::interrupted_uuid_transaction_is_recovered_on_next_begin -- --exact --nocapture
+
+      - name: Prove the zed-cli package is packable from the exact lock graph
+        run: cargo package --locked --allow-dirty --no-verify --list >/dev/null
+
+      - name: Strict clippy on the new consumer suite
+        run: cargo clippy --locked --test den_2037_lock_consumer -- -D warnings
+
+  shared-polyglot-package-smoke:
+    name: shared lock library packed consumers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out zed-cli evidence branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out the exact shared lock-library evidence head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-locks-and-leases
+          ref: 68f11e18cbdadfbf3770659bd7db61b63c881933
+          path: _shared-locks
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust, Go, Node and Gleam toolchains
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+          rustc --version
+          cargo --version
+          go version
+          node --version
+          npm --version
+
+      - name: Install Gleam
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: '27'
+          gleam-version: '1.16.0'
+          rebar3-version: '3'
+
+      - name: Rust packaged-crate consumer
+        run: |
+          set -euo pipefail
+          cd _shared-locks/src/rust
+          cargo package --locked --allow-dirty --no-verify
+          crate=$(find target/package -maxdepth 1 -name 'ores-locks-and-leases-*.crate' -print -quit)
+          test -n "$crate"
+          root="$RUNNER_TEMP/rust-packed-consumer"
+          rm -rf "$root"
+          mkdir -p "$root/unpacked" "$root/consumer/src"
+          tar -xzf "$crate" -C "$root/unpacked"
+          unpacked=$(find "$root/unpacked" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          cat > "$root/consumer/Cargo.toml" <<EOF
+          [package]
+          name = "den2037-rust-packed-consumer"
+          version = "0.0.0"
+          edition = "2024"
+          [dependencies]
+          ores-locks-and-leases = { path = "$unpacked" }
+          EOF
+          printf 'use ores_locks_and_leases as _;\nfn main() {}\n' > "$root/consumer/src/main.rs"
+          cargo check --manifest-path "$root/consumer/Cargo.toml"
+
+      - name: TypeScript npm-pack consumer
+        run: |
+          set -euo pipefail
+          cd _shared-locks/src/ts
+          npm ci --no-audit --no-fund
+          npm test
+          tgz=$(npm pack --silent)
+          root="$RUNNER_TEMP/ts-packed-consumer"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cd "$root"
+          npm init -y >/dev/null
+          npm pkg set type=module >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund "$GITHUB_WORKSPACE/_shared-locks/src/ts/$tgz"
+          node -e 'import("@oresoftware/locks-and-leases").then(m => { if (Object.keys(m).length === 0) process.exit(1); })'
+
+      - name: Go external-module consumer
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/go-lock-consumer"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cd "$root"
+          go mod init example.invalid/den2037-consumer
+          go mod edit -require=github.com/ORESoftware/ores-locks-and-leases/src/go@v0.0.0
+          go mod edit -replace=github.com/ORESoftware/ores-locks-and-leases/src/go="$GITHUB_WORKSPACE/_shared-locks/src/go"
+          cat > consumer_test.go <<'EOF'
+          package consumer
+          import _ "github.com/ORESoftware/ores-locks-and-leases/src/go"
+          import "testing"
+          func TestPackedBoundaryBuilds(t *testing.T) {}
+          EOF
+          go test ./...
+
+      - name: Gleam package and consumer build
+        run: |
+          set -euo pipefail
+          cd _shared-locks/src/gleam
+          gleam deps download
+          gleam test
+          gleam hex build
+
+  evidence-summary:
+    name: require every executable DEN-2037 lane
+    if: always()
+    needs: [consumer-native, shared-polyglot-package-smoke]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Enforce executable evidence
+        env:
+          NATIVE: ${{ needs.consumer-native.result }}
+          PACKED: ${{ needs.shared-polyglot-package-smoke.result }}
+        run: |
+          set -euo pipefail
+          printf 'consumer-native=%s\nshared-packed=%s\n' "$NATIVE" "$PACKED"
+          test "$NATIVE" = success
+          test "$PACKED" = success
