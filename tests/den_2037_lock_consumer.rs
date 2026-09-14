@@ -12,7 +12,7 @@ const HELPER_CRITICAL: &str = "ZED_DEN2037_HELPER_CRITICAL";
 const HELPER_OVERLAP: &str = "ZED_DEN2037_HELPER_OVERLAP";
 const HELPER_HOLD_MS: &str = "ZED_DEN2037_HELPER_HOLD_MS";
 const HELPER_TEST: &str = "den2037_install_lock_helper";
-const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
+const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct ChildGuard(Option<Child>);
 
@@ -89,8 +89,8 @@ fn den2037_install_lock_helper() {
 }
 
 #[test]
-fn install_lock_scales_across_2_4_8_16_processes_without_overlap() {
-    for contenders in [2usize, 4, 8, 16] {
+fn install_lock_scales_across_1_2_4_8_16_32_processes_without_overlap() {
+    for contenders in [1usize, 2, 4, 8, 16, 32] {
         let temp = tempfile::tempdir().expect("temporary root");
         let home = temp.path().join("home");
         let critical = temp.path().join("critical");
@@ -111,7 +111,7 @@ fn install_lock_scales_across_2_4_8_16_processes_without_overlap() {
             "{contenders} contenders left a critical-section marker behind"
         );
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(15),
             "{contenders} contenders exceeded the coarse local contention tail budget"
         );
     }
@@ -140,7 +140,11 @@ fn clean_home_bootstraps_lock_root_without_destroying_unrelated_content() {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode & 0o077, 0, "lock root must not expose group/other permission bits: {mode:o}");
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "lock root must not expose group/other permission bits: {mode:o}"
+        );
     }
 
     drop(guard);
