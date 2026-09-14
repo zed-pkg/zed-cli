@@ -21,10 +21,11 @@ defaults:
     shell: bash
 
 env:
-  # Neither endpoint belongs to GitHub and neither can serve package data.
-  # The .invalid TLD is guaranteed not to resolve; loopback port 1 fails fast.
+  # The registry cannot resolve; the R2 endpoint is a local sentinel that logs
+  # any request. A successful GitHub-first restore must leave that log with no
+  # GETs, proving Zed/Cloudflare infrastructure is not consulted first.
   DEAD_REGISTRY: https://zed-control-plane-intentionally-unavailable.invalid
-  DEAD_R2: http://127.0.0.1:1
+  DEAD_R2: http://127.0.0.1:18081
 
 jobs:
   github-direct:
@@ -55,6 +56,19 @@ jobs:
           set -Eeuo pipefail
           cargo test --locked source_fallback::tests:: -- --nocapture
 
+      - name: Start fail-if-used R2 sentinel
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/dead-r2-root"
+          : > "$RUNNER_TEMP/r2-sentinel.log"
+          python3 -m http.server 18081 \
+            --bind 127.0.0.1 \
+            --directory "$RUNNER_TEMP/dead-r2-root" \
+            >"$RUNNER_TEMP/r2-sentinel.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/r2-sentinel.pid"
+          sleep 1
+          kill -0 "$(cat "$RUNNER_TEMP/r2-sentinel.pid")"
+
       - name: Create five-language consumer
         run: |
           set -Eeuo pipefail
@@ -82,7 +96,7 @@ jobs:
           "zed-pkg-test/gleam-lib" = "=1.0.0"
           EOF
 
-      - name: Install with registry down, R2 down, and no GitHub token
+      - name: Install with registry down, R2 forbidden, and no GitHub token
         working-directory: ${{ runner.temp }}/github-only-consumer
         env:
           ZED_PKG_SOURCE_FALLBACK: 'true'
@@ -95,7 +109,7 @@ jobs:
             --install-mode copy --adapter none --allow-ecosystem-mismatch \
             2>&1 | tee "$RUNNER_TEMP/github-only-a.log"
 
-          test "$(grep -c 'using GitHub fallback' "$RUNNER_TEMP/github-only-a.log")" -ge 5
+          test "$(grep -E -c 'using GitHub(-first)? fallback' "$RUNNER_TEMP/github-only-a.log")" -ge 5
           test -s .zpkg.lock
           for name in go-lib python-lib dart-lib node-lib gleam-lib; do
             grep -R -q "name = \"$name\"" zed_modules
@@ -190,13 +204,17 @@ jobs:
           test "$status" -ne 0
           grep -E 'expected zed-pkg-test/awkward-lib@0\.1\.0|claims .*awkward-lib@0\.1\.0' "$RUNNER_TEMP/github-negative.log"
 
-      - name: Prove the outage path does not require Zed or Cloudflare origins
+      - name: Prove GitHub recovery did not touch R2 or Cloudflare
+        if: always()
         run: |
           set -Eeuo pipefail
           log="$RUNNER_TEMP/github-only-a.log"
-          grep -q 'using GitHub fallback' "$log"
-          # A successful install while the only configured Zed-owned endpoints are
-          # deliberately unreachable proves the dependency graph is recoverable from
-          # GitHub. Keep this list explicit so future CDN/control-plane additions do
-          # not silently become mandatory.
+          test -s "$log"
+          grep -E -q 'using GitHub(-first)? fallback' "$log"
+          if grep -q 'GET /' "$RUNNER_TEMP/r2-sentinel.log"; then
+            echo 'GitHub-first recovery unexpectedly contacted the configured R2/CDN endpoint:' >&2
+            cat "$RUNNER_TEMP/r2-sentinel.log" >&2
+            exit 1
+          fi
           ! grep -E 'success.*(zpkg\.net|cdn\.zpkg\.net|cloudflare)' "$log"
+          kill "$(cat "$RUNNER_TEMP/r2-sentinel.pid")" || true
