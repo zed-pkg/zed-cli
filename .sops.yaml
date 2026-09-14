@@ -25,21 +25,12 @@ creation_rules:
   # Production carries the registry.zpkg.net publish token and the production
   # Supabase key slot — narrowest recipient set.
   - path_regex: ^env/enc/prod\.env\.enc$
-    key_groups:
-      - age:
-          - *op_alex_macbook
+    age:
+      - *op_alex_macbook
 
-  # Staging and dev. Same mechanism; widen the recipient list here first when
-  # onboarding someone, before granting prod.
-  - path_regex: ^env/enc/(staging|dev)\.env\.enc$
-    key_groups:
-      - age:
-          - *op_alex_macbook
-
-  # Catch-all so a new `env/enc/*.env.enc` can never be written unencrypted by
-  # accident. Anything not matched above still gets encrypted to the operator
-  # set rather than falling through to plaintext.
-  - path_regex: ^env/enc/.*\.env\.enc$
-    key_groups:
-      - age:
-          - *op_alex_macbook
+  # Development has its own exact profile. Add `stage` only when a tracked
+  # `env/enc/stage.env.enc` is intentionally introduced through the canonical
+  # ores-sops lifecycle; do not admit undeclared profile names via a wildcard.
+  - path_regex: ^env/enc/dev\.env\.enc$
+    age:
+      - *op_alex_macbook
