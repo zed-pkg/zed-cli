@@ -4,13 +4,16 @@ on:
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - DEN-3488-local-dev-repo-race
 
 permissions:
   contents: write
 
 jobs:
   rust-feature-validation:
-    if: github.head_ref == 'DEN-3488-local-dev-repo-race' && github.actor != 'github-actions[bot]'
+    if: (github.head_ref == 'DEN-3488-local-dev-repo-race' || github.ref_name == 'DEN-3488-local-dev-repo-race') && github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
     steps:
       - name: Check out feature branch head
