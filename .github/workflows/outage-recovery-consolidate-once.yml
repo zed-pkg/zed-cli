@@ -1,0 +1,162 @@
+name: consolidate outage recovery once
+
+on:
+  push:
+    branches:
+      - DEN-3829-github-control-plane-fallback
+    paths:
+      - '.github/workflows/outage-recovery-consolidate-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: DEN-3829-github-control-plane-fallback
+          fetch-depth: 0
+          persist-credentials: true
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - name: Apply shared recovery and GHCR relative-Location fixes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          cargo = Path('Cargo.toml')
+          text = cargo.read_text()
+          old = 'zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c" }'
+          new = 'zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "bb0f3fe10218e7dcb6a857bcb43deffdaa08b4f6" }'
+          if old not in text:
+              raise SystemExit('expected old zed-interfaces pin not found')
+          cargo.write_text(text.replace(old, new, 1))
+
+          path = Path('src/source_fallback.rs')
+          text = path.read_text()
+          helper_pattern = re.compile(
+              r'/// During source fallback, prefer infrastructure owned by GitHub before\n'
+              r'/// any Zed-operated R2/Cloudflare mirror\. The normal registry path is\n'
+              r'/// still attempted before this function is involved\.\n'
+              r'fn source_fallback_priority\(kind: ArtifactSourceKind\) -> u8 \{.*?\n\}\n\n'
+              r'fn github_first_locators\(mut locators: Vec<ArtifactLocator>\) -> Vec<ArtifactLocator> \{.*?\n\}\n\n',
+              re.S,
+          )
+          text, removed = helper_pattern.subn('', text, count=1)
+          if removed != 1:
+              raise SystemExit('expected exactly one local recovery helper block')
+          text = text.replace(
+              'use zed_interfaces::artifact::ArtifactFormat;\n',
+              'use zed_interfaces::artifact::ArtifactFormat;\nuse zed_interfaces::artifact_recovery_locators;\n',
+              1,
+          )
+          text = text.replace('    artifact_locators, ', '    ', 1)
+          text = text.replace(
+              'github_first_locators(artifact_locators(&query))',
+              'artifact_recovery_locators(&query)',
+              1,
+          )
+          direct = re.compile(
+              r'github_first_locators\(artifact_locators\(&ArtifactQuery \{(.*?)\n        \}\)\)',
+              re.S,
+          )
+          text, calls = direct.subn(r'artifact_recovery_locators(&ArtifactQuery {\1\n        })', text)
+          if calls != 2:
+              raise SystemExit('expected two direct recovery query call sites, found %d' % calls)
+          if 'github_first_locators(' in text or 'source_fallback_priority(' in text or 'artifact_locators(' in text:
+              raise SystemExit('local recovery ordering survived migration')
+          if text.count('artifact_recovery_locators(') != 3:
+              raise SystemExit('expected exactly three shared recovery call sites')
+          path.write_text(text)
+
+          path = Path('src/github_packages.rs')
+          text = path.read_text()
+          old = '''    let start = client
+        .post(ghcr_uploads_url(identity))
+        .bearer_auth(token)'''
+          new = '''    let upload_url = ghcr_uploads_url(identity);
+    let start = client
+        .post(&upload_url)
+        .bearer_auth(token)'''
+          if old not in text:
+              raise SystemExit('GHCR upload-start block not found')
+          text = text.replace(old, new, 1)
+          old = '''    let put_url = with_digest_query(&location, &blob.digest);'''
+          new = '''    let location = resolve_upload_location(&upload_url, &location)?;
+    let put_url = with_digest_query(&location, &blob.digest);'''
+          if old not in text:
+              raise SystemExit('GHCR upload Location use not found')
+          text = text.replace(old, new, 1)
+          anchor = '''fn with_digest_query(location: &str, digest: &str) -> String {
+    let separator = if location.contains('?') { '&' } else { '?' };
+    format!("{location}{separator}digest={digest}")
+}
+'''
+          helper = '''fn resolve_upload_location(base_url: &str, location: &str) -> Result<String> {
+    if let Ok(url) = reqwest::Url::parse(location) {
+        return Ok(url.to_string());
+    }
+    let base = reqwest::Url::parse(base_url)
+        .with_context(|| format!("parse GHCR upload base URL {base_url}"))?;
+    Ok(base
+        .join(location)
+        .with_context(|| format!("resolve GHCR upload Location {location:?} against {base_url}"))?
+        .to_string())
+}
+
+'''
+          if anchor not in text:
+              raise SystemExit('with_digest_query anchor not found')
+          text = text.replace(anchor, helper + anchor, 1)
+          test_anchor = '''    #[test]
+    fn upload_session_appends_digest_query() {'''
+          tests = '''    #[test]
+    fn upload_session_resolves_relative_location_against_registry_origin() {
+        let base = "https://ghcr.io/v2/acme/http-kit/blobs/uploads/";
+        assert_eq!(
+            resolve_upload_location(base, "/v2/acme/http-kit/blobs/uploads/abc?_state=1").unwrap(),
+            "https://ghcr.io/v2/acme/http-kit/blobs/uploads/abc?_state=1"
+        );
+        assert_eq!(
+            resolve_upload_location(base, "abc?_state=1").unwrap(),
+            "https://ghcr.io/v2/acme/http-kit/blobs/uploads/abc?_state=1"
+        );
+        assert_eq!(
+            resolve_upload_location(base, "https://ghcr.io/v2/acme/http-kit/blobs/uploads/xyz").unwrap(),
+            "https://ghcr.io/v2/acme/http-kit/blobs/uploads/xyz"
+        );
+    }
+
+'''
+          if test_anchor not in text:
+              raise SystemExit('GHCR test anchor not found')
+          text = text.replace(test_anchor, tests + test_anchor, 1)
+          path.write_text(text)
+          PY
+          cargo update -p zed-interfaces
+          cargo fmt --all
+          cargo test --locked --lib github_packages
+          cargo test --locked --lib source_fallback
+          cargo check --locked --lib
+          cargo clippy --locked --lib -- -A unsafe-code -D warnings
+          git diff --check
+          test "$(grep -Fc 'artifact_recovery_locators(' src/source_fallback.rs)" -eq 3
+          ! grep -F 'github_first_locators' src/source_fallback.rs
+          grep -F 'resolve_upload_location(&upload_url, &location)?' src/github_packages.rs
+      - name: Commit verified consolidation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock src/source_fallback.rs src/github_packages.rs
+          git commit -m 'fix: centralize outage recovery and resolve GHCR upload locations'
+          git push origin HEAD:DEN-3829-github-control-plane-fallback
