@@ -58,7 +58,7 @@ for test_name in (
 
 consumer_tests = read("tests/den_2037_lock_consumer.rs")
 for test_name in (
-    "install_lock_scales_across_2_4_8_16_processes_without_overlap",
+    "install_lock_scales_across_1_2_4_8_16_32_processes_without_overlap",
     "clean_home_bootstraps_lock_root_without_destroying_unrelated_content",
     "unknown_legacy_lock_artifacts_are_preserved",
 ):
@@ -95,6 +95,8 @@ for command in (
     "store_lock_evented",
     "frozen_offline_prefetch",
     "transaction::tests::interrupted_uuid_transaction_is_recovered_on_next_begin",
+    "0fc100afc3cd60b5ce091b4207f910bf08f2cfb7",
+    "zed-lock-version-skew",
 ):
     require(command in workflow, f"DEN-2037 workflow is missing executable evidence command {command}")
 
