@@ -12,6 +12,7 @@ use std::fs;
 use std::io::Read as _;
 use std::path::{Component, Path};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -134,6 +135,10 @@ pub struct FallbackRegistry {
     client: reqwest::blocking::Client,
     cache: Mutex<HashMap<String, VersionMetadata>>,
     github_identities: Mutex<HashMap<String, GithubIdentity>>,
+    github_repositories: Mutex<HashMap<String, GithubRepo>>,
+    github_tag_cache: Mutex<HashMap<String, Vec<GithubTag>>>,
+    github_smart_ref_cache: Mutex<HashMap<String, GitSmartRefs>>,
+    github_api_degraded: AtomicBool,
 }
 
 impl FallbackRegistry {
@@ -156,6 +161,10 @@ impl FallbackRegistry {
                 client,
                 cache: Mutex::new(HashMap::new()),
                 github_identities: Mutex::new(HashMap::new()),
+                github_repositories: Mutex::new(HashMap::new()),
+                github_tag_cache: Mutex::new(HashMap::new()),
+                github_smart_ref_cache: Mutex::new(HashMap::new()),
+                github_api_degraded: AtomicBool::new(false),
             }),
             Err(_) => Box::new(inner),
         }
@@ -214,13 +223,31 @@ impl FallbackRegistry {
             github_api_repo_url(identity),
             metadata.vcs_tag
         );
+        if !self.github_api_degraded.load(Ordering::Relaxed) {
+            match self.github_headers(self.client.get(url)).send() {
+                Ok(response) if response.status().is_success() => {
+                    metadata.vcs_commit = response
+                        .json::<GithubCommit>()
+                        .ok()
+                        .and_then(|commit| commit_sha(&commit.sha));
+                    if metadata.vcs_commit.is_some() {
+                        return;
+                    }
+                }
+                Ok(response) if github_api_status_is_degradable(response.status()) => {
+                    self.github_api_degraded.store(true, Ordering::Relaxed);
+                }
+                Err(_) => {
+                    self.github_api_degraded.store(true, Ordering::Relaxed);
+                }
+                _ => {}
+            }
+        }
         metadata.vcs_commit = self
-            .github_headers(self.client.get(url))
-            .send()
+            .github_smart_refs(identity)
             .ok()
-            .filter(|response| response.status().is_success())
-            .and_then(|response| response.json::<GithubCommit>().ok())
-            .and_then(|commit| commit_sha(&commit.sha));
+            .and_then(|refs| refs.tag_commits.get(&metadata.vcs_tag).cloned())
+            .and_then(|sha| commit_sha(&sha));
     }
 
     fn github_headers(
@@ -264,20 +291,74 @@ impl FallbackRegistry {
     }
 
     fn github_repo(&self, identity: &GithubIdentity) -> Result<GithubRepo> {
-        let response = self
-            .github_headers(self.client.get(github_api_repo_url(identity)))
-            .send()
-            .with_context(|| format!("fetch GitHub repository {}", identity.web_url()))?;
-        if !response.status().is_success() {
-            bail!(
+        let key = github_identity_key(identity);
+        if let Some(repo) = self
+            .github_repositories
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key).cloned())
+        {
+            return Ok(repo);
+        }
+
+        let api_result = if self.github_api_degraded.load(Ordering::Relaxed) {
+            None
+        } else {
+            Some(
+                self.github_headers(self.client.get(github_api_repo_url(identity)))
+                    .send(),
+            )
+        };
+
+        let repo = match api_result {
+            Some(Ok(response)) if response.status().is_success() => response
+                .json()
+                .with_context(|| format!("decode GitHub repository {}", identity.web_url()))?,
+            Some(Ok(response)) if github_api_status_is_degradable(response.status()) => {
+                self.github_api_degraded.store(true, Ordering::Relaxed);
+                self.github_repo_via_smart_http(identity).with_context(|| {
+                    format!(
+                        "GitHub REST repository lookup for {} returned {}; smart-HTTP fallback also failed",
+                        identity.web_url(),
+                        response.status()
+                    )
+                })?
+            }
+            Some(Ok(response)) => bail!(
                 "GitHub repository {} returned {}",
                 identity.web_url(),
                 response.status()
-            );
+            ),
+            Some(Err(error)) => {
+                self.github_api_degraded.store(true, Ordering::Relaxed);
+                self.github_repo_via_smart_http(identity).with_context(|| {
+                    format!(
+                        "GitHub REST repository lookup for {} failed ({error}); smart-HTTP fallback also failed",
+                        identity.web_url()
+                    )
+                })?
+            }
+            None => self.github_repo_via_smart_http(identity)?,
+        };
+
+        if let Ok(mut guard) = self.github_repositories.lock() {
+            guard.insert(key, repo.clone());
         }
-        response
-            .json()
-            .with_context(|| format!("decode GitHub repository {}", identity.web_url()))
+        Ok(repo)
+    }
+
+    fn github_repo_via_smart_http(&self, identity: &GithubIdentity) -> Result<GithubRepo> {
+        let refs = self.github_smart_refs(identity)?;
+        let default_branch = refs.default_branch.clone().with_context(|| {
+            format!(
+                "GitHub smart-HTTP advertisement for {} did not report HEAD's branch",
+                identity.web_url()
+            )
+        })?;
+        Ok(GithubRepo {
+            default_branch,
+            html_url: identity.web_url(),
+        })
     }
 
     fn github_manifest(&self, identity: &GithubIdentity, default_branch: &str) -> Result<Manifest> {
@@ -535,25 +616,116 @@ impl FallbackRegistry {
     }
 
     fn github_tags(&self, identity: &GithubIdentity) -> Result<Vec<GithubTag>> {
-        let response = self
-            .github_headers(self.client.get(github_api_tags_url(identity)))
+        let key = github_identity_key(identity);
+        if let Some(tags) = self
+            .github_tag_cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key).cloned())
+        {
+            return Ok(tags);
+        }
+
+        let api_result = if self.github_api_degraded.load(Ordering::Relaxed) {
+            None
+        } else {
+            Some(
+                self.github_headers(self.client.get(github_api_tags_url(identity)))
+                    .send(),
+            )
+        };
+
+        let tags = match api_result {
+            Some(Ok(response)) if response.status().is_success() => {
+                response.json().unwrap_or_default()
+            }
+            Some(Ok(response)) if github_api_status_is_degradable(response.status()) => {
+                self.github_api_degraded.store(true, Ordering::Relaxed);
+                self.github_tags_via_smart_http(identity).with_context(|| {
+                    format!(
+                        "GitHub REST tags for {} returned {}; smart-HTTP fallback also failed",
+                        identity.web_url(),
+                        response.status()
+                    )
+                })?
+            }
+            Some(Ok(response)) => {
+                let hint = if self.config.github_token.is_none()
+                    && response.status() == reqwest::StatusCode::NOT_FOUND
+                {
+                    " (repository may be private; private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN)"
+                } else {
+                    ""
+                };
+                bail!(
+                    "GitHub tags for {} returned {}{hint}",
+                    identity.web_url(),
+                    response.status()
+                );
+            }
+            Some(Err(error)) => {
+                self.github_api_degraded.store(true, Ordering::Relaxed);
+                self.github_tags_via_smart_http(identity).with_context(|| {
+                    format!(
+                        "GitHub REST tags for {} failed ({error}); smart-HTTP fallback also failed",
+                        identity.web_url()
+                    )
+                })?
+            }
+            None => self.github_tags_via_smart_http(identity)?,
+        };
+
+        if let Ok(mut guard) = self.github_tag_cache.lock() {
+            guard.insert(key, tags.clone());
+        }
+        Ok(tags)
+    }
+
+    fn github_tags_via_smart_http(&self, identity: &GithubIdentity) -> Result<Vec<GithubTag>> {
+        let refs = self.github_smart_refs(identity)?;
+        let mut names: Vec<String> = refs.tag_commits.keys().cloned().collect();
+        names.sort();
+        Ok(names.into_iter().map(|name| GithubTag { name }).collect())
+    }
+
+    fn github_smart_refs(&self, identity: &GithubIdentity) -> Result<GitSmartRefs> {
+        let key = github_identity_key(identity);
+        if let Some(refs) = self
+            .github_smart_ref_cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&key).cloned())
+        {
+            return Ok(refs);
+        }
+
+        let url = format!(
+            "https://github.com/{}/{}.git/info/refs?service=git-upload-pack",
+            identity.owner, identity.repo
+        );
+        let mut request = self
+            .client
+            .get(&url)
+            .header("Accept", "application/x-git-upload-pack-advertisement");
+        if let Some(token) = self.config.github_token.as_deref() {
+            request = request.basic_auth("x-access-token", Some(token));
+        }
+        let response = request
             .send()
-            .with_context(|| format!("list tags for {}", identity.web_url()))?;
+            .with_context(|| format!("fetch GitHub smart refs from {url}"))?;
         if !response.status().is_success() {
-            let hint = if self.config.github_token.is_none()
-                && response.status() == reqwest::StatusCode::NOT_FOUND
-            {
-                " (repository may be private; private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN)"
-            } else {
-                ""
-            };
             bail!(
-                "GitHub tags for {} returned {}{hint}",
+                "GitHub smart refs for {} returned {}",
                 identity.web_url(),
                 response.status()
             );
         }
-        Ok(response.json().unwrap_or_default())
+        let bytes = response.bytes().context("read GitHub smart refs")?;
+        let refs = parse_git_smart_refs(bytes.as_ref())?;
+        if let Ok(mut guard) = self.github_smart_ref_cache.lock() {
+            guard.insert(key, refs.clone());
+        }
+        Ok(refs)
     }
 
     fn release_sidecar(
@@ -564,12 +736,27 @@ impl FallbackRegistry {
         version: &str,
         tag: &str,
     ) -> Option<VersionMetadata> {
-        let release = self
-            .github_headers(self.client.get(github_api_release_url(identity, tag)))
-            .send()
-            .ok()
-            .and_then(|response| response.error_for_status().ok())
-            .and_then(|response| response.json::<GithubRelease>().ok());
+        let release = if self.github_api_degraded.load(Ordering::Relaxed) {
+            None
+        } else {
+            match self
+                .github_headers(self.client.get(github_api_release_url(identity, tag)))
+                .send()
+            {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<GithubRelease>().ok()
+                }
+                Ok(response) if github_api_status_is_degradable(response.status()) => {
+                    self.github_api_degraded.store(true, Ordering::Relaxed);
+                    None
+                }
+                Err(_) => {
+                    self.github_api_degraded.store(true, Ordering::Relaxed);
+                    None
+                }
+                _ => None,
+            }
+        };
         for sidecar in github_release_sidecar_names(org, name, version) {
             let url = zed_interfaces::source::github_release_download_url(identity, tag, &sidecar);
             let Ok(response) = self.client.get(&url).send() else {
@@ -812,7 +999,7 @@ struct GithubRepositorySearch {
     items: Vec<GithubRepo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GithubRepo {
     default_branch: String,
     #[serde(default)]
@@ -907,7 +1094,7 @@ fn release_asset_metadata(
     None
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct GithubTag {
     name: String,
 }
@@ -915,6 +1102,102 @@ struct GithubTag {
 #[derive(Debug, Deserialize)]
 struct GithubCommit {
     sha: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GitSmartRefs {
+    default_branch: Option<String>,
+    tag_commits: HashMap<String, String>,
+}
+
+fn github_api_status_is_degradable(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::FORBIDDEN
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn github_identity_key(identity: &GithubIdentity) -> String {
+    format!(
+        "{}/{}",
+        identity.owner.to_ascii_lowercase(),
+        identity.repo.to_ascii_lowercase()
+    )
+}
+
+fn parse_git_smart_refs(bytes: &[u8]) -> Result<GitSmartRefs> {
+    let mut refs = GitSmartRefs::default();
+    let mut offset = 0usize;
+    let mut tag_refs: HashMap<String, (String, bool)> = HashMap::new();
+
+    while offset < bytes.len() {
+        if bytes.len().saturating_sub(offset) < 4 {
+            bail!("truncated Git smart-HTTP pkt-line header");
+        }
+        let header = std::str::from_utf8(&bytes[offset..offset + 4])
+            .context("non-UTF8 Git smart-HTTP pkt-line length")?;
+        let length = usize::from_str_radix(header, 16)
+            .with_context(|| format!("invalid Git smart-HTTP pkt-line length `{header}`"))?;
+        offset += 4;
+        if length == 0 || length == 1 || length == 2 {
+            continue;
+        }
+        if length < 4 {
+            bail!("invalid Git smart-HTTP pkt-line length {length}");
+        }
+        let payload_len = length - 4;
+        if bytes.len().saturating_sub(offset) < payload_len {
+            bail!("truncated Git smart-HTTP pkt-line payload");
+        }
+        let payload = &bytes[offset..offset + payload_len];
+        offset += payload_len;
+        let line = std::str::from_utf8(payload)
+            .context("non-UTF8 Git smart-HTTP advertisement")?
+            .trim_end_matches(['\r', '\n']);
+        if line.is_empty() || line.starts_with("# service=") {
+            continue;
+        }
+
+        let (ref_line, capabilities) = line.split_once('\0').unwrap_or((line, ""));
+        for capability in capabilities.split_whitespace() {
+            if let Some(branch) = capability.strip_prefix("symref=HEAD:refs/heads/")
+                && !branch.is_empty()
+            {
+                refs.default_branch = Some(branch.to_string());
+            }
+        }
+
+        let Some((sha, reference)) = ref_line.split_once(' ') else {
+            continue;
+        };
+        let Some(sha) = commit_sha(sha) else {
+            continue;
+        };
+        let Some(raw_tag) = reference.strip_prefix("refs/tags/") else {
+            continue;
+        };
+        let (tag, peeled) = match raw_tag.strip_suffix("^{}") {
+            Some(tag) => (tag, true),
+            None => (raw_tag, false),
+        };
+        if tag.is_empty() {
+            continue;
+        }
+        match tag_refs.get(tag) {
+            Some((_, true)) if !peeled => {}
+            _ => {
+                tag_refs.insert(tag.to_string(), (sha, peeled));
+            }
+        }
+    }
+
+    refs.tag_commits = tag_refs
+        .into_iter()
+        .map(|(tag, (sha, _))| (tag, sha))
+        .collect();
+    if refs.default_branch.is_none() && refs.tag_commits.is_empty() {
+        bail!("Git smart-HTTP advertisement contained no usable HEAD or tags");
+    }
+    Ok(refs)
 }
 
 /// A full lowercase 40-hex Git commit id, or nothing. Abbreviated or oddly
@@ -1262,6 +1545,53 @@ mod tests {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use zed_interfaces::source::{r2_object_keys, resolve_r2_public_base};
+
+    fn pkt(payload: &str) -> String {
+        format!("{:04x}{payload}", payload.len() + 4)
+    }
+
+    #[test]
+    fn smart_http_refs_recover_default_branch_and_peeled_tags() {
+        let commit = "a".repeat(40);
+        let tag_object = "b".repeat(40);
+        let peeled = "c".repeat(40);
+        let first =
+            format!("{commit} HEAD\0multi_ack symref=HEAD:refs/heads/trunk agent=git/github\n");
+        let lightweight = format!("{commit} refs/tags/v1.0.0\n");
+        let annotated = format!("{tag_object} refs/tags/v2.0.0\n");
+        let annotated_peeled = format!("{peeled} refs/tags/v2.0.0^{{}}\n");
+        let advertisement = format!(
+            "{}0000{}{}{}{}0000",
+            pkt("# service=git-upload-pack\n"),
+            pkt(&first),
+            pkt(&lightweight),
+            pkt(&annotated),
+            pkt(&annotated_peeled)
+        );
+        let refs = parse_git_smart_refs(advertisement.as_bytes()).unwrap();
+        assert_eq!(refs.default_branch.as_deref(), Some("trunk"));
+        assert_eq!(refs.tag_commits.get("v1.0.0"), Some(&commit));
+        assert_eq!(refs.tag_commits.get("v2.0.0"), Some(&peeled));
+    }
+
+    #[test]
+    fn github_rest_quota_and_server_failures_are_degradable() {
+        assert!(github_api_status_is_degradable(
+            reqwest::StatusCode::FORBIDDEN
+        ));
+        assert!(github_api_status_is_degradable(
+            reqwest::StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(github_api_status_is_degradable(
+            reqwest::StatusCode::BAD_GATEWAY
+        ));
+        assert!(!github_api_status_is_degradable(
+            reqwest::StatusCode::NOT_FOUND
+        ));
+        assert!(!github_api_status_is_degradable(
+            reqwest::StatusCode::UNAUTHORIZED
+        ));
+    }
 
     #[test]
     fn github_sources_precede_zed_owned_r2_during_fallback() {
