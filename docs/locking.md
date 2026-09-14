@@ -194,12 +194,10 @@ artifact while this process waits.
 The canonical local-lock implementation now lives in the public
 [`zed-pkg/zed-lock`](https://github.com/zed-pkg/zed-lock) repository.
 `zed-cli` consumes immutable commit
-`0fc100afc3cd60b5ce091b4207f910bf08f2cfb7`, which is also the source of the
-[`v0.1.0` release](https://github.com/zed-pkg/zed-lock/releases/tag/v0.1.0).
-
-The release contains the packaged `zed-lock-0.1.0.crate` archive and a
-SHA-256 sidecar. The crate archive digest is
-`2850b39d1906433ea584fb649934936137dae873eaecf127666f5d88740b3f20`.
+`1db0da00d30fcf2e0762f50eedb1f88458020b52`, the exact revision enforced by
+`Cargo.toml`, `Cargo.lock`, and the blocking-store process-lock workflow. That
+revision identifies `zed-lock` version `0.1.1`. Release artifact digests are
+verified at the `zed-lock` publication boundary rather than duplicated here.
 
 Ownership is deliberately split:
 
