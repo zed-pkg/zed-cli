@@ -1,0 +1,215 @@
+name: patch GitHub-first fallback ordering
+
+on:
+  push:
+    branches:
+      - DEN-3829-github-control-plane-fallback
+    paths:
+      - '.github/workflows/patch-github-first-fallback.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.repository == 'zed-pkg/zed-cli' && github.ref_name == 'DEN-3829-github-control-plane-fallback'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: DEN-3829-github-control-plane-fallback
+          fetch-depth: 1
+
+      - name: Patch fallback ordering and tests
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/source_fallback.rs')
+          text = path.read_text()
+
+          def replace_once(old: str, new: str) -> None:
+              global text
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one occurrence, found {count}: {old[:120]!r}')
+              text = text.replace(old, new, 1)
+
+          replace_once(
+              '//! Retry GitHub and public R2 when the configured HTTP registry is unreachable.\n//!\n//! Loopback `file://` and `http://127.0.0.1` registries stay hermetic: tests\n//! and air-gapped mirrors never leak to github.com. Production hosts such as\n//! `registry.zpkg.net` fall back to guessed public R2 keys and GitHub Release\n//! assets, then to the GitHub tag archive, repacked exactly as `zed publish`\n//! would pack that tag.\n',
+              '//! Retry GitHub first, then optional public R2, when an HTTP registry is unreachable.\n//!\n//! Loopback `file://` and `http://127.0.0.1` registries stay hermetic: tests\n//! and air-gapped mirrors never leak to github.com. Production hosts such as\n//! `registry.zpkg.net` recover directly from GitHub Releases, GHCR, or a GitHub\n//! tag archive repacked exactly as `zed publish` would pack that tag. Public R2\n//! remains a later optional mirror, never a required recovery dependency.\n'
+          )
+
+          anchor = '''fn max_artifact_bytes() -> u64 {
+              std::env::var("ZED_PKG_MAX_ARTIFACT_BYTES")
+                  .ok()
+                  .and_then(|v| v.parse().ok())
+                  .unwrap_or(DEFAULT_MAX_ARTIFACT_BYTES)
+          }
+          '''
+          insertion = anchor + '''
+          /// During source fallback, prefer infrastructure owned by GitHub before
+          /// any Zed-operated R2/Cloudflare mirror. The normal registry path is
+          /// still attempted before this function is involved.
+          fn source_fallback_priority(kind: ArtifactSourceKind) -> u8 {
+              match kind {
+                  ArtifactSourceKind::GithubRelease => 0,
+                  ArtifactSourceKind::GithubPackages => 1,
+                  ArtifactSourceKind::GithubArchive => 2,
+                  ArtifactSourceKind::R2 => 3,
+                  ArtifactSourceKind::Registry => 4,
+              }
+          }
+
+          fn github_first_locators(mut locators: Vec<ArtifactLocator>) -> Vec<ArtifactLocator> {
+              locators.sort_by_key(|locator| source_fallback_priority(locator.kind));
+              locators
+          }
+          '''
+          replace_once(anchor, insertion)
+
+          replace_once(
+              '''        let locators = artifact_locators(&query);
+                  let download_url = locators
+                      .iter()
+                      .find(|locator| locator.kind != ArtifactSourceKind::GithubArchive)
+                      .or_else(|| locators.last())
+                      .map(|locator| locator.url.clone())
+                      .context("no fallback locator")?;
+          ''',
+              '''        let locators = github_first_locators(artifact_locators(&query));
+                  let download_url = locators
+                      .first()
+                      .map(|locator| locator.url.clone())
+                      .context("no fallback locator")?;
+          '''
+          )
+
+          replace_once(
+              '''        let locators = artifact_locators(&ArtifactQuery {
+                      org,
+                      name,
+                      version,
+                      vcs_tag: tag,
+                      sha256: Some(sha256.as_str()),
+                      format: ArtifactFormat::TarGz,
+                      repo_url: Some(repo_url.as_str()),
+                      artifacts: Some(&ArtifactsSection::EMPTY),
+                      registry_base: None,
+                      r2_public_base: self.config.r2_public_base.as_deref(),
+                      r2_public_key: self.config.r2_public_key.as_deref(),
+                  });
+          ''',
+              '''        let locators = github_first_locators(artifact_locators(&ArtifactQuery {
+                      org,
+                      name,
+                      version,
+                      vcs_tag: tag,
+                      sha256: Some(sha256.as_str()),
+                      format: ArtifactFormat::TarGz,
+                      repo_url: Some(repo_url.as_str()),
+                      artifacts: Some(&ArtifactsSection::EMPTY),
+                      registry_base: None,
+                      r2_public_base: self.config.r2_public_base.as_deref(),
+                      r2_public_key: self.config.r2_public_key.as_deref(),
+                  }));
+          '''
+          )
+
+          replace_once(
+              '''        let locators = artifact_locators(&ArtifactQuery {
+                      org: &version.org,
+                      name: &version.name,
+                      version: &version.version,
+                      vcs_tag: &version.vcs_tag,
+                      sha256: packed_digest.then_some(version.sha256.as_str()),
+                      format: version.format,
+                      repo_url: Some(repo_url.as_str()),
+                      artifacts: Some(&ArtifactsSection::EMPTY),
+                      registry_base: None,
+                      r2_public_base: self.config.r2_public_base.as_deref(),
+                      r2_public_key: self.config.r2_public_key.as_deref(),
+                  });
+          ''',
+              '''        let locators = github_first_locators(artifact_locators(&ArtifactQuery {
+                      org: &version.org,
+                      name: &version.name,
+                      version: &version.version,
+                      vcs_tag: &version.vcs_tag,
+                      sha256: packed_digest.then_some(version.sha256.as_str()),
+                      format: version.format,
+                      repo_url: Some(repo_url.as_str()),
+                      artifacts: Some(&ArtifactsSection::EMPTY),
+                      registry_base: None,
+                      r2_public_base: self.config.r2_public_base.as_deref(),
+                      r2_public_key: self.config.r2_public_key.as_deref(),
+                  }));
+          '''
+          )
+
+          replace_once(
+              '''        // The GitHub tag archive stays in the chain even when a digest is
+                  // pinned. It is the last locator and is repacked deterministically, so
+                  // a digest derived from it is reproducible, and every caller verifies
+                  // the bytes against the pin. Skipping it broke installs whose digest
+                  // had been derived from that same archive in another registry instance.
+          ''',
+              '''        // The GitHub tag archive stays in the chain even when a digest is
+                  // pinned. GitHub sources are tried before Zed-owned R2 so a total Zed
+                  // control-plane outage goes directly to GitHub. The archive is repacked
+                  // deterministically and every caller verifies the bytes against the pin.
+          '''
+          )
+
+          text = text.replace('using GitHub/R2 fallback', 'using GitHub-first fallback')
+          text = text.replace('the GitHub/R2 fallback also failed', 'the GitHub-first/R2 fallback also failed')
+
+          test_anchor = '''    #[test]
+              fn loopback_registries_are_hermetic() {
+          '''
+          priority_test = '''    #[test]
+              fn github_sources_precede_zed_owned_r2_during_fallback() {
+                  assert!(
+                      source_fallback_priority(ArtifactSourceKind::GithubRelease)
+                          < source_fallback_priority(ArtifactSourceKind::R2)
+                  );
+                  assert!(
+                      source_fallback_priority(ArtifactSourceKind::GithubPackages)
+                          < source_fallback_priority(ArtifactSourceKind::R2)
+                  );
+                  assert!(
+                      source_fallback_priority(ArtifactSourceKind::GithubArchive)
+                          < source_fallback_priority(ArtifactSourceKind::R2)
+                  );
+                  assert!(
+                      source_fallback_priority(ArtifactSourceKind::GithubRelease)
+                          < source_fallback_priority(ArtifactSourceKind::GithubPackages)
+                  );
+                  assert!(
+                      source_fallback_priority(ArtifactSourceKind::GithubPackages)
+                          < source_fallback_priority(ArtifactSourceKind::GithubArchive)
+                  );
+              }
+
+          ''' + test_anchor
+          replace_once(test_anchor, priority_test)
+
+          path.write_text(text)
+          PY
+
+          cargo fmt --all -- --check || cargo fmt --all
+          cargo test --locked source_fallback::tests::github_sources_precede_zed_owned_r2_during_fallback
+
+      - name: Commit runtime change
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'ORESoftware CI'
+          git config user.email 'ci@oresoftware.com'
+          git add src/source_fallback.rs
+          git diff --cached --check
+          git commit -m 'DEN-3829: prefer GitHub before Zed-owned mirrors during fallback'
+          git push origin HEAD:DEN-3829-github-control-plane-fallback
