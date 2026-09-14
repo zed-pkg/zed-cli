@@ -322,8 +322,9 @@ fn upload_blob(
     if head.status().is_success() {
         return Ok(());
     }
+    let upload_url = ghcr_uploads_url(identity);
     let start = client
-        .post(ghcr_uploads_url(identity))
+        .post(&upload_url)
         .bearer_auth(token)
         .send()
         .with_context(|| format!("start GHCR blob upload {}", blob.digest))?;
@@ -340,6 +341,7 @@ fn upload_blob(
         .and_then(|value| value.to_str().ok())
         .map(str::to_string)
         .context("GHCR upload session missing Location")?;
+    let location = resolve_upload_location(&upload_url, &location)?;
     let put_url = with_digest_query(&location, &blob.digest);
     let put = client
         .put(&put_url)
@@ -376,6 +378,18 @@ fn put_manifest(
         ghcr_reference(identity, tag),
         response.status()
     )
+}
+
+fn resolve_upload_location(base_url: &str, location: &str) -> Result<String> {
+    if let Ok(url) = reqwest::Url::parse(location) {
+        return Ok(url.to_string());
+    }
+    let base = reqwest::Url::parse(base_url)
+        .with_context(|| format!("parse GHCR upload base URL {base_url}"))?;
+    Ok(base
+        .join(location)
+        .with_context(|| format!("resolve GHCR upload Location {location:?} against {base_url}"))?
+        .to_string())
 }
 
 fn with_digest_query(location: &str, digest: &str) -> String {
@@ -513,6 +527,24 @@ mod tests {
         assert_eq!(identity.repo, "ghcr-fallback-canary");
         assert!(
             identity_from_ghcr_url("https://example.com/v2/acme/pkg/blobs/sha256:abc").is_none()
+        );
+    }
+
+    #[test]
+    fn upload_session_resolves_relative_location_against_registry_origin() {
+        let base = "https://ghcr.io/v2/acme/http-kit/blobs/uploads/";
+        assert_eq!(
+            resolve_upload_location(base, "/v2/acme/http-kit/blobs/uploads/abc?_state=1").unwrap(),
+            "https://ghcr.io/v2/acme/http-kit/blobs/uploads/abc?_state=1"
+        );
+        assert_eq!(
+            resolve_upload_location(base, "abc?_state=1").unwrap(),
+            "https://ghcr.io/v2/acme/http-kit/blobs/uploads/abc?_state=1"
+        );
+        assert_eq!(
+            resolve_upload_location(base, "https://ghcr.io/v2/acme/http-kit/blobs/uploads/xyz")
+                .unwrap(),
+            "https://ghcr.io/v2/acme/http-kit/blobs/uploads/xyz"
         );
     }
 
