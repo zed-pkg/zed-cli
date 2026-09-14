@@ -1,10 +1,10 @@
-//! Retry GitHub and public R2 when the configured HTTP registry is unreachable.
+//! Retry GitHub first, then optional public R2, when an HTTP registry is unreachable.
 //!
 //! Loopback `file://` and `http://127.0.0.1` registries stay hermetic: tests
 //! and air-gapped mirrors never leak to github.com. Production hosts such as
-//! `registry.zpkg.net` fall back to guessed public R2 keys and GitHub Release
-//! assets, then to the GitHub tag archive, repacked exactly as `zed publish`
-//! would pack that tag.
+//! `registry.zpkg.net` recover directly from GitHub Releases, GHCR, or a GitHub
+//! tag archive repacked exactly as `zed publish` would pack that tag. Public R2
+//! remains a later optional mirror, never a required recovery dependency.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -71,6 +71,24 @@ fn max_artifact_bytes() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_ARTIFACT_BYTES)
+}
+
+/// During source fallback, prefer infrastructure owned by GitHub before
+/// any Zed-operated R2/Cloudflare mirror. The normal registry path is
+/// still attempted before this function is involved.
+fn source_fallback_priority(kind: ArtifactSourceKind) -> u8 {
+    match kind {
+        ArtifactSourceKind::GithubRelease => 0,
+        ArtifactSourceKind::GithubPackages => 1,
+        ArtifactSourceKind::GithubArchive => 2,
+        ArtifactSourceKind::R2 => 3,
+        ArtifactSourceKind::Registry => 4,
+    }
+}
+
+fn github_first_locators(mut locators: Vec<ArtifactLocator>) -> Vec<ArtifactLocator> {
+    locators.sort_by_key(|locator| source_fallback_priority(locator.kind));
+    locators
 }
 
 #[derive(Debug, Clone)]
@@ -461,11 +479,9 @@ impl FallbackRegistry {
             r2_public_base: self.config.r2_public_base.as_deref(),
             r2_public_key: self.config.r2_public_key.as_deref(),
         };
-        let locators = artifact_locators(&query);
+        let locators = github_first_locators(artifact_locators(&query));
         let download_url = locators
-            .iter()
-            .find(|locator| locator.kind != ArtifactSourceKind::GithubArchive)
-            .or_else(|| locators.last())
+            .first()
             .map(|locator| locator.url.clone())
             .context("no fallback locator")?;
         let mut metadata = VersionMetadata {
@@ -613,7 +629,7 @@ impl FallbackRegistry {
             .unwrap_or(digest.as_str())
             .to_string();
         let repo_url = identity.web_url();
-        let locators = artifact_locators(&ArtifactQuery {
+        let locators = github_first_locators(artifact_locators(&ArtifactQuery {
             org,
             name,
             version,
@@ -625,7 +641,7 @@ impl FallbackRegistry {
             registry_base: None,
             r2_public_base: self.config.r2_public_base.as_deref(),
             r2_public_key: self.config.r2_public_key.as_deref(),
-        });
+        }));
         Some(VersionMetadata {
             org: org.to_string(),
             name: name.to_string(),
@@ -655,7 +671,7 @@ impl FallbackRegistry {
         // carry suffixes such as `.rs`.
         let identity = self.resolve_github_identity(&version.org, &version.name)?;
         let repo_url = identity.web_url();
-        let locators = artifact_locators(&ArtifactQuery {
+        let locators = github_first_locators(artifact_locators(&ArtifactQuery {
             org: &version.org,
             name: &version.name,
             version: &version.version,
@@ -667,12 +683,11 @@ impl FallbackRegistry {
             registry_base: None,
             r2_public_base: self.config.r2_public_base.as_deref(),
             r2_public_key: self.config.r2_public_key.as_deref(),
-        });
+        }));
         // The GitHub tag archive stays in the chain even when a digest is
-        // pinned. It is the last locator and is repacked deterministically, so
-        // a digest derived from it is reproducible, and every caller verifies
-        // the bytes against the pin. Skipping it broke installs whose digest
-        // had been derived from that same archive in another registry instance.
+        // pinned. GitHub sources are tried before Zed-owned R2 so a total Zed
+        // control-plane outage goes directly to GitHub. The archive is repacked
+        // deterministically and every caller verifies the bytes against the pin.
         for locator in locators {
             if locator.kind == ArtifactSourceKind::Registry {
                 continue;
@@ -730,12 +745,12 @@ impl Registry for FallbackRegistry {
             Err(error) => match self.github_get_version(org, name, version) {
                 Ok(metadata) => {
                     eprintln!(
-                        "warning: registry unavailable for {org}/{name}@{version}; using GitHub/R2 fallback ({error})"
+                        "warning: registry unavailable for {org}/{name}@{version}; using GitHub-first fallback ({error})"
                     );
                     Ok(metadata)
                 }
                 Err(fallback) => Err(error.context(format!(
-                    "registry unavailable and the GitHub/R2 fallback also failed: {fallback:#}"
+                    "registry unavailable and the GitHub-first/R2 fallback also failed: {fallback:#}"
                 ))),
             },
         }
@@ -747,7 +762,7 @@ impl Registry for FallbackRegistry {
             Err(error) => match self.download_locators(version, dest) {
                 Ok(()) => Ok(()),
                 Err(fallback) => Err(error.context(format!(
-                    "registry download failed and the GitHub/R2 fallback also failed: {fallback:#}"
+                    "registry download failed and the GitHub-first/R2 fallback also failed: {fallback:#}"
                 ))),
             },
         }
@@ -1247,6 +1262,30 @@ mod tests {
     use flate2::Compression;
     use flate2::write::GzEncoder;
     use zed_interfaces::source::{r2_object_keys, resolve_r2_public_base};
+
+    #[test]
+    fn github_sources_precede_zed_owned_r2_during_fallback() {
+        assert!(
+            source_fallback_priority(ArtifactSourceKind::GithubRelease)
+                < source_fallback_priority(ArtifactSourceKind::R2)
+        );
+        assert!(
+            source_fallback_priority(ArtifactSourceKind::GithubPackages)
+                < source_fallback_priority(ArtifactSourceKind::R2)
+        );
+        assert!(
+            source_fallback_priority(ArtifactSourceKind::GithubArchive)
+                < source_fallback_priority(ArtifactSourceKind::R2)
+        );
+        assert!(
+            source_fallback_priority(ArtifactSourceKind::GithubRelease)
+                < source_fallback_priority(ArtifactSourceKind::GithubPackages)
+        );
+        assert!(
+            source_fallback_priority(ArtifactSourceKind::GithubPackages)
+                < source_fallback_priority(ArtifactSourceKind::GithubArchive)
+        );
+    }
 
     #[test]
     fn loopback_registries_are_hermetic() {
