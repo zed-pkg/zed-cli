@@ -30,6 +30,7 @@ jobs:
           set -Eeuo pipefail
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           cargo = Path('Cargo.toml')
           text = cargo.read_text()
@@ -41,41 +42,23 @@ jobs:
 
           path = Path('src/source_fallback.rs')
           text = path.read_text()
-          helper = '''/// During source fallback, prefer infrastructure owned by GitHub before
-/// any Zed-operated R2/Cloudflare mirror. The normal registry path is
-/// still attempted before this function is involved.
-fn source_fallback_priority(kind: ArtifactSourceKind) -> u8 {
-    match kind {
-        ArtifactSourceKind::GithubRelease => 0,
-        ArtifactSourceKind::GithubPackages => 1,
-        ArtifactSourceKind::GithubArchive => 2,
-        ArtifactSourceKind::R2 => 3,
-        ArtifactSourceKind::Registry => 4,
-    }
-}
-
-fn github_first_locators(mut locators: Vec<ArtifactLocator>) -> Vec<ArtifactLocator> {
-    locators.sort_by_key(|locator| source_fallback_priority(locator.kind));
-    locators
-}
-
-'''
-          if helper not in text:
-              raise SystemExit('local recovery helper block not found')
-          text = text.replace(helper, '', 1)
-          text = text.replace(
-              'use zed_interfaces::artifact::ArtifactFormat;\n',
-              'use zed_interfaces::artifact::ArtifactFormat;\nuse zed_interfaces::artifact_recovery_locators;\n',
-              1,
-          )
-          text = text.replace('github_first_locators(artifact_locators(&ArtifactQuery {', 'artifact_recovery_locators(&ArtifactQuery {')
-          text = text.replace('        }));', '        });')
-          # The replacement above intentionally changes exactly the two recovery-query closures;
-          # fail closed if the local wrapper survived or the shared helper was not wired twice.
+          helper_pattern = re.compile(r'/// During source fallback, prefer infrastructure owned by GitHub before\n/// any Zed-operated R2/Cloudflare mirror\. The normal registry path is\n/// still attempted before this function is involved\.\nfn source_fallback_priority\(kind: ArtifactSourceKind\) -> u8 \{.*?\n\}\n\nfn github_first_locators\(mut locators: Vec<ArtifactLocator>\) -> Vec<ArtifactLocator> \{.*?\n\}\n\n', re.S)
+          text, removed = helper_pattern.subn('', text, count=1)
+          if removed != 1:
+              raise SystemExit('expected exactly one local recovery helper block')
+          text = text.replace('use zed_interfaces::artifact::ArtifactFormat;\n', 'use zed_interfaces::artifact::ArtifactFormat;\nuse zed_interfaces::artifact_recovery_locators;\n', 1)
+          call_pattern = re.compile(r'github_first_locators\(artifact_locators\(&ArtifactQuery \{(.*?)\n        \}\)\)', re.S)
+          text, calls = call_pattern.subn(r'artifact_recovery_locators(&ArtifactQuery {\1\n        })', text)
+          if calls != 2:
+              raise SystemExit('expected exactly two local recovery wrapper call sites, found %d' % calls)
+          if text.count('artifact_locators(') == 0:
+              text = text.replace('    artifact_locators, ', '    ')
+          if text.count('ArtifactLocator') == 1:
+              text = text.replace('    ArtifactLocator, ', '    ')
           if 'github_first_locators(' in text or 'source_fallback_priority(' in text:
               raise SystemExit('local recovery ordering survived migration')
           if text.count('artifact_recovery_locators(&ArtifactQuery {') != 2:
-              raise SystemExit(f'expected two shared recovery call sites, found {text.count("artifact_recovery_locators(&ArtifactQuery {")}')
+              raise SystemExit('shared recovery helper was not wired at both call sites')
           path.write_text(text)
           PY
           cargo update -p zed-interfaces
@@ -85,7 +68,7 @@ fn github_first_locators(mut locators: Vec<ArtifactLocator>) -> Vec<ArtifactLoca
           cargo clippy --locked --lib -- -A unsafe-code -D warnings
           git diff --check
           grep -F 'rev = "bb0f3fe10218e7dcb6a857bcb43deffdaa08b4f6"' Cargo.toml
-          grep -F 'artifact_recovery_locators(&ArtifactQuery {' src/source_fallback.rs | test "$(wc -l)" -eq 2
+          test "$(grep -Fc 'artifact_recovery_locators(&ArtifactQuery {' src/source_fallback.rs)" -eq 2
           ! grep -F 'github_first_locators' src/source_fallback.rs
       - name: Commit shared-authority migration
         shell: bash
