@@ -797,7 +797,11 @@ impl FallbackRegistry {
             .get(&url)
             .header("Accept", "application/vnd.oci.image.manifest.v1+json");
         if let Some(token) = &self.config.github_token {
-            request = request.bearer_auth(token);
+            match crate::github_packages::ghcr_registry_token(&self.client, token, identity, "pull")
+            {
+                Ok(bearer) => request = request.bearer_auth(bearer),
+                Err(_) => return None,
+            }
         }
         let Ok(response) = request.send() else {
             return None;
