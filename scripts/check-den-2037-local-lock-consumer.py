@@ -100,7 +100,31 @@ for command in (
 ):
     require(command in workflow, f"DEN-2037 workflow is missing executable evidence command {command}")
 
+doctor = read("src/bin/zed-doctor.rs")
+for required in (
+    "not_inferred_from_lock_file_contents",
+    "symlink_metadata",
+    "expected mode 0700",
+    "expected mode 0600",
+    "unknown_preserved",
+    "no files were changed",
+):
+    require(required in doctor, f"doctor locks is missing read-only safety evidence: {required}")
+require("acquire_blocking" not in doctor, "doctor locks must not acquire production locks")
+require("remove_file" not in doctor and "remove_dir" not in doctor, "doctor locks must never delete lock artifacts")
+
+lock_doctor_workflow = read(".github/workflows/den-2037-doctor-locks.yml")
+for runner in ("ubuntu-24.04", "macos-15", "windows-2025"):
+    require(runner in lock_doctor_workflow, f"doctor locks workflow must run on {runner}")
+for command in (
+    "cargo test --locked --bin zed-doctor",
+    "cargo clippy --locked --bin zed-doctor -- -D warnings",
+    "locks --json",
+):
+    require(command in lock_doctor_workflow, f"doctor locks workflow is missing executable evidence command {command}")
+
 pending = [task["id"] for task in tasks if task.get("evidence") == "audit_pending"]
+require(not pending, f"tasks still pending executable evidence: {pending}")
 print(json.dumps({
     "schema": manifest["schema"],
     "status": "admitted",
