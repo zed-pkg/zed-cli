@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Apply semantic regression and clippy fixes
+      - name: Align Cargo adapter integration regression
         shell: bash
         run: |
           set -euo pipefail
@@ -39,17 +39,6 @@ jobs:
 
           fn main() {
               let root = env::current_dir().expect("cwd");
-
-              let dev_path = root.join("src/dev.rs");
-              let dev = fs::read_to_string(&dev_path).expect("read src/dev.rs");
-              let dev = replace_once(
-                  dev,
-                  "let mut prefixed = parts.iter().cloned().collect::<Vec<_>>();",
-                  "let mut prefixed = parts.to_vec();",
-                  "clippy iterator collection",
-              );
-              fs::write(&dev_path, dev).expect("write src/dev.rs");
-
               let test_path = root.join("tests/develop_edge_cases.rs");
               let tests = fs::read_to_string(&test_path).expect("read develop_edge_cases.rs");
               let old = r###"#[test]
@@ -112,7 +101,7 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/dev.rs tests/develop_edge_cases.rs
+          git add tests/develop_edge_cases.rs
           git diff --cached --check
           git commit -m 'test: align develop Cargo adapter regression'
           AUTH="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
