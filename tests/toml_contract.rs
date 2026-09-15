@@ -9,8 +9,7 @@ fn root() -> PathBuf {
 fn parse_toml(path: &Path) -> toml::Value {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
-    toml::from_str(&text)
-        .unwrap_or_else(|error| panic!("invalid TOML {}: {error}", path.display()))
+    toml::from_str(&text).unwrap_or_else(|error| panic!("invalid TOML {}: {error}", path.display()))
 }
 
 fn string_at<'a>(value: &'a toml::Value, path: &[&str]) -> &'a str {
@@ -58,18 +57,16 @@ fn zed_package_version_matches_the_native_release_version() {
 }
 
 #[test]
-fn zed_package_declares_the_canonical_flags_runtime_and_contract() {
+fn zed_cli_flags_remain_a_separate_canonical_contract() {
     let root = root();
     let zpkg = parse_toml(&root.join(".zpkg.toml"));
     let cargo = parse_toml(&root.join("Cargo.toml"));
     let flags = parse_toml(&root.join(".cli-flags.toml"));
 
-    assert_eq!(
-        string_at(&zpkg, &["cli", "flags_contract"]),
-        ".cli-flags.toml"
+    assert!(
+        zpkg.get("cli").is_none(),
+        ".zpkg.toml must stay within the zed-interfaces Manifest authority; CLI flags belong in .cli-flags.toml"
     );
-    assert_eq!(string_at(&zpkg, &["cli", "flags_runtime"]), "flags-2-env");
-    assert_eq!(string_at(&zpkg, &["cli", "primary_bin"]), "zed");
 
     let flags2env = cargo
         .get("dependencies")
@@ -133,7 +130,10 @@ fn global_flags_do_not_reuse_environment_keys_or_public_aliases() {
                 if alias == canonical_alias {
                     continue;
                 }
-                assert!(aliases.insert(alias.to_owned()), "duplicate global flag alias: {alias}");
+                assert!(
+                    aliases.insert(alias.to_owned()),
+                    "duplicate global flag alias: {alias}"
+                );
             }
         }
     }
