@@ -145,7 +145,7 @@ jobs:
           old="$RUNNER_TEMP/zed-lock-old"
           current="$RUNNER_TEMP/zed-lock-current"
           make_helper "$old" 0fc100afc3cd60b5ce091b4207f910bf08f2cfb7
-          make_helper "$current" dec9801c7fdfa809576612dc503c6423906f3e71
+          make_helper "$current" b595b7c7192e9d298ced77fa3758440052300348
 
       - name: Prove old owner excludes current binary and current reuses the same rendezvous
         run: |
@@ -291,6 +291,7 @@ jobs:
     if: always()
     needs: [consumer-native, zed-lock-version-skew, shared-polyglot-package-smoke]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Enforce executable evidence
         env:
