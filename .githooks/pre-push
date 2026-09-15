@@ -37,8 +37,8 @@ if [[ -f .zpkg.lock ]]; then
   zed validate --require-lock
 else
   # Package-author repositories may intentionally omit a committed lock.
-  # Validate the authored manifest first, then create an ephemeral latest lock.
-  zed validate
+  # Let install materialize an ephemeral latest lock, then validate that exact graph below.
+  :
 fi
 
 # Resolve the newest published versions still allowed by the authored requirements.
