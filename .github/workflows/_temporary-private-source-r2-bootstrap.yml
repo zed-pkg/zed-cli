@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Check out exact branch
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: fix/private-source-r2-bootstrap-20260915
           fetch-depth: 0
@@ -30,197 +30,12 @@ jobs:
           components: rustfmt, clippy
 
       - name: Patch source-independent R2 download lane
-        shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/source_fallback.rs')
-          text = path.read_text()
-
-          old = '''    artifact_locators, github_api_release_url, github_api_repo_url, github_api_tags_url,
-    github_raw_manifest_url, github_release_asset_names, github_release_sidecar_names,
-    parse_github_identity, resolve_r2_public_base, version_from_git_tag,
-'''
-          new = '''    R2_CONTENT_PREFIX, R2_PACKAGE_PREFIX, artifact_locators, github_api_release_url,
-    github_api_repo_url, github_api_tags_url, github_raw_manifest_url,
-    github_release_asset_names, github_release_sidecar_names, parse_github_identity,
-    r2_object_keys, resolve_r2_public_base, version_from_git_tag,
-'''
-          assert text.count(old) == 1
-          text = text.replace(old, new, 1)
-
-          marker = '''fn release_asset_metadata(
-'''
-          helper = r'''/// Public R2 locators that are derivable from the package coordinate and an
-/// optional pinned digest alone. These deliberately exclude the conventional
-/// `github/{owner}/{repo}` alias: private source discovery must not gate an
-/// immutable/content-addressed or package-coordinate artifact download.
-fn source_independent_r2_locators(
-    version: &VersionMetadata,
-    r2_public_base: Option<&str>,
-    r2_public_key: Option<&str>,
-) -> Vec<ArtifactLocator> {
-    let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
-    let empty = ArtifactsSection::EMPTY;
-    let query = ArtifactQuery {
-        org: &version.org,
-        name: &version.name,
-        version: &version.version,
-        vcs_tag: &version.vcs_tag,
-        sha256: packed_digest.then_some(version.sha256.as_str()),
-        format: version.format,
-        repo_url: None,
-        artifacts: Some(&empty),
-        registry_base: None,
-        r2_public_base,
-        r2_public_key,
-    };
-    let base = resolve_r2_public_base(None, r2_public_base, r2_public_key);
-    let content_prefix = format!("{R2_CONTENT_PREFIX}/");
-    let package_prefix = format!("{R2_PACKAGE_PREFIX}/{}/{}/", version.org, version.name);
-    r2_object_keys(&query)
-        .into_iter()
-        .filter(|key| key.starts_with(&content_prefix) || key.starts_with(&package_prefix))
-        .map(|key| ArtifactLocator {
-            kind: ArtifactSourceKind::R2,
-            url: format!("{}/{key}", base.trim_end_matches('/')),
-        })
-        .collect()
-}
-
-'''
-          assert text.count(marker) == 1
-          text = text.replace(marker, helper + marker, 1)
-
-          old = '''    fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
-        let mut errors = Vec::new();
-        let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
-        // Artifact fallback must use the same manifest-validated canonical repository
-        // identity as metadata/version fallback. A cold cache is not permission to
-        // regress to the conventional org/name guess because valid repositories can
-        // carry suffixes such as `.rs`.
-        let identity = self.resolve_github_identity(&version.org, &version.name)?;
-'''
-          new = '''    fn download_locators(&self, version: &VersionMetadata, dest: &Path) -> Result<()> {
-        let mut errors = Vec::new();
-        let packed_digest = zed_interfaces::manifest::is_sha256_hex(&version.sha256);
-
-        // A packed artifact can be addressed by digest or by Zed package coordinate
-        // without knowing the source repository name. Try those public R2 aliases
-        // first so a consumer of a private source package does not need source-read
-        // permission merely to download already-published bytes.
-        let source_independent = source_independent_r2_locators(
-            version,
-            self.config.r2_public_base.as_deref(),
-            self.config.r2_public_key.as_deref(),
-        );
-        for locator in &source_independent {
-            match download_url(&self.client, &locator.url, dest, version.size, None) {
-                Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error:#}", locator.url)),
-            }
-        }
-
-        // GitHub-derived aliases, releases, GHCR, and source archives still use the
-        // manifest-validated canonical repository identity. A cold cache is not
-        // permission to regress to the conventional org/name guess because valid
-        // repositories can carry suffixes such as `.rs` or `.js`.
-        let identity = self.resolve_github_identity(&version.org, &version.name)?;
-'''
-          assert text.count(old) == 1
-          text = text.replace(old, new, 1)
-
-          old = '''        for locator in locators {
-            if locator.kind == ArtifactSourceKind::Registry {
-                continue;
-            }
-'''
-          new = '''        for locator in locators {
-            if locator.kind == ArtifactSourceKind::Registry
-                || source_independent.iter().any(|seen| seen.url == locator.url)
-            {
-                continue;
-            }
-'''
-          assert text.count(old) == 1
-          text = text.replace(old, new, 1)
-
-          marker = '''    #[test]
-    fn pinned_downloads_try_the_tag_archive_last() {
-'''
-          tests = r'''    #[test]
-    fn source_independent_r2_downloads_do_not_require_a_github_repo_name() {
-        let sha256 = "ab".repeat(32);
-        let version = VersionMetadata {
-            org: "oresoftware".into(),
-            name: "ores-sw".into(),
-            version: "0.1.0".into(),
-            sha256: sha256.clone(),
-            size: 42,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v0.1.0".into(),
-            vcs_commit: None,
-            download_url: "https://registry.zpkg.net/v1/artifacts/placeholder".into(),
-            published_at: "2026-09-15T00:00:00Z".into(),
-            yanked: false,
-            mirrors: Vec::new(),
-            signatures: Vec::new(),
-        };
-        let locators = source_independent_r2_locators(&version, None, None);
-        let urls: Vec<_> = locators.iter().map(|locator| locator.url.as_str()).collect();
-        assert_eq!(locators.len(), 2, "{urls:?}");
-        assert!(urls.iter().any(|url| {
-            *url == format!("https://cdn.zpkg.net/artifacts/{sha256}.tar.gz")
-        }));
-        assert!(urls.iter().any(|url| {
-            *url == "https://cdn.zpkg.net/packages/oresoftware/ores-sw/0.1.0/ores-sw-0.1.0.tar.gz"
-        }));
-        assert!(
-            urls.iter().all(|url| !url.contains("/github/")),
-            "source-independent lane must not guess github.com/oresoftware/ores-sw: {urls:?}"
-        );
-    }
-
-    #[test]
-    fn source_independent_r2_honors_configured_public_origin() {
-        let version = VersionMetadata {
-            org: "acme".into(),
-            name: "private-source".into(),
-            version: "1.2.3".into(),
-            sha256: String::new(),
-            size: 0,
-            format: ArtifactFormat::TarGz,
-            vcs_tag: "v1.2.3".into(),
-            vcs_commit: None,
-            download_url: String::new(),
-            published_at: "1970-01-01T00:00:00Z".into(),
-            yanked: false,
-            mirrors: Vec::new(),
-            signatures: Vec::new(),
-        };
-        let locators = source_independent_r2_locators(
-            &version,
-            Some("https://packages.example.test/"),
-            None,
-        );
-        assert_eq!(locators.len(), 1);
-        assert_eq!(
-            locators[0].url,
-            "https://packages.example.test/packages/acme/private-source/1.2.3/private-source-1.2.3.tar.gz"
-        );
-    }
-
-'''
-          assert text.count(marker) == 1
-          text = text.replace(marker, tests + marker, 1)
-          path.write_text(text)
-          PY
+          python3 scripts/_temporary_private_source_r2_patch.py
           cargo fmt
 
       - name: Certify source-independent fallback
-        shell: bash
         run: |
           set -euo pipefail
           cargo fmt --check
@@ -230,7 +45,6 @@ fn source_independent_r2_locators(
           git diff --check
 
       - name: Publish certified source change
-        shell: bash
         run: |
           set -euo pipefail
           git add src/source_fallback.rs
