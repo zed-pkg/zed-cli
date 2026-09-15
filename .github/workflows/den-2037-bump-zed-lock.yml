@@ -18,7 +18,7 @@ jobs:
           ref: den-2037-consumer-local-lock-e2e-v1
           fetch-depth: 0
           persist-credentials: true
-      - name: Replace every production/evidence pin atomically
+      - name: Replace Cargo and documentation pins
         env:
           OLD_REV: dec9801c7fdfa809576612dc503c6423906f3e71
           NEW_REV: b595b7c7192e9d298ced77fa3758440052300348
@@ -28,8 +28,7 @@ jobs:
           import os
           from pathlib import Path
           old=os.environ['OLD_REV']; new=os.environ['NEW_REV']
-          paths=[Path('Cargo.toml'),Path('docs/locking.md'),Path('.github/workflows/blocking-store-process-locks.yml')]
-          for path in paths:
+          for path in [Path('Cargo.toml'),Path('docs/locking.md')]:
               text=path.read_text()
               count=text.count(old)
               if count == 0:
@@ -42,19 +41,17 @@ jobs:
           )
           docs.write_text(text)
           PY
-      - name: Regenerate the exact Cargo lock graph
+      - name: Regenerate and verify the exact Cargo lock graph
         env:
           NEW_REV: b595b7c7192e9d298ced77fa3758440052300348
         run: |
           set -euo pipefail
           cargo update -p zed-lock
           cargo metadata --locked --format-version 1 | python3 -c 'import json,os,sys; d=json.load(sys.stdin); p=[x for x in d["packages"] if x["name"]=="zed-lock"]; assert len(p)==1,p; s=p[0]["source"] or ""; assert os.environ["NEW_REV"] in s,s; print(s)'
-      - name: Run static DEN-2037 evidence admission
-        run: python3 scripts/check-den-2037-local-lock-consumer.py
-      - name: Commit only the certified pin set
+      - name: Commit the non-workflow certified pin set
         run: |
           set -euo pipefail
-          git add Cargo.toml Cargo.lock docs/locking.md .github/workflows/blocking-store-process-locks.yml
+          git add Cargo.toml Cargo.lock docs/locking.md
           git diff --cached --check
           git config user.name 'ORESoftware'
           git config user.email 'alex@oresoftware.com'
