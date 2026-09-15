@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$repo_root"
+
+if [[ "${1:-}" == "--install" ]]; then
+  chmod +x .githooks/pre-push
+  git config core.hooksPath .githooks
+  printf 'installed Zed pre-push hook via core.hooksPath=.githooks\n'
+  exit 0
+fi
+
+[[ -f .zpkg.toml ]] || exit 0
+command -v zed >/dev/null 2>&1 || {
+  echo 'zed CLI is required; install the pinned project/fleet version first' >&2
+  exit 1
+}
+
+pack_dir="${TMPDIR:-/tmp}/zed-latest-deps-pack-$$"
+ephemeral_lock=0
+cleanup() {
+  rm -rf "$pack_dir"
+  if [[ "$ephemeral_lock" == "1" ]]; then
+    rm -f .zpkg.lock
+  fi
+}
+trap cleanup EXIT
+
+lock_existed=0
+lock_tracked=0
+if [[ -f .zpkg.lock ]]; then
+  lock_existed=1
+  if git ls-files --error-unmatch .zpkg.lock >/dev/null 2>&1; then
+    lock_tracked=1
+  fi
+  zed validate --require-lock
+else
+  # Package-author repositories may intentionally omit a committed lock.
+  # Validate the authored manifest first, then create an ephemeral latest lock.
+  zed validate
+fi
+
+# Resolve the newest published versions still allowed by the authored requirements.
+zed install
+
+[[ -f .zpkg.lock ]] || {
+  echo 'zed install did not produce .zpkg.lock; cannot prove a frozen replay' >&2
+  exit 1
+}
+zed validate --require-lock
+
+if [[ "$lock_tracked" == "1" ]]; then
+  # A repository that commits its lock owns a strict freshness contract.
+  if ! git diff --quiet HEAD -- .zpkg.lock; then
+    echo 'Zed dependency lock is stale relative to the newest versions allowed by .zpkg.toml.' >&2
+    echo 'Run zed install, review the dependency update, commit .zpkg.lock, and retry.' >&2
+    git --no-pager diff HEAD -- .zpkg.lock >&2 || true
+    exit 1
+  fi
+elif [[ "$lock_existed" == "0" ]]; then
+  # The generated lock exists only to prove current/latest resolution and replay.
+  # Do not impose a new lockfile policy on package-author repos as a side effect.
+  ephemeral_lock=1
+fi
+
+# Prove the just-resolved graph replays exactly before compiling against it.
+zed install --frozen
+zed build
+
+# Compile the consuming repository while Zed's generated adapter environment is active.
+if [[ -f Cargo.toml ]]; then
+  if [[ -f Cargo.lock ]]; then
+    zed develop --no-install -c 'cargo check --locked --all-targets'
+  else
+    zed develop --no-install -c 'cargo check --all-targets'
+  fi
+fi
+
+if [[ -f go.mod ]]; then
+  zed develop --no-install -c 'go test ./...'
+fi
+
+if [[ -f package.json ]]; then
+  if [[ -f pnpm-lock.yaml ]]; then
+    pm='corepack pnpm'
+    install_cmd='corepack pnpm install --frozen-lockfile'
+  elif [[ -f package-lock.json ]]; then
+    pm='npm'
+    install_cmd='npm ci'
+  elif [[ -f yarn.lock ]]; then
+    pm='corepack yarn'
+    install_cmd='corepack yarn install --immutable'
+  else
+    pm='npm'
+    install_cmd='npm install --ignore-scripts'
+  fi
+
+  if node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts.typecheck ? 0 : 1)'; then
+    script=typecheck
+  elif node -e 'const p=require("./package.json"); process.exit(p.scripts && p.scripts.build ? 0 : 1)'; then
+    script=build
+  else
+    echo 'package.json has neither a typecheck nor build script; refusing to claim Node compile coverage' >&2
+    exit 1
+  fi
+  zed develop --no-install -c "$install_cmd && $pm run $script"
+fi
+
+if [[ -f pyproject.toml || -f setup.py ]]; then
+  zed develop --no-install -c 'python3 -m compileall -q .'
+fi
+
+if [[ -f pom.xml ]]; then
+  zed develop --no-install -c 'mvn -B -DskipTests compile'
+fi
+
+if [[ -f gradlew ]]; then
+  zed develop --no-install -c './gradlew --no-daemon classes'
+fi
+
+# Packaging is a final structural assertion over the same manifest/materialized graph.
+mkdir -p "$pack_dir"
+zed pack --out "$pack_dir"
