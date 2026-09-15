@@ -1,0 +1,105 @@
+name: One-shot finish Cargo path root repair
+
+on:
+  push:
+    branches:
+      - fix/develop-cargo-path-root-20260915
+
+permissions:
+  contents: write
+
+jobs:
+  finish:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact repair head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Align Cargo adapter integration regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/patch.rs" <<'RS'
+          use std::{env, fs, process};
+
+          fn replace_once(text: String, old: &str, new: &str, label: &str) -> String {
+              let count = text.matches(old).count();
+              if count != 1 {
+                  eprintln!("expected exactly one {label}, found {count}");
+                  process::exit(2);
+              }
+              text.replacen(old, new, 1)
+          }
+
+          fn main() {
+              let root = env::current_dir().expect("cwd");
+              let test_path = root.join("tests/develop_edge_cases.rs");
+              let tests = fs::read_to_string(&test_path).expect("read develop_edge_cases.rs");
+              let old = r###"#[test]
+          fn cargo_adapter_configuration_is_copied_into_the_development_home() {
+              let fixture = Fixture::new();
+              fixture.native_project();
+              let metadata = fixture.root.join(".zed");
+              fs::create_dir_all(&metadata).expect("create zed metadata directory");
+              let source = "[patch.crates-io]\nexample = { path = \"../example\" }\n";
+              fs::write(metadata.join("cargo-paths.toml"), source).expect("write cargo adapter");
+
+              fixture.print_env(&[]);
+
+              let destination = fixture.root.join(".zed/dev/cargo/home/config.toml");
+              assert_eq!(
+                  fs::read_to_string(destination).expect("read copied cargo adapter"),
+                  source
+              );
+          }
+          "###;
+              let new = r###"#[test]
+          fn cargo_adapter_configuration_is_root_anchored_in_the_development_home() {
+              let fixture = Fixture::new();
+              fixture.native_project();
+              let metadata = fixture.root.join(".zed");
+              fs::create_dir_all(&metadata).expect("create zed metadata directory");
+              let source = "[patch.crates-io]\nexample = { path = \"../example\" }\n";
+              fs::write(metadata.join("cargo-paths.toml"), source).expect("write cargo adapter");
+
+              fixture.print_env(&[]);
+
+              let destination = fixture.root.join(".zed/dev/cargo/home/config.toml");
+              let generated = fs::read_to_string(destination).expect("read generated cargo adapter");
+              let parsed: toml::Value = toml::from_str(&generated).expect("parse generated cargo adapter");
+              assert_eq!(
+                  parsed["patch"]["crates-io"]["example"]["path"].as_str(),
+                  fixture.root.join("../example").to_str()
+              );
+          }
+          "###;
+              let tests = replace_once(tests, old, new, "Cargo adapter integration regression");
+              fs::write(&test_path, tests).expect("write develop_edge_cases.rs");
+          }
+          RS
+          rustc --edition 2024 "$RUNNER_TEMP/patch.rs" -o "$RUNNER_TEMP/patch"
+          "$RUNNER_TEMP/patch"
+          cargo fmt --all --check
+          cargo test --locked --test develop_edge_cases cargo_adapter_configuration_is_root_anchored_in_the_development_home
+          cargo test --locked --lib cargo_adapter_anchors_generated_paths_to_project_root
+          git diff --check
+
+      - name: Commit validated follow-up
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add tests/develop_edge_cases.rs
+          git diff --cached --check
+          git commit -m 'test: align develop Cargo adapter regression'
+          AUTH="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" push origin HEAD:fix/develop-cargo-path-root-20260915

@@ -531,7 +531,7 @@ fn language_adapter_files_are_reflected_in_the_managed_environment() {
 }
 
 #[test]
-fn cargo_adapter_configuration_is_copied_into_the_development_home() {
+fn cargo_adapter_configuration_is_root_anchored_in_the_development_home() {
     let fixture = Fixture::new();
     fixture.native_project();
     let metadata = fixture.root.join(".zed");
@@ -542,9 +542,11 @@ fn cargo_adapter_configuration_is_copied_into_the_development_home() {
     fixture.print_env(&[]);
 
     let destination = fixture.root.join(".zed/dev/cargo/home/config.toml");
+    let generated = fs::read_to_string(destination).expect("read generated cargo adapter");
+    let parsed: toml::Value = toml::from_str(&generated).expect("parse generated cargo adapter");
     assert_eq!(
-        fs::read_to_string(destination).expect("read copied cargo adapter"),
-        source
+        parsed["patch"]["crates-io"]["example"]["path"].as_str(),
+        fixture.root.join("../example").to_str()
     );
 }
 
