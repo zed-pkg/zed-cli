@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: one-shot-runtime-env-test-patch-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   patch:
     runs-on: ubuntu-24.04
