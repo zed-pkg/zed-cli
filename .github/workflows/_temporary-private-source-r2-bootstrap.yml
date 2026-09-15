@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - fix/private-source-r2-bootstrap-20260915
+    paths:
+      - .github/workflows/_temporary-private-source-r2-bootstrap.yml
 
 permissions:
   contents: write
 
 jobs:
   harden:
-    if: "${{ github.event.head_commit.message == 'ci: stage private-source R2 bootstrap hardening' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -78,10 +79,7 @@ fn source_independent_r2_locators(
     };
     let base = resolve_r2_public_base(None, r2_public_base, r2_public_key);
     let content_prefix = format!("{R2_CONTENT_PREFIX}/");
-    let package_prefix = format!(
-        "{R2_PACKAGE_PREFIX}/{}/{}/",
-        version.org, version.name
-    );
+    let package_prefix = format!("{R2_PACKAGE_PREFIX}/{}/{}/", version.org, version.name);
     r2_object_keys(&query)
         .into_iter()
         .filter(|key| key.starts_with(&content_prefix) || key.starts_with(&package_prefix))
