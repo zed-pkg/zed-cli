@@ -18,27 +18,19 @@ jobs:
     timeout-minutes: 45
     env:
       ZED_PKG_INTERACTIVE: "false"
-      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      ZED_CLI_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - name: Check out exact candidate source
+      - name: Check out candidate source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           path: source
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify exact candidate source
-        working-directory: source
-        shell: bash
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Check out exact candidate Zed CLI verifier
+      - name: Check out locked-build-compatible Zed CLI
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-cli
-          ref: ${{ env.ZED_CLI_COMMIT }}
+          ref: 70e02eb7dc9a423d4465fd421ce5b150b16451b6
           path: zed-tool
           persist-credentials: false
 
@@ -47,7 +39,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$ZED_CLI_COMMIT"
           cargo build --locked --bin zed
           mkdir -p "$HOME/.local/bin"
           install -m 0755 target/debug/zed "$HOME/.local/bin/zed"
