@@ -37,6 +37,9 @@ zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "4509f19e
 # Unified graph admission: the merged client, direct interfaces crate,
 # and direct behavior crate all resolve through one immutable Rust type authority.
 zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "6a046b0a5e262c0c6a23851b810d7fe7eda251c4" }
+# Non-blocking/cancellable registry reads. Direct reqwest::blocking transport is
+# legacy and remains only for publication/download compatibility during migration.
+zed-client-async = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "a1465453e98716b10bee54f71a8737a372fb4a86" }
 # Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
 zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "1db0da00d30fcf2e0762f50eedb1f88458020b52" }
 anyhow = "1"
@@ -51,6 +54,9 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 flate2 = "1"
 globset = "0.4"
 hex = "0.4"
+# Deprecated transport: keep only while multipart publication and legacy
+# artifact download paths are migrated to Hyper. Resolver/speculative reads
+# must not add new reqwest::blocking call sites.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rpassword = "7"
 semver = { version = "1", features = ["serde"] }
@@ -59,6 +65,8 @@ serde_json = "1"
 sha2 = "0.10"
 tar = "0.4"
 tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 toml = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 walkdir = "2"
