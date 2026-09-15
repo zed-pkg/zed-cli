@@ -194,10 +194,12 @@ artifact while this process waits.
 The canonical local-lock implementation now lives in the public
 [`zed-pkg/zed-lock`](https://github.com/zed-pkg/zed-lock) repository.
 `zed-cli` consumes immutable commit
-`1db0da00d30fcf2e0762f50eedb1f88458020b52`, the exact revision enforced by
+`dec9801c7fdfa809576612dc503c6423906f3e71`, the exact revision enforced by
 `Cargo.toml`, `Cargo.lock`, and the blocking-store process-lock workflow. That
-revision identifies `zed-lock` version `0.1.1`. Release artifact digests are
-verified at the `zed-lock` publication boundary rather than duplicated here.
+revision includes the DEN-3091 private lock-path and symlink-resistant-open
+hardening plus the Windows contention normalization certified by DEN-3167.
+Release artifact digests are verified at the `zed-lock` publication boundary
+rather than duplicated here.
 
 Ownership is deliberately split:
 
