@@ -22,11 +22,13 @@ grep -Fq 'dir = ".vendor/.zed"' .zpkg.toml || { echo 'Zed install directory must
 for output in \
   '"target/release/zed"' \
   '"target/release/zed-gitops"' \
-  '"target/release/zed-git-install"'; do
+  '"target/release/zed-git-install"' \
+  '"target/release/zed-doctor"'; do
   grep -Fq "$output" .zpkg.toml || { printf 'Zed package must publish required executable output: %s\n' "$output" >&2; exit 1; }
 done
 grep -Fq '"zed-gitops" = "target/release/zed-gitops"' .zpkg.toml || { echo 'Zed package must install the sibling zed-gitops executable' >&2; exit 1; }
 grep -Fq '"zed-git-install" = "target/release/zed-git-install"' .zpkg.toml || { echo 'Zed package must install the sibling zed-git-install executable' >&2; exit 1; }
+grep -Fq '"zed-doctor" = "target/release/zed-doctor"' .zpkg.toml || { echo 'Zed package must install the sibling zed-doctor executable' >&2; exit 1; }
 grep -Fq '".vendor/.zed/**"' .zpkg.toml || { echo 'publish exclusions must omit materialized Zed dependencies' >&2; exit 1; }
 
 if [[ -f .zpkg.lock ]] && [[ "$(wc -c < .zpkg.lock)" -le 12 ]]; then
@@ -55,15 +57,10 @@ import tomllib
 root = pathlib.Path.cwd()
 manifest = tomllib.loads((root / ".zpkg.toml").read_text(encoding="utf-8"))
 cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
-# Parse the contract independently for syntax. The exact bundled flags2env
-# runtime remains the semantic/audit authority elsewhere in CI.
 flags_contract = tomllib.loads((root / ".cli-flags.toml").read_text(encoding="utf-8"))
 cargo_lock = (root / "Cargo.lock").read_text(encoding="utf-8")
 errors: list[str] = []
 
-# Public Rust model/behavior crates are nominal authorities. A lockfile that
-# resolves more than one Git source identity for either crate can compile deep
-# into the graph and then fail with misleading E0308 mismatched-type errors.
 lock_doc = tomllib.loads(cargo_lock)
 for public_crate in ("zed-interfaces", "zed-lib"):
     sources = {
@@ -91,7 +88,7 @@ expected_sources = {
     ),
     "zed-lock": (
         "https://github.com/zed-pkg/zed-lock.git",
-        "1db0da00d30fcf2e0762f50eedb1f88458020b52",
+        "b595b7c7192e9d298ced77fa3758440052300348",
     ),
 }
 
@@ -121,7 +118,7 @@ cargo_bins = {
     for entry in cargo.get("bin", [])
     if isinstance(entry, dict) and isinstance(entry.get("name"), str)
 }
-required_public_bins = {"zed", "zed-gitops", "zed-git-install"}
+required_public_bins = {"zed", "zed-gitops", "zed-git-install", "zed-doctor"}
 missing_public_bins = sorted(required_public_bins - set(manifest_bins))
 if missing_public_bins:
     errors.append(
