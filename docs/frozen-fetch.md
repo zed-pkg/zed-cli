@@ -84,6 +84,14 @@ authority is the URL-parser domain `localhost` (or no host at all); loopback
 IP literals are rejected before `Url::to_file_path()` so Windows cannot
 reinterpret them as UNC.
 
+A well-formed `file://` lock source whose registry directory does not exist on
+this machine (for example a throwaway publish directory recorded on another
+machine) is not a trust input: the pinned digest is. Fetch then reads the pinned
+version from the configured registry, and through that registry's GitHub
+fallback when zpkg.net is unavailable. It verifies every field above exactly as
+for the locked source and reports the substitution as a degraded note that does
+not echo the source path. `immutable-nix-store-input` sources never fall back.
+
 ## Nix use
 
 A Nix fixed-output derivation should ask `zed fetch` to publish into an existing

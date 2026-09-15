@@ -116,7 +116,6 @@ pub mod mise_export {
 }
 pub mod github_mirror;
 pub mod github_packages;
-pub(crate) mod github_source_archive;
 pub mod mise_lock;
 pub mod native;
 pub mod native_host_client;
