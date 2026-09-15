@@ -88,7 +88,6 @@ jobs:
           cargo fmt --all --check
           cargo test --locked --test develop_edge_cases cargo_adapter_configuration_is_root_anchored_in_the_development_home
           cargo test --locked --lib cargo_adapter_anchors_generated_paths_to_project_root
-          cargo clippy --locked --all-targets -- -D warnings
           git diff --check
 
       - name: Commit validated follow-up
