@@ -1,0 +1,306 @@
+name: DEN-2037 local-lock consumer hardening
+
+on:
+  pull_request:
+    paths:
+      - 'conformance/den-2037-*.json'
+      - 'docs/locking.md'
+      - 'docs/lock-telemetry.md'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - 'tests/den_2037_lock_consumer.rs'
+      - 'tests/store_lock_evented.rs'
+      - 'tests/frozen_offline_prefetch.rs'
+      - 'src/store.rs'
+      - 'src/transaction.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/blocking-store-process-locks.yml'
+      - '.github/workflows/frozen-offline-prefetch.yml'
+      - '.github/workflows/den-2037-local-lock-consumer.yml'
+  push:
+    branches: [main, den-2037-consumer-local-lock-e2e-v1]
+    paths:
+      - 'conformance/den-2037-*.json'
+      - 'docs/locking.md'
+      - 'docs/lock-telemetry.md'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - 'tests/den_2037_lock_consumer.rs'
+      - 'tests/store_lock_evented.rs'
+      - 'tests/frozen_offline_prefetch.rs'
+      - 'src/store.rs'
+      - 'src/transaction.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/blocking-store-process-locks.yml'
+      - '.github/workflows/frozen-offline-prefetch.yml'
+      - '.github/workflows/den-2037-local-lock-consumer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: den-2037-consumer-lock-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  consumer-native:
+    name: consumer locks / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Admit the 15-task evidence manifest and exact dependency pins
+        run: python3 scripts/check-den-2037-local-lock-consumer.py
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run 1/2/4/8/16/32 contention, bootstrap, legacy and alias regressions
+        run: cargo test --locked --test den_2037_lock_consumer -- --nocapture
+
+      - name: Re-run native process queue, granularity and crash contracts
+        run: cargo test --locked --test store_lock_evented -- --nocapture
+
+      - name: Re-run staged-registry deletion and fully offline replay
+        run: cargo test --locked --test frozen_offline_prefetch -- --nocapture
+
+      - name: Re-run staged commit crash recovery
+        run: cargo test --locked -p zed-cli --lib transaction::tests::interrupted_uuid_transaction_is_recovered_on_next_begin -- --exact --nocapture
+
+      - name: Prove the zed-cli package is packable from the exact lock graph
+        run: cargo package --locked --allow-dirty --no-verify --list >/dev/null
+
+      - name: Strict clippy on the new consumer suite
+        run: cargo clippy --locked --test den_2037_lock_consumer -- -D warnings
+
+  zed-lock-version-skew:
+    name: zed-lock on-disk version skew
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Build v0.1.0 and production-revision helpers
+        run: |
+          set -euo pipefail
+          make_helper() {
+            dir="$1"
+            rev="$2"
+            mkdir -p "$dir/src"
+            cat > "$dir/Cargo.toml" <<EOF
+          [package]
+          name = "den2037-version-skew-helper"
+          version = "0.0.0"
+          edition = "2024"
+          [dependencies]
+          zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "$rev" }
+          EOF
+            cat > "$dir/src/main.rs" <<'EOF'
+          use std::fs;
+          use std::path::PathBuf;
+          use std::thread;
+          use std::time::Duration;
+          use zed_lock::{LockManager, LockRequest};
+
+          fn main() {
+              let mut args = std::env::args_os().skip(1);
+              let lock = PathBuf::from(args.next().expect("lock path"));
+              let ready = PathBuf::from(args.next().expect("ready path"));
+              let hold_ms = args
+                  .next()
+                  .expect("hold ms")
+                  .to_string_lossy()
+                  .parse::<u64>()
+                  .expect("numeric hold ms");
+              let _guard = LockManager::global()
+                  .acquire_blocking(LockRequest::exclusive(lock).operation("version skew"))
+                  .expect("acquire version-skew lock");
+              fs::write(ready, b"ready").expect("write readiness marker");
+              thread::sleep(Duration::from_millis(hold_ms));
+          }
+          EOF
+            cargo build --quiet --manifest-path "$dir/Cargo.toml"
+          }
+          old="$RUNNER_TEMP/zed-lock-old"
+          current="$RUNNER_TEMP/zed-lock-current"
+          make_helper "$old" 0fc100afc3cd60b5ce091b4207f910bf08f2cfb7
+          make_helper "$current" b595b7c7192e9d298ced77fa3758440052300348
+
+      - name: Prove old owner excludes current binary and current reuses the same rendezvous
+        run: |
+          set -euo pipefail
+          lock="$RUNNER_TEMP/version-skew.lock"
+          old_ready="$RUNNER_TEMP/old.ready"
+          current_ready="$RUNNER_TEMP/current.ready"
+          "$RUNNER_TEMP/zed-lock-old/target/debug/den2037-version-skew-helper" "$lock" "$old_ready" 1200 &
+          old_pid=$!
+          trap 'kill "$old_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 100); do
+            test -f "$old_ready" && break
+            sleep 0.02
+          done
+          test -f "$old_ready"
+          start=$(date +%s%N)
+          "$RUNNER_TEMP/zed-lock-current/target/debug/den2037-version-skew-helper" "$lock" "$current_ready" 0
+          end=$(date +%s%N)
+          wait "$old_pid"
+          trap - EXIT
+          test -f "$current_ready"
+          elapsed_ms=$(( (end - start) / 1000000 ))
+          printf 'version-skew wait_ms=%s\n' "$elapsed_ms"
+          test "$elapsed_ms" -ge 600
+          test -f "$lock"
+
+  shared-polyglot-package-smoke:
+    name: shared lock library external consumers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out zed-cli evidence branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Check out exact shared lock-library snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ORESoftware/ores-locks-and-leases
+          ref: 0c47e80d7c169e9648b9439791855e9479a403c2
+          path: _shared-locks
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Move shared checkout outside the zed-cli Cargo workspace
+        run: |
+          set -euo pipefail
+          shared="$RUNNER_TEMP/shared-locks"
+          rm -rf "$shared"
+          mv "$GITHUB_WORKSPACE/_shared-locks" "$shared"
+          echo "SHARED_LOCKS=$shared" >> "$GITHUB_ENV"
+
+      - name: Install Rust, Go, Node and Gleam toolchains
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.85.1 --profile minimal
+          rustup default 1.85.1
+          rustc --version
+          cargo --version
+          go version
+          node --version
+          npm --version
+
+      - name: Install Gleam
+        uses: erlef/setup-beam@54075bcc5e249e4758d363f27d099f55d843f124 # v1.24.1
+        with:
+          otp-version: '27'
+          gleam-version: '1.16.0'
+          rebar3-version: '3'
+
+      - name: Rust external Git/Zed consumer
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/rust-external-consumer"
+          rm -rf "$root"
+          mkdir -p "$root/src"
+          cat > "$root/Cargo.toml" <<EOF
+          [package]
+          name = "den2037-rust-external-consumer"
+          version = "0.0.0"
+          edition = "2024"
+          [workspace]
+          [dependencies]
+          ores-locks-and-leases = { path = "$SHARED_LOCKS/src/rust", default-features = false }
+          EOF
+          cat > "$root/src/main.rs" <<'EOF'
+          use ores_locks_and_leases::{LocalFileLock, LockKey};
+          fn main() {
+              let _ = std::mem::size_of::<LocalFileLock>();
+              let _ = LockKey::new("den2037-consumer");
+          }
+          EOF
+          cargo check --manifest-path "$root/Cargo.toml"
+
+      - name: TypeScript npm-pack consumer
+        run: |
+          set -euo pipefail
+          cd "$SHARED_LOCKS/src/ts"
+          npm ci --no-audit --no-fund
+          npm test
+          tgz=$(npm pack --silent)
+          root="$RUNNER_TEMP/ts-packed-consumer"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cd "$root"
+          npm init -y >/dev/null
+          npm pkg set type=module >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund "$SHARED_LOCKS/src/ts/$tgz"
+          node -e 'import("@oresoftware/locks-and-leases").then(m => { if (Object.keys(m).length === 0) process.exit(1); })'
+
+      - name: Go external-module consumer
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/go-lock-consumer"
+          rm -rf "$root"
+          mkdir -p "$root"
+          cd "$root"
+          go mod init example.invalid/den2037-consumer
+          go mod edit -require=github.com/ORESoftware/ores-locks-and-leases/src/go@v0.0.0
+          go mod edit -replace=github.com/ORESoftware/ores-locks-and-leases/src/go="$SHARED_LOCKS/src/go"
+          cat > consumer_test.go <<'EOF'
+          package consumer
+          import _ "github.com/ORESoftware/ores-locks-and-leases/src/go"
+          import "testing"
+          func TestPackedBoundaryBuilds(t *testing.T) {}
+          EOF
+          go test ./...
+
+      - name: Gleam package and consumer build
+        run: |
+          set -euo pipefail
+          cd "$SHARED_LOCKS/src/gleam"
+          gleam deps download
+          gleam test
+          gleam hex build
+
+  evidence-summary:
+    name: require every executable DEN-2037 lane
+    if: always()
+    needs: [consumer-native, zed-lock-version-skew, shared-polyglot-package-smoke]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Enforce executable evidence
+        env:
+          NATIVE: ${{ needs.consumer-native.result }}
+          SKEW: ${{ needs.zed-lock-version-skew.result }}
+          EXTERNAL: ${{ needs.shared-polyglot-package-smoke.result }}
+        run: |
+          set -euo pipefail
+          printf 'consumer-native=%s\nversion-skew=%s\nshared-external=%s\n' "$NATIVE" "$SKEW" "$EXTERNAL"
+          test "$NATIVE" = success
+          test "$SKEW" = success
+          test "$EXTERNAL" = success

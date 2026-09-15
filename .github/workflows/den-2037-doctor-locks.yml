@@ -1,0 +1,61 @@
+name: DEN-2037 doctor locks read-only
+
+on:
+  pull_request:
+    paths:
+      - 'src/bin/zed-doctor.rs'
+      - 'conformance/den-2037-local-lock-consumer.json'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - '.github/workflows/den-2037-doctor-locks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: den-2037-doctor-locks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doctor-locks:
+    name: doctor locks / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run doctor-lock unit contracts
+        run: cargo test --locked --bin zed-doctor -- --nocapture
+
+      - name: Deny warnings in doctor binary
+        run: cargo clippy --locked --bin zed-doctor -- -D warnings
+
+      - name: Prove a missing lock root is read-only and healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/doctor-home"
+          test ! -e "$root"
+          ZED_PKG_HOME="$root" cargo run --quiet --locked --bin zed-doctor -- locks --json > "$RUNNER_TEMP/doctor.json"
+          test ! -e "$root"
+          grep -F '"state": "not_initialized"' "$RUNNER_TEMP/doctor.json"
+          grep -F '"ownership": "not_inferred_from_lock_file_contents"' "$RUNNER_TEMP/doctor.json"

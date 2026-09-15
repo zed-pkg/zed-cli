@@ -1,0 +1,34 @@
+{
+  "schema": "zed.den-2037.local-lock-consumer.v1",
+  "authority": {
+    "local_backend": "zed-lock native descriptor/handle lock",
+    "distributed_backend": "fiducia opt-in only for shared cross-host mutation",
+    "stale_breaking": false,
+    "network_required_for_local_lock": false
+  },
+  "tasks": [
+    {"id": 1, "name": "packed-artifact-consumer-smoke", "evidence": "workflow"},
+    {"id": 2, "name": "fully-offline-local-install-canary", "evidence": "tests/frozen_offline_prefetch.rs"},
+    {"id": 3, "name": "same-package-multiprocess-2-4-8-16", "evidence": "tests/den_2037_lock_consumer.rs"},
+    {"id": 4, "name": "different-package-lock-granularity", "evidence": "tests/store_lock_evented.rs"},
+    {"id": 5, "name": "consumer-crash-after-acquire", "evidence": "tests/store_lock_evented.rs"},
+    {"id": 6, "name": "consumer-crash-during-staged-commit", "evidence": "src/transaction.rs"},
+    {"id": 7, "name": "canonical-package-to-lock-namespace", "evidence": "conformance/den-2037-lock-namespace.json"},
+    {"id": 8, "name": "legacy-lock-artifact-policy", "evidence": "tests/den_2037_lock_consumer.rs"},
+    {"id": 9, "name": "per-user-lock-root-bootstrap", "evidence": "tests/den_2037_lock_consumer.rs"},
+    {"id": 10, "name": "symlinked-home-indirection", "evidence": "tests/den_2037_lock_consumer.rs"},
+    {"id": 11, "name": "on-disk-version-skew", "evidence": "workflow"},
+    {"id": 12, "name": "doctor-locks-read-only", "evidence": "src/bin/zed-doctor.rs"},
+    {"id": 13, "name": "low-cardinality-lock-telemetry", "evidence": "docs/lock-telemetry.md"},
+    {"id": 14, "name": "contention-performance-budget", "evidence": "tests/den_2037_lock_consumer.rs"},
+    {"id": 15, "name": "exact-dependency-evidence-pin", "evidence": "scripts/check-den-2037-local-lock-consumer.py"}
+  ],
+  "portable_os": ["linux", "macos", "windows"],
+  "forbidden_local_lock_dependencies": ["redis", "fiducia", "cloudflare_durable_objects", "dns"],
+  "notes": [
+    "zed-cli intentionally uses zed-lock rather than the portable mkdir backend from ores-locks-and-leases",
+    "package names are not interpolated into artifact lock filenames; immutable artifact SHA-256 is the store lock identity",
+    "a global per-home install lock protects shared refs/lockfile mutation and must not be confused with artifact/build granularity",
+    "doctor locks is structural and read-only: it never infers live ownership from lock-file contents because ownership belongs to the native descriptor or handle"
+  ]
+}
