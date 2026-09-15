@@ -20,8 +20,8 @@ jobs:
           persist-credentials: true
       - name: Replace every production/evidence pin atomically
         env:
-          OLD_REV: 1db0da00d30fcf2e0762f50eedb1f88458020b52
-          NEW_REV: da3962afc72e66e252be8da403a6cec70d520115
+          OLD_REV: dec9801c7fdfa809576612dc503c6423906f3e71
+          NEW_REV: b595b7c7192e9d298ced77fa3758440052300348
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -35,25 +35,20 @@ jobs:
               if count == 0:
                   raise SystemExit(f'{path}: old zed-lock revision not found')
               path.write_text(text.replace(old,new))
-          cargo=Path('Cargo.toml')
-          text=cargo.read_text()
-          text=text.replace(
-              '# Includes the Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.\nzed-lock =',
-              '# Includes DEN-3091 private/symlink-resistant paths and DEN-3167 Windows contention normalization.\nzed-lock =',
-          )
-          cargo.write_text(text)
           docs=Path('docs/locking.md')
           text=docs.read_text().replace(
-              'revision identifies `zed-lock` version `0.1.1`.',
-              'revision identifies `zed-lock` version `0.1.1` and includes the DEN-3091 fail-closed private-path authority (Unix 0700/0600 plus symlink-resistant open and Windows private-DACL/reparse handling).',
+              'revision includes the DEN-3091 private lock-path and symlink-resistant-open\nhardening plus the Windows contention normalization certified by DEN-3167.',
+              'revision includes the DEN-3091 private lock-path and symlink-resistant-open\nhardening, the Windows DACL-protection correction, DEN-3167 contention normalization,\nand the merged DEN-2037 sixth-order API-state/event conformance suite.',
           )
           docs.write_text(text)
           PY
       - name: Regenerate the exact Cargo lock graph
+        env:
+          NEW_REV: b595b7c7192e9d298ced77fa3758440052300348
         run: |
           set -euo pipefail
           cargo update -p zed-lock
-          cargo metadata --locked --format-version 1 | python3 -c 'import json,sys; d=json.load(sys.stdin); p=[x for x in d["packages"] if x["name"]=="zed-lock"]; assert len(p)==1,p; s=p[0]["source"] or ""; assert "da3962afc72e66e252be8da403a6cec70d520115" in s,s; print(s)'
+          cargo metadata --locked --format-version 1 | python3 -c 'import json,os,sys; d=json.load(sys.stdin); p=[x for x in d["packages"] if x["name"]=="zed-lock"]; assert len(p)==1,p; s=p[0]["source"] or ""; assert os.environ["NEW_REV"] in s,s; print(s)'
       - name: Run static DEN-2037 evidence admission
         run: python3 scripts/check-den-2037-local-lock-consumer.py
       - name: Commit only the certified pin set
@@ -63,5 +58,5 @@ jobs:
           git diff --cached --check
           git config user.name 'ORESoftware'
           git config user.email 'alex@oresoftware.com'
-          git commit -m 'fix(DEN-2037): pin zed-cli to hardened zed-lock authority'
+          git commit -m 'fix(DEN-2037): pin zed-cli to certified zed-lock merge'
           git push origin HEAD:den-2037-consumer-local-lock-e2e-v1
