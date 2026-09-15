@@ -1,0 +1,56 @@
+name: Zed latest dependency gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zed-latest-deps-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zed-latest-deps:
+    name: zed-latest-deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ZED_PKG_INTERACTIVE: "false"
+    steps:
+      - name: Check out candidate source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out locked-build-compatible Zed CLI
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: zed-pkg/zed-cli
+          ref: 70e02eb7dc9a423d4465fd421ce5b150b16451b6
+          path: zed-tool
+          persist-credentials: false
+
+      - name: Build exact Zed CLI toolchain pin
+        working-directory: zed-tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 target/debug/zed "$HOME/.local/bin/zed"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Report exact Zed version and source
+        shell: bash
+        run: |
+          zed --version
+          git -C zed-tool rev-parse HEAD
+
+      - name: Resolve latest allowed dependencies, replay lock, and compile
+        working-directory: source
+        shell: bash
+        run: bash .githooks/pre-push --ci
