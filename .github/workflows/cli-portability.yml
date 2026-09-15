@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   portability:
-    uses: ORESoftware/.github/.github/workflows/reusable-cli-portability.yml@3e31a79a13643264ff52737fbe02c80c44548075
+    uses: zed-pkg/.github/.github/workflows/reusable-cli-portability.yml@8771248b035486c5787e8b7eb8e1222f650ce141
     with:
       language: rust
       working-directory: .
