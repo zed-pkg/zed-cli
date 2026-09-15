@@ -39,7 +39,7 @@ zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "4509f19e
 zed-client = { git = "https://github.com/zed-pkg/zed-clients.git", rev = "6a046b0a5e262c0c6a23851b810d7fe7eda251c4" }
 # Includes DEN-3091 private Unix lock paths / symlink-resistant opening plus the
 # Windows ERROR_LOCK_VIOLATION contention normalization certified by DEN-3167.
-zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "dec9801c7fdfa809576612dc503c6423906f3e71" }
+zed-lock = { git = "https://github.com/zed-pkg/zed-lock.git", rev = "b595b7c7192e9d298ced77fa3758440052300348" }
 anyhow = "1"
 clap = { version = "4.5", features = ["derive", "env"] }
 clap_complete = "4.5"
