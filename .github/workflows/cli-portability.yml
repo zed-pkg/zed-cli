@@ -11,9 +11,6 @@ on:
       - .zpkg.toml
       - '**/*.toml'
       - '**/*.toml.example'
-      - rust-toolchain.toml
-      - '.cli-flags.toml'
-      - '.*-cli-flags.toml'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -29,9 +26,6 @@ on:
       - .zpkg.toml
       - '**/*.toml'
       - '**/*.toml.example'
-      - rust-toolchain.toml
-      - '.cli-flags.toml'
-      - '.*-cli-flags.toml'
       - build.rs
       - 'src/**'
       - 'tests/**'
@@ -45,14 +39,147 @@ concurrency:
   group: cli-portability-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+
 jobs:
   portability:
-    uses: zed-pkg/.github/.github/workflows/reusable-cli-portability.yml@8771248b035486c5787e8b7eb8e1222f650ce141
-    with:
-      language: rust
-      working-directory: .
-      # Keep this exact version synchronized with rust-toolchain.toml. Passing
-      # `stable` here would bypass the repository pin inside this reusable job.
-      rust-toolchain: '1.98.1'
-      cargo-locked: true
-      run-smoke: true
+    name: Rust CLI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out the exact candidate revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Verify exact candidate revision
+        shell: node {0}
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          const childProcess = require('child_process');
+          const expected = process.env.EXPECTED_SHA;
+          if (!expected) throw new Error('expected candidate SHA is empty');
+          const result = childProcess.spawnSync('git', ['rev-parse', 'HEAD'], {
+            encoding: 'utf8',
+            windowsHide: true,
+          });
+          if (result.error) throw result.error;
+          if (result.status !== 0) {
+            process.stderr.write(result.stderr || 'git rev-parse HEAD failed\n');
+            process.exit(result.status ?? 1);
+          }
+          const actual = result.stdout.trim();
+          if (actual.toLowerCase() !== expected.toLowerCase()) {
+            throw new Error(`checkout provenance mismatch: expected ${expected}, got ${actual}`);
+          }
+          process.stdout.write(`validated exact candidate revision ${actual}\n`);
+
+      - name: Install repository-pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+
+      - name: Require committed Cargo.lock and pinned toolchain
+        shell: node {0}
+        run: |
+          const fs = require('fs');
+          const toml = fs.readFileSync('rust-toolchain.toml', 'utf8');
+          if (!fs.statSync('Cargo.lock', { throwIfNoEntry: false })?.isFile()) {
+            throw new Error('CLI portability requires a committed Cargo.lock');
+          }
+          if (!/channel\s*=\s*["']1\.98\.1["']/.test(toml)) {
+            throw new Error('cli-portability toolchain must stay synchronized with rust-toolchain.toml');
+          }
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint locked Rust targets
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test locked Rust targets
+        run: cargo test --locked --all-targets -- --nocapture
+
+      - name: Build locked release binaries
+        run: cargo build --locked --release --bins
+
+      - name: Smoke every Rust CLI binary
+        shell: node {0}
+        run: |
+          const childProcess = require('child_process');
+          const fs = require('fs');
+          const path = require('path');
+
+          const metadataResult = childProcess.spawnSync(
+            'cargo',
+            ['metadata', '--locked', '--no-deps', '--format-version', '1'],
+            { encoding: 'utf8', windowsHide: true },
+          );
+          if (metadataResult.error) throw metadataResult.error;
+          if (metadataResult.status !== 0) {
+            process.stderr.write(metadataResult.stderr || 'cargo metadata failed\n');
+            process.exit(metadataResult.status ?? 1);
+          }
+          const metadata = JSON.parse(metadataResult.stdout);
+          const binaries = [...new Set(metadata.packages.flatMap((pkg) =>
+            pkg.targets
+              .filter((target) => target.kind.includes('bin'))
+              .map((target) => target.name),
+          ))].sort();
+          if (binaries.length === 0) {
+            throw new Error('Rust CLI portability requires at least one binary target');
+          }
+          for (const binary of binaries) {
+            const executable = path.join(
+              metadata.target_directory,
+              'release',
+              binary + (process.platform === 'win32' ? '.exe' : ''),
+            );
+            if (!fs.statSync(executable, { throwIfNoEntry: false })?.isFile()) {
+              throw new Error(`release binary is missing: ${executable}`);
+            }
+            const result = childProcess.spawnSync(executable, ['--help'], {
+              encoding: 'utf8',
+              env: { ...process.env, NO_COLOR: '1' },
+              timeout: 30_000,
+              windowsHide: true,
+            });
+            process.stdout.write(result.stdout || '');
+            process.stderr.write(result.stderr || '');
+            if (result.error) throw result.error;
+            if (result.status !== 0) {
+              throw new Error(`${binary} --help exited ${result.status}`);
+            }
+          }
+
+      - name: Prove validation did not mutate tracked source
+        if: always()
+        shell: node {0}
+        run: |
+          const childProcess = require('child_process');
+          const status = childProcess.spawnSync(
+            'git',
+            ['status', '--porcelain=v1', '--untracked-files=no'],
+            { encoding: 'utf8', windowsHide: true },
+          );
+          if (status.error) throw status.error;
+          if (status.status !== 0) {
+            process.stderr.write(status.stderr || 'git status failed\n');
+            process.exit(status.status ?? 1);
+          }
+          if (status.stdout.trim()) {
+            process.stderr.write('CLI validation mutated tracked source:\n');
+            process.stderr.write(status.stdout);
+            process.exit(1);
+          }
