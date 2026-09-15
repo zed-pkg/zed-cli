@@ -92,7 +92,9 @@ fn inspect_lock_root(home: &Path) -> Result<LockReport> {
                 findings,
             });
         }
-        Err(error) => return Err(error).with_context(|| format!("inspect {}", lock_root.display())),
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspect {}", lock_root.display()));
+        }
     };
 
     let mut safe = true;
@@ -204,7 +206,12 @@ fn inspect_lock_file_permissions(
     use std::os::unix::fs::PermissionsExt;
     let mode = metadata.permissions().mode() & 0o777;
     if mode == 0o600 {
-        findings.push(finding(name, "lock_file", "info", "private 0600 rendezvous file"));
+        findings.push(finding(
+            name,
+            "lock_file",
+            "info",
+            "private 0600 rendezvous file",
+        ));
         true
     } else {
         findings.push(finding(
@@ -299,7 +306,10 @@ mod tests {
         let report = inspect_lock_root(&temp.path().join("home"))?;
         assert!(!report.safe);
         assert_eq!(report.state, "unsafe");
-        assert_eq!(fs::metadata(&lock_root)?.permissions().mode() & 0o777, 0o755);
+        assert_eq!(
+            fs::metadata(&lock_root)?.permissions().mode() & 0o777,
+            0o755
+        );
         Ok(())
     }
 
@@ -336,7 +346,12 @@ mod tests {
         let report = inspect_lock_root(&temp.path().join("home"))?;
         assert!(report.safe, "{report:?}");
         assert!(legacy.exists());
-        assert!(report.findings.iter().any(|item| item.kind == "unknown_preserved"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|item| item.kind == "unknown_preserved")
+        );
         Ok(())
     }
 }
