@@ -252,7 +252,24 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
     let mut fetched = Vec::with_capacity(packages.len());
     let mut degraded: Vec<String> = Vec::new();
     for locked in &packages {
-        let source = effective_source(locked, &cfg.registry);
+        let locked_source = effective_source(locked, &cfg.registry);
+        let configured = cfg.registry.trim_end_matches('/');
+        // A committed lock can name a machine-local `file://` registry that
+        // does not exist here (a throwaway publish directory, another
+        // developer's path). The pin, not that path, is the authority, so read
+        // the pinned version from the configured registry — and through its
+        // fallback, GitHub — and verify it exactly as before.
+        let source = if locked_source != configured && missing_local_source(locked_source) {
+            degraded.push(format!(
+                "{}@{}: the locked local registry is not present on this machine; \
+                 reading the pinned version from the configured registry",
+                locked.full_name(),
+                locked.version
+            ));
+            configured
+        } else {
+            locked_source
+        };
         if !registries.contains_key(source) {
             registries.insert(source.to_string(), context.open(source)?);
         }
@@ -394,6 +411,17 @@ fn validate_locked_packages(
         validate_source(effective_source(package, fallback_registry))?;
     }
     Ok(packages)
+}
+
+/// A `file://` lock source whose registry directory is absent on this machine.
+/// Immutable Nix store inputs never qualify: a missing store path is a broken
+/// derivation, not an outage to route around, and must stay hermetic.
+fn missing_local_source(source: &str) -> bool {
+    source_kind(source) == "file"
+        && reqwest::Url::parse(source)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .is_some_and(|path| !path.is_dir())
 }
 
 fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) -> &'a str {
@@ -1162,6 +1190,60 @@ mod tests {
         assert_eq!(index["packages"][0]["source_kind"], "file");
         assert_eq!(index["packages"][0]["sha256"], locked.sha256);
         assert!(no_fetch_staging(outputs.path()));
+    }
+
+    #[test]
+    fn missing_local_lock_source_reads_the_pin_from_the_configured_registry() {
+        let project = tempfile::tempdir().unwrap();
+        let registry = tempfile::tempdir().unwrap();
+        let outputs = tempfile::tempdir().unwrap();
+        let mut locked = seed_package(
+            registry.path(),
+            "ores-wasm-loaders",
+            "owls-interfaces",
+            "0.1.1",
+            &[("rust/src/lib.rs", b"pub fn owls() {}\n")],
+        );
+        // The lock was written on a machine whose publish directory is gone.
+        let vanished = outputs.path().join("vanished-publish-registry");
+        locked.source = format!("file://{}", vanished.display());
+        write_lock(project.path(), vec![locked.clone()]);
+        let mut cfg = config(outputs.path().join("home"));
+        cfg.registry = format!("file://{}", registry.path().display());
+
+        let bundle = outputs.path().join("bundle");
+        let report = run(
+            project.path(),
+            &cfg,
+            FetchArgs {
+                frozen: true,
+                output: bundle.clone(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(report.packages, 1);
+        assert_eq!(report.degraded.len(), 1, "{:?}", report.degraded);
+        let vanished_text = vanished.to_string_lossy().to_string();
+        assert!(
+            !report.degraded[0].contains(&vanished_text),
+            "diagnostics must not echo the lock source: {:?}",
+            report.degraded
+        );
+        assert!(
+            bundle
+                .join("packages")
+                .join(&locked.sha256)
+                .join("pkg/rust/src/lib.rs")
+                .is_file()
+        );
+
+        assert!(missing_local_source(&locked.source));
+        assert!(!missing_local_source(&cfg.registry));
+        assert!(!missing_local_source(
+            "file:///nix/store/00000000000000000000000000000000-missing-zed-registry"
+        ));
+        assert!(!missing_local_source("https://registry.zpkg.net"));
     }
 
     #[test]
