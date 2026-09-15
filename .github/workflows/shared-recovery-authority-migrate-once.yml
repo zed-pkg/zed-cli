@@ -1,0 +1,166 @@
+name: shared recovery authority migration one-shot
+
+on:
+  push:
+    branches: [hardening/shared-recovery-authority-20260915]
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: hardening/shared-recovery-authority-20260915
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+      - name: Migrate local fallback ordering to shared zed-interfaces authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/migrate_shared_recovery.rs <<'RS'
+          use std::fs;
+
+          const OLD_REV: &str = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c";
+          const NEW_REV: &str = "bb0f3fe10218e7dcb6a857bcb43deffdaa08b4f6";
+          const WRAPPED_PREFIX: &str = "github_first_locators(artifact_locators(&";
+
+          fn replace_exact_once(text: &mut String, from: &str, to: &str, label: &str) {
+              let count = text.matches(from).count();
+              assert_eq!(count, 1, "expected exactly one {label}, found {count}");
+              *text = text.replacen(from, to, 1);
+          }
+
+          fn rewrite_wrapped_calls(mut text: String) -> (String, usize) {
+              let mut count = 0usize;
+              loop {
+                  let Some(start) = text.find(WRAPPED_PREFIX) else { break };
+                  let arg_start = start + WRAPPED_PREFIX.len();
+                  let bytes = text.as_bytes();
+                  let mut depth = 2i32;
+                  let mut inner_close = None;
+                  let mut outer_close = None;
+                  for i in arg_start..bytes.len() {
+                      match bytes[i] {
+                          b'(' => depth += 1,
+                          b')' => {
+                              depth -= 1;
+                              if depth == 1 && inner_close.is_none() {
+                                  inner_close = Some(i);
+                              } else if depth == 0 {
+                                  outer_close = Some(i);
+                                  break;
+                              }
+                          }
+                          _ => {}
+                      }
+                  }
+                  let inner = inner_close.expect("inner artifact_locators call must close");
+                  let outer = outer_close.expect("outer github_first_locators call must close");
+                  assert!(text[inner + 1..outer].trim().is_empty(), "wrapper closings must be adjacent apart from whitespace");
+                  let argument = text[arg_start..inner].to_string();
+                  let replacement = format!("artifact_recovery_locators(&{argument})");
+                  text.replace_range(start..=outer, &replacement);
+                  count += 1;
+              }
+              (text, count)
+          }
+
+          fn remove_test_function(text: &mut String, name: &str) {
+              let needle = format!("    #[test]\n    fn {name}() {{");
+              let start = text.find(&needle).expect("ordering test must exist exactly once");
+              assert_eq!(text.matches(&needle).count(), 1, "ordering test must be unique");
+              let brace = text[start..].find('{').map(|i| start + i).unwrap();
+              let bytes = text.as_bytes();
+              let mut depth = 0i32;
+              let mut end = None;
+              for i in brace..bytes.len() {
+                  match bytes[i] {
+                      b'{' => depth += 1,
+                      b'}' => {
+                          depth -= 1;
+                          if depth == 0 {
+                              end = Some(i + 1);
+                              break;
+                          }
+                      }
+                      _ => {}
+                  }
+              }
+              let mut end = end.expect("ordering test closing brace");
+              while end < text.len() && matches!(text.as_bytes()[end], b'\n' | b'\r') {
+                  end += 1;
+              }
+              text.replace_range(start..end, "");
+          }
+
+          fn main() {
+              let mut cargo = fs::read_to_string("Cargo.toml").unwrap();
+              replace_exact_once(&mut cargo, OLD_REV, NEW_REV, "zed-interfaces revision");
+              fs::write("Cargo.toml", cargo).unwrap();
+
+              let mut source = fs::read_to_string("src/source_fallback.rs").unwrap();
+              replace_exact_once(
+                  &mut source,
+                  "use zed_interfaces::artifact::ArtifactFormat;\n",
+                  "use zed_interfaces::artifact::ArtifactFormat;\nuse zed_interfaces::artifact_recovery_locators;\n",
+                  "shared recovery import insertion point",
+              );
+
+              let local_start = source
+                  .find("/// During source fallback, prefer infrastructure owned by GitHub before")
+                  .expect("local priority comment must exist");
+              let local_end_marker = "#[derive(Debug, Clone)]\npub struct SourceFallbackConfig";
+              let local_end = source[local_start..]
+                  .find(local_end_marker)
+                  .map(|i| local_start + i)
+                  .expect("SourceFallbackConfig marker must follow local ordering helpers");
+              source.replace_range(local_start..local_end, "");
+
+              let (mut source, rewrites) = rewrite_wrapped_calls(source);
+              assert_eq!(rewrites, 3, "expected exactly three production recovery call sites");
+              remove_test_function(
+                  &mut source,
+                  "github_sources_precede_zed_owned_r2_during_fallback",
+              );
+
+              assert!(!source.contains("fn source_fallback_priority"));
+              assert!(!source.contains("fn github_first_locators"));
+              assert!(!source.contains("github_first_locators("));
+              assert!(!source.contains("github_sources_precede_zed_owned_r2_during_fallback"));
+              assert_eq!(source.matches("artifact_recovery_locators(").count(), 3);
+              fs::write("src/source_fallback.rs", source).unwrap();
+          }
+          RS
+          rustc /tmp/migrate_shared_recovery.rs -o /tmp/migrate_shared_recovery
+          /tmp/migrate_shared_recovery
+
+          cargo update -p zed-interfaces --precise bb0f3fe10218e7dcb6a857bcb43deffdaa08b4f6
+          cargo fmt --all
+          cargo fmt --all --check
+          cargo test --locked --lib source_fallback
+          cargo check --locked --lib
+          cargo clippy --locked --lib -- -D warnings
+          git diff --check
+          test "$(grep -c 'bb0f3fe10218e7dcb6a857bcb43deffdaa08b4f6' Cargo.toml)" -eq 1
+          test "$(grep -c 'github_first_locators' src/source_fallback.rs || true)" -eq 0
+          test "$(grep -c 'source_fallback_priority' src/source_fallback.rs || true)" -eq 0
+          test "$(grep -c 'artifact_recovery_locators(' src/source_fallback.rs)" -eq 3
+      - name: Commit reviewed migration and remove one-shot workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock src/source_fallback.rs
+          git rm .github/workflows/shared-recovery-authority-migrate-once.yml
+          staged="$(git diff --cached --name-only | sort)"
+          expected="$(printf '%s\n' '.github/workflows/shared-recovery-authority-migrate-once.yml' 'Cargo.lock' 'Cargo.toml' 'src/source_fallback.rs' | sort)"
+          test "$staged" = "$expected"
+          git commit -m "refactor: consume shared GitHub-first recovery policy"
+          git push origin HEAD:hardening/shared-recovery-authority-20260915
