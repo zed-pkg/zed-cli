@@ -145,7 +145,7 @@ jobs:
           old="$RUNNER_TEMP/zed-lock-old"
           current="$RUNNER_TEMP/zed-lock-current"
           make_helper "$old" 0fc100afc3cd60b5ce091b4207f910bf08f2cfb7
-          make_helper "$current" 1db0da00d30fcf2e0762f50eedb1f88458020b52
+          make_helper "$current" dec9801c7fdfa809576612dc503c6423906f3e71
 
       - name: Prove old owner excludes current binary and current reuses the same rendezvous
         run: |
@@ -173,7 +173,7 @@ jobs:
           test -f "$lock"
 
   shared-polyglot-package-smoke:
-    name: shared lock library packed consumers
+    name: shared lock library external consumers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -188,7 +188,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ORESoftware/ores-locks-and-leases
-          ref: 68f11e18cbdadfbf3770659bd7db61b63c881933
+          ref: 0c47e80d7c169e9648b9439791855e9479a403c2
           path: _shared-locks
           fetch-depth: 1
           persist-credentials: false
@@ -220,29 +220,29 @@ jobs:
           gleam-version: '1.16.0'
           rebar3-version: '3'
 
-      - name: Rust packaged-crate consumer
+      - name: Rust external Git/Zed consumer
         run: |
           set -euo pipefail
-          cd "$SHARED_LOCKS/src/rust"
-          cargo package --locked --allow-dirty --no-verify
-          crate=$(find target/package -maxdepth 1 -name 'ores-locks-and-leases-*.crate' -print -quit)
-          test -n "$crate"
-          root="$RUNNER_TEMP/rust-packed-consumer"
+          root="$RUNNER_TEMP/rust-external-consumer"
           rm -rf "$root"
-          mkdir -p "$root/unpacked" "$root/consumer/src"
-          tar -xzf "$crate" -C "$root/unpacked"
-          unpacked=$(find "$root/unpacked" -mindepth 1 -maxdepth 1 -type d -print -quit)
-          cat > "$root/consumer/Cargo.toml" <<EOF
+          mkdir -p "$root/src"
+          cat > "$root/Cargo.toml" <<EOF
           [package]
-          name = "den2037-rust-packed-consumer"
+          name = "den2037-rust-external-consumer"
           version = "0.0.0"
           edition = "2024"
           [workspace]
           [dependencies]
-          ores-locks-and-leases = { path = "$unpacked" }
+          ores-locks-and-leases = { path = "$SHARED_LOCKS/src/rust", default-features = false }
           EOF
-          printf 'use ores_locks_and_leases as _;\nfn main() {}\n' > "$root/consumer/src/main.rs"
-          cargo check --manifest-path "$root/consumer/Cargo.toml"
+          cat > "$root/src/main.rs" <<'EOF'
+          use ores_locks_and_leases::{LocalFileLock, LockKey};
+          fn main() {
+              let _ = std::mem::size_of::<LocalFileLock>();
+              let _ = LockKey::new("den2037-consumer");
+          }
+          EOF
+          cargo check --manifest-path "$root/Cargo.toml"
 
       - name: TypeScript npm-pack consumer
         run: |
@@ -296,10 +296,10 @@ jobs:
         env:
           NATIVE: ${{ needs.consumer-native.result }}
           SKEW: ${{ needs.zed-lock-version-skew.result }}
-          PACKED: ${{ needs.shared-polyglot-package-smoke.result }}
+          EXTERNAL: ${{ needs.shared-polyglot-package-smoke.result }}
         run: |
           set -euo pipefail
-          printf 'consumer-native=%s\nversion-skew=%s\nshared-packed=%s\n' "$NATIVE" "$SKEW" "$PACKED"
+          printf 'consumer-native=%s\nversion-skew=%s\nshared-external=%s\n' "$NATIVE" "$SKEW" "$EXTERNAL"
           test "$NATIVE" = success
           test "$SKEW" = success
-          test "$PACKED" = success
+          test "$EXTERNAL" = success
