@@ -77,26 +77,61 @@ jobs:
       matrix:
         language: [rust, typescript, dart]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Checkout exact proposed zed-cli helper
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: zed-pkg/zed-cli
+          ref: ${{ needs.resolve.outputs.cli_sha }}
+          path: zed-cli-tools
+          persist-credentials: false
+      - name: Checkout exact zed-interfaces tip
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: zed-pkg/zed-interfaces
           ref: ${{ needs.resolve.outputs.interfaces_sha }}
+          path: zed-interfaces
           persist-credentials: false
       - if: matrix.language == 'rust'
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
       - if: matrix.language == 'rust'
+        working-directory: zed-interfaces
         run: cargo test --locked --all-targets
       - if: matrix.language == 'typescript'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 22
-      - if: matrix.language == 'typescript'
-        working-directory: src/ts
-        run: npm install --no-save typescript@5 @types/node && npx tsc --noEmit && node --test wire-format.test.ts
+      - name: Test canonical Node target discovery helper
+        if: matrix.language == 'typescript'
+        run: node --test zed-cli-tools/scripts/discover-node-targets.test.mjs
+      - name: Discover and compile every canonical Node target
+        if: matrix.language == 'typescript'
+        shell: bash
+        run: |
+          set -euo pipefail
+          node zed-cli-tools/scripts/discover-node-targets.mjs zed-interfaces > "$RUNNER_TEMP/node-targets"
+          test -s "$RUNNER_TEMP/node-targets"
+          target_count=0
+          while IFS= read -r target; do
+            [ -n "$target" ] || continue
+            target_count=$((target_count + 1))
+            dir="zed-interfaces"
+            if [ "$target" != "." ]; then
+              dir="$dir/$target"
+            fi
+            echo "Compiling canonical Node target: $target"
+            (
+              cd "$dir"
+              npm install --ignore-scripts
+              npm run --if-present typecheck
+              npm run --if-present build
+              npm run --if-present test
+            )
+          done < "$RUNNER_TEMP/node-targets"
+          test "$target_count" -ge 1
       - if: matrix.language == 'dart'
         uses: dart-lang/setup-dart@e51d8e571e22473a2ddebf0ef8a2123f0ab2c02c
       - if: matrix.language == 'dart'
-        working-directory: src/dart
+        working-directory: zed-interfaces/src/dart
         run: dart pub get && dart analyze --fatal-infos && dart test
 
   clients:
