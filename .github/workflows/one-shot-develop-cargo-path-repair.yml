@@ -104,11 +104,11 @@ jobs:
                   let registries = patch
                       .as_table_mut()
                       .context("generated Cargo adapter `patch` must be a table")?;
-                  for registry in registries.values_mut() {
+                  for (_, registry) in registries.iter_mut() {
                       let packages = registry
                           .as_table_mut()
                           .context("generated Cargo adapter patch registry must be a table")?;
-                      for package in packages.values_mut() {
+                      for (_, package) in packages.iter_mut() {
                           let package = package
                               .as_table_mut()
                               .context("generated Cargo adapter patch package must be a table")?;
