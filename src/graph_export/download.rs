@@ -79,7 +79,7 @@ pub(super) fn graph_url(
     );
     ensure!(
         url.username().is_empty() && url.password().is_none(),
-        "registry URL may not embed credentials; use --token or ZED_PKG_TOKEN"
+        "registry URL may not embed credentials; set ZED_PKG_TOKEN in the environment"
     );
     ensure!(
         url.query().is_none() && url.fragment().is_none(),

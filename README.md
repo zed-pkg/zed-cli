@@ -495,7 +495,7 @@ actual CLI never drift, so it is always authoritative:
 | `--source-fallback` | `ZED_PKG_SOURCE_FALLBACK` | on; retry public R2 and GitHub when the HTTP registry is down (`file://` and loopback stay hermetic) |
 | (env only) | `ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK` | off; test-org canaries that bind mocks to `127.0.0.1` must set this |
 | `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
-| `--token` | `ZED_PKG_TOKEN` | saved credentials |
+| (env only; secret) | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
 | `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
 | `--supabase-key` | `ZED_PKG_SUPABASE_KEY` | optional public publishable/anon key |
@@ -539,6 +539,14 @@ actual CLI never drift, so it is always authoritative:
 
 `--registry file:///path` selects a directory-backed registry: hermetic CI,
 air-gapped mirrors, and the default `zed r2g` mode all use it.
+
+Secret-bearing values never have a flag, because argv is visible to `ps`,
+process accounting, and shell history. The registry bearer token is read only
+from `ZED_PKG_TOKEN` (or saved credentials) and the auth password only from
+`ZED_PKG_AUTH_PASSWORD`, `--password-stdin`, or the hidden prompt. The removed
+spellings `--token` and `--zed-pkg-auth-password` fail closed with exit code 2
+and a redacted error before any dispatch; there is no warn-and-accept window.
+Both names are inventoried in `[env].ignore` of every affected `.*cli-flags.toml`.
 
 ## Authentication
 
@@ -651,7 +659,8 @@ zed r2g --docker --image node:22-slim   # pick an image with the runtime you nee
 # Certify a disposable Rust registry reached through a port-forward. Publishing
 # is persistent from the registry's point of view: an identical retry reuses
 # the immutable version, while changed bytes require a new version or a reset.
-zed --registry http://127.0.0.1:48080 --token "$ZED_PKG_TOKEN" \
+# The bearer token comes from the exported ZED_PKG_TOKEN, never from argv.
+zed --registry http://127.0.0.1:48080 \
   r2g --registry-mode server --clean
 ```
 
