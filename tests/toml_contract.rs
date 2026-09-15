@@ -2,6 +2,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use flags2env::BundledFlags2Env;
+
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -25,15 +27,53 @@ fn string_at<'a>(value: &'a toml::Value, path: &[&str]) -> &'a str {
         .unwrap_or_else(|| panic!("TOML path {} must be a string", path.join(".")))
 }
 
-#[test]
-fn every_repository_root_toml_file_parses() {
-    let root = root();
-    let mut files = fs::read_dir(&root)
+fn collect_repository_toml_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    let entries = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("failed to read directory {}: {error}", dir.display()));
+
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| panic!("failed to read directory entry: {error}"));
+        let path = entry.path();
+        if path.is_dir() {
+            if matches!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(".git" | ".zed" | "target")
+            ) {
+                continue;
+            }
+            collect_repository_toml_files(&path, files);
+        } else if path.is_file() && path.extension().is_some_and(|ext| ext == "toml") {
+            files.push(path);
+        }
+    }
+}
+
+fn root_cli_contracts() -> Vec<PathBuf> {
+    let mut files = fs::read_dir(root())
         .expect("read repository root")
         .filter_map(Result::ok)
         .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "toml"))
+        .filter(|path| {
+            if !path.is_file() {
+                return false;
+            }
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name == ".cli-flags.toml"
+                        || (name.starts_with('.') && name.ends_with("-cli-flags.toml"))
+                })
+        })
         .collect::<Vec<_>>();
+    files.sort();
+    files
+}
+
+#[test]
+fn every_repository_toml_file_parses() {
+    let root = root();
+    let mut files = Vec::new();
+    collect_repository_toml_files(&root, &mut files);
     files.sort();
 
     assert!(files.iter().any(|path| path.ends_with("Cargo.toml")));
@@ -42,6 +82,30 @@ fn every_repository_root_toml_file_parses() {
 
     for path in files {
         let _ = parse_toml(&path);
+    }
+}
+
+#[test]
+fn every_root_cli_contract_passes_the_bundled_flags2env_audit() {
+    let contracts = root_cli_contracts();
+    assert!(
+        contracts.iter().any(|path| path.ends_with(".cli-flags.toml")),
+        "repository root must contain .cli-flags.toml"
+    );
+    assert!(
+        contracts.len() >= 6,
+        "expected the canonical CLI contract plus the checked-in auxiliary contracts"
+    );
+
+    let parser = BundledFlags2Env::new();
+    for contract in contracts {
+        let display = contract.display().to_string();
+        let path = contract
+            .to_str()
+            .unwrap_or_else(|| panic!("CLI contract path is not UTF-8: {display}"));
+        parser
+            .audit_config(Some(path))
+            .unwrap_or_else(|error| panic!("flags2env audit failed for {display}: {error}"));
     }
 }
 
@@ -85,7 +149,12 @@ fn zed_package_declares_the_canonical_flags_runtime_and_contract() {
         .and_then(toml::Value::as_str)
         .expect("flags2env must use an immutable Git revision");
     assert_eq!(revision.len(), 40);
-    assert!(revision.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert!(
+        revision
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "flags2env revision must be a full lowercase hexadecimal SHA"
+    );
 
     assert_eq!(
         flags
