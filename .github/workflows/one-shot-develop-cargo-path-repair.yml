@@ -184,7 +184,7 @@ jobs:
           RS
           rustc --edition 2024 "$RUNNER_TEMP/patch.rs" -o "$RUNNER_TEMP/patch"
           "$RUNNER_TEMP/patch" src/dev.rs
-          cargo fmt --all -- --check
+          rustfmt --edition 2024 src/dev.rs
           cargo test --locked --lib cargo_adapter_anchors_generated_paths_to_project_root
           git diff --check
 
