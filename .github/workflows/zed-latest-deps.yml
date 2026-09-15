@@ -19,7 +19,7 @@ jobs:
     env:
       ZED_PKG_INTERACTIVE: "false"
       EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      ZED_CLI_COMMIT: c132535c6ff0ce4a174a5a3801835c3c54c18ce9
+      ZED_CLI_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Check out exact candidate source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -34,7 +34,7 @@ jobs:
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Check out exact root-fix Zed CLI
+      - name: Check out exact candidate Zed CLI verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: zed-pkg/zed-cli
