@@ -71,10 +71,8 @@ jobs:
               fixture.print_env(&[]);
 
               let destination = fixture.root.join(".zed/dev/cargo/home/config.toml");
-              let generated =
-                  fs::read_to_string(destination).expect("read generated cargo adapter");
-              let parsed: toml::Value =
-                  toml::from_str(&generated).expect("parse generated cargo adapter");
+              let generated = fs::read_to_string(destination).expect("read generated cargo adapter");
+              let parsed: toml::Value = toml::from_str(&generated).expect("parse generated cargo adapter");
               assert_eq!(
                   parsed["patch"]["crates-io"]["example"]["path"].as_str(),
                   fixture.root.join("../example").to_str()
