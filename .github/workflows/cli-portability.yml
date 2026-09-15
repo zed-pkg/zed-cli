@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   portability:
-    uses: zed-pkg/.github/.github/workflows/reusable-cli-portability.yml@9e861b051b1f2e07aa0ed28d341c1f1899186b4c
+    uses: zed-pkg/.github/.github/workflows/reusable-cli-portability.yml@859bb591e0065422ef0f00c86fa5fe147b44fcfa
     with:
       language: rust
       working-directory: .
