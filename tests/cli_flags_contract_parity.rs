@@ -149,15 +149,16 @@ fn command_roots(command: &Command) -> BTreeSet<String> {
 }
 
 fn non_flags2env_public_roots() -> BTreeSet<String> {
-    // The complete help/completion model is the typed runtime model plus any
-    // separately installed zed-* extension models. The set difference derives
-    // external namespaces from production composition rather than a hand-kept
-    // exclusion list.
-    let public = zed_cli::completion::root_command();
+    // Derive separately installed zed-* namespaces from the production
+    // external-subcommand augmenter itself. The complete public completion tree
+    // also contains modular built-ins (develop/fetch/graph/etc.); comparing it
+    // directly with cli_model would incorrectly classify those built-ins as
+    // external and exempt them from flags2env ownership checks.
     let typed = zed_cli::cli_model::command();
-    let public_roots = command_roots(&public);
     let typed_roots = command_roots(&typed);
-    let external = public_roots
+    let external_model = zed_cli::external_subcommands::augment_root_command(typed.clone());
+    let external_roots = command_roots(&external_model);
+    let external = external_roots
         .difference(&typed_roots)
         .cloned()
         .collect::<BTreeSet<_>>();
