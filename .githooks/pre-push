@@ -17,6 +17,21 @@ command -v zed >/dev/null 2>&1 || {
   exit 1
 }
 
+# Git supplies exact local/remote revisions on stdin. Shell transports those
+# refs only; the Rust release-intent engine parses both manifests and decides
+# whether the package version actually changed and whether semver/calver intent
+# is valid. New branches (all-zero remote SHA) are admitted by that engine.
+push_ranges=()
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [[ -n "${local_sha:-}" && -n "${remote_sha:-}" ]] || continue
+  push_ranges+=("$remote_sha:$local_sha")
+done
+for range in "${push_ranges[@]}"; do
+  remote_sha="${range%%:*}"
+  local_sha="${range##*:}"
+  zed release-intent guard-range "$remote_sha" "$local_sha"
+done
+
 pack_dir="${TMPDIR:-/tmp}/zed-latest-deps-pack-$$"
 ephemeral_lock=0
 cleanup() {
