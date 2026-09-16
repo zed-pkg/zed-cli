@@ -98,7 +98,6 @@ class GitHubInterfaceFleetTests(unittest.TestCase):
                     ".zpkg.toml": zpkg(
                         "server", "auth", "acme/auth-interfaces"
                     ),
-                    ".zpkg.lock": "{}\n",
                     "src/lib.rs": "use auth_interfaces as interfaces;\n",
                 },
             ),
