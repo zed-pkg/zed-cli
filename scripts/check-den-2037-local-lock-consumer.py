@@ -118,10 +118,14 @@ for runner in ("ubuntu-24.04", "macos-15", "windows-2025"):
     require(runner in lock_doctor_workflow, f"doctor locks workflow must run on {runner}")
 for command in (
     "cargo test --locked --bin zed-doctor",
-    "cargo clippy --locked --bin zed-doctor -- -D warnings",
     "locks --json",
 ):
     require(command in lock_doctor_workflow, f"doctor locks workflow is missing executable evidence command {command}")
+require(
+    "cargo clippy --locked --bin zed-doctor --" in lock_doctor_workflow
+    and "-D warnings" in lock_doctor_workflow,
+    "doctor locks workflow must run clippy for zed-doctor with warnings denied",
+)
 
 pending = [task["id"] for task in tasks if task.get("evidence") == "audit_pending"]
 require(not pending, f"tasks still pending executable evidence: {pending}")
