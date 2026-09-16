@@ -14,7 +14,9 @@ use zed_interfaces::manifest::Manifest;
 
 use crate::config::Config;
 
-pub const DEPENDENTS_CONFIG_PATH: &str = ".zed/dependents.toml";
+/// Repository-owned consumer automation policy. `.zed/` is intentionally local
+/// scratch in zed-cli, so durable team policy lives beside `.zpkg.toml` instead.
+pub const DEPENDENTS_CONFIG_PATH: &str = ".zpkg-dependents.toml";
 
 fn default_ttl() -> u64 { 86_400 }
 fn yes() -> bool { true }
@@ -59,8 +61,6 @@ pub fn init_config(project: &Path, kind: ConsumerKindV1, mode: AutomationModeV1)
     let mut config = DependentsConfig::default();
     config.consumer_kind = kind;
     config.automation_mode = mode;
-    let parent = path.parent().context("dependents config has no parent")?;
-    fs::create_dir_all(parent)?;
     fs::write(&path, toml::to_string_pretty(&config)?)?;
     println!("created {}", path.display());
     Ok(())
