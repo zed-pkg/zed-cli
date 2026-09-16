@@ -158,7 +158,19 @@ pub trait Registry {
     ) -> Result<AuditLogResponse>;
 }
 
+const LEGACY_PUBLIC_REGISTRY_URL: &str = "https://registry.zpkg.net";
+const CANONICAL_PUBLIC_REGISTRY_URL: &str = "https://zpkg.net";
+
+fn canonical_registry_url(url: &str) -> &str {
+    if url.trim_end_matches('/') == LEGACY_PUBLIC_REGISTRY_URL {
+        CANONICAL_PUBLIC_REGISTRY_URL
+    } else {
+        url
+    }
+}
+
 pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
+    let url = canonical_registry_url(url);
     if url.starts_with("file://") {
         Ok(Box::new(FileRegistry::new(file_registry_path(url)?)))
     } else if url.starts_with("http://") || url.starts_with("https://") {
@@ -167,6 +179,23 @@ pub fn registry_for(url: &str) -> Result<Box<dyn Registry>> {
     } else {
         bail!("unsupported registry url `{url}` (expected http(s):// or file://)");
     }
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_public_registry_alias_uses_the_canonical_zpkg_edge() {
+    assert_eq!(
+        canonical_registry_url("https://registry.zpkg.net"),
+        "https://zpkg.net"
+    );
+    assert_eq!(
+        canonical_registry_url("https://registry.zpkg.net/"),
+        "https://zpkg.net"
+    );
+    assert_eq!(
+        canonical_registry_url("https://registry.example.test"),
+        "https://registry.example.test"
+    );
 }
 
 /// Pick the highest stable version satisfying `req`.
