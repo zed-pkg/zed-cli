@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 use zed_cli::release_intent::ReleaseIntentKind;
 
@@ -42,6 +42,11 @@ enum Command {
     },
     /// Pre-commit guard: require an intent only when staged package.version changes.
     Guard,
+    /// Pre-push guard over the exact remote and local revisions supplied by Git.
+    GuardRange {
+        base: String,
+        head: String,
+    },
     /// Print the current validated intent.
     Show {
         #[arg(long)]
@@ -116,11 +121,16 @@ fn run() -> Result<()> {
             zed_cli::release_intent::guard_staged(&project)?;
             println!("release intent guard passed");
         }
+        Command::GuardRange { base, head } => {
+            zed_cli::release_intent::guard_range(&project, &base, &head)?;
+            println!("release intent range guard passed");
+        }
         Command::Show { json } => {
             let intent = zed_cli::release_intent::load(&project)?;
-            let manifest = zed_cli::release_intent::check(&project, false)?
-                .expect("check(false) returns an intent");
-            debug_assert_eq!(intent, manifest);
+            let Some(validated) = zed_cli::release_intent::check(&project, false)? else {
+                bail!("release intent disappeared while validating it");
+            };
+            debug_assert_eq!(intent, validated);
             print_intent(&intent, json)?;
         }
         Command::Clear => {
