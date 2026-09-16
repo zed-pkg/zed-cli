@@ -54,11 +54,7 @@ impl ReleaseIntentV1 {
         ensure!(self.package == manifest.full_name(), "release intent package `{}` does not match manifest `{}`", self.package, manifest.full_name());
         ensure!(self.version_scheme == manifest.package.version_scheme, "release intent version scheme drifted from manifest");
         ensure!(self.target_version == manifest.package.version, "release intent targets `{}` but manifest currently declares `{}`", self.target_version, manifest.package.version);
-        manifest
-            .package
-            .version_scheme
-            .validate_version(&self.target_version)
-            .map_err(anyhow::Error::msg)?;
+        manifest.package.version_scheme.validate_version(&self.target_version).map_err(anyhow::Error::msg)?;
         if self.requested == ReleaseIntentKind::None {
             ensure!(self.current_version == self.target_version, "commit-only intent must not change the package version");
         } else {
@@ -97,10 +93,10 @@ pub fn plan(
         (VersionScheme::Calver, _) => bail!("calver packages use `calendar` (or `none`) release intent"),
         (VersionScheme::Opaque, _) => bail!("opaque versions support commit-only intent; set an explicit package version before publishing"),
     };
-    if let Some(explicit) = explicit_target {
-        if requested != ReleaseIntentKind::Calendar {
-            ensure!(explicit == target, "--target-version `{explicit}` disagrees with computed `{target}`");
-        }
+    if let Some(explicit) = explicit_target
+        && requested != ReleaseIntentKind::Calendar
+    {
+        ensure!(explicit == target, "--target-version `{explicit}` disagrees with computed `{target}`");
     }
     Ok(ReleaseIntentV1 {
         schema: RELEASE_INTENT_SCHEMA_V1.to_owned(),
@@ -145,7 +141,7 @@ pub fn set(
 pub fn load(project: &Path) -> Result<ReleaseIntentV1> {
     let path = project.join(RELEASE_INTENT_PATH);
     let raw = fs::read_to_string(&path)
-        .with_context(|| format!("missing release intent {}; run `zed release intent set ...`", path.display()))?;
+        .with_context(|| format!("missing release intent {}; run `zed release-intent set ...`", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("invalid release intent {}", path.display()))
 }
 
@@ -169,16 +165,39 @@ pub fn guard_staged(project: &Path) -> Result<()> {
     let Some(staged) = git_show_manifest(project, ":.zpkg.toml")? else {
         return Ok(());
     };
-    let previous: Manifest = toml::from_str(&previous).context("HEAD .zpkg.toml is invalid")?;
-    let staged: Manifest = toml::from_str(&staged).context("staged .zpkg.toml is invalid")?;
-    if previous.package.version == staged.package.version {
+    validate_transition(project, &previous, &staged)
+}
+
+/// Pre-push guard over the exact remote/local revisions provided by Git. New
+/// branches have no remote package baseline, so they are intentionally left to
+/// normal CI/publish admission rather than guessed here.
+pub fn guard_range(project: &Path, base: &str, head: &str) -> Result<()> {
+    if base.bytes().all(|byte| byte == b'0') {
+        return Ok(());
+    }
+    ensure!(is_git_sha(base) && is_git_sha(head), "guard-range requires exact 40-character Git SHAs");
+    let Some(previous) = git_show_manifest(project, &format!("{base}:.zpkg.toml"))? else {
+        return Ok(());
+    };
+    let Some(next) = git_show_manifest(project, &format!("{head}:.zpkg.toml"))? else {
+        return Ok(());
+    };
+    validate_transition(project, &previous, &next)
+}
+
+fn validate_transition(project: &Path, previous: &str, next: &str) -> Result<()> {
+    let previous: Manifest = toml::from_str(previous).context("previous .zpkg.toml is invalid")?;
+    let next: Manifest = toml::from_str(next).context("next .zpkg.toml is invalid")?;
+    if previous.package.version == next.package.version {
         return Ok(());
     }
     let intent = load(project)?;
-    ensure!(intent.package == staged.full_name(), "release intent package does not match staged manifest");
-    ensure!(intent.current_version == previous.package.version, "release intent starts at `{}` but HEAD is `{}`", intent.current_version, previous.package.version);
-    ensure!(intent.target_version == staged.package.version, "release intent targets `{}` but staged manifest targets `{}`", intent.target_version, staged.package.version);
-    ensure!(intent.requested != ReleaseIntentKind::None, "staged version changed under commit-only release intent");
+    ensure!(intent.package == next.full_name(), "release intent package does not match target manifest");
+    ensure!(intent.version_scheme == next.package.version_scheme, "release intent version scheme does not match target manifest");
+    ensure!(intent.current_version == previous.package.version, "release intent starts at `{}` but pushed baseline is `{}`", intent.current_version, previous.package.version);
+    ensure!(intent.target_version == next.package.version, "release intent targets `{}` but pushed manifest targets `{}`", intent.target_version, next.package.version);
+    ensure!(intent.requested != ReleaseIntentKind::None, "package version changed under commit-only release intent");
+    next.package.version_scheme.validate_version(&next.package.version).map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -258,6 +277,10 @@ fn git_show_manifest(project: &Path, object: &str) -> Result<Option<String>> {
     Ok(Some(String::from_utf8(output.stdout).context("git returned non-UTF8 manifest")?))
 }
 
+fn is_git_sha(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 pub fn intent_path(project: &Path) -> PathBuf {
     project.join(RELEASE_INTENT_PATH)
 }
@@ -277,5 +300,10 @@ mod tests {
     fn patch_syntax_does_not_apply_to_calendar_versions() {
         let version = VersionScheme::Calver;
         assert!(version.validate_version("2026.09.16").is_ok());
+    }
+
+    #[test]
+    fn all_zero_remote_sha_is_treated_as_new_branch() {
+        assert!("0000000000000000000000000000000000000000".bytes().all(|byte| byte == b'0'));
     }
 }
