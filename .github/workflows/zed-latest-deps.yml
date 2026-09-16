@@ -18,6 +18,10 @@ jobs:
     timeout-minutes: 45
     env:
       ZED_PKG_INTERACTIVE: "false"
+      # The latest graph includes private ORESoftware package authorities.
+      # Keep credentials out of argv and expose the fleet read token only to
+      # the resolver process through the canonical Zed GitHub-token env name.
+      ZED_PKG_GITHUB_TOKEN: ${{ secrets.FLEET_GITHUB_READ_TOKEN }}
     steps:
       - name: Check out exact candidate source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -26,6 +30,15 @@ jobs:
           path: source
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Require private-source read credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ZED_PKG_GITHUB_TOKEN:-}" ]; then
+            echo "FLEET_GITHUB_READ_TOKEN is required because the latest dependency graph contains private GitHub package sources" >&2
+            exit 78
+          fi
 
       - name: Build exact candidate Zed CLI
         working-directory: source
