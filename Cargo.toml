@@ -25,6 +25,14 @@ path = "src/bin/zed-binary.rs"
 name = "zed-git-install"
 path = "src/bin/zed-git-install.rs"
 
+[[bin]]
+name = "zed-dependents"
+path = "src/bin/zed-dependents.rs"
+
+[[bin]]
+name = "zed-release-intent"
+path = "src/bin/zed-release-intent.rs"
+
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"
