@@ -942,14 +942,84 @@ fn prepare_cargo_adapter(root: &Path) -> Result<()> {
         return Ok(());
     }
     let destination = root.join(".zed/dev/cargo/home/config.toml");
-    fs::copy(&source, &destination).with_context(|| {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating managed Cargo home {}", parent.display()))?;
+    }
+
+    let source_text = fs::read_to_string(&source)
+        .with_context(|| format!("reading Rust adapter {}", source.display()))?;
+    let mut config: toml::Value = toml::from_str(&source_text)
+        .with_context(|| format!("parsing Rust adapter {}", source.display()))?;
+    anchor_cargo_adapter_paths(root, &mut config)?;
+    let rendered = toml::to_string_pretty(&config).context("serializing managed Cargo adapter")?;
+    fs::write(&destination, rendered).with_context(|| {
         format!(
-            "copying Rust adapter {} to {}",
-            source.display(),
-            destination.display()
+            "writing Rust adapter {} from {}",
+            destination.display(),
+            source.display()
         )
     })?;
     Ok(())
+}
+
+fn anchor_cargo_adapter_paths(root: &Path, config: &mut toml::Value) -> Result<()> {
+    let table = config
+        .as_table_mut()
+        .context("generated Cargo adapter must be a TOML table")?;
+
+    if let Some(paths) = table.get_mut("paths") {
+        let paths = paths
+            .as_array_mut()
+            .context("generated Cargo adapter `paths` must be an array")?;
+        for path in paths {
+            let raw = path
+                .as_str()
+                .context("generated Cargo adapter `paths` entries must be strings")?
+                .to_owned();
+            *path = toml::Value::String(anchor_cargo_adapter_path(root, &raw)?);
+        }
+    }
+
+    if let Some(patch) = table.get_mut("patch") {
+        let registries = patch
+            .as_table_mut()
+            .context("generated Cargo adapter `patch` must be a table")?;
+        for (_, registry) in registries.iter_mut() {
+            let packages = registry
+                .as_table_mut()
+                .context("generated Cargo adapter patch registry must be a table")?;
+            for (_, package) in packages.iter_mut() {
+                let package = package
+                    .as_table_mut()
+                    .context("generated Cargo adapter patch package must be a table")?;
+                let Some(path) = package.get_mut("path") else {
+                    continue;
+                };
+                let raw = path
+                    .as_str()
+                    .context("generated Cargo adapter patch path must be a string")?
+                    .to_owned();
+                *path = toml::Value::String(anchor_cargo_adapter_path(root, &raw)?);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn anchor_cargo_adapter_path(root: &Path, raw: &str) -> Result<String> {
+    let path = Path::new(raw);
+    let anchored = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    anchored.to_str().map(str::to_owned).with_context(|| {
+        format!(
+            "Cargo adapter path is not valid UTF-8: {}",
+            anchored.display()
+        )
+    })
 }
 
 fn ensure_python_venv(root: &Path, options: &DevelopArgs) -> Result<Option<PathBuf>> {
@@ -1633,6 +1703,36 @@ mod tests {
                 .get_arguments()
                 .any(|arg| arg.get_long() == Some("mise"))
         );
+    }
+
+    #[test]
+    fn cargo_adapter_anchors_generated_paths_to_project_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(temp.path()).unwrap();
+        fs::create_dir_all(root.join(".zed")).unwrap();
+        fs::write(
+            root.join(".zed/cargo-paths.toml"),
+            r#"paths = [".vendor/.zed/zed-pkg/zed-interfaces"]
+
+[patch.crates-io.zed-interfaces]
+path = "zed_modules/zed-pkg/zed-interfaces"
+"#,
+        )
+        .unwrap();
+
+        prepare_cargo_adapter(&root).unwrap();
+
+        let generated = fs::read_to_string(root.join(".zed/dev/cargo/home/config.toml")).unwrap();
+        let parsed: toml::Value = toml::from_str(&generated).unwrap();
+        assert_eq!(
+            parsed["paths"][0].as_str(),
+            root.join(".vendor/.zed/zed-pkg/zed-interfaces").to_str()
+        );
+        assert_eq!(
+            parsed["patch"]["crates-io"]["zed-interfaces"]["path"].as_str(),
+            root.join("zed_modules/zed-pkg/zed-interfaces").to_str()
+        );
+        assert!(!generated.contains(".zed/dev/cargo/.vendor"));
     }
 
     #[test]
