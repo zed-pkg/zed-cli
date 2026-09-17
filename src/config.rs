@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -431,12 +432,17 @@ pub fn read_manifest(project: &Path) -> Result<Manifest> {
     });
 
     let mut manifest = if let Some(text) = override_text {
+        crate::zpkg_env::validate_manifest_env(&text).with_context(|| {
+            format!("invalid in-memory env metadata for {}", project.display())
+        })?;
         Manifest::parse(&text)
             .with_context(|| format!("invalid in-memory manifest for {}", project.display()))?
     } else {
         let path = project.join(MANIFEST_FILE);
         let text = fs::read_to_string(&path)
             .with_context(|| format!("no {MANIFEST_FILE} found in {}", project.display()))?;
+        crate::zpkg_env::validate_manifest_env(&text)
+            .with_context(|| format!("invalid env metadata in {}", path.display()))?;
         Manifest::parse(&text).with_context(|| format!("invalid manifest {}", path.display()))?
     };
     apply_resolved_requirements(&normalized, &mut manifest);
@@ -444,13 +450,25 @@ pub fn read_manifest(project: &Path) -> Result<Manifest> {
 }
 
 pub fn write_manifest(project: &Path, manifest: &Manifest) -> Result<()> {
+    let path = project.join(MANIFEST_FILE);
+    let existing = match fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("reading {} before manifest rewrite", path.display())
+            });
+        }
+    };
+
     let mut text = manifest.to_toml_string()?;
     if let Some(consumes_gitmodules) =
         crate::git_submodules::manifest_gitmodules_consumption(project)?
     {
         text = crate::git_submodules::set_manifest_consumes_gitmodules(&text, consumes_gitmodules)?;
     }
-    fs::write(project.join(MANIFEST_FILE), text)?;
+    text = crate::zpkg_env::preserve_manifest_env(existing.as_deref(), &text)?;
+    fs::write(&path, text)?;
     Ok(())
 }
 
@@ -470,6 +488,21 @@ url = "https://localhost/manifestless/consumer"
 
 [dependencies]
 "acme/http-kit" = "^1"
+"#;
+
+    const ENV_BLOCK: &str = r#"
+
+[[env]]
+name = "mode"
+key = "ACME_MODE"
+kind = "string"
+required = false
+secret = false
+exposure = "env-only"
+description = "Optional runtime mode."
+overrides = ["runtime.mode"]
+environments = ["dev", "stage", "prod"]
+defaultValue = "normal"
 "#;
 
     #[test]
@@ -510,6 +543,37 @@ url = "https://localhost/manifestless/consumer"
             crate::git_submodules::manifest_gitmodules_consumption(project.path()).unwrap(),
             Some(true)
         );
+    }
+
+    #[test]
+    fn manifest_rewrite_preserves_valid_env_inventory() {
+        let project = tempfile::tempdir().unwrap();
+        fs::write(
+            project.path().join(MANIFEST_FILE),
+            format!("{BASIC_MANIFEST}{ENV_BLOCK}"),
+        )
+        .unwrap();
+        let manifest = read_manifest(project.path()).unwrap();
+
+        write_manifest(project.path(), &manifest).unwrap();
+
+        let rewritten = fs::read_to_string(project.path().join(MANIFEST_FILE)).unwrap();
+        let declarations = crate::zpkg_env::validate_manifest_env(&rewritten).unwrap();
+        assert_eq!(declarations.len(), 1);
+        assert_eq!(declarations[0].key, "ACME_MODE");
+        assert_eq!(declarations[0].default_value.as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn read_manifest_rejects_invalid_env_inventory() {
+        let project = tempfile::tempdir().unwrap();
+        let invalid = format!(
+            "{BASIC_MANIFEST}\n[[env]]\nname = \"secret_token\"\nkey = \"SECRET_TOKEN\"\nkind = \"string\"\nrequired = false\nsecret = true\nexposure = \"env-only\"\ndescription = \"Secret token.\"\noverrides = [\"runtime.token\"]\nenvironments = [\"prod\"]\ndefaultValue = \"must-not-live-here\"\n"
+        );
+        fs::write(project.path().join(MANIFEST_FILE), invalid).unwrap();
+
+        let error = read_manifest(project.path()).unwrap_err();
+        assert!(error.to_string().contains("invalid env metadata"));
     }
 
     #[test]
@@ -641,7 +705,7 @@ url = "https://localhost/manifestless/consumer"
         creds.set_token("https://reg.example.com/", "tok-a".to_string());
         creds.save(home.path()).unwrap();
 
-        let loaded = Credentials::load(home.path()).unwrap();
+        let loaded = Credentials::load(&home.path()).unwrap();
         assert_eq!(
             loaded.token_for("https://reg.example.com").as_deref(),
             Some("tok-a")
