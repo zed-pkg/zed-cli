@@ -151,5 +151,6 @@ pub mod tree;
 pub mod update;
 pub mod validation;
 pub mod vcs;
+pub mod zpkg_env;
 
 pub mod tool_versions;
