@@ -1,0 +1,9 @@
+#!/bin/sh
+# zed: keep git submodules and zed packages materialized after post-checkout.
+# Installed by zed-cli/scripts/install-git-hooks.sh — do not edit here; edit hooks/zed-git-hook.sh.
+here=$(dirname "$0")
+case "post-checkout" in
+  post-checkout) exec sh "$here/zed-git-hook.sh" post-checkout "$1" "$2" ;;   # prev HEAD, new HEAD, branch-flag
+  post-merge)    exec sh "$here/zed-git-hook.sh" post-checkout "$(git rev-parse ORIG_HEAD 2>/dev/null)" "$(git rev-parse HEAD)" ;;
+  post-rewrite)  exec sh "$here/zed-git-hook.sh" post-checkout "" "$(git rev-parse HEAD)" ;;
+esac
