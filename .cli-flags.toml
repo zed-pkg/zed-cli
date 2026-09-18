@@ -27,7 +27,7 @@ help = "Registry base URL."
 env = "ZED_PKG_HOME"
 aliases = ["home"]
 type = "string"
-help = "Zed home directory; defaults to ~/.zed-pkg."
+help = "Zed home directory; defaults to ~/.zpkg (legacy ~/.zed-pkg is auto-detected)."
 
 [flags.auth_url]
 env = "ZED_PKG_AUTH_URL"
