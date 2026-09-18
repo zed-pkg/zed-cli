@@ -181,3 +181,27 @@ fn early_dispatch_does_not_bypass_rejected_secret_argv() {
         assert_secret_argv_rejected(&args, secret, env, option);
     }
 }
+
+/// User-facing guidance must not advertise the removed secret flags as a
+/// supported spelling; rejection tests and the rejection message may name them.
+#[test]
+fn docs_and_diagnostics_do_not_advertise_removed_secret_flags() {
+    const SURFACES: &[&str] = &["README.md", "src/ops.rs", "src/graph_export/download.rs"];
+    const ADVERTISED: &[&str] = &[
+        "| `--token` |",
+        "--token \"$",
+        "pass --token",
+        "use --token",
+        "--zed-pkg-auth-password \"$",
+    ];
+    for file in SURFACES {
+        let text =
+            fs::read_to_string(file).unwrap_or_else(|error| panic!("reading {file}: {error}"));
+        for pattern in ADVERTISED {
+            assert!(
+                !text.contains(pattern),
+                "{file} still advertises removed secret argv spelling {pattern:?}"
+            );
+        }
+    }
+}
