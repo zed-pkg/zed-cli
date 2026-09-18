@@ -36,9 +36,22 @@ impl Config {
     pub fn from_globals(globals: &Globals) -> Result<Self> {
         let configured_home = match &globals.home {
             Some(h) => h.clone(),
-            None => dirs::home_dir()
-                .context("could not determine home directory; set ZED_PKG_HOME")?
-                .join(ZED_HOME_DIR_NAME),
+            None => {
+                let user_home = dirs::home_dir()
+                    .context("could not determine home directory; set ZED_PKG_HOME")?;
+                let preferred = user_home.join(".zpkg");
+                let legacy = user_home.join(ZED_HOME_DIR_NAME);
+                if preferred.exists() || !legacy.exists() {
+                    preferred
+                } else {
+                    eprintln!(
+                        "note: using legacy Zed home {}; set ZED_PKG_HOME or migrate to {} when convenient",
+                        legacy.display(),
+                        preferred.display()
+                    );
+                    legacy
+                }
+            }
         };
         // Store paths become symlink targets during installation. Keeping a
         // relative --home here would make that target relative to the nested
