@@ -5,7 +5,7 @@ use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
     AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
-    ReleaseCmd, StoreCmd, TaskCmd,
+    ReleaseCmd, StoreCmd, TaskCmd, WorkspaceCmd,
 };
 use zed_cli::cli_tools;
 use zed_cli::completion;
@@ -28,6 +28,7 @@ use zed_cli::ops;
 use zed_cli::preflight;
 use zed_cli::r2g::{self, R2gOptions};
 use zed_cli::release;
+use zed_cli::source_composition;
 use zed_cli::store::Store;
 use zed_cli::task_cli::{self, TaskAction};
 use zed_cli::tree;
@@ -237,6 +238,25 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             std::fs::create_dir_all(&project)?;
             ops::init(&project, org, name, cfg.interactive)
         }
+        Cmd::Workspace { cmd } => match cmd {
+            WorkspaceCmd::Sync => {
+                let project = source_composition::find_root(&cwd)?
+                    .context("no [interop.source-composition.sources] declaration found at or above the current directory")?;
+                zed_cli::project_lock::with_lock(
+                    &project,
+                    "synchronize manifest-authoritative VCS sources",
+                    || {
+                        zed_cli::transaction::recover_pending(&project)?;
+                        let report = source_composition::sync(&project)?;
+                        println!(
+                            "synchronized {} VCS source(s): {} checkout(s), {} Git submodule projection(s)",
+                            report.sources, report.checkouts, report.git_submodules
+                        );
+                        Ok(())
+                    },
+                )
+            }
+        },
         Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
@@ -278,6 +298,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            let source_project = source_composition::find_root(&cwd)?;
             let sync_git_submodules =
                 git_submodules || submodules::manifest_consumes_gitmodules(&cwd)?;
             let permissions = ops::InstallPermissions {
@@ -286,7 +307,29 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 allow_install_hooks,
                 native_manager,
             };
-            if sync_git_submodules {
+            if let Some(project) = source_project {
+                let operation = if frozen {
+                    "synchronize manifest VCS sources and restore frozen Zed dependency graph"
+                } else {
+                    "synchronize manifest VCS sources and install Zed dependency graph"
+                };
+                let _guard = zed_cli::project_lock::acquire(&project, operation)?;
+                zed_cli::transaction::recover_pending(&project)?;
+                source_composition::sync(&project)?;
+                managed_install::install_with_permissions(
+                    &project,
+                    &cfg,
+                    &specs,
+                    frozen,
+                    install_mode,
+                    adapter,
+                    &permissions,
+                    target.as_deref(),
+                    allow_no_manifest,
+                    allow_ecosystem_mismatch,
+                )
+                .map(|_| ())
+            } else if sync_git_submodules {
                 // Git synchronization mutates the submodule worktrees and must
                 // share one descriptor lifetime with manifest/lock resolution,
                 // materialization, adapter wiring, and Git-lock finalization.
