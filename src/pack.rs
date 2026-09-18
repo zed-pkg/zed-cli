@@ -464,6 +464,8 @@ pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    #[cfg(unix)]
+    use std::process::Command;
 
     use flate2::read::GzDecoder;
 
@@ -477,6 +479,116 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path().unwrap().to_string_lossy().to_string())
             .collect()
+    }
+
+    #[cfg(unix)]
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    fn committed_submodule_fixture() -> (tempfile::TempDir, Manifest) {
+        let root = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+
+        git(child.path(), &["init"]);
+        git(child.path(), &["config", "user.name", "Zed Test"]);
+        git(child.path(), &["config", "user.email", "zed@example.invalid"]);
+        fs::write(child.path().join("payload.txt"), "submodule payload\n").unwrap();
+        git(child.path(), &["add", "payload.txt"]);
+        git(child.path(), &["commit", "-m", "fixture child"]);
+
+        git(root.path(), &["init"]);
+        git(root.path(), &["config", "user.name", "Zed Test"]);
+        git(root.path(), &["config", "user.email", "zed@example.invalid"]);
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "superproject"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/superproject"
+"#;
+        fs::write(
+            root.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        let child_path = child.path().to_str().unwrap();
+        git(
+            root.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--",
+                child_path,
+                "vendor/child",
+            ],
+        );
+        git(
+            root.path(),
+            &[
+                "add",
+                zed_interfaces::paths::MANIFEST_FILE,
+                ".gitmodules",
+                "vendor/child",
+            ],
+        );
+        git(root.path(), &["commit", "-m", "fixture superproject"]);
+        (root, Manifest::parse(source_manifest).unwrap())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_requires_included_submodules_but_allows_canonical_subtree_exclusion() {
+        let (root, manifest) = committed_submodule_fixture();
+
+        let packed = pack_all(root.path(), &manifest, None).unwrap();
+        let files = archive_files(&packed[0].packed.path);
+        assert!(files.contains("pkg/vendor/child/payload.txt"));
+        assert!(!files.iter().any(|path| path.ends_with("/.git")));
+        assert!(!files.iter().any(|path| path.contains("/.git/")));
+        assert!(!files.iter().any(|path| path.ends_with("/.gitmodules")));
+
+        git(
+            root.path(),
+            &["submodule", "deinit", "-f", "--", "vendor/child"],
+        );
+        let error = pack_all(root.path(), &manifest, None).unwrap_err().to_string();
+        assert!(error.contains("not initialized"), "{error}");
+
+        let excluded = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "superproject"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/superproject"
+
+[publish]
+exclude = ["vendor/child/**"]
+"#,
+        )
+        .unwrap();
+        let packed = pack_all(root.path(), &excluded, None).unwrap();
+        let files = archive_files(&packed[0].packed.path);
+        assert!(!files.iter().any(|path| path.starts_with("pkg/vendor/child/")));
     }
 
     #[test]
