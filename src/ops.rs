@@ -4287,7 +4287,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-domain = { package = "canonical-lib", version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+domain = { package = "canonical-lib", version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core" }
 "#,
         )?;
         fs::write(
@@ -4339,7 +4339,7 @@ url = "https://github.com/canonical-cloud/canonical-lib-core"
 members = ["app"]
 
 [workspace.dependencies]
-canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core" }
 "#,
         )?;
         fs::write(
@@ -4375,6 +4375,64 @@ url = "https://github.com/canonical-cloud/canonical-lib-core"
             Some("zed_modules/canonical-cloud/canonical-lib-core")
         );
         Ok(())
+    }
+
+    #[test]
+    fn cargo_git_source_selector_requires_exact_materialized_rev() {
+        let commit = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4";
+        let provider = ZedGitProvenance {
+            url: "https://github.com/canonical-cloud/canonical-lib-core".to_string(),
+            commit: Some(commit.to_string()),
+            tags: BTreeSet::from(["v0.1.0".to_string()]),
+        };
+        let exact = CargoGitSource {
+            url: provider.url.clone(),
+            rev: Some(commit.to_string()),
+            tag: None,
+            branch: None,
+        };
+        assert!(cargo_git_source_matches(&exact, &provider));
+
+        let wrong = CargoGitSource {
+            rev: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            ..exact.clone()
+        };
+        assert!(!cargo_git_source_matches(&wrong, &provider));
+
+        let abbreviated = CargoGitSource {
+            rev: Some("d2f7371f".to_string()),
+            ..exact
+        };
+        assert!(!cargo_git_source_matches(&abbreviated, &provider));
+    }
+
+    #[test]
+    fn cargo_git_source_selector_requires_materialized_tag_and_rejects_branches() {
+        let provider = ZedGitProvenance {
+            url: "https://github.com/acme/tool".to_string(),
+            commit: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            tags: BTreeSet::from(["v1.2.3".to_string()]),
+        };
+        let tagged = CargoGitSource {
+            url: provider.url.clone(),
+            rev: None,
+            tag: Some("v1.2.3".to_string()),
+            branch: None,
+        };
+        assert!(cargo_git_source_matches(&tagged, &provider));
+
+        let wrong_tag = CargoGitSource {
+            tag: Some("v1.2.4".to_string()),
+            ..tagged.clone()
+        };
+        assert!(!cargo_git_source_matches(&wrong_tag, &provider));
+
+        let branch = CargoGitSource {
+            tag: None,
+            branch: Some("main".to_string()),
+            ..tagged
+        };
+        assert!(!cargo_git_source_matches(&branch, &provider));
     }
 
     #[test]
