@@ -64,14 +64,8 @@ fn env_value(name: &str) -> Result<String> {
     })
 }
 
-fn expand_env_with(
-    raw: &str,
-    lookup: impl Fn(&str) -> Result<String> + Copy,
-) -> Result<String> {
-    fn expand_tail(
-        raw: &str,
-        lookup: impl Fn(&str) -> Result<String> + Copy,
-    ) -> Result<String> {
+fn expand_env_with(raw: &str, lookup: impl Fn(&str) -> Result<String> + Copy) -> Result<String> {
+    fn expand_tail(raw: &str, lookup: impl Fn(&str) -> Result<String> + Copy) -> Result<String> {
         let Some(dollar) = raw.find('$') else {
             return Ok(raw.to_string());
         };
@@ -182,9 +176,7 @@ pub(crate) fn resolve(
                 )
             })?;
             if !metadata.file_type().is_file() {
-                bail!(
-                    "local path override for `{package}` must contain a regular {MANIFEST_FILE}"
-                );
+                bail!("local path override for `{package}` must contain a regular {MANIFEST_FILE}");
             }
             Ok((package.clone(), canonical))
         })
