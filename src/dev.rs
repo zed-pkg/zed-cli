@@ -1786,7 +1786,7 @@ edition = "2021"
             .trim()
             .to_owned();
         let upstream_url = reqwest::Url::from_file_path(&upstream)
-            .map_err(|_| anyhow!("could not form file URL for Cargo adapter fixture"))?
+            .map_err(|_| anyhow::anyhow!("could not form file URL for Cargo adapter fixture"))?
             .to_string();
         let upstream_url_toml =
             serde_json::to_string(&upstream_url).context("quoting Cargo adapter fixture URL")?;
