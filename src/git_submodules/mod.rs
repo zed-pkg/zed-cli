@@ -738,7 +738,7 @@ mod manifest_kind_tests {
     #[cfg(unix)]
     use super::preflight_gitmodules_metadata;
     use super::{
-        paths_overlap, submodule_manifest_present, validate_gitmodules_index,
+        git_config_string, paths_overlap, submodule_manifest_present, validate_gitmodules_index,
     };
 
     #[test]
@@ -763,6 +763,20 @@ mod manifest_kind_tests {
         assert!(paths_overlap(".zed/pkg/acme/lib", ".zed/pkg"));
         assert!(!paths_overlap(".zed/pkg", "submodules/lib"));
         assert!(!paths_overlap("zed_modules", "apps/service"));
+    }
+
+    #[test]
+    fn generated_git_config_values_are_quoted_and_control_safe() {
+        assert_eq!(
+            git_config_string("ssh://git@example.com/org/repo.git", "url").unwrap(),
+            "\"ssh://git@example.com/org/repo.git\""
+        );
+        assert_eq!(
+            git_config_string("path with \"quotes\" and \\slashes", "path").unwrap(),
+            "\"path with \\\"quotes\\\" and \\\\slashes\""
+        );
+        assert!(git_config_string("bad\nvalue", "url").is_err());
+        assert!(git_config_string("", "url").is_err());
     }
 
     #[test]
