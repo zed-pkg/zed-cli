@@ -29,7 +29,7 @@ pub struct Globals {
     )]
     pub registry: String,
 
-    /// zed home directory (store, cache, credentials); defaults to ~/.zed-pkg
+    /// zed home directory (store, cache, credentials); defaults to ~/.zpkg (legacy ~/.zed-pkg is retained when it is the only existing store)
     #[arg(long, global = true, env = "ZED_PKG_HOME")]
     pub home: Option<PathBuf>,
 
