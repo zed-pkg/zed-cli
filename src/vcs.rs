@@ -107,7 +107,6 @@ pub fn verify_publish_provenance(
     Ok(tag_commit)
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
