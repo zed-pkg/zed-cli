@@ -13,7 +13,7 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use flags2env::BundledFlags2Env;
 use walkdir::{DirEntry, WalkDir};
