@@ -154,6 +154,7 @@ the legacy version route by default or the additive target-qualified route with
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
 | `zed install --cli <tool> [--cli <tool> ...]` | Resolve exact project-owned CLI runtimes into `.zed/environment.lock.toml` and copy their complete runtime roots below `.zed/tools`; built-ins are `nodejs` and `python3` |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
+| `zed workspace sync` | Reconcile manifest-authoritative VCS source composition into ordinary checkouts and generated Git-submodule projections without making native VCS metadata a second package graph |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed inspect --root ABSOLUTE_PATH [--format json]` | Fully offline, read-only manifest, lock, store, Git-submodule, mise, and Nix analysis for IDEs and automation |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
