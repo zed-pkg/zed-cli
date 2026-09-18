@@ -950,11 +950,11 @@ fn cargo_dependency_sources_by_package(
 
 fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
     let dependency_sources = cargo_dependency_sources_by_package(project)?;
-    let mut entries: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    let mut entries: BTreeMap<String, (String, Option<ZedGitProvenance>)> = BTreeMap::new();
     for path in paths {
         let Some(package) = cargo_package_name(path)? else {
             eprintln!(
-                "warning: {} has no root [package].name; emitting a Cargo paths override without a Cargo patch entry",
+                "warning: {} has no root [package].name; skipping Cargo patch generation for this installed Rust package",
                 path.display()
             );
             continue;
