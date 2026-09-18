@@ -254,6 +254,12 @@ pub enum EnvironmentManagerArg {
     Asdf,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum WorkspaceCmd {
+    /// Materialize VCS sources declared by [workspace.sources] and project Git submodules.
+    Sync,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum EnvironmentExportManagerArg {
     /// Export deterministic mise TOML from a schema-v2 plan.
@@ -400,6 +406,11 @@ pub enum Cmd {
         /// mismatch is almost always a mistake worth failing on
         #[arg(long, env = "ZED_PKG_ALLOW_ECOSYSTEM_MISMATCH")]
         allow_ecosystem_mismatch: bool,
+    },
+    /// Synchronize manifest-authoritative workspace source repositories.
+    Workspace {
+        #[command(subcommand)]
+        cmd: WorkspaceCmd,
     },
     /// Remove installed dependency trees while retaining .zpkg.toml and
     /// .zpkg.lock so `zed install --frozen` can restore them exactly.
