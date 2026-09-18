@@ -88,7 +88,9 @@ fn every_repository_toml_file_parses() {
 fn every_root_cli_contract_passes_the_bundled_flags2env_audit() {
     let contracts = root_cli_contracts();
     assert!(
-        contracts.iter().any(|path| path.ends_with(".cli-flags.toml")),
+        contracts
+            .iter()
+            .any(|path| path.ends_with(".cli-flags.toml")),
         "repository root must contain .cli-flags.toml"
     );
     assert!(
