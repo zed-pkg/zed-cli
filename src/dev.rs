@@ -1736,6 +1736,69 @@ path = "zed_modules/zed-pkg/zed-interfaces"
     }
 
     #[test]
+    fn cargo_adapter_resolves_git_dependency_offline_from_zed_patch() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let root = fs::canonicalize(temp.path())?;
+        let dependency = root.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(dependency.join("src"))?;
+        fs::create_dir_all(root.join("src"))?;
+        fs::create_dir_all(root.join(".zed"))?;
+
+        fs::write(
+            root.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { version = "=0.1.0", git = "https://github.invalid/acme/private-lib", rev = "0123456789012345678901234567890123456789" }
+"#,
+        )?;
+        fs::write(root.join("src/lib.rs"), "pub fn consumer() {}\n")?;
+        fs::write(
+            dependency.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        fs::write(dependency.join("src/lib.rs"), "pub fn private_lib() {}\n")?;
+        fs::write(
+            root.join(".zed/cargo-paths.toml"),
+            r#"paths = ["zed_modules/acme/private-lib"]
+
+[patch.crates-io.private-lib]
+path = "zed_modules/acme/private-lib"
+
+[patch."https://github.invalid/acme/private-lib".private-lib]
+path = "zed_modules/acme/private-lib"
+"#,
+        )?;
+
+        prepare_cargo_adapter(&root)?;
+
+        let cargo_home = root.join(".zed/dev/cargo/home");
+        let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+            .current_dir(&root)
+            .env("CARGO_HOME", &cargo_home)
+            .arg("metadata")
+            .arg("--offline")
+            .arg("--format-version")
+            .arg("1")
+            .arg("--no-deps")
+            .status()
+            .context("running Cargo offline against the Zed Git-source patch")?;
+        if !status.success() {
+            bail!(
+                "Cargo attempted or required the unreachable Git source instead of the Zed patch"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn nested_invocations_select_the_owning_manifest() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("repo");
