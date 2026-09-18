@@ -880,8 +880,7 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                         ));
                     }
 
-                    let mut source_patches: BTreeMap<&str, Vec<&CargoPatchEntry>> =
-                        BTreeMap::new();
+                    let mut source_patches: BTreeMap<&str, Vec<&CargoPatchEntry>> = BTreeMap::new();
                     for patch in &patches {
                         for source in &patch.git_sources {
                             source_patches
@@ -891,10 +890,7 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                         }
                     }
                     for (source, source_entries) in source_patches {
-                        doc.push_str(&format!(
-                            "\n[patch.{}]\n",
-                            toml_basic_string(source)?
-                        ));
+                        doc.push_str(&format!("\n[patch.{}]\n", toml_basic_string(source)?));
                         for patch in source_entries {
                             doc.push_str(&format!(
                                 "{} = {{ path = {} }}\n",
