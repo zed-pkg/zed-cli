@@ -1767,12 +1767,7 @@ edition = "2021"
         fs::write(dependency.join("src/lib.rs"), "pub fn private_lib() {}\n")?;
         fs::write(
             root.join(".zed/cargo-paths.toml"),
-            r#"paths = ["zed_modules/acme/private-lib"]
-
-[patch.crates-io.private-lib]
-path = "zed_modules/acme/private-lib"
-
-[patch."https://github.invalid/acme/private-lib".private-lib]
+            r#"[patch."https://github.invalid/acme/private-lib".private-lib]
 path = "zed_modules/acme/private-lib"
 "#,
         )?;
