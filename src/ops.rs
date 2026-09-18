@@ -880,18 +880,16 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                         ));
                     }
 
-                    let mut source_patches: BTreeMap<&str, Vec<&CargoPatchEntry>> = BTreeMap::new();
-                    for patch in &patches {
-                        for source in &patch.git_sources {
-                            source_patches
-                                .entry(source.as_str())
-                                .or_default()
-                                .push(patch);
-                        }
-                    }
-                    for (source, source_entries) in source_patches {
+                    let source_urls: BTreeSet<&str> = patches
+                        .iter()
+                        .flat_map(|patch| patch.git_sources.iter().map(String::as_str))
+                        .collect();
+                    for source in source_urls {
                         doc.push_str(&format!("\n[patch.{}]\n", toml_basic_string(source)?));
-                        for patch in source_entries {
+                        for patch in patches
+                            .iter()
+                            .filter(|patch| patch.git_sources.contains(source))
+                        {
                             doc.push_str(&format!(
                                 "{} = {{ path = {} }}\n",
                                 toml_basic_string(&patch.package)?,
@@ -3993,11 +3991,11 @@ edition = "2021"
     }
 
     #[test]
-    fn rust_cargo_config_patches_matching_git_source_to_zed_path() {
-        let temp = tempfile::tempdir().unwrap();
+    fn rust_cargo_config_patches_matching_git_source_to_zed_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
         let project = temp.path().join("consumer");
         let package = project.join("zed_modules/canonical-cloud/canonical-lib-core");
-        fs::create_dir_all(&package).unwrap();
+        fs::create_dir_all(&package)?;
         fs::write(
             project.join("Cargo.toml"),
             r#"[package]
@@ -4008,8 +4006,7 @@ edition = "2021"
 [dependencies]
 domain = { package = "canonical-lib", version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
 "#,
-        )
-        .unwrap();
+        )?;
         fs::write(
             package.join("Cargo.toml"),
             r#"[package]
@@ -4017,14 +4014,13 @@ name = "canonical-lib"
 version = "0.1.0"
 edition = "2021"
 "#,
-        )
-        .unwrap();
+        )?;
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
 
-        write_toolchain_wiring(&project, &roots).unwrap();
+        write_toolchain_wiring(&project, &roots)?;
 
-        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml")).unwrap();
-        let parsed: toml::Value = toml::from_str(&generated).unwrap();
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        let parsed: toml::Value = toml::from_str(&generated)?;
         assert_eq!(
             parsed["patch"]["https://github.com/canonical-cloud/canonical-lib-core"]
                 ["canonical-lib"]["path"]
@@ -4033,6 +4029,7 @@ edition = "2021"
         );
         assert!(!generated.contains("x-access-token"));
         assert!(!generated.contains("d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"));
+        Ok(())
     }
 
     #[test]
