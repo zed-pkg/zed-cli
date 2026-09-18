@@ -244,6 +244,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             WorkspaceCmd::Sync => {
                 let project = source_composition::find_root(&cwd)?
                     .context("no [interop.source-composition.sources] declaration found at or above the current directory")?;
+                anyhow::ensure!(
+                    !git_submodules && !submodules::manifest_consumes_gitmodules(&project)?,
+                    "manifest-authoritative source composition cannot run with legacy Git-submodule consumption; import/remove the legacy authority first"
+                );
                 zed_cli::project_lock::with_lock(
                     &project,
                     "synchronize manifest-authoritative VCS sources",
@@ -303,6 +307,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let source_project = source_composition::find_root(&cwd)?;
             let sync_git_submodules =
                 git_submodules || submodules::manifest_consumes_gitmodules(&cwd)?;
+            anyhow::ensure!(
+                source_project.is_none() || !sync_git_submodules,
+                "manifest-authoritative source composition cannot coexist with legacy Git-submodule consumption; import/remove the legacy authority first"
+            );
             let permissions = ops::InstallPermissions {
                 allow_build,
                 allow_native_deps,
