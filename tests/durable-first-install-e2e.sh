@@ -92,7 +92,7 @@ grep -F 'org = "zed-local"' "$durable/.zpkg.toml"
 grep -F 'zed-generated-consumer' "$durable/.zpkg.toml"
 grep -F '"zed-pkg/docker-node-lib" = "^1"' "$durable/.zpkg.toml"
 grep -F 'adapter = "node"' "$durable/.zpkg.toml"
-test -d "$durable/zed_modules/zed-pkg/docker-node-lib"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
 test -d "$durable/node_modules/@zed-pkg/docker-node-lib"
 
 (
@@ -104,7 +104,7 @@ test -d "$durable/node_modules/@zed-pkg/docker-node-lib"
 )
 grep -F '"zed-pkg/docker-node-lib" = "^1"' "$durable/.zpkg.toml"
 grep -F '"zed-pkg/docker-node-lib-two" = "^1"' "$durable/.zpkg.toml"
-test -d "$durable/zed_modules/zed-pkg/docker-node-lib-two"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib-two"
 test -d "$durable/node_modules/@zed-pkg/docker-node-lib-two"
 
 # A generated consumer cannot be published accidentally, even when normal VCS
@@ -174,8 +174,8 @@ test -f "$concurrent/.zpkg.toml"
 test -f "$concurrent/.zpkg.lock"
 grep -F '"zed-pkg/docker-node-lib" = "^1"' "$concurrent/.zpkg.toml"
 grep -F '"zed-pkg/docker-node-lib-two" = "^1"' "$concurrent/.zpkg.toml"
-test -d "$concurrent/zed_modules/zed-pkg/docker-node-lib"
-test -d "$concurrent/zed_modules/zed-pkg/docker-node-lib-two"
+test -d "$concurrent/.zed/pkg/zed-pkg/docker-node-lib"
+test -d "$concurrent/.zed/pkg/zed-pkg/docker-node-lib-two"
 
 # Resolution/install failures remove only the exact generated manifest and do
 # not leave a lockfile or materialized dependency tree behind.
@@ -193,7 +193,7 @@ if (
 fi
 test ! -e "$failed_root/.zpkg.toml"
 test ! -e "$failed_root/.zpkg.lock"
-test ! -e "$failed_root/zed_modules"
+test ! -e "$failed_root/.zed/pkg"
 test ! -e "$failed_root/node_modules/@zed-pkg/docker-node-lib"
 
 # The canonical flag and environment variable preserve the established
@@ -268,6 +268,6 @@ grep -F 'lockfile cannot identify which packages were direct dependencies' \
 )
 test ! -e "$restore/.zpkg.toml"
 cmp "$ephemeral/.zpkg.lock" "$restore/.zpkg.lock"
-test -d "$restore/zed_modules/zed-pkg/docker-node-lib"
+test -d "$restore/.zed/pkg/zed-pkg/docker-node-lib"
 
 printf 'durable first-install E2E passed: %s\n' "$root"
