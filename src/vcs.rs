@@ -106,10 +106,12 @@ pub fn verify_publish_provenance(
     }
     Ok(tag_commit)
 }
- 
+
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::hg_tag_commit;
 
     #[test]
@@ -117,6 +119,4 @@ mod tests {
         let error = hg_tag_commit(Path::new("."), "bad\ntag");
         assert!(error.is_err());
     }
-
-    use std::path::Path;
 }
