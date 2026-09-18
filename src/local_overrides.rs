@@ -116,6 +116,9 @@ pub(crate) fn expand_env(raw: &str) -> Result<String> {
         out.push_str(&env_value(name)?);
         index = end;
     }
+    if out.chars().any(char::is_control) {
+        bail!("expanded local path override contains control characters");
+    }
     Ok(out)
 }
 
@@ -132,6 +135,7 @@ pub(crate) fn resolve(
         .with_context(|| format!("canonicalizing project {}", project.display()))?;
     let modules_path = canonical_project.join(modules_dir);
     let modules = fs::canonicalize(&modules_path).unwrap_or(modules_path);
+    let staging = canonical_project.join(crate::transaction::STAGING_DIR);
     let mut resolved = BTreeMap::new();
 
     for (package, configured) in raw {
@@ -159,6 +163,12 @@ pub(crate) fn resolve(
             bail!(
                 "local path override for `{package}` overlaps Zed package install directory {}",
                 modules.display()
+            );
+        }
+        if canonical.starts_with(&staging) {
+            bail!(
+                "local path override for `{package}` points into Zed transaction staging {}",
+                staging.display()
             );
         }
         let manifest = canonical.join(MANIFEST_FILE);
