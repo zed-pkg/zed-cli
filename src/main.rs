@@ -1,5 +1,7 @@
 use std::ffi::{OsStr, OsString};
 
+use anyhow::Context;
+
 use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
