@@ -116,7 +116,9 @@ fn current_lock_entries(
 ) -> Result<Vec<GitSubmoduleLock>> {
     let members = collect_workspace_members(project, manifest)?;
     let active = active_workspace_packages(manifest, &members);
-    let configured: BTreeMap<String, SubmoduleConfig> = configured_submodules(project)?
+    let configured_modules = configured_submodules(project)?;
+    super::validate_submodule_install_layout(manifest, &configured_modules)?;
+    let configured: BTreeMap<String, SubmoduleConfig> = configured_modules
         .into_iter()
         .map(|module| (module.path.clone(), module))
         .collect();
@@ -136,7 +138,10 @@ fn current_lock_entries(
         if module.is_none() && prior.is_none() {
             continue;
         }
-        if module.is_some() && !verified_gitmodules {
+        if module.is_some()
+            && !verified_gitmodules
+            && !super::is_generated_gitmodules_projection(project)?
+        {
             verify_gitmodules_committed(project)?;
             verified_gitmodules = true;
         }
@@ -243,15 +248,22 @@ fn build_lock_entry(
     previous: Option<&GitSubmoduleLock>,
 ) -> Result<GitSubmoduleLock> {
     let commit = verify_checkout(project, &member.path, &member.root)?;
-    // The committed `.gitmodules` declaration is the reproducible transport
-    // authority. A checkout's local `origin` can legitimately be rewritten by
-    // mirrors or developer tooling, so use it only when Git metadata has been
-    // intentionally removed after takeover and the lock has no prior URL.
-    let remote = module
-        .map(|module| module.url.clone())
-        .or_else(|| previous.map(|entry| entry.url.clone()))
-        .or_else(|| origin_url(&member.root))
-        .context("adopted Git submodule has no transport URL")?;
+    // Authored .gitmodules metadata is migration input. After takeover, Zed may
+    // regenerate .gitmodules as a compatibility projection from the lock, so the
+    // prior lock entry remains the exact transport authority for generated
+    // projections. A checkout's local origin is only a final fallback.
+    let generated_projection = super::is_generated_gitmodules_projection(project)?;
+    let remote = if generated_projection {
+        previous
+            .map(|entry| entry.url.clone())
+            .or_else(|| module.map(|module| module.url.clone()))
+    } else {
+        module
+            .map(|module| module.url.clone())
+            .or_else(|| previous.map(|entry| entry.url.clone()))
+    }
+    .or_else(|| origin_url(&member.root))
+    .context("adopted Git submodule has no transport URL")?;
     let name = module
         .map(|module| module.name.clone())
         .or_else(|| previous.map(|entry| entry.name.clone()))
