@@ -110,6 +110,9 @@ url = "{repo_url}"
 [dependencies]
 # "acme/http-kit" = "^1"
 
+[install]
+dir = ".zed/pkg"
+
 [publish]
 # Extra globs to strip beyond the defaults (tests, CI, .github, READMEs):
 exclude = []
