@@ -147,16 +147,28 @@ pub(crate) fn is_generated_gitmodules_projection(project: &Path) -> Result<bool>
 }
 
 fn ensure_gitmodules_projection(project: &Path) -> Result<bool> {
-    if project.join(".gitmodules").exists() {
-        return Ok(false);
+    let path = project.join(".gitmodules");
+    match fs::symlink_metadata(&path) {
+        Ok(_) => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("inspecting {}", path.display()));
+        }
     }
+
     let entries = lock::read_lock_extensions(project)?;
     if entries.is_empty() {
         return Ok(false);
     }
     let rendered = render_gitmodules_projection(&entries)?;
-    fs::write(project.join(".gitmodules"), rendered)
-        .with_context(|| format!("writing generated .gitmodules in {}", project.display()))?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .with_context(|| format!("creating generated {}", path.display()))?;
+    use std::io::Write as _;
+    file.write_all(rendered.as_bytes())
+        .with_context(|| format!("writing generated {}", path.display()))?;
     eprintln!(
         "generated .gitmodules compatibility projection from Zed lock metadata in {}",
         project.display()
