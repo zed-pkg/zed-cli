@@ -919,9 +919,8 @@ pub(crate) fn workspace_members(project: &Path) -> Result<BTreeMap<String, PathB
     Ok(members)
 }
 
-pub fn sync(project: &Path) -> Result<SyncReport> {
-    let sources = resolve(project)?;
-    let git_submodules = sync_git_submodules(project, &sources)?;
+fn sync_sources(project: &Path, sources: &[ResolvedSource]) -> Result<SyncReport> {
+    let git_submodules = sync_git_submodules(project, sources)?;
     let mut checkouts = 0;
     for source in sources
         .iter()
@@ -937,8 +936,20 @@ pub fn sync(project: &Path) -> Result<SyncReport> {
     })
 }
 
-pub fn sync_frozen(project: &Path) -> Result<SyncReport> {
+pub fn sync(project: &Path) -> Result<SyncReport> {
     let sources = resolve(project)?;
+    sync_sources(project, &sources)
+}
+
+pub fn sync_for_install(project: &Path, frozen: bool) -> Result<SyncReport> {
+    let sources: Vec<_> = resolve(project)?
+        .into_iter()
+        .filter(|source| source.role == "workspace")
+        .collect();
+    if !frozen {
+        return sync_sources(project, &sources);
+    }
+
     let checkout_sources: Vec<_> = sources
         .iter()
         .filter(|source| source.projection == Projection::Checkout)
@@ -946,7 +957,7 @@ pub fn sync_frozen(project: &Path) -> Result<SyncReport> {
         .collect();
     if !checkout_sources.is_empty() {
         bail!(
-            "--frozen source composition does not yet have an immutable workspace-source lock for ordinary VCS checkouts ({}); use Git-submodule projections or run a reviewed non-frozen `zed workspace sync`",
+            "--frozen source composition does not yet have an immutable workspace-source lock for ordinary VCS workspace checkouts ({}); use Git-submodule projections or run a reviewed non-frozen `zed workspace sync`",
             checkout_sources.join(", ")
         );
     }
@@ -1142,7 +1153,9 @@ url = "https://example.invalid/hg/docs"
 role = "inventory""#,
             ),
         )?;
-        let error = super::sync_frozen(project.path()).unwrap_err().to_string();
+        let error = super::sync_for_install(project.path(), true)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("workspace-source lock"), "{error}");
         Ok(())
     }
