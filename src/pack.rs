@@ -568,7 +568,10 @@ url = "https://github.com/acme/superproject"
             root.path(),
             &["submodule", "deinit", "-f", "--", "vendor/child"],
         );
-        let error = pack_all(root.path(), &manifest, None).unwrap_err().to_string();
+        let error = match pack_all(root.path(), &manifest, None) {
+            Ok(_) => panic!("packing an included deinitialized submodule unexpectedly succeeded"),
+            Err(error) => error.to_string(),
+        };
         assert!(error.contains("not initialized"), "{error}");
 
         let excluded = Manifest::parse(
