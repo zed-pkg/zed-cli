@@ -836,6 +836,31 @@ fn cargo_git_source_matches(source: &CargoGitSource, provider: &ZedGitProvenance
     true
 }
 
+fn matching_cargo_git_source_urls(
+    declared: BTreeSet<CargoGitSource>,
+    provider: Option<&ZedGitProvenance>,
+) -> BTreeSet<String> {
+    let Some(provider) = provider else {
+        return BTreeSet::new();
+    };
+    let mut sources_by_url: BTreeMap<String, Vec<CargoGitSource>> = BTreeMap::new();
+    for source in declared {
+        sources_by_url
+            .entry(source.url.clone())
+            .or_default()
+            .push(source);
+    }
+    sources_by_url
+        .into_iter()
+        .filter_map(|(url, declarations)| {
+            declarations
+                .iter()
+                .all(|source| cargo_git_source_matches(source, provider))
+                .then_some(url)
+        })
+        .collect()
+}
+
 fn normalized_git_repository_url(raw: &str) -> Option<String> {
     let raw = raw.trim();
     if raw.is_empty() || raw.bytes().any(|byte| byte.is_ascii_control()) {
@@ -976,24 +1001,10 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
         .into_iter()
         .map(|(package, (config_path, provenance))| {
             let declared_sources = dependency_sources.get(&package).cloned().unwrap_or_default();
-            let mut sources_by_url: BTreeMap<String, Vec<CargoGitSource>> = BTreeMap::new();
-            for source in declared_sources.git_sources {
-                sources_by_url
-                    .entry(source.url.clone())
-                    .or_default()
-                    .push(source);
-            }
-            let matching_sources = sources_by_url
-                .into_iter()
-                .filter_map(|(url, declarations)| {
-                    provenance.as_ref().and_then(|provider| {
-                        declarations
-                            .iter()
-                            .all(|source| cargo_git_source_matches(source, provider))
-                            .then_some(url)
-                    })
-                })
-                .collect();
+            let matching_sources = matching_cargo_git_source_urls(
+                declared_sources.git_sources,
+                provenance.as_ref(),
+            );
             CargoPatchEntry {
                 crates_io: declared_sources.crates_io,
                 git_sources: matching_sources,
@@ -4412,6 +4423,31 @@ url = "https://github.com/canonical-cloud/canonical-lib-core"
             ..exact
         };
         assert!(!cargo_git_source_matches(&abbreviated, &provider));
+    }
+
+    #[test]
+    fn cargo_git_patch_requires_all_same_url_selectors_to_agree() {
+        let url = "https://github.com/acme/tool".to_string();
+        let provider = ZedGitProvenance {
+            url: url.clone(),
+            commit: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+            tags: BTreeSet::new(),
+        };
+        let declared = BTreeSet::from([
+            CargoGitSource {
+                url: url.clone(),
+                rev: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+                tag: None,
+                branch: None,
+            },
+            CargoGitSource {
+                url: url.clone(),
+                rev: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
+                tag: None,
+                branch: None,
+            },
+        ]);
+        assert!(matching_cargo_git_source_urls(declared, Some(&provider)).is_empty());
     }
 
     #[test]
