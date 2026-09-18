@@ -1,0 +1,66 @@
+name: regenerate #442 interfaces lock
+
+on:
+  push:
+    branches:
+      - feat/dependent-notification-release-intent-20260916
+    paths:
+      - .github/workflows/regen-442-interfaces-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: feat/dependent-notification-release-intent-20260916
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+      - name: Reconcile merged interfaces authority
+        shell: bash
+        env:
+          INTERFACES_REV: ecdd91b0c956cee56b7a577f940f88ed3316e63b
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          new = "ecdd91b0c956cee56b7a577f940f88ed3316e63b"
+          replacements = {
+              Path("Cargo.toml"): {
+                  "b25572c3c4b9043d804d26ca69e139d3efefc933": new,
+              },
+              Path("scripts/validate-zed-package-graph.sh"): {
+                  "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c": new,
+              },
+          }
+          for path, mapping in replacements.items():
+              text = path.read_text(encoding="utf-8")
+              original = text
+              for old, target in mapping.items():
+                  if old not in text:
+                      raise SystemExit(f"expected authority {old} not found in {path}")
+                  text = text.replace(old, target)
+              if text == original:
+                  raise SystemExit(f"no authority update made in {path}")
+              path.write_text(text, encoding="utf-8")
+          PY
+          cargo update -p zed-interfaces
+          grep -Fq "git+https://github.com/zed-pkg/zed-interfaces.git?rev=${INTERFACES_REV}#${INTERFACES_REV}" Cargo.lock
+          bash scripts/validate-zed-package-graph.sh
+      - name: Commit resolver output and remove helper
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm .github/workflows/regen-442-interfaces-lock.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock scripts/validate-zed-package-graph.sh .github/workflows/regen-442-interfaces-lock.yml
+          git diff --cached --check
+          git commit -m "fix: reconcile merged interfaces authority"
+          git push origin HEAD:feat/dependent-notification-release-intent-20260916
