@@ -518,6 +518,7 @@ fn generated_manifest(
         signing: Default::default(),
         mirrors: Vec::new(),
     };
+    manifest.install.dir = Some(".zed/pkg".to_string());
     manifest.install.target = target.map(str::to_owned);
     manifest.install.adapter = adapter_name(adapter).map(str::to_owned);
     manifest
@@ -788,6 +789,7 @@ mod tests {
         assert_eq!(first.package.name, "my-consumer-app");
         assert!(is_generated_consumer(&first));
         assert!(is_non_publishable_generated(&first));
+        assert_eq!(first.install.dir.as_deref(), Some(".zed/pkg"));
         assert_eq!(first.install.target.as_deref(), Some("node"));
         assert_eq!(first.install.adapter.as_deref(), Some("node"));
         assert_eq!(
