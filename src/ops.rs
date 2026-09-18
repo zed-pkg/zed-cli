@@ -4117,6 +4117,18 @@ go 1.24.1 // minimum toolchain
         let package = project.join("zed_modules/acme/tool");
         fs::create_dir_all(&package).unwrap();
         fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tool-crate = "1.2.3"
+"#,
+        )
+        .unwrap();
+        fs::write(
             package.join("Cargo.toml"),
             r#"[package]
 name = "tool-crate"
@@ -4289,7 +4301,7 @@ url = "https://github.com/acme/lookalike"
             !generated.contains("[patch.\"https://github.com/canonical-cloud/canonical-lib-core\"]"),
             "{generated}"
         );
-        assert!(generated.contains("[patch.crates-io]"), "{generated}");
+        assert!(!generated.contains("[patch.crates-io]"), "{generated}");
         Ok(())
     }
 
