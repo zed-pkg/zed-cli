@@ -13,7 +13,7 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use flags2env::BundledFlags2Env;
 use walkdir::{DirEntry, WalkDir};
@@ -1790,10 +1790,9 @@ path = "zed_modules/acme/private-lib"
             .arg("--no-deps")
             .status()
             .context("running Cargo offline against the Zed Git-source patch")?;
-        ensure!(
-            status.success(),
-            "Cargo attempted or required the unreachable Git source instead of the Zed patch"
-        );
+        if !status.success() {
+            bail!("Cargo attempted or required the unreachable Git source instead of the Zed patch");
+        }
         Ok(())
     }
 
