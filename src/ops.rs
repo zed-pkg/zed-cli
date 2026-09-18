@@ -663,6 +663,13 @@ fn required_go_work_version(project: &Path, paths: &[PathBuf]) -> String {
 struct CargoPatchEntry {
     package: String,
     config_path: String,
+    crates_io: bool,
+    git_sources: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct CargoDependencySources {
+    crates_io: bool,
     git_sources: BTreeSet<String>,
 }
 
@@ -733,32 +740,47 @@ fn normalized_git_repository_url(raw: &str) -> Option<String> {
     Some(normalized)
 }
 
-fn collect_cargo_git_sources(
+fn collect_cargo_dependency_sources(
     dependencies: Option<&toml::value::Table>,
-    sources: &mut BTreeMap<String, BTreeSet<String>>,
+    sources: &mut BTreeMap<String, CargoDependencySources>,
 ) {
     let Some(dependencies) = dependencies else {
         return;
     };
     for (dependency_name, specification) in dependencies {
-        let Some(specification) = specification.as_table() else {
-            continue;
-        };
-        let Some(git) = specification.get("git").and_then(toml::Value::as_str) else {
-            continue;
-        };
-        let package = specification
-            .get("package")
-            .and_then(toml::Value::as_str)
-            .unwrap_or(dependency_name);
-        sources
-            .entry(package.to_owned())
-            .or_default()
-            .insert(git.to_owned());
+        match specification {
+            toml::Value::String(_) => {
+                sources.entry(dependency_name.to_owned()).or_default().crates_io = true;
+            }
+            toml::Value::Table(specification) => {
+                let package = specification
+                    .get("package")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or(dependency_name);
+                if let Some(git) = specification.get("git").and_then(toml::Value::as_str) {
+                    sources
+                        .entry(package.to_owned())
+                        .or_default()
+                        .git_sources
+                        .insert(git.to_owned());
+                } else if specification.get("path").is_none()
+                    && specification.get("registry").is_none()
+                    && !specification
+                        .get("workspace")
+                        .and_then(toml::Value::as_bool)
+                        .unwrap_or(false)
+                {
+                    sources.entry(package.to_owned()).or_default().crates_io = true;
+                }
+            }
+            _ => {}
+        }
     }
 }
 
-fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTreeSet<String>>> {
+fn cargo_dependency_sources_by_package(
+    project: &Path,
+) -> Result<BTreeMap<String, CargoDependencySources>> {
     let manifest_path = project.join("Cargo.toml");
     if !manifest_path.is_file() {
         return Ok(BTreeMap::new());
@@ -770,12 +792,12 @@ fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTree
     let mut sources = BTreeMap::new();
 
     for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        collect_cargo_git_sources(
+        collect_cargo_dependency_sources(
             document.get(section).and_then(toml::Value::as_table),
             &mut sources,
         );
     }
-    collect_cargo_git_sources(
+    collect_cargo_dependency_sources(
         document
             .get("workspace")
             .and_then(toml::Value::as_table)
@@ -786,7 +808,7 @@ fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTree
     if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
         for target in targets.values().filter_map(toml::Value::as_table) {
             for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                collect_cargo_git_sources(
+                collect_cargo_dependency_sources(
                     target.get(section).and_then(toml::Value::as_table),
                     &mut sources,
                 );
@@ -797,7 +819,7 @@ fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTree
 }
 
 fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
-    let git_sources = cargo_git_sources_by_package(project)?;
+    let dependency_sources = cargo_dependency_sources_by_package(project)?;
     let mut entries: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     for path in paths {
         let Some(package) = cargo_package_name(path)? else {
@@ -826,8 +848,9 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
             let provider = repository_url
                 .as_deref()
                 .and_then(normalized_git_repository_url);
-            let candidate_sources = git_sources.get(&package).cloned().unwrap_or_default();
-            let matching_sources = candidate_sources
+            let declared_sources = dependency_sources.get(&package).cloned().unwrap_or_default();
+            let matching_sources = declared_sources
+                .git_sources
                 .into_iter()
                 .filter(|source| {
                     provider.as_ref().is_some_and(|provider| {
@@ -836,6 +859,7 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
                 })
                 .collect();
             CargoPatchEntry {
+                crates_io: declared_sources.crates_io,
                 git_sources: matching_sources,
                 package,
                 config_path,
@@ -932,16 +956,20 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                     doc.push_str(&format!("    {},\n", toml_basic_string(path)?));
                 }
                 doc.push_str("]\n");
-                if !patches.is_empty() {
+                let crates_io_patches: Vec<&CargoPatchEntry> =
+                    patches.iter().filter(|patch| patch.crates_io).collect();
+                if !crates_io_patches.is_empty() {
                     doc.push_str("\n[patch.crates-io]\n");
-                    for patch in &patches {
+                    for patch in crates_io_patches {
                         doc.push_str(&format!(
                             "{} = {{ path = {} }}\n",
                             toml_basic_string(&patch.package)?,
                             toml_basic_string(&patch.config_path)?,
                         ));
                     }
+                }
 
+                if !patches.is_empty() {
                     let source_urls: BTreeSet<&str> = patches
                         .iter()
                         .flat_map(|patch| patch.git_sources.iter().map(String::as_str))
