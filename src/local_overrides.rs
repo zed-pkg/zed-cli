@@ -43,7 +43,7 @@ fn validate_raw(package: &str, raw: &str) -> Result<()> {
     }
     if raw.contains("$(") || raw.contains('`') {
         bail!(
-            "local path override for `{package}` permits only $VAR and ${VAR}; shell command substitution is forbidden"
+            "local path override for `{package}` permits only $VAR and ${{VAR}}; shell command substitution is forbidden"
         );
     }
     Ok(())
@@ -63,9 +63,10 @@ fn env_value(name: &str) -> Result<String> {
     })
 }
 
-/// Expand only $VAR and ${VAR}. This is deliberately not shell expansion:
-/// no command substitution, tilde expansion, globbing, or word splitting.
-pub(crate) fn expand_env(raw: &str) -> Result<String> {
+fn expand_env_with(
+    raw: &str,
+    lookup: impl Fn(&str) -> Result<String>,
+) -> Result<String> {
     validate_raw("<path>", raw)?;
     let bytes = raw.as_bytes();
     let mut out = String::with_capacity(raw.len());
@@ -88,7 +89,7 @@ pub(crate) fn expand_env(raw: &str) -> Result<String> {
             let name_start = index + 2;
             let Some(close_offset) = bytes[name_start..].iter().position(|byte| *byte == b'}')
             else {
-                bail!("local path override has an unclosed `${...}` reference");
+                bail!("local path override has an unclosed `${{...}}` reference");
             };
             let close = name_start + close_offset;
             let name = &raw[name_start..close];
@@ -99,7 +100,7 @@ pub(crate) fn expand_env(raw: &str) -> Result<String> {
             {
                 bail!("local path override has invalid environment variable name `{name}`");
             }
-            out.push_str(&env_value(name)?);
+            out.push_str(&lookup(name)?);
             index = close + 1;
             continue;
         }
@@ -113,13 +114,19 @@ pub(crate) fn expand_env(raw: &str) -> Result<String> {
             end += 1;
         }
         let name = &raw[name_start..end];
-        out.push_str(&env_value(name)?);
+        out.push_str(&lookup(name)?);
         index = end;
     }
     if out.chars().any(char::is_control) {
         bail!("expanded local path override contains control characters");
     }
     Ok(out)
+}
+
+/// Expand only $VAR and ${VAR}. This is deliberately not shell expansion:
+/// no command substitution, tilde expansion, globbing, or word splitting.
+pub(crate) fn expand_env(raw: &str) -> Result<String> {
+    expand_env_with(raw, env_value)
 }
 
 fn paths_overlap(left: &Path, right: &Path) -> bool {
@@ -188,17 +195,25 @@ pub(crate) fn resolve(
 
 #[cfg(test)]
 mod tests {
-    use super::expand_env;
+    use anyhow::{Result, bail};
+
+    use super::expand_env_with;
+
+    fn test_lookup(name: &str) -> Result<String> {
+        match name {
+            "ZED_OVERRIDE_ROOT" => Ok("/tmp/zed-root".to_string()),
+            other => bail!("unexpected variable {other}"),
+        }
+    }
 
     #[test]
     fn expands_only_named_environment_variables() {
-        unsafe { std::env::set_var("ZED_OVERRIDE_ROOT", "/tmp/zed-root") };
         assert_eq!(
-            expand_env("${ZED_OVERRIDE_ROOT}/pkg").unwrap(),
+            expand_env_with("${ZED_OVERRIDE_ROOT}/pkg", test_lookup).unwrap(),
             "/tmp/zed-root/pkg"
         );
         assert_eq!(
-            expand_env("$ZED_OVERRIDE_ROOT/pkg").unwrap(),
+            expand_env_with("$ZED_OVERRIDE_ROOT/pkg", test_lookup).unwrap(),
             "/tmp/zed-root/pkg"
         );
     }
@@ -212,7 +227,7 @@ mod tests {
             "${HOME",
             "$9BAD/path",
         ] {
-            assert!(expand_env(value).is_err(), "{value}");
+            assert!(expand_env_with(value, test_lookup).is_err(), "{value}");
         }
     }
 }
