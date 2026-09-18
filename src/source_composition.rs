@@ -1150,13 +1150,34 @@ role = "inventory""#,
                 r#"[interop.source-composition.sources.docs]
 vcs = "hg"
 url = "https://example.invalid/hg/docs"
-role = "inventory""#,
+role = "workspace"
+package = "acme/docs""#,
             ),
         )?;
         let error = super::sync_for_install(project.path(), true)
             .unwrap_err()
             .to_string();
         assert!(error.contains("workspace-source lock"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn install_time_sync_does_not_clone_inventory_sources() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        fs::write(
+            project.path().join(".zpkg.toml"),
+            manifest(
+                r#"[interop.source-composition.sources.docs]
+vcs = "hg"
+url = "https://example.invalid/hg/docs"
+role = "inventory""#,
+            ),
+        )?;
+        let report = super::sync_for_install(project.path(), false)?;
+        assert_eq!(report.sources, 0);
+        assert_eq!(report.git_submodules, 0);
+        assert_eq!(report.checkouts, 0);
+        assert!(!project.path().join(".zed/vcs/docs").exists());
         Ok(())
     }
 
