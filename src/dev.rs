@@ -1736,24 +1736,66 @@ path = "zed_modules/zed-pkg/zed-interfaces"
     }
 
     #[test]
-    fn cargo_adapter_resolves_git_dependency_offline_from_zed_patch() -> Result<()> {
+    fn cargo_adapter_resolves_git_dependency_from_zed_patch_without_remote_network() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let root = fs::canonicalize(temp.path())?;
+        let upstream = root.join("upstream/private-lib");
         let dependency = root.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(upstream.join("src"))?;
         fs::create_dir_all(dependency.join("src"))?;
         fs::create_dir_all(root.join("src"))?;
         fs::create_dir_all(root.join(".zed"))?;
 
         fs::write(
-            root.join("Cargo.toml"),
+            upstream.join("Cargo.toml"),
             r#"[package]
-name = "consumer"
+name = "private-lib"
 version = "0.1.0"
 edition = "2021"
-
-[dependencies]
-private-lib = { version = "=0.1.0", git = "https://github.invalid/acme/private-lib", rev = "0123456789012345678901234567890123456789" }
 "#,
+        )?;
+        fs::write(upstream.join("src/lib.rs"), "pub fn upstream_private_lib() {}\n")?;
+        for args in [
+            ["init", "-q"].as_slice(),
+            ["config", "user.name", "zed-test"].as_slice(),
+            ["config", "user.email", "zed-test@example.invalid"].as_slice(),
+            ["add", "."].as_slice(),
+            ["commit", "-q", "-m", "fixture"].as_slice(),
+        ] {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&upstream)
+                .args(args)
+                .status()
+                .with_context(|| format!("running git {}", args.join(" ")))?;
+            if !status.success() {
+                bail!("git {} failed for Cargo adapter fixture", args.join(" "));
+            }
+        }
+        let revision = Command::new("git")
+            .arg("-C")
+            .arg(&upstream)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .context("reading Cargo adapter fixture revision")?;
+        if !revision.status.success() {
+            bail!("git rev-parse HEAD failed for Cargo adapter fixture");
+        }
+        let revision = String::from_utf8(revision.stdout)
+            .context("Cargo adapter fixture revision was not UTF-8")?
+            .trim()
+            .to_owned();
+        let upstream_url = reqwest::Url::from_file_path(&upstream)
+            .map_err(|_| anyhow!("could not form file URL for Cargo adapter fixture"))?
+            .to_string();
+        let upstream_url_toml =
+            serde_json::to_string(&upstream_url).context("quoting Cargo adapter fixture URL")?;
+
+        fs::write(
+            root.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprivate-lib = {{ version = \"=0.1.0\", git = {upstream_url_toml}, rev = \"{revision}\" }}\n"
+            ),
         )?;
         fs::write(root.join("src/lib.rs"), "pub fn consumer() {}\n")?;
         fs::write(
@@ -1767,14 +1809,9 @@ edition = "2021"
         fs::write(dependency.join("src/lib.rs"), "pub fn private_lib() {}\n")?;
         fs::write(
             root.join(".zed/cargo-paths.toml"),
-            r#"paths = ["zed_modules/acme/private-lib"]
-
-[patch.crates-io.private-lib]
-path = "zed_modules/acme/private-lib"
-
-[patch."https://github.invalid/acme/private-lib".private-lib]
-path = "zed_modules/acme/private-lib"
-"#,
+            format!(
+                "paths = [\"zed_modules/acme/private-lib\"]\n\n[patch.{upstream_url_toml}.private-lib]\npath = \"zed_modules/acme/private-lib\"\n"
+            ),
         )?;
 
         prepare_cargo_adapter(&root)?;
@@ -1784,14 +1821,13 @@ path = "zed_modules/acme/private-lib"
             .current_dir(&root)
             .env("CARGO_HOME", &cargo_home)
             .arg("metadata")
-            .arg("--offline")
             .arg("--format-version")
             .arg("1")
             .output()
-            .context("running Cargo offline against the Zed Git-source patch")?;
+            .context("running Cargo against the local-only Zed Git-source patch")?;
         if !output.status.success() {
             bail!(
-                "Cargo attempted or required the unreachable Git source instead of the Zed patch: {}",
+                "Cargo did not resolve the local Git source through the Zed patch: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
