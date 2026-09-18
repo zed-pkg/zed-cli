@@ -694,6 +694,45 @@ fn cargo_package_name(root: &Path) -> Result<Option<String>> {
     Ok(Some(name.to_string()))
 }
 
+fn zed_repository_url(root: &Path) -> Result<Option<String>> {
+    let manifest_path = root.join(MANIFEST_FILE);
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let document = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let document: toml::Value = toml::from_str(&document)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    Ok(document
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .and_then(|package| package.get("repository"))
+        .and_then(toml::Value::as_table)
+        .and_then(|repository| repository.get("url"))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned))
+}
+
+fn normalized_git_repository_url(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.bytes().any(|byte| byte.is_ascii_control()) {
+        return None;
+    }
+    let (scheme, authority_and_path) = raw.split_once("://")?;
+    if !matches!(scheme, "https" | "http" | "ssh" | "git") {
+        return None;
+    }
+    let authority = authority_and_path.split('/').next()?;
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let mut normalized = raw.trim_end_matches('/').to_owned();
+    if normalized.ends_with(".git") {
+        normalized.truncate(normalized.len() - 4);
+    }
+    Some(normalized)
+}
+
 fn collect_cargo_git_sources(
     dependencies: Option<&toml::value::Table>,
     sources: &mut BTreeMap<String, BTreeSet<String>>,
@@ -759,7 +798,7 @@ fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTree
 
 fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
     let git_sources = cargo_git_sources_by_package(project)?;
-    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+    let mut entries: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     for path in paths {
         let Some(package) = cargo_package_name(path)? else {
             eprintln!(
@@ -769,7 +808,8 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
             continue;
         };
         let config_path = relative_to(project, path);
-        if let Some(existing) = entries.get(&package)
+        let repository_url = zed_repository_url(path)?;
+        if let Some((existing, _)) = entries.get(&package)
             && existing != &config_path
         {
             bail!(
@@ -778,14 +818,28 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
                 config_path
             );
         }
-        entries.insert(package, config_path);
+        entries.insert(package, (config_path, repository_url));
     }
     Ok(entries
         .into_iter()
-        .map(|(package, config_path)| CargoPatchEntry {
-            git_sources: git_sources.get(&package).cloned().unwrap_or_default(),
-            package,
-            config_path,
+        .map(|(package, (config_path, repository_url))| {
+            let provider = repository_url
+                .as_deref()
+                .and_then(normalized_git_repository_url);
+            let candidate_sources = git_sources.get(&package).cloned().unwrap_or_default();
+            let matching_sources = candidate_sources
+                .into_iter()
+                .filter(|source| {
+                    provider.as_ref().is_some_and(|provider| {
+                        normalized_git_repository_url(source).as_ref() == Some(provider)
+                    })
+                })
+                .collect();
+            CargoPatchEntry {
+                git_sources: matching_sources,
+                package,
+                config_path,
+            }
         })
         .collect())
 }
