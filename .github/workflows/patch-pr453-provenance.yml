@@ -1,0 +1,543 @@
+name: one-shot harden PR 453 provenance
+
+on:
+  push:
+    branches:
+      - automation/harden-pr453-provenance
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: harden/cargo-git-patch-provenance
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify expected input head
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3fc2bc4f6654d25c336ddd4a4b3e1cf5da781b5c"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Apply provenance hardening deterministically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/patch_pr453.rs" <<'RS'
+          use std::fs;
+
+          fn replace_once(text: &mut String, old: &str, new: &str, label: &str) {
+              let count = text.matches(old).count();
+              assert_eq!(count, 1, "{label}: expected exactly one match, found {count}");
+              *text = text.replacen(old, new, 1);
+          }
+
+          fn replace_between(text: &mut String, start: &str, end: &str, replacement: &str, label: &str) {
+              let start_index = text.find(start).unwrap_or_else(|| panic!("{label}: missing start marker"));
+              let tail = &text[start_index..];
+              let end_offset = tail.find(end).unwrap_or_else(|| panic!("{label}: missing end marker"));
+              let end_index = start_index + end_offset;
+              let mut next = String::with_capacity(text.len() + replacement.len());
+              next.push_str(&text[..start_index]);
+              next.push_str(replacement);
+              next.push_str(&text[end_index..]);
+              *text = next;
+          }
+
+          fn main() {
+              let path = "src/ops.rs";
+              let mut text = fs::read_to_string(path).expect("read src/ops.rs");
+
+              replace_between(
+                  &mut text,
+                  "fn git_checkout_identity(root: &Path)",
+                  "fn zed_git_provenance(",
+                  r#"fn git_command_text(root: &Path, args: &[&str]) -> Option<String> {
+              let output = Command::new("git")
+                  .args(args)
+                  .current_dir(root)
+                  .output()
+                  .ok()?;
+              if !output.status.success() {
+                  return None;
+              }
+              String::from_utf8(output.stdout)
+                  .ok()
+                  .map(|value| value.trim().to_owned())
+                  .filter(|value| !value.is_empty())
+          }
+
+          #[derive(Debug, Clone, PartialEq, Eq)]
+          struct GitCheckoutIdentity {
+              commit: String,
+              tags: BTreeSet<String>,
+              origin: String,
+          }
+
+          fn git_checkout_identity(root: &Path) -> Option<GitCheckoutIdentity> {
+              if !root.join(".git").exists() {
+                  return None;
+              }
+              let status = Command::new("git")
+                  .args([
+                      "status",
+                      "--porcelain=v1",
+                      "--untracked-files=all",
+                      "--ignored=matching",
+                      "--ignore-submodules=none",
+                  ])
+                  .current_dir(root)
+                  .output()
+                  .ok()?;
+              if !status.status.success() || !status.stdout.is_empty() {
+                  return None;
+              }
+              let commit = git_command_text(root, &["rev-parse", "HEAD"])?;
+              let origin = git_command_text(root, &["config", "--get", "remote.origin.url"])?;
+              let tags = git_command_text(root, &["tag", "--points-at", "HEAD"])
+                  .map(|output| {
+                      output
+                          .lines()
+                          .map(str::trim)
+                          .filter(|tag| !tag.is_empty())
+                          .map(str::to_owned)
+                          .collect()
+                  })
+                  .unwrap_or_default();
+              Some(GitCheckoutIdentity {
+                  commit,
+                  tags,
+                  origin,
+              })
+          }
+
+          "#,
+                  "live checkout identity",
+              );
+
+              replace_once(
+                  &mut text,
+                  r#"    let (checkout_commit, checkout_tags) = git_checkout_identity(root);
+              if checkout_commit.is_some() {
+                  return Ok(Some(ZedGitProvenance {
+                      url,
+                      commit: checkout_commit,
+                      tags: checkout_tags,
+                  }));
+              }
+          "#,
+                  r#"    if root.join(".git").exists() {
+                  let Some(checkout) = git_checkout_identity(root) else {
+                      return Ok(None);
+                  };
+                  let (Some(expected_repository), Some(actual_repository)) = (
+                      normalized_git_repository_url(&url),
+                      normalized_git_repository_url(&checkout.origin),
+                  ) else {
+                      return Ok(None);
+                  };
+                  if expected_repository != actual_repository {
+                      return Ok(None);
+                  }
+                  return Ok(Some(ZedGitProvenance {
+                      url,
+                      commit: Some(checkout.commit),
+                      tags: checkout.tags,
+                  }));
+              }
+          "#,
+                  "live checkout provenance gate",
+              );
+
+              replace_between(
+                  &mut text,
+                  "fn cargo_git_source_matches(",
+                  "fn matching_cargo_git_source_urls(",
+                  r#"fn cargo_git_source_matches(source: &CargoGitSource, provider: &ZedGitProvenance) -> bool {
+              let (Some(source_url), Some(provider_url)) = (
+                  normalized_git_repository_url(&source.url),
+                  normalized_git_repository_url(&provider.url),
+              ) else {
+                  return false;
+              };
+              if source_url != provider_url {
+                  return false;
+              }
+              if source.branch.is_some() {
+                  return false;
+              }
+              if let Some(rev) = source.rev.as_deref() {
+                  let valid_full_commit = rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit());
+                  if !valid_full_commit
+                      || provider
+                          .commit
+                          .as_deref()
+                          .is_none_or(|commit| !commit.eq_ignore_ascii_case(rev))
+                  {
+                      return false;
+                  }
+              }
+              if let Some(tag) = source.tag.as_deref()
+                  && !provider.tags.contains(tag)
+              {
+                  return false;
+              }
+              true
+          }
+
+          "#,
+                  "invalid URL fail-closed matching",
+              );
+
+              replace_once(
+                  &mut text,
+                  r#"    if raw.is_empty() || raw.bytes().any(|byte| byte.is_ascii_control()) {
+                  return None;
+              }
+          "#,
+                  r#"    if raw.is_empty()
+                  || raw.bytes().any(|byte| byte.is_ascii_control())
+                  || raw.contains('?')
+                  || raw.contains('#')
+              {
+                  return None;
+              }
+          "#,
+                  "query and fragment rejection",
+              );
+
+              replace_between(
+                  &mut text,
+                  "fn cargo_dependency_sources_by_package(",
+                  "fn cargo_patch_entries(",
+                  r#"fn collect_cargo_dependency_sources_from_document(
+              document: &toml::Value,
+              sources: &mut BTreeMap<String, CargoDependencySources>,
+          ) {
+              for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                  collect_cargo_dependency_sources(
+                      document.get(section).and_then(toml::Value::as_table),
+                      sources,
+                  );
+              }
+              collect_cargo_dependency_sources(
+                  document
+                      .get("workspace")
+                      .and_then(toml::Value::as_table)
+                      .and_then(|workspace| workspace.get("dependencies"))
+                      .and_then(toml::Value::as_table),
+                  sources,
+              );
+              if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
+                  for target in targets.values().filter_map(toml::Value::as_table) {
+                      for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                          collect_cargo_dependency_sources(
+                              target.get(section).and_then(toml::Value::as_table),
+                              sources,
+                          );
+                      }
+                  }
+              }
+          }
+
+          fn cargo_workspace_globset(
+              workspace: &toml::value::Table,
+              field: &str,
+          ) -> Result<Option<globset::GlobSet>> {
+              let Some(value) = workspace.get(field) else {
+                  return Ok(None);
+              };
+              let entries = value
+                  .as_array()
+                  .with_context(|| format!("[workspace].{field} must be an array"))?;
+              let mut builder = globset::GlobSetBuilder::new();
+              for entry in entries {
+                  let pattern = entry
+                      .as_str()
+                      .with_context(|| format!("[workspace].{field} entries must be strings"))?;
+                  if pattern.starts_with('/') || pattern.split('/').any(|part| part == "..") {
+                      bail!("[workspace].{field} entry escapes the project root");
+                  }
+                  builder.add(
+                      globset::Glob::new(pattern)
+                          .with_context(|| format!("invalid [workspace].{field} glob"))?,
+                  );
+              }
+              Ok(Some(builder.build().with_context(|| {
+                  format!("building [workspace].{field} glob set")
+              })?))
+          }
+
+          fn cargo_workspace_member_manifests(
+              project: &Path,
+              document: &toml::Value,
+          ) -> Result<Vec<PathBuf>> {
+              let Some(workspace) = document.get("workspace").and_then(toml::Value::as_table) else {
+                  return Ok(Vec::new());
+              };
+              let Some(members) = cargo_workspace_globset(workspace, "members")? else {
+                  return Ok(Vec::new());
+              };
+              let excludes = cargo_workspace_globset(workspace, "exclude")?;
+              let mut manifests = Vec::new();
+              const MAX_WORKSPACE_MANIFESTS: usize = 4096;
+
+              for entry in walkdir::WalkDir::new(project)
+                  .follow_links(false)
+                  .into_iter()
+                  .filter_entry(|entry| {
+                      if entry.path() == project || !entry.file_type().is_dir() {
+                          return true;
+                      }
+                      !matches!(
+                          entry.file_name().to_str(),
+                          Some(".git" | ".zed" | ".vendor" | "node_modules" | "target" | "zed_modules")
+                      )
+                  })
+              {
+                  let entry =
+                      entry.with_context(|| format!("walking Cargo workspace {}", project.display()))?;
+                  if !entry.file_type().is_file() || entry.file_name().to_str() != Some("Cargo.toml") {
+                      continue;
+                  }
+                  let manifest_path = entry.path();
+                  if manifest_path == project.join("Cargo.toml") {
+                      continue;
+                  }
+                  let parent = manifest_path
+                      .parent()
+                      .context("workspace member Cargo.toml has no parent")?;
+                  let relative = parent
+                      .strip_prefix(project)
+                      .context("workspace member escaped the project root")?;
+                  let normalized = relative.to_string_lossy().replace('\\', "/");
+                  if !members.is_match(&normalized)
+                      || excludes
+                          .as_ref()
+                          .is_some_and(|patterns| patterns.is_match(&normalized))
+                  {
+                      continue;
+                  }
+                  manifests.push(manifest_path.to_path_buf());
+                  if manifests.len() > MAX_WORKSPACE_MANIFESTS {
+                      bail!("Cargo workspace exceeds {MAX_WORKSPACE_MANIFESTS} explicit member manifests");
+                  }
+              }
+              manifests.sort();
+              manifests.dedup();
+              Ok(manifests)
+          }
+
+          fn cargo_dependency_sources_by_package(
+              project: &Path,
+          ) -> Result<BTreeMap<String, CargoDependencySources>> {
+              let manifest_path = project.join("Cargo.toml");
+              if !manifest_path.is_file() {
+                  return Ok(BTreeMap::new());
+              }
+              let document = fs::read_to_string(&manifest_path)
+                  .with_context(|| format!("reading {}", manifest_path.display()))?;
+              let document: toml::Value = toml::from_str(&document)
+                  .with_context(|| format!("parsing {}", manifest_path.display()))?;
+              let mut sources = BTreeMap::new();
+              collect_cargo_dependency_sources_from_document(&document, &mut sources);
+
+              for member_manifest in cargo_workspace_member_manifests(project, &document)? {
+                  let member = fs::read_to_string(&member_manifest)
+                      .with_context(|| format!("reading {}", member_manifest.display()))?;
+                  let member: toml::Value = toml::from_str(&member)
+                      .with_context(|| format!("parsing {}", member_manifest.display()))?;
+                  collect_cargo_dependency_sources_from_document(&member, &mut sources);
+              }
+              Ok(sources)
+          }
+
+          "#,
+                  "Cargo workspace member dependency discovery",
+              );
+
+              replace_once(
+                  &mut text,
+                  r#"        run(&["init", "-q"])?;
+                  run(&["add", "."])?;
+          "#,
+                  r#"        run(&["init", "-q"])?;
+                  run(&["remote", "add", "origin", "https://github.com/acme/tool"])?;
+                  run(&["add", "."])?;
+          "#,
+                  "existing live checkout fixture origin",
+              );
+
+              let test_marker = "    #[test]\n    fn cargo_git_source_selector_requires_exact_materialized_rev()";
+              let new_tests = r#"    #[test]
+              fn cargo_git_source_rejects_invalid_repository_identities() {
+                  let provider = ZedGitProvenance {
+                      url: "also not a repository".to_owned(),
+                      commit: None,
+                      tags: BTreeSet::new(),
+                  };
+                  let invalid = CargoGitSource {
+                      url: "not a repository".to_owned(),
+                      rev: None,
+                      tag: None,
+                      branch: None,
+                  };
+                  assert!(!cargo_git_source_matches(&invalid, &provider));
+                  assert!(normalized_git_repository_url("https://github.com/acme/tool?token=secret").is_none());
+                  assert!(normalized_git_repository_url("https://github.com/acme/tool#fragment").is_none());
+                  assert!(normalized_git_repository_url("git@github.com:acme/tool.git").is_none());
+              }
+
+              #[test]
+              fn live_git_checkout_requires_matching_origin_and_clean_tree() -> Result<()> {
+                  let temp = tempfile::tempdir()?;
+                  let project = temp.path().join("consumer");
+                  let package = project.join("zed_modules/acme/tool");
+                  fs::create_dir_all(&package)?;
+                  fs::write(
+                      package.join(MANIFEST_FILE),
+                      r#"[package]
+          org = "acme"
+          name = "tool"
+          version = "1.0.0"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/acme/tool"
+          "#,
+                  )?;
+                  fs::write(package.join("README.md"), "fixture\n")?;
+                  let run = |args: &[&str]| -> Result<()> {
+                      let status = Command::new("git")
+                          .args(args)
+                          .current_dir(&package)
+                          .status()?;
+                      if !status.success() {
+                          bail!("git {} failed", args.join(" "));
+                      }
+                      Ok(())
+                  };
+                  run(&["init", "-q"])?;
+                  run(&["remote", "add", "origin", "https://github.com/other/tool"])?;
+                  run(&["add", "."])?;
+                  let status = Command::new("git")
+                      .args([
+                          "-c",
+                          "user.name=Zed Test",
+                          "-c",
+                          "user.email=zed-test@example.invalid",
+                          "commit",
+                          "-qm",
+                          "fixture",
+                      ])
+                      .current_dir(&package)
+                      .status()?;
+                  if !status.success() {
+                      bail!("git fixture commit failed");
+                  }
+                  assert!(zed_git_provenance(&project, &package)?.is_none());
+
+                  run(&["remote", "set-url", "origin", "https://github.com/acme/tool"])?;
+                  assert!(zed_git_provenance(&project, &package)?.is_some());
+                  fs::write(package.join("UNTRACKED.rs"), "pub const DRIFT: bool = true;\n")?;
+                  assert!(zed_git_provenance(&project, &package)?.is_none());
+                  Ok(())
+              }
+
+          "#;
+              let insertion = format!("{new_tests}{test_marker}");
+              replace_once(&mut text, test_marker, &insertion, "security regression tests");
+
+              let workspace_marker = "    #[test]\n    fn rust_cargo_config_patches_workspace_git_dependency()";
+              let workspace_test = r#"    #[test]
+              fn rust_cargo_config_discovers_git_dependency_in_workspace_member() -> Result<()> {
+                  let temp = tempfile::tempdir()?;
+                  let project = temp.path().join("consumer");
+                  let app = project.join("apps/app");
+                  let ignored = project.join("apps/ignored");
+                  fs::create_dir_all(&app)?;
+                  fs::create_dir_all(&ignored)?;
+                  fs::write(
+                      project.join("Cargo.toml"),
+                      r#"[workspace]
+          members = ["apps/*"]
+          exclude = ["apps/ignored"]
+          resolver = "3"
+          "#,
+                  )?;
+                  fs::write(
+                      app.join("Cargo.toml"),
+                      r#"[package]
+          name = "app"
+          version = "0.1.0"
+          edition = "2021"
+
+          [dependencies]
+          canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+          "#,
+                  )?;
+                  fs::write(
+                      ignored.join("Cargo.toml"),
+                      r#"[package]
+          name = "ignored"
+          version = "0.1.0"
+          edition = "2021"
+
+          [dependencies]
+          should-not-be-seen = { git = "https://example.invalid/ignored" }
+          "#,
+                  )?;
+                  let sources = cargo_dependency_sources_by_package(&project)?;
+                  let canonical = sources
+                      .get("canonical-lib")
+                      .context("workspace member Git dependency must be discovered")?;
+                  assert_eq!(canonical.git_sources.len(), 1);
+                  assert!(!sources.contains_key("should-not-be-seen"));
+                  Ok(())
+              }
+
+          "#;
+              let workspace_insertion = format!("{workspace_test}{workspace_marker}");
+              replace_once(
+                  &mut text,
+                  workspace_marker,
+                  &workspace_insertion,
+                  "workspace member regression test",
+              );
+
+              fs::write(path, text).expect("write src/ops.rs");
+          }
+          RS
+          rustc --edition=2021 "$RUNNER_TEMP/patch_pr453.rs" -o "$RUNNER_TEMP/patch_pr453"
+          "$RUNNER_TEMP/patch_pr453"
+          cargo fmt --all -- --check
+
+      - name: Run focused provenance regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cargo_git_source_rejects_invalid_repository_identities -- --exact
+          cargo test --locked --lib live_git_checkout_requires_matching_origin_and_clean_tree -- --exact
+          cargo test --locked --lib live_git_checkout_precedes_stale_or_malformed_project_lock -- --exact
+          cargo test --locked --lib rust_cargo_config_discovers_git_dependency_in_workspace_member -- --exact
+          cargo test --locked --lib cargo_git_source_selector_requires_exact_materialized_rev -- --exact
+          cargo test --locked --lib cargo_git_patch_requires_all_same_url_selectors_to_agree -- --exact
+
+      - name: Commit hardened source to PR branch
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3fc2bc4f6654d25c336ddd4a4b3e1cf5da781b5c"
+          test "$(git diff --name-only)" = "src/ops.rs"
+          git add src/ops.rs
+          git -c user.name='ORESoftware' -c user.email='alex@oresoftware.com' commit -m 'fix(rust): close Cargo Git provenance gaps'
+          git push origin HEAD:harden/cargo-git-patch-provenance
