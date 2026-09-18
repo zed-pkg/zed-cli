@@ -985,12 +985,13 @@ fn extract_tag_archive(raw: &Path, tree: &Path) -> Result<()> {
         ) {
             continue;
         }
+        // `zed pack` walks the working tree and takes regular files only, so a
+        // published artifact never contains links or specials. Skipping them
+        // here keeps a repacked tag byte-identical to what publishing that tag
+        // produces; failing instead would make any repository that merely
+        // carries a symlink unresolvable from github.com.
         if kind != tar::EntryType::Regular {
-            bail!(
-                "GitHub tag archive entry `{}` has unsupported type {kind:?} \
-                 (only files and directories are allowed)",
-                path.display()
-            );
+            continue;
         }
         let mut components = path.components();
         if !matches!(components.next(), Some(Component::Normal(_))) {
@@ -1605,24 +1606,66 @@ dir = "."
     }
 
     #[test]
-    fn tag_archive_links_fail_closed() {
+    fn tag_archive_links_are_skipped_like_publish_does() {
+        // `zed pack` takes regular files only, so a link in the source tree is
+        // absent from the published artifact. A repacked tag must agree, or a
+        // repository that merely carries a symlink becomes uninstallable.
         let fixture = tempfile::NamedTempFile::new().unwrap();
         let mut builder = tar::Builder::new(GzEncoder::new(
             fs::File::create(fixture.path()).unwrap(),
             Compression::default(),
         ));
+        let mut manifest = tar::Header::new_ustar();
+        manifest.set_size(FIXTURE_MANIFEST.len() as u64);
+        manifest.set_mode(0o644);
+        builder
+            .append_data(
+                &mut manifest,
+                "owls-interfaces-0.1.1/.zpkg.toml",
+                FIXTURE_MANIFEST,
+            )
+            .unwrap();
+        let body = b"pub fn owls() {}\n".as_slice();
+        let mut file = tar::Header::new_ustar();
+        file.set_size(body.len() as u64);
+        file.set_mode(0o644);
+        builder
+            .append_data(&mut file, "owls-interfaces-0.1.1/rust/src/lib.rs", body)
+            .unwrap();
         let mut link = tar::Header::new_ustar();
         link.set_entry_type(tar::EntryType::Symlink);
         link.set_size(0);
         builder
-            .append_link(&mut link, "repo-1.0.0/escape", "/etc/passwd")
+            .append_link(
+                &mut link,
+                "owls-interfaces-0.1.1/clients/publish.sh",
+                "/etc/passwd",
+            )
             .unwrap();
         builder.into_inner().unwrap().finish().unwrap();
+
         let out = tempfile::tempdir().unwrap();
-        let error = repack(fixture.path(), "repo", &out.path().join("a.tar.gz"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("unsupported type"), "{error}");
+        let packed = out.path().join("a.tar.gz");
+        repack(fixture.path(), "owls-interfaces", &packed).unwrap();
+
+        let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(&packed).unwrap()));
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(entries.iter().any(|path| path == "pkg/rust/src/lib.rs"));
+        assert!(
+            !entries.iter().any(|path| path.contains("publish.sh")),
+            "{entries:?}"
+        );
     }
 
     #[test]
