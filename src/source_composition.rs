@@ -854,6 +854,98 @@ recursive = true"#,
     }
 
     #[test]
+    fn rejects_prefix_overlaps_reserved_paths_and_ambiguous_refs() -> Result<()> {
+        for block in [
+            r#"[interop.source-composition.sources.one]
+vcs = "git"
+url = "https://github.com/acme/one.git"
+role = "inventory"
+path = "sources"
+
+[interop.source-composition.sources.two]
+vcs = "git"
+url = "https://github.com/acme/two.git"
+role = "inventory"
+path = "sources/two""#,
+            r#"[interop.source-composition.sources.bad]
+vcs = "git"
+url = "https://github.com/acme/bad.git"
+role = "inventory"
+path = ".git/hooks""#,
+            r#"[interop.source-composition.sources.bad]
+vcs = "git"
+url = "https://github.com/acme/bad.git"
+role = "inventory"
+revision = "deadbeef"
+branch = "main""#,
+            r#"[interop.source-composition.sources.bad]
+vcs = "git"
+url = "https://github.com/acme/bad repo.git"
+role = "inventory""#,
+        ] {
+            let project = tempfile::tempdir()?;
+            fs::write(project.path().join(".zpkg.toml"), manifest(block))?;
+            assert!(resolve(project.path()).is_err(), "{block}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_sync_refuses_mutable_checkout_sources_before_network_access() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        fs::write(
+            project.path().join(".zpkg.toml"),
+            manifest(
+                r#"[interop.source-composition.sources.docs]
+vcs = "hg"
+url = "https://example.invalid/hg/docs"
+role = "inventory""#,
+            ),
+        )?;
+        let error = super::sync_frozen(project.path()).unwrap_err().to_string();
+        assert!(error.contains("workspace-source lock"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn workspace_role_projects_into_the_package_resolver() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        let child = project.path().join(".zed/vcs/lib");
+        fs::create_dir_all(&child)?;
+        fs::write(
+            child.join(".zpkg.toml"),
+            r#"[package]
+org = "acme"
+name = "lib"
+version = "1.2.3"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/lib"
+"#,
+        )?;
+        fs::write(
+            project.path().join(".zpkg.toml"),
+            manifest(
+                r#"[dependencies]
+"acme/lib" = "=1.2.3"
+
+[interop.source-composition.sources.lib]
+vcs = "git"
+url = "https://github.com/acme/lib.git"
+role = "workspace"
+package = "acme/lib""#,
+            ),
+        )?;
+
+        let members = super::workspace_members(project.path())?;
+        assert_eq!(members.len(), 1);
+        assert_eq!(members["acme/lib"], fs::canonicalize(child)?);
+        Ok(())
+    }
+
+    #[test]
     fn rejects_overlapping_and_cross_vcs_submodule_sources() -> Result<()> {
         for block in [
             r#"[interop.source-composition.sources.bad]
