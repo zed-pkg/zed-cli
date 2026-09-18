@@ -5,6 +5,13 @@
 name: release
 
 on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/dev.rs
+      - src/ops.rs
+      - .github/workflows/release.yml
   push:
     branches:
       - "release/**"
@@ -27,12 +34,13 @@ jobs:
       - name: Check out exact release candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Verify exact clean source head
         shell: bash
         env:
-          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
@@ -53,6 +61,7 @@ jobs:
 
   build:
     needs: preflight
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
