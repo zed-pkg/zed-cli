@@ -963,7 +963,7 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        Projection, paths_overlap, render_gitmodules, resolve, validate_name,
+        Projection, is_allowed_repo_url, paths_overlap, render_gitmodules, resolve, validate_name,
         validate_safe_relative,
     };
 
@@ -1042,6 +1042,52 @@ recursive = true"#,
         assert!(projection.contains("[submodule \"zed:git-lib\"]"));
         assert!(projection.contains("path = \"apps/lib\""));
         assert!(!projection.contains("hg-lib"));
+        Ok(())
+    }
+
+    #[test]
+    fn repository_urls_reject_credentials_options_and_whitespace() {
+        for good in [
+            "https://github.com/acme/lib.git",
+            "ssh://git@github.com/acme/lib.git",
+            "git@github.com:acme/lib.git",
+        ] {
+            assert!(is_allowed_repo_url(good), "{good}");
+        }
+        for bad in [
+            "https://token@github.com/acme/lib.git",
+            "https://user:secret@github.com/acme/lib.git",
+            "ssh://user:secret@github.com/acme/lib.git",
+            "-oProxyCommand=evil@host:path",
+            "https://github.com/acme/lib git",
+        ] {
+            assert!(!is_allowed_repo_url(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn source_composition_rejects_duplicate_package_ownership() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        fs::write(
+            project.path().join(".zpkg.toml"),
+            manifest(
+                r#"[interop.source-composition.sources.one]
+vcs = "git"
+url = "https://github.com/acme/one.git"
+role = "workspace"
+package = "acme/lib"
+path = "sources/one"
+
+[interop.source-composition.sources.two]
+vcs = "git"
+url = "https://github.com/acme/two.git"
+role = "workspace"
+package = "acme/lib"
+path = "sources/two""#,
+            ),
+        )?;
+        let error = resolve(project.path()).unwrap_err().to_string();
+        assert!(error.contains("declared by both source"), "{error}");
         Ok(())
     }
 
