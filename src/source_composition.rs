@@ -11,8 +11,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use zed_interfaces::vcs::Vcs;
 use zed_interfaces::paths::MANIFEST_FILE;
+use zed_interfaces::vcs::Vcs;
 
 use crate::config::read_manifest;
 use crate::transaction::ProjectTransaction;
@@ -110,13 +110,16 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> Result<String> {
 
 fn read_raw(project: &Path) -> Result<SourceComposition> {
     let path = project.join(MANIFEST_FILE);
-    let metadata = fs::symlink_metadata(&path)
-        .with_context(|| format!("inspecting {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(&path).with_context(|| format!("inspecting {}", path.display()))?;
     if !metadata.file_type().is_file() {
         bail!("{} must be a regular file", path.display());
     }
     if metadata.len() > MAX_MANIFEST_BYTES {
-        bail!("{} exceeds the {MAX_MANIFEST_BYTES}-byte manifest limit", path.display());
+        bail!(
+            "{} exceeds the {MAX_MANIFEST_BYTES}-byte manifest limit",
+            path.display()
+        );
     }
     let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let envelope: ManifestEnvelope =
@@ -274,7 +277,10 @@ fn resolve(project: &Path) -> Result<Vec<ResolvedSource>> {
             bail!("source `{name}` has unsupported role `{}`", source.role);
         }
         if source.projection == Projection::GitSubmodule && source.vcs != Vcs::Git {
-            bail!("source `{name}` uses git-submodule projection but vcs is {}", source.vcs);
+            bail!(
+                "source `{name}` uses git-submodule projection but vcs is {}",
+                source.vcs
+            );
         }
         if source.role == "workspace" && source.package.is_none() {
             bail!("workspace source `{name}` must declare package = \"org/name\"");
@@ -494,12 +500,7 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
     for source in &entries {
         let name = format!("submodule.zed:{}.url", source.name);
         run(project, "git", &["config", "--local", &name, &source.url])?;
-        let mut update = vec![
-            "submodule",
-            "update",
-            "--init",
-            "--checkout",
-        ];
+        let mut update = vec!["submodule", "update", "--init", "--checkout"];
         if source.recursive {
             update.push("--recursive");
         }
@@ -606,12 +607,12 @@ fn clone_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
         Vcs::Sapling => {
             run(project, "sl", &["clone", "--", &source.url, dest])?;
         }
-        Vcs::Fossil => bail!(
-            "fossil source checkout is declared but automated clone is not certified yet"
-        ),
-        Vcs::Pijul => bail!(
-            "pijul source checkout is declared but automated clone is not certified yet"
-        ),
+        Vcs::Fossil => {
+            bail!("fossil source checkout is declared but automated clone is not certified yet")
+        }
+        Vcs::Pijul => {
+            bail!("pijul source checkout is declared but automated clone is not certified yet")
+        }
     }
     Ok(())
 }
@@ -622,7 +623,11 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
         clone_checkout(project, source)?;
     }
     if !path.is_dir() {
-        bail!("source `{}` path {} is not a directory", source.name, path.display());
+        bail!(
+            "source `{}` path {} is not a directory",
+            source.name,
+            path.display()
+        );
     }
     let path = ensure_existing_source_contained(project, source)?;
     if !is_clean(source.vcs, &path)? {
@@ -648,7 +653,11 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
                 run(&path, "git", &["checkout", "--detach", revision])?;
             } else if let Some(branch) = source.branch.as_deref() {
                 run(&path, "git", &["checkout", "--", branch])?;
-                run(&path, "git", &["merge", "--ff-only", &format!("origin/{branch}")])?;
+                run(
+                    &path,
+                    "git",
+                    &["merge", "--ff-only", &format!("origin/{branch}")],
+                )?;
             }
         }
         Vcs::Hg => {
@@ -675,8 +684,12 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
 }
 
 pub(crate) fn workspace_members(project: &Path) -> Result<BTreeMap<String, PathBuf>> {
-    let canonical_project = fs::canonicalize(project)
-        .with_context(|| format!("canonicalizing source-composition root {}", project.display()))?;
+    let canonical_project = fs::canonicalize(project).with_context(|| {
+        format!(
+            "canonicalizing source-composition root {}",
+            project.display()
+        )
+    })?;
     let mut members = BTreeMap::new();
     for source in resolve(project)?
         .into_iter()
@@ -705,7 +718,10 @@ pub(crate) fn workspace_members(project: &Path) -> Result<BTreeMap<String, PathB
         let metadata = fs::symlink_metadata(&manifest_path)
             .with_context(|| format!("inspecting {}", manifest_path.display()))?;
         if !metadata.file_type().is_file() {
-            bail!("workspace source `{}` must contain a regular {MANIFEST_FILE}", source.name);
+            bail!(
+                "workspace source `{}` must contain a regular {MANIFEST_FILE}",
+                source.name
+            );
         }
         let manifest = read_manifest(&canonical)?;
         if manifest.full_name() != package {
@@ -772,7 +788,8 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        Projection, paths_overlap, render_gitmodules, resolve, validate_name, validate_safe_relative,
+        Projection, paths_overlap, render_gitmodules, resolve, validate_name,
+        validate_safe_relative,
     };
 
     fn manifest(source_block: &str) -> String {
