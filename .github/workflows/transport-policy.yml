@@ -1,0 +1,47 @@
+name: Rust transport policy
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'TRANSPORT.md'
+      - '.github/workflows/transport-policy.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  no-new-blocking-reqwest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject blocking reqwest outside the grandfathered registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          matches="$(grep -RIn --exclude-dir=target 'reqwest::blocking' src || true)"
+          unexpected="$(printf '%s\n' "$matches" | grep -v '^src/registry.rs:' || true)"
+          if [[ -n "$unexpected" ]]; then
+            printf '%s\n' "$unexpected" >&2
+            echo 'reqwest::blocking is deprecated; use zed-client-async/Hyper.' >&2
+            exit 1
+          fi
+
+      - name: Reject newly added blocking reqwest calls anywhere
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+          additions="$(git diff --unified=0 "$base" "$head" -- src \
+            | grep -E '^\+[^+].*reqwest::blocking' || true)"
+          if [[ -n "$additions" ]]; then
+            printf '%s\n' "$additions" >&2
+            echo 'new reqwest::blocking call sites are forbidden; use zed-client-async/Hyper.' >&2
+            exit 1
+          fi
