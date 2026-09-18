@@ -242,6 +242,12 @@ fn resolve(project: &Path) -> Result<Vec<ResolvedSource>> {
             bail!("source \`{name}\` URL may not begin with '-'");
         }
         validate_scalar(&source.role, "role", &name)?;
+        if !matches!(
+            source.role.as_str(),
+            "workspace" | "inventory" | "embedded-source" | "experiment-reference" | "legacy"
+        ) {
+            bail!("source `{name}` has unsupported role `{}`", source.role);
+        }
         if source.projection == Projection::GitSubmodule && source.vcs != Vcs::Git {
             bail!("source \`{name}\` uses git-submodule projection but vcs is {}", source.vcs);
         }
@@ -339,12 +345,6 @@ fn generated_gitmodules(project: &Path) -> Result<bool> {
 
 fn write_gitmodules(project: &Path, entries: &[ResolvedSource]) -> Result<()> {
     let path = project.join(".gitmodules");
-    if fs::symlink_metadata(&path).is_ok() && !generated_gitmodules(project)? {
-        bail!(
-            "{} is authored Git metadata; import/overtake it before manifest-authoritative sync so Zed never overwrites a second authority",
-            path.display()
-        );
-    }
     let rendered = render_gitmodules(entries)?;
     let current = fs::read_to_string(&path).ok();
     if current.as_deref() == Some(rendered.as_str()) {
@@ -408,6 +408,7 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
     }
 
     write_gitmodules(project, sources)?;
+    run(project, "git", &["add", "--", ".gitmodules"])?;
     run(project, "git", &["submodule", "sync", "--recursive"])?;
     for source in &entries {
         let name = format!("submodule.zed:{}.url", source.name);
@@ -424,7 +425,7 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
         update.extend(["--", source.path.as_str()]);
         run(project, "git", &update)?;
         if let Some(revision) = source.revision.as_deref() {
-            run(&project.join(&source.path), "git", &["checkout", "--detach", "--", revision])?;
+            run(&project.join(&source.path), "git", &["checkout", "--detach", revision])?;
         }
     }
     Ok(entries.len())
@@ -500,7 +501,7 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
             }
             run(&path, "git", &["fetch", "--prune", "origin"])?;
             if let Some(revision) = source.revision.as_deref() {
-                run(&path, "git", &["checkout", "--detach", "--", revision])?;
+                run(&path, "git", &["checkout", "--detach", revision])?;
             } else if let Some(branch) = source.branch.as_deref() {
                 run(&path, "git", &["checkout", "--", branch])?;
                 run(&path, "git", &["merge", "--ff-only", &format!("origin/{branch}")])?;
