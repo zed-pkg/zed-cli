@@ -5,7 +5,7 @@ use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
     AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
-    ReleaseCmd, StoreCmd, TaskCmd,
+    ReleaseCmd, StoreCmd, TaskCmd, WorkspaceCmd,
 };
 use zed_cli::cli_tools;
 use zed_cli::completion;
@@ -33,6 +33,7 @@ use zed_cli::task_cli::{self, TaskAction};
 use zed_cli::tree;
 use zed_cli::update;
 use zed_cli::validation;
+use zed_cli::workspace_sources;
 
 fn main() {
     let args = std::env::args_os().collect::<Vec<_>>();
@@ -278,6 +279,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 }
                 return Ok(());
             }
+            if !frozen && workspace_sources::has_declared_sources(&cwd)? {
+                let report = workspace_sources::sync(&cwd)?;
+                println!(
+                    "synced workspace sources in {} ({} Git submodule(s), {} checkout(s))",
+                    report.root.display(),
+                    report.git_submodules,
+                    report.checkouts
+                );
+            }
             let sync_git_submodules =
                 git_submodules || submodules::manifest_consumes_gitmodules(&cwd)?;
             let permissions = ops::InstallPermissions {
@@ -332,6 +342,18 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 .map(|_| ())
             }
         }
+        Cmd::Workspace { cmd } => match cmd {
+            WorkspaceCmd::Sync => {
+                let report = workspace_sources::sync(&cwd)?;
+                println!(
+                    "synced workspace sources in {} ({} Git submodule(s), {} checkout(s))",
+                    report.root.display(),
+                    report.git_submodules,
+                    report.checkouts
+                );
+                Ok(())
+            }
+        },
         Cmd::Uninstall { specs } => ops::uninstall(&cwd, &cfg, &specs),
         Cmd::Env { cmd } => match cmd {
             EnvCmd::Import {
