@@ -176,7 +176,9 @@ fn validate_safe_relative(path: &str, field: &str) -> Result<()> {
             )
         })
     {
-        bail!("{field} `{path}` must be a safe project-relative path of at most 4096 bytes without control characters");
+        bail!(
+            "{field} `{path}` must be a safe project-relative path of at most 4096 bytes without control characters"
+        );
     }
     Ok(())
 }
@@ -463,8 +465,8 @@ fn ensure_git_superproject_root(project: &Path) -> Result<()> {
         .context("Git-submodule projections require a Git superproject")?;
     let canonical_project = fs::canonicalize(project)
         .with_context(|| format!("canonicalizing project {}", project.display()))?;
-    let canonical_top = fs::canonicalize(&top)
-        .with_context(|| format!("canonicalizing Git superproject {top}"))?;
+    let canonical_top =
+        fs::canonicalize(&top).with_context(|| format!("canonicalizing Git superproject {top}"))?;
     if canonical_top != canonical_project {
         bail!(
             "Git-submodule source composition must be declared at the Git superproject root {}; current Zed source-composition root is {}",
