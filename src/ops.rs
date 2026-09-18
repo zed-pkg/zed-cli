@@ -976,15 +976,23 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
         .into_iter()
         .map(|(package, (config_path, provenance))| {
             let declared_sources = dependency_sources.get(&package).cloned().unwrap_or_default();
-            let matching_sources = declared_sources
-                .git_sources
+            let mut sources_by_url: BTreeMap<String, Vec<CargoGitSource>> = BTreeMap::new();
+            for source in declared_sources.git_sources {
+                sources_by_url
+                    .entry(source.url.clone())
+                    .or_default()
+                    .push(source);
+            }
+            let matching_sources = sources_by_url
                 .into_iter()
-                .filter(|source| {
-                    provenance
-                        .as_ref()
-                        .is_some_and(|provider| cargo_git_source_matches(source, provider))
+                .filter_map(|(url, declarations)| {
+                    provenance.as_ref().and_then(|provider| {
+                        declarations
+                            .iter()
+                            .all(|source| cargo_git_source_matches(source, provider))
+                            .then_some(url)
+                    })
                 })
-                .map(|source| source.url)
                 .collect();
             CargoPatchEntry {
                 crates_io: declared_sources.crates_io,
