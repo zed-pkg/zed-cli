@@ -1754,7 +1754,10 @@ version = "0.1.0"
 edition = "2021"
 "#,
         )?;
-        fs::write(upstream.join("src/lib.rs"), "pub fn upstream_private_lib() {}\n")?;
+        fs::write(
+            upstream.join("src/lib.rs"),
+            "pub fn upstream_private_lib() {}\n",
+        )?;
         for args in [
             ["init", "-q"].as_slice(),
             ["config", "user.name", "zed-test"].as_slice(),
