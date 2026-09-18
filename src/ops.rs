@@ -736,6 +736,14 @@ fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTree
             &mut sources,
         );
     }
+    collect_cargo_git_sources(
+        document
+            .get("workspace")
+            .and_then(toml::Value::as_table)
+            .and_then(|workspace| workspace.get("dependencies"))
+            .and_then(toml::Value::as_table),
+        &mut sources,
+    );
     if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
         for target in targets.values().filter_map(toml::Value::as_table) {
             for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
@@ -4029,6 +4037,44 @@ edition = "2021"
         );
         assert!(!generated.contains("x-access-token"));
         assert!(!generated.contains("d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_patches_workspace_git_dependency() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/canonical-cloud/canonical-lib-core");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[workspace]
+members = ["app"]
+
+[workspace.dependencies]
+canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "canonical-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        let parsed: toml::Value = toml::from_str(&generated)?;
+        assert_eq!(
+            parsed["patch"]["https://github.com/canonical-cloud/canonical-lib-core"]
+                ["canonical-lib"]["path"]
+                .as_str(),
+            Some("zed_modules/canonical-cloud/canonical-lib-core")
+        );
         Ok(())
     }
 
