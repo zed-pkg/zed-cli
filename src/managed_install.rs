@@ -35,6 +35,7 @@ const GENERATED_VERSION: &str = "0.0.0";
 const GENERATED_MARKER: &str = "zed-generated-consumer";
 const GENERATED_DESCRIPTION: &str =
     "Local Zed dependency manifest; edit package metadata before publishing";
+const GENERATED_INSTALL_DIR: &str = ".zed/pkg";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectSelection {
@@ -518,6 +519,7 @@ fn generated_manifest(
         signing: Default::default(),
         mirrors: Vec::new(),
     };
+    manifest.install.dir = Some(GENERATED_INSTALL_DIR.to_string());
     manifest.install.target = target.map(str::to_owned);
     manifest.install.adapter = adapter_name(adapter).map(str::to_owned);
     manifest
@@ -788,6 +790,7 @@ mod tests {
         assert_eq!(first.package.name, "my-consumer-app");
         assert!(is_generated_consumer(&first));
         assert!(is_non_publishable_generated(&first));
+        assert_eq!(first.install.dir.as_deref(), Some(GENERATED_INSTALL_DIR));
         assert_eq!(first.install.target.as_deref(), Some("node"));
         assert_eq!(first.install.adapter.as_deref(), Some("node"));
         assert_eq!(

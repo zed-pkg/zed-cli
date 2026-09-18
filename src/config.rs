@@ -15,6 +15,24 @@ use crate::mirrored_registry::{FallbackPolicy, MirrorContext, TrustAnchors};
 use crate::publisher_keys::TrustCache;
 use crate::registry::Registry;
 
+const CANONICAL_ZED_HOME_DIR_NAME: &str = ".zpkg";
+
+fn select_default_zed_home(user_home: &Path) -> PathBuf {
+    let canonical = user_home.join(CANONICAL_ZED_HOME_DIR_NAME);
+    let legacy = user_home.join(ZED_HOME_DIR_NAME);
+    if canonical.exists() || !legacy.exists() {
+        canonical
+    } else {
+        legacy
+    }
+}
+
+fn default_zed_home() -> Result<PathBuf> {
+    let user_home =
+        dirs::home_dir().context("could not determine home directory; set ZED_PKG_HOME")?;
+    Ok(select_default_zed_home(&user_home))
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub registry: String,
@@ -36,9 +54,7 @@ impl Config {
     pub fn from_globals(globals: &Globals) -> Result<Self> {
         let configured_home = match &globals.home {
             Some(h) => h.clone(),
-            None => dirs::home_dir()
-                .context("could not determine home directory; set ZED_PKG_HOME")?
-                .join(ZED_HOME_DIR_NAME),
+            None => default_zed_home()?,
         };
         // Store paths become symlink targets during installation. Keeping a
         // relative --home here would make that target relative to the nested
@@ -630,6 +646,28 @@ url = "https://localhost/manifestless/consumer"
         assert!(cfg.home.is_absolute());
         assert_eq!(cfg.home, std::env::current_dir().unwrap().join(".zed-home"));
         assert_eq!(cfg.registry, "https://reg.example.com");
+    }
+
+    #[test]
+    fn default_home_prefers_new_location_but_preserves_legacy_only_store() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        assert_eq!(
+            select_default_zed_home(home.path()),
+            home.path().join(CANONICAL_ZED_HOME_DIR_NAME)
+        );
+
+        fs::create_dir_all(home.path().join(ZED_HOME_DIR_NAME))?;
+        assert_eq!(
+            select_default_zed_home(home.path()),
+            home.path().join(ZED_HOME_DIR_NAME)
+        );
+
+        fs::create_dir_all(home.path().join(CANONICAL_ZED_HOME_DIR_NAME))?;
+        assert_eq!(
+            select_default_zed_home(home.path()),
+            home.path().join(CANONICAL_ZED_HOME_DIR_NAME)
+        );
+        Ok(())
     }
 
     #[test]

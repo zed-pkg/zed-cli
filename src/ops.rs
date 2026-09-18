@@ -1327,6 +1327,17 @@ fn install_locked(
 ) -> Result<InstallOutcome> {
     let mode = effective_install_mode(mode);
     let manifest = read_manifest(project)?;
+    let raw_local_overrides = crate::local_overrides::read(project)?;
+    if frozen && !raw_local_overrides.is_empty() {
+        bail!(
+            "--frozen refuses mutable [overrides.path] sources; remove the local overrides or run a non-frozen developer install"
+        );
+    }
+    let local_overrides = if raw_local_overrides.is_empty() {
+        BTreeMap::new()
+    } else {
+        crate::local_overrides::resolve(project, manifest.modules_dir(), &raw_local_overrides)?
+    };
     let configured_adapter = manifest
         .install
         .adapter
@@ -1406,6 +1417,43 @@ fn install_locked(
         }
         while let Some((org, name, req_str)) = queue.pop_front() {
             let key = format!("{org}/{name}");
+
+            if let Some(local_dir) = local_overrides.get(&key) {
+                if workspace_member_for_dependency(&manifest, workspace.as_ref(), &key).is_some() {
+                    bail!(
+                        "dependency `{key}` is both a workspace member and [overrides.path] source; choose one local authority"
+                    );
+                }
+                let local_manifest = read_manifest(local_dir).with_context(|| {
+                    format!(
+                        "reading local path override `{key}` from {}",
+                        local_dir.display()
+                    )
+                })?;
+                if local_manifest.full_name() != key {
+                    bail!(
+                        "local path override `{key}` points to package `{}` at {}",
+                        local_manifest.full_name(),
+                        local_dir.display()
+                    );
+                }
+                let requirement = Requirement::parse(&req_str);
+                if !requirement.matches(&local_manifest.package.version) {
+                    bail!(
+                        "local path override {key}@{} does not satisfy `{req_str}`",
+                        local_manifest.package.version
+                    );
+                }
+                if !workspace_links.contains_key(&key) {
+                    workspace_links.insert(key.clone(), local_dir.clone());
+                    for (sub_key, sub_req) in local_manifest.dependencies {
+                        let (sub_org, sub_name) = split_key(&sub_key)?;
+                        queue.push_back((sub_org, sub_name, sub_req));
+                    }
+                }
+                continue;
+            }
+
             // Workspace members short-circuit the registry entirely: link
             // the member's source tree, then keep resolving its deps.
             if let Some(member_dir) =
@@ -1483,6 +1531,17 @@ fn install_locked(
                 let (sub_org, sub_name) = split_key(&sub_key)?;
                 queue.push_back((sub_org, sub_name, sub_req));
             }
+        }
+        let unused: Vec<&str> = local_overrides
+            .keys()
+            .filter(|key| !workspace_links.contains_key(*key))
+            .map(String::as_str)
+            .collect();
+        if !unused.is_empty() {
+            bail!(
+                "[overrides.path] contains package(s) not reachable from the dependency graph: {}",
+                unused.join(", ")
+            );
         }
     }
 
