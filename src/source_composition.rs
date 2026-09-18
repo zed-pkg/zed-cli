@@ -11,6 +11,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use zed_interfaces::manifest::is_dependency_key;
 use zed_interfaces::paths::MANIFEST_FILE;
 use zed_interfaces::vcs::Vcs;
 
@@ -219,7 +220,10 @@ fn is_reserved_source_path(path: &str) -> bool {
 }
 
 fn is_allowed_repo_url(url: &str) -> bool {
-    if url.chars().any(char::is_whitespace) || url.chars().any(char::is_control) {
+    if url.starts_with('-')
+        || url.chars().any(char::is_whitespace)
+        || url.chars().any(char::is_control)
+    {
         return false;
     }
     for scheme in ["https://", "http://"] {
@@ -228,10 +232,33 @@ fn is_allowed_repo_url(url: &str) -> bool {
             return !authority.is_empty() && !authority.contains('@');
         }
     }
-    ["ssh://", "git://", "git+ssh://"]
-        .iter()
-        .any(|scheme| url.starts_with(scheme))
-        || (url.contains('@') && url.contains(':') && !url.contains("://"))
+    if let Some(rest) = url.strip_prefix("git://") {
+        let authority = rest.split('/').next().unwrap_or_default();
+        return !authority.is_empty() && !authority.contains('@');
+    }
+    for scheme in ["ssh://", "git+ssh://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            let authority = rest.split('/').next().unwrap_or_default();
+            if authority.is_empty() {
+                return false;
+            }
+            if let Some((userinfo, host)) = authority.rsplit_once('@') {
+                return !userinfo.is_empty() && !userinfo.contains(':') && !host.is_empty();
+            }
+            return true;
+        }
+    }
+    if !url.contains("://")
+        && let Some((user, host_path)) = url.split_once('@')
+        && let Some((host, path)) = host_path.split_once(':')
+    {
+        return !user.is_empty()
+            && !user.contains(':')
+            && !host.is_empty()
+            && !path.is_empty()
+            && !path.starts_with('-');
+    }
+    false
 }
 
 fn validate_scalar(value: &str, field: &str, source: &str) -> Result<()> {
@@ -311,7 +338,9 @@ fn resolve(project: &Path) -> Result<Vec<ResolvedSource>> {
             bail!("workspace source `{name}` must declare package = \"org/name\"");
         }
         if let Some(package) = source.package.as_deref() {
-            crate::ops::split_key(package)?;
+            if !is_dependency_key(package) {
+                bail!("source `{name}` has invalid package identity `{package}`");
+            }
             if let Some(previous_name) = packages.insert(package.to_string(), name.clone()) {
                 bail!(
                     "package `{package}` is declared by both source `{previous_name}` and source `{name}`"
@@ -382,6 +411,23 @@ fn ensure_destination_parent_contained(project: &Path, destination: &Path) -> Re
     let parent = destination
         .parent()
         .context("source destination must have a parent")?;
+
+    let mut existing = parent;
+    while !existing.exists() {
+        existing = existing
+            .parent()
+            .context("source destination has no existing ancestor")?;
+    }
+    let canonical_existing = fs::canonicalize(existing)
+        .with_context(|| format!("canonicalizing source ancestor {}", existing.display()))?;
+    if !canonical_existing.starts_with(&canonical_project) {
+        bail!(
+            "source destination ancestor {} resolves outside project {}",
+            canonical_existing.display(),
+            canonical_project.display()
+        );
+    }
+
     fs::create_dir_all(parent)
         .with_context(|| format!("creating source parent {}", parent.display()))?;
     let canonical_parent = fs::canonicalize(parent)
@@ -410,6 +456,43 @@ fn ensure_existing_source_contained(project: &Path, source: &ResolvedSource) -> 
         );
     }
     Ok(canonical)
+}
+
+fn ensure_git_superproject_root(project: &Path) -> Result<()> {
+    let top = run(project, "git", &["rev-parse", "--show-toplevel"])
+        .context("Git-submodule projections require a Git superproject")?;
+    let canonical_project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing project {}", project.display()))?;
+    let canonical_top = fs::canonicalize(&top)
+        .with_context(|| format!("canonicalizing Git superproject {top}"))?;
+    if canonical_top != canonical_project {
+        bail!(
+            "Git-submodule source composition must be declared at the Git superproject root {}; current Zed source-composition root is {}",
+            canonical_top.display(),
+            canonical_project.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_gitmodules_regular_or_missing(project: &Path) -> Result<()> {
+    let path = project.join(".gitmodules");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(_) => bail!("{} must be a regular file when present", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspecting {}", path.display())),
+    }
+}
+
+fn validate_git_branch(project: &Path, source: &ResolvedSource, branch: &str) -> Result<()> {
+    run(project, "git", &["check-ref-format", "--branch", branch]).with_context(|| {
+        format!(
+            "source `{}` branch `{branch}` is not a valid Git branch name",
+            source.name
+        )
+    })?;
+    Ok(())
 }
 
 fn git_config_quote(value: &str) -> Result<String> {
@@ -443,6 +526,7 @@ fn render_gitmodules(entries: &[ResolvedSource]) -> Result<String> {
 }
 
 fn generated_gitmodules(project: &Path) -> Result<bool> {
+    ensure_gitmodules_regular_or_missing(project)?;
     let path = project.join(".gitmodules");
     match fs::read_to_string(&path) {
         Ok(text) => Ok(text.starts_with(GENERATED_GITMODULES_HEADER)),
@@ -521,8 +605,7 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
     if entries.is_empty() {
         return Ok(0);
     }
-    run(project, "git", &["rev-parse", "--show-toplevel"])
-        .context("git-submodule projections require a Git superproject")?;
+    ensure_git_superproject_root(project)?;
 
     // Existing authored .gitmodules must be migrated explicitly. Generated
     // files are disposable projections and are rewritten deterministically.
@@ -571,6 +654,7 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
             let name = format!("zed:{}", source.name);
             let mut owned = vec!["submodule".to_string(), "add".to_string()];
             if let Some(branch) = source.branch.as_deref() {
+                validate_git_branch(project, source, branch)?;
                 owned.extend(["-b".to_string(), branch.to_string()]);
             }
             owned.extend([
@@ -626,8 +710,7 @@ fn sync_git_submodules_frozen(project: &Path, sources: &[ResolvedSource]) -> Res
     if entries.is_empty() {
         return Ok(0);
     }
-    run(project, "git", &["rev-parse", "--show-toplevel"])
-        .context("Git-submodule projections require a Git superproject")?;
+    ensure_git_superproject_root(project)?;
 
     let expected_projection = render_gitmodules(sources)?;
     let path = project.join(".gitmodules");
@@ -743,6 +826,7 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
             if let Some(revision) = source.revision.as_deref() {
                 run(&path, "git", &["checkout", "--detach", revision])?;
             } else if let Some(branch) = source.branch.as_deref() {
+                validate_git_branch(&path, source, branch)?;
                 run(&path, "git", &["switch", branch])?;
                 run(
                     &path,
