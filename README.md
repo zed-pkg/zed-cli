@@ -571,7 +571,7 @@ actual CLI never drift, so it is always authoritative:
 | `--r2-public-key` | `ZED_PKG_R2_PUBLIC_KEY` | optional hostname, `https://…`, or Cloudflare `pub-<id>` |
 | `--source-fallback` | `ZED_PKG_SOURCE_FALLBACK` | on; retry public R2 and GitHub when the HTTP registry is down (`file://` and loopback stay hermetic) |
 | (env only) | `ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK` | off; test-org canaries that bind mocks to `127.0.0.1` must set this |
-| `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
+| `--home` | `ZED_PKG_HOME` | `~/.zpkg` (legacy `~/.zed-pkg` retained only when it is the sole existing store) |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
 | `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
@@ -783,7 +783,7 @@ Linux (arm64 + x64, gnu and musl), and Windows via
 ## Store layout
 
 ```
-~/.zed-pkg/
+$ZED_PKG_HOME/                         # normally ~/.zpkg; legacy ~/.zed-pkg may be auto-selected
   store/v1/<aa>/<sha256>/pkg/          extracted source artifacts (content-addressed, immutable)
   builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
   cache/<sha256>.tar.gz                downloaded archives
@@ -795,8 +795,8 @@ Linux (arm64 + x64, gnu and musl), and Windows via
 ```
 
 Verified binary downloads additionally receive a human-readable, source- and
-target-qualified view under ~/.zpkg/downloads. The existing
-~/.zed-pkg/store remains the content-addressed byte authority. The host view
+target-qualified view under `~/.zpkg/downloads`. The selected
+`$ZED_PKG_HOME/store` remains the content-addressed byte authority. The host view
 uses Windows-safe typed folders such as
 zed-org--acme/zed-project--payments/zed-package--tool/versions/1.2.3/zed/targets/aarch64-linux-android.
 Projectless packages omit the project segment. Configure the root, delimiter,
