@@ -80,57 +80,74 @@ pub fn pack_all(
     let mut packages = Vec::with_capacity(manifest.targets.len());
 
     for (target, _) in manifest.target_package_names() {
-        let mut derived = manifest
-            .manifest_for_target(&target)
-            .with_context(|| format!("target `{target}` disappeared during packing"))?;
-        let section = manifest
-            .targets
-            .get(&target)
-            .with_context(|| format!("target `{target}` disappeared during packing"))?;
-        let source = project.join(&section.dir);
-        if !source.is_dir() {
-            bail!(
-                "target `{target}` source root `{}` is not a directory",
-                section.dir
-            );
-        }
-
-        // A root target is the repository's canonical package. Older manifests
-        // named it `<package>-repository` to avoid a schema-level name clash;
-        // the emitted artifact must nevertheless use the exact root identity
-        // so `zed install org/repository-name` works as expected.
-        if section.dir == "." {
-            derived.package.name = manifest.package.name.clone();
-        } else if source.join(zed_interfaces::paths::MANIFEST_FILE).exists() {
-            bail!(
-                "target `{target}` contains its own {}; declare packages only in the repository-root manifest",
-                zed_interfaces::paths::MANIFEST_FILE
-            );
-        }
-
-        let ignore_rules = crate::publish_ignore::read_rules(&source)?;
-        let staging = tempfile::tempdir().context("create target packing directory")?;
-        copy_files(&source, staging.path(), &derived, &ignore_rules)?;
-        copy_root_legal_files(project, staging.path())?;
-        fs::write(
-            staging.path().join(zed_interfaces::paths::MANIFEST_FILE),
-            derived.to_toml_string()?,
-        )?;
-
-        let packed = pack_format_with_ignore_rules(
-            staging.path(),
-            &derived,
-            Some(&output),
-            ArtifactFormat::TarGz,
-            &ignore_rules,
-        )?;
-        packages.push(PackagedTarget {
-            target: Some(target),
-            manifest: derived,
-            packed,
-        });
+        packages.push(pack_target(project, manifest, &target, Some(&output))?);
     }
     Ok(packages)
+}
+
+/// Build the one artifact `pack_all` would emit for a single declared target.
+///
+/// Resolving one package must not require every sibling target to be present:
+/// a target rooted at generated output is absent from a source tag, and that
+/// alone should not make the repository's other packages unresolvable.
+pub(crate) fn pack_target(
+    project: &Path,
+    manifest: &Manifest,
+    target: &str,
+    out_dir: Option<&Path>,
+) -> Result<PackagedTarget> {
+    let output = out_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| project.join(PACK_OUT_DIR));
+    let mut derived = manifest
+        .manifest_for_target(target)
+        .with_context(|| format!("target `{target}` disappeared during packing"))?;
+    let section = manifest
+        .targets
+        .get(target)
+        .with_context(|| format!("target `{target}` disappeared during packing"))?;
+    let source = project.join(&section.dir);
+    if !source.is_dir() {
+        bail!(
+            "target `{target}` source root `{}` is not a directory",
+            section.dir
+        );
+    }
+
+    // A root target is the repository's canonical package. Older manifests
+    // named it `<package>-repository` to avoid a schema-level name clash;
+    // the emitted artifact must nevertheless use the exact root identity
+    // so `zed install org/repository-name` works as expected.
+    if section.dir == "." {
+        derived.package.name = manifest.package.name.clone();
+    } else if source.join(zed_interfaces::paths::MANIFEST_FILE).exists() {
+        bail!(
+            "target `{target}` contains its own {}; declare packages only in the repository-root manifest",
+            zed_interfaces::paths::MANIFEST_FILE
+        );
+    }
+
+    let ignore_rules = crate::publish_ignore::read_rules(&source)?;
+    let staging = tempfile::tempdir().context("create target packing directory")?;
+    copy_files(&source, staging.path(), &derived, &ignore_rules)?;
+    copy_root_legal_files(project, staging.path())?;
+    fs::write(
+        staging.path().join(zed_interfaces::paths::MANIFEST_FILE),
+        derived.to_toml_string()?,
+    )?;
+
+    let packed = pack_format_with_ignore_rules(
+        staging.path(),
+        &derived,
+        Some(&output),
+        ArtifactFormat::TarGz,
+        &ignore_rules,
+    )?;
+    Ok(PackagedTarget {
+        target: Some(target.to_string()),
+        manifest: derived,
+        packed,
+    })
 }
 
 fn copy_files(

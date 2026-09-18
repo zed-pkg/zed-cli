@@ -3,30 +3,33 @@
 //! Loopback `file://` and `http://127.0.0.1` registries stay hermetic: tests
 //! and air-gapped mirrors never leak to github.com. Production hosts such as
 //! `registry.zpkg.net` fall back to guessed public R2 keys and GitHub Release
-//! assets, then to a tagged source archive only when no packed digest is known.
+//! assets, then to the GitHub tag archive, repacked exactly as `zed publish`
+//! would pack that tag.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Component, Path};
 use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use flate2::read::GzDecoder;
 use serde::Deserialize;
 use zed_interfaces::artifact::ArtifactFormat;
 use zed_interfaces::manifest::{Manifest, is_slug};
+use zed_interfaces::mirror::MirrorDescriptorV1;
 use zed_interfaces::paths::MANIFEST_FILE;
 use zed_interfaces::registry::{
     AuditLogResponse, ClaimOrgResponse, PackageMetadata, PublishMeta, PublishResponse,
     SearchResponse, VersionMetadata, YankResponse,
 };
 use zed_interfaces::source::{
-    ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity, artifact_locators,
-    github_api_release_url, github_api_repo_url, github_api_tags_url, github_raw_manifest_url,
-    github_release_asset_names, github_release_sidecar_names, parse_github_identity,
-    version_from_git_tag,
+    ArtifactLocator, ArtifactQuery, ArtifactSourceKind, ArtifactsSection, GithubIdentity,
+    artifact_locators, github_api_release_url, github_api_repo_url, github_api_tags_url,
+    github_raw_manifest_url, github_release_asset_names, github_release_sidecar_names,
+    parse_github_identity, resolve_r2_public_base, version_from_git_tag,
 };
 use zed_interfaces::vcs::Vcs;
 
@@ -35,6 +38,14 @@ use crate::registry::{HttpRegistry, Registry};
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_GITHUB_REPO_CANDIDATES: usize = 12;
 const GITHUB_REPOSITORY_SEARCH_URL: &str = "https://api.github.com/search/repositories";
+/// Public repository, under the package's own organization, whose index maps a
+/// package name to the repository that publishes it. Overridable for test orgs.
+const ORG_PACKAGE_INDEX_REPO: &str = "zed-packages";
+const ORG_PACKAGE_INDEX_FILE: &str = "packages.json";
+/// The index is small, operator-authored JSON; a hostile or corrupted one must
+/// not be able to turn resolution into an out-of-memory abort.
+const MAX_ORG_INDEX_BYTES: u64 = 256 * 1024;
+const ORG_PACKAGE_INDEX_SCHEMA: &str = "zed.org-package-index/v1";
 
 thread_local! {
     static CLI_OVERRIDES: RefCell<Option<CliFallbackOverrides>> = const { RefCell::new(None) };
@@ -140,6 +151,68 @@ impl FallbackRegistry {
         }
     }
 
+    fn r2_base(&self) -> String {
+        resolve_r2_public_base(
+            None,
+            self.config.r2_public_base.as_deref(),
+            self.config.r2_public_key.as_deref(),
+        )
+    }
+
+    /// Fetch a GitHub tag archive and repack it as a Zed artifact. The raw
+    /// archive's size is unrelated to the packed artifact's, so only the
+    /// global cap bounds the download; the caller verifies the packed digest.
+    fn download_tag_archive(
+        &self,
+        identity: &GithubIdentity,
+        url: &str,
+        version: &VersionMetadata,
+        dest: &Path,
+    ) -> Result<()> {
+        let raw = tempfile::NamedTempFile::new().context("tag archive tempfile")?;
+        match self.config.github_token.as_deref() {
+            // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
+            // private repository 404s there even with a token. The REST
+            // tarball endpoint honours the token and redirects to a signed
+            // codeload URL for the same tag.
+            Some(token) => {
+                let api_url = github_api_tarball_url(identity, &version.vcs_tag);
+                download_url(&self.client, &api_url, raw.path(), 0, Some(token))?;
+            }
+            None => download_url(&self.client, url, raw.path(), 0, None)?,
+        }
+        repack_tag_archive(
+            raw.path(),
+            &version.org,
+            &version.name,
+            &version.version,
+            dest,
+        )
+    }
+
+    /// Record the commit a version's tag points at. Fallback metadata otherwise
+    /// carries no commit, and a frozen restore compares VCS provenance against
+    /// the lock exactly, so it would refuse a digest-identical artifact. The
+    /// commit comes from GitHub, never from the archive; if GitHub cannot say,
+    /// the field stays empty and that comparison fails closed as before.
+    fn fill_tag_commit(&self, identity: &GithubIdentity, metadata: &mut VersionMetadata) {
+        if metadata.vcs_commit.is_some() {
+            return;
+        }
+        let url = format!(
+            "{}/commits/{}",
+            github_api_repo_url(identity),
+            metadata.vcs_tag
+        );
+        metadata.vcs_commit = self
+            .github_headers(self.client.get(url))
+            .send()
+            .ok()
+            .filter(|response| response.status().is_success())
+            .and_then(|response| response.json::<GithubCommit>().ok())
+            .and_then(|commit| commit_sha(&commit.sha));
+    }
+
     fn github_headers(
         &self,
         request: reqwest::blocking::RequestBuilder,
@@ -233,11 +306,70 @@ impl FallbackRegistry {
             Err(error) => format!("{} was unavailable: {error:#}", guessed.web_url()),
         };
 
+        // A package's repository need not be named after it: `next-loggers` is
+        // published from `ores-otel/ores.otel.log`, and a repository name is
+        // not a valid package slug anyway when it carries dots. The owning
+        // organization declares that mapping in a public index, which is read
+        // over raw.githubusercontent.com — no API call, so it keeps working
+        // when GitHub's unauthenticated API budget is exhausted. The mapping
+        // only *locates* a repository: the committed manifest there must still
+        // self-claim this exact package, so a wrong entry cannot hijack it.
+        let index_failure = match self.index_github_identity(org, name) {
+            Ok(identity) => {
+                self.remember_github_identity(org, name, &identity);
+                return Ok(identity);
+            }
+            Err(error) => format!("{guessed_failure}; org package index: {error:#}"),
+        };
+
         let discovered = self
             .search_github_identity(org, name)
-            .with_context(|| guessed_failure)?;
+            .with_context(|| index_failure)?;
         self.remember_github_identity(org, name, &discovered);
         Ok(discovered)
+    }
+
+    /// Resolve a package through its organization's declared package index.
+    fn index_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
+        if !env_bool("ZED_PKG_ORG_PACKAGE_INDEX", true) {
+            bail!("org package index lookups are disabled");
+        }
+        let url = org_package_index_url(org);
+        let response = self
+            .client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .with_context(|| format!("fetch org package index {url}"))?;
+        if !response.status().is_success() {
+            bail!("org package index {url} returned {}", response.status());
+        }
+        let mut body = Vec::new();
+        response
+            .take(MAX_ORG_INDEX_BYTES.saturating_add(1))
+            .read_to_end(&mut body)
+            .with_context(|| format!("read org package index {url}"))?;
+        if body.len() as u64 > MAX_ORG_INDEX_BYTES {
+            bail!("org package index {url} exceeds {MAX_ORG_INDEX_BYTES} bytes");
+        }
+        let index: OrgPackageIndex = serde_json::from_slice(&body)
+            .with_context(|| format!("decode org package index {url}"))?;
+        let identity = index_repository_for(&index, org, name)?;
+        // raw.githubusercontent.com again: locating a package must not spend
+        // the API budget the artifact and release lookups still need.
+        let manifest = self.fetch_manifest(&identity, "HEAD").with_context(|| {
+            format!(
+                "org package index names {}, which has no admissible {MANIFEST_FILE}",
+                identity.web_url()
+            )
+        })?;
+        if !manifest_self_claims_github_identity(&manifest, org, name, &identity) {
+            bail!(
+                "org package index names {}, whose committed {MANIFEST_FILE} does not self-claim package {org}/{name}",
+                identity.web_url()
+            );
+        }
+        Ok(identity)
     }
 
     fn search_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
@@ -359,11 +491,13 @@ impl FallbackRegistry {
         }
         let identity = self.resolve_github_identity(org, name)?;
         let tag = format!("v{version}");
-        if let Some(metadata) = self.release_sidecar(&identity, org, name, version, &tag) {
+        if let Some(mut metadata) = self.release_sidecar(&identity, org, name, version, &tag) {
+            self.fill_tag_commit(&identity, &mut metadata);
             self.remember(metadata.clone());
             return Ok(metadata);
         }
-        if let Some(metadata) = self.ghcr_version(&identity, org, name, version, &tag) {
+        if let Some(mut metadata) = self.ghcr_version(&identity, org, name, version, &tag) {
+            self.fill_tag_commit(&identity, &mut metadata);
             self.remember(metadata.clone());
             return Ok(metadata);
         }
@@ -413,12 +547,10 @@ impl FallbackRegistry {
             download_url,
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
-            mirrors: locators
-                .iter()
-                .map(zed_interfaces::mirror::MirrorDescriptorV1::from_locator)
-                .collect(),
+            mirrors: fallback_mirrors(&locators, &self.r2_base()),
             signatures: Vec::new(),
         };
+        self.fill_tag_commit(&identity, &mut metadata);
         self.fill_digest(&mut metadata)?;
         self.remember(metadata.clone());
         Ok(metadata)
@@ -603,10 +735,12 @@ impl FallbackRegistry {
             r2_public_base: self.config.r2_public_base.as_deref(),
             r2_public_key: self.config.r2_public_key.as_deref(),
         });
+        // The GitHub tag archive stays in the chain even when a digest is
+        // pinned. It is the last locator and is repacked deterministically, so
+        // a digest derived from it is reproducible, and every caller verifies
+        // the bytes against the pin. Skipping it broke installs whose digest
+        // had been derived from that same archive in another registry instance.
         for locator in locators {
-            if locator.kind == ArtifactSourceKind::GithubArchive && packed_digest {
-                continue;
-            }
             if locator.kind == ArtifactSourceKind::Registry {
                 continue;
             }
@@ -619,21 +753,14 @@ impl FallbackRegistry {
                     version.size,
                     max_artifact_bytes(),
                 )
-            } else if locator.kind == ArtifactSourceKind::GithubArchive
-                && let Some(token) = self.config.github_token.as_deref()
-            {
-                // github.com/<owner>/<repo>/archive/... is anonymous-only, so a
-                // private repository 404s there even with a token. The REST
-                // tarball endpoint honours the token and redirects to a signed
-                // codeload URL for the same tag.
-                let api_url = github_api_tarball_url(&identity, &version.vcs_tag);
-                download_url(&self.client, &api_url, dest, version.size, Some(token))
+            } else if locator.kind == ArtifactSourceKind::GithubArchive {
+                self.download_tag_archive(&identity, &locator.url, version, dest)
             } else {
                 download_url(&self.client, &locator.url, dest, version.size, None)
             };
             match result {
                 Ok(()) => return Ok(()),
-                Err(error) => errors.push(format!("{}: {error}", locator.url)),
+                Err(error) => errors.push(format!("{}: {error:#}", locator.url)),
             }
         }
         bail!(
@@ -837,6 +964,252 @@ struct GithubTag {
     name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct GithubCommit {
+    sha: String,
+}
+
+/// A full lowercase 40-hex Git commit id, or nothing. Abbreviated or oddly
+/// cased ids would never compare equal to a lock's recorded commit anyway.
+fn commit_sha(value: &str) -> Option<String> {
+    (value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    .then(|| value.to_owned())
+}
+
+/// Ceiling on files taken from one GitHub tag archive (inode-exhaustion guard,
+/// matching the store's extraction bound).
+const MAX_TAG_ARCHIVE_FILES: usize = 200_000;
+
+/// Rebuild, from a GitHub tag archive, the artifact `zed publish` would have
+/// produced for that tag.
+///
+/// `git archive` output has a `<repo>-<tag>/` root, a `pax_global_header`
+/// entry, and gzip bytes GitHub does not promise to keep stable; the store
+/// accepts none of that, and a raw polyglot manifest still declares targets
+/// the published artifact does not. The tree is extracted and packed with the
+/// same [`crate::pack::pack_all`] publish uses, keeping the root package.
+/// Packing is deterministic, so the digest names the tree rather than
+/// GitHub's compressor, and it equals the published digest for a tag packed
+/// by this packer — a pinned lockfile can be satisfied from github.com alone.
+fn repack_tag_archive(raw: &Path, org: &str, name: &str, version: &str, dest: &Path) -> Result<()> {
+    let staging = tempfile::tempdir().context("tag archive staging directory")?;
+    let tree = staging.path().join("tree");
+    extract_tag_archive(raw, &tree)?;
+    let manifest = crate::config::read_manifest(&tree)
+        .context("GitHub tag archive has no valid package manifest")?;
+    let declared = &manifest.package;
+    if declared.org != org || declared.name != name || declared.version != version {
+        bail!(
+            "GitHub tag archive declares {}/{}@{}, expected {org}/{name}@{version}",
+            declared.org,
+            declared.name,
+            declared.version
+        );
+    }
+    // The same manifest hardening `zed pack` / `zed publish` apply before
+    // packing; without it the derived `.zpkg.toml` — and so the digest —
+    // differs from the published artifact. Their preflights guard a local
+    // checkout's untracked inputs, which a tag archive cannot contain.
+    let manifest =
+        crate::pack_inputs::harden_manifest(crate::pack_guard::harden_manifest(manifest));
+    let out = staging.path().join("out");
+    // Pack only the target that provides the requested package. Packing every
+    // declared target would fail on a sibling rooted at generated output that
+    // a source tag cannot contain, making this package unresolvable for a
+    // reason that has nothing to do with it.
+    let root = if manifest.is_polyglot() {
+        let mut selected = None;
+        for (target, target_package) in manifest.target_package_names() {
+            let is_root = manifest
+                .targets
+                .get(&target)
+                .is_some_and(|section| section.dir == ".");
+            let provided = if is_root {
+                manifest.package.name.clone()
+            } else {
+                target_package
+            };
+            if provided == name {
+                selected = Some(target);
+                break;
+            }
+        }
+        let target = selected.with_context(|| {
+            format!("GitHub tag archive for {org}/{name}@{version} publishes no such package")
+        })?;
+        crate::pack::pack_target(&tree, &manifest, &target, Some(&out))
+            .context("repack GitHub tag archive")?
+    } else {
+        crate::pack::pack_all(&tree, &manifest, Some(&out))
+            .context("repack GitHub tag archive")?
+            .into_iter()
+            .find(|package| package.manifest.package.name == name)
+            .with_context(|| {
+                format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
+            })?
+    };
+    // Callers hand over a store cache path whose directory may not exist yet
+    // (a frozen fetch uses a fresh isolated store); `download_url` creates it
+    // for the other locators, so this one must too.
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).context("create repacked artifact directory")?;
+    }
+    fs::copy(&root.packed.path, dest).context("stage repacked GitHub tag archive")?;
+    Ok(())
+}
+
+/// Extract a GitHub tag archive's tree, without its `<repo>-<tag>/` root, into
+/// `tree`. Links, specials, and escaping paths fail closed and sizes are
+/// capped, exactly as in the store's extractor: the bytes come from the network.
+fn extract_tag_archive(raw: &Path, tree: &Path) -> Result<()> {
+    let budget = max_artifact_bytes();
+    let mut total: u64 = 0;
+    let mut files = 0usize;
+    let file = fs::File::open(raw).context("open GitHub tag archive")?;
+    let mut archive = tar::Archive::new(GzDecoder::new(file));
+    for entry in archive.entries().context("read GitHub tag archive")? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        let kind = entry.header().entry_type();
+        if matches!(
+            kind,
+            tar::EntryType::Directory | tar::EntryType::XGlobalHeader | tar::EntryType::XHeader
+        ) {
+            continue;
+        }
+        // `zed pack` walks the working tree and takes regular files only, so a
+        // published artifact never contains links or specials. Skipping them
+        // here keeps a repacked tag byte-identical to what publishing that tag
+        // produces; failing instead would make any repository that merely
+        // carries a symlink unresolvable from github.com.
+        if kind != tar::EntryType::Regular {
+            continue;
+        }
+        let mut components = path.components();
+        if !matches!(components.next(), Some(Component::Normal(_))) {
+            bail!(
+                "GitHub tag archive entry `{}` has no root directory",
+                path.display()
+            );
+        }
+        let rel = components.as_path();
+        if rel.as_os_str().is_empty()
+            || !rel.components().all(|c| matches!(c, Component::Normal(_)))
+        {
+            bail!(
+                "GitHub tag archive entry `{}` escapes the archive root",
+                path.display()
+            );
+        }
+        files += 1;
+        if files > MAX_TAG_ARCHIVE_FILES {
+            bail!("GitHub tag archive has more than {MAX_TAG_ARCHIVE_FILES} files; refusing");
+        }
+        let size = entry.header().size()?;
+        total = total.saturating_add(size);
+        if total > budget {
+            bail!("GitHub tag archive expands past the {budget}-byte cap; refusing");
+        }
+        let target = tree.join(rel);
+        if target.exists() {
+            bail!("GitHub tag archive repeats entry `{}`", path.display());
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out = fs::File::create(&target)?;
+        let copied = std::io::copy(&mut (&mut entry).take(size), &mut out)?;
+        if copied != size {
+            bail!("GitHub tag archive entry `{}` is truncated", path.display());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if entry.header().mode()? & 0o111 != 0 {
+                0o755
+            } else {
+                0o644
+            };
+            fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+        }
+    }
+    if files == 0 {
+        bail!("GitHub tag archive contains no files");
+    }
+    Ok(())
+}
+
+/// Mirrors recorded on fallback-derived version metadata. An R2 locator is a
+/// complete object URL, but an object-store mirror is a *base* that
+/// `artifact_urls` appends keys to, so every R2 locator collapses to the one
+/// public base. Registry locators are dropped: the registry already heads the
+/// mirror chain.
+fn fallback_mirrors(locators: &[ArtifactLocator], r2_base: &str) -> Vec<MirrorDescriptorV1> {
+    let mut mirrors: Vec<MirrorDescriptorV1> = Vec::new();
+    for locator in locators {
+        let mirror = match locator.kind {
+            ArtifactSourceKind::Registry => continue,
+            ArtifactSourceKind::R2 => {
+                MirrorDescriptorV1::object_store(r2_base.trim_end_matches('/'))
+            }
+            ArtifactSourceKind::GithubRelease
+            | ArtifactSourceKind::GithubPackages
+            | ArtifactSourceKind::GithubArchive => MirrorDescriptorV1::from_locator(locator),
+        };
+        if !mirrors
+            .iter()
+            .any(|seen| seen.kind == mirror.kind && seen.url == mirror.url)
+        {
+            mirrors.push(mirror);
+        }
+    }
+    mirrors
+}
+
+/// An organization's declaration of where its packages are published.
+#[derive(Debug, Deserialize)]
+struct OrgPackageIndex {
+    #[serde(default)]
+    schema: String,
+    #[serde(default)]
+    packages: std::collections::BTreeMap<String, OrgPackageEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrgPackageEntry {
+    #[serde(default)]
+    repository: String,
+}
+
+/// Where an organization declares its package index.
+fn org_package_index_url(org: &str) -> String {
+    let repo = env_nonempty("ZED_PKG_ORG_PACKAGE_INDEX_REPO")
+        .unwrap_or_else(|| ORG_PACKAGE_INDEX_REPO.to_string());
+    format!("https://raw.githubusercontent.com/{org}/{repo}/HEAD/{ORG_PACKAGE_INDEX_FILE}")
+}
+
+/// The repository an index names for one package, rejecting anything that is
+/// not a GitHub repository this organization could legitimately point at.
+fn index_repository_for(index: &OrgPackageIndex, org: &str, name: &str) -> Result<GithubIdentity> {
+    if index.schema != ORG_PACKAGE_INDEX_SCHEMA {
+        bail!(
+            "org package index for {org} declares schema `{}`, expected `{ORG_PACKAGE_INDEX_SCHEMA}`",
+            index.schema
+        );
+    }
+    let entry = index
+        .packages
+        .get(name)
+        .with_context(|| format!("org package index for {org} does not declare `{name}`"))?;
+    let identity = parse_github_identity(&entry.repository).with_context(|| {
+        format!("org package index entry for {org}/{name} is not a GitHub repository URL")
+    })?;
+    Ok(identity)
+}
+
 fn versions_from_tags(tags: &[GithubTag]) -> Vec<String> {
     let mut versions: Vec<String> = tags
         .iter()
@@ -1008,6 +1381,8 @@ pub fn github_guess_is_safe(org: &str, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
     use zed_interfaces::source::{r2_object_keys, resolve_r2_public_base};
 
     #[test]
@@ -1197,6 +1572,332 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
             r2_object_keys(&query)
                 .iter()
                 .any(|key| key == "github/zed-pkg/zed-cli/v0.1.0/zed-cli-0.1.0.tar.gz")
+        );
+    }
+
+    #[test]
+    fn pinned_downloads_try_the_tag_archive_last() {
+        let sha256 = "ab".repeat(32);
+        let query = ArtifactQuery {
+            org: "ores-wasm-loaders",
+            name: "owls-interfaces",
+            version: "0.1.1",
+            vcs_tag: "v0.1.1",
+            sha256: Some(&sha256),
+            format: ArtifactFormat::TarGz,
+            repo_url: Some("https://github.com/ores-wasm-loaders/owls-interfaces"),
+            artifacts: Some(&ArtifactsSection::EMPTY),
+            registry_base: None,
+            r2_public_base: Some("https://cdn.zpkg.net"),
+            r2_public_key: None,
+        };
+        let locators = artifact_locators(&query);
+        let archive = locators
+            .iter()
+            .position(|locator| locator.kind == ArtifactSourceKind::GithubArchive)
+            .expect("a pinned query still yields the GitHub tag archive");
+        assert_eq!(archive, locators.len() - 1);
+    }
+
+    const FIXTURE_MANIFEST: &[u8] = br#"[package]
+org = "ores-wasm-loaders"
+name = "owls-interfaces"
+version = "0.1.1"
+description = "Release manifests and host contracts for shared WASM loaders"
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/ores-wasm-loaders/owls-interfaces"
+
+[targets.repository]
+dir = "."
+"#;
+
+    /// A `git archive`-shaped tarball of a polyglot repository: pax global
+    /// header, `<root>/` directory, a nested file, and an executable, all
+    /// with non-zero mtimes.
+    fn git_archive_fixture(root: &str, mtime: u64, level: u32) -> tempfile::NamedTempFile {
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        let encoder = GzEncoder::new(
+            fs::File::create(fixture.path()).unwrap(),
+            Compression::new(level),
+        );
+        let mut builder = tar::Builder::new(encoder);
+        let comment = b"52 comment=291406191b55606e34b7980b42112e9c77ab690b\n";
+        let mut pax = tar::Header::new_ustar();
+        pax.set_entry_type(tar::EntryType::XGlobalHeader);
+        pax.set_size(comment.len() as u64);
+        builder
+            .append_data(&mut pax, "pax_global_header", comment.as_slice())
+            .unwrap();
+        let mut dir = tar::Header::new_ustar();
+        dir.set_entry_type(tar::EntryType::Directory);
+        dir.set_size(0);
+        dir.set_mode(0o775);
+        dir.set_mtime(mtime);
+        builder
+            .append_data(&mut dir, format!("{root}/"), std::io::empty())
+            .unwrap();
+        for (path, mode, body) in [
+            ("rust/src/lib.rs", 0o664, b"pub fn owls() {}\n".as_slice()),
+            (".zpkg.toml", 0o664, FIXTURE_MANIFEST),
+            ("scripts/run.sh", 0o775, b"#!/bin/sh\n".as_slice()),
+        ] {
+            let mut header = tar::Header::new_ustar();
+            header.set_size(body.len() as u64);
+            header.set_mode(mode);
+            header.set_mtime(mtime);
+            builder
+                .append_data(&mut header, format!("{root}/{path}"), body)
+                .unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+        fixture
+    }
+
+    fn repack(fixture: &Path, name: &str, dest: &Path) -> Result<()> {
+        repack_tag_archive(fixture, "ores-wasm-loaders", name, "0.1.1", dest)
+    }
+
+    #[test]
+    fn tag_archives_repack_into_the_published_root_artifact() {
+        let first = git_archive_fixture("owls-interfaces-0.1.1", 1_757_080_440, 9);
+        let second = git_archive_fixture("owls-interfaces-291406191b55", 42, 1);
+        let out = tempfile::tempdir().unwrap();
+        // `a` lands in a cache directory that does not exist yet, as in a
+        // frozen fetch's fresh isolated store.
+        let (a, b) = (
+            out.path().join("cache/artifacts/a.tar.gz"),
+            out.path().join("b.tar.gz"),
+        );
+        repack(first.path(), "owls-interfaces", &a).unwrap();
+        repack(second.path(), "owls-interfaces", &b).unwrap();
+        assert_eq!(sha256_and_size(&a).unwrap(), sha256_and_size(&b).unwrap());
+
+        let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(&a).unwrap()));
+        let mut manifest = None;
+        let mut entries = Vec::new();
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            assert_eq!(entry.header().mtime().unwrap(), 0, "{path}");
+            if path == "pkg/scripts/run.sh" {
+                assert_eq!(entry.header().mode().unwrap(), 0o755);
+            }
+            if path == "pkg/.zpkg.toml" {
+                let mut text = String::new();
+                entry.read_to_string(&mut text).unwrap();
+                manifest = Some(Manifest::parse(&text).unwrap());
+            }
+            entries.push(path);
+        }
+        for expected in [
+            "pkg/.zpkg.toml",
+            "pkg/rust/src/lib.rs",
+            "pkg/scripts/run.sh",
+        ] {
+            assert!(entries.iter().any(|path| path == expected), "{entries:?}");
+        }
+        // The published root artifact carries a single-target manifest, so a
+        // consumer that requests `rust` is not refused over `[targets]`.
+        let manifest = manifest.expect("packed manifest");
+        assert_eq!(manifest.package.name, "owls-interfaces");
+        assert!(manifest.targets.is_empty());
+        // `zed pack` hardens the manifest before packing; skipping that changes
+        // the derived manifest bytes and so the digest a lockfile pins.
+        for hardened in [".zedinclude", "**/.git/**"] {
+            assert!(
+                manifest.publish.exclude.iter().any(|rule| rule == hardened),
+                "{:?}",
+                manifest.publish.exclude
+            );
+        }
+    }
+
+    #[test]
+    fn the_org_package_index_lives_in_a_public_org_repository() {
+        assert_eq!(
+            org_package_index_url("oresoftware"),
+            "https://raw.githubusercontent.com/oresoftware/zed-packages/HEAD/packages.json"
+        );
+    }
+
+    #[test]
+    fn an_index_locates_a_repository_that_is_not_named_after_the_package() {
+        let index: OrgPackageIndex = serde_json::from_str(
+            r#"{
+                "schema": "zed.org-package-index/v1",
+                "packages": {
+                    "next-loggers": {
+                        "repository": "https://github.com/ores-otel/ores.otel.log"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let identity = index_repository_for(&index, "oresoftware", "next-loggers").unwrap();
+        assert_eq!(identity.owner, "ores-otel");
+        assert_eq!(identity.repo, "ores.otel.log");
+
+        // A package the organization has not declared is not resolvable, and a
+        // stale or hostile schema is refused outright rather than guessed at.
+        let missing = index_repository_for(&index, "oresoftware", "not-declared")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("does not declare"), "{missing}");
+
+        let wrong_schema: OrgPackageIndex =
+            serde_json::from_str(r#"{"schema": "something-else", "packages": {}}"#).unwrap();
+        let error = index_repository_for(&wrong_schema, "oresoftware", "next-loggers")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected"), "{error}");
+    }
+
+    #[test]
+    fn an_index_entry_must_be_a_github_repository_url() {
+        for repository in [
+            "https://example.test/ores-otel/ores.otel.log",
+            "not a url",
+            "",
+        ] {
+            let index: OrgPackageIndex = serde_json::from_str(&format!(
+                r#"{{"schema": "zed.org-package-index/v1",
+                     "packages": {{"next-loggers": {{"repository": "{repository}"}}}}}}"#
+            ))
+            .unwrap();
+            assert!(
+                index_repository_for(&index, "oresoftware", "next-loggers").is_err(),
+                "{repository} must not resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn tag_commits_must_be_full_lowercase_git_ids() {
+        let sha = "291406191b55606e34b7980b42112e9c77ab690b";
+        assert_eq!(commit_sha(sha).as_deref(), Some(sha));
+        assert_eq!(commit_sha("2914061"), None);
+        assert_eq!(commit_sha(&sha.to_ascii_uppercase()), None);
+        assert_eq!(commit_sha(&format!("{sha}0")), None);
+        assert_eq!(
+            commit_sha("../../../etc/passwd-padding-to-forty-chars"),
+            None
+        );
+    }
+
+    #[test]
+    fn tag_archive_identity_must_match_the_request() {
+        let fixture = git_archive_fixture("other-0.1.1", 1, 6);
+        let out = tempfile::tempdir().unwrap();
+        let error = repack(fixture.path(), "other", &out.path().join("a.tar.gz"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("expected ores-wasm-loaders/other@0.1.1"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn tag_archive_links_are_skipped_like_publish_does() {
+        // `zed pack` takes regular files only, so a link in the source tree is
+        // absent from the published artifact. A repacked tag must agree, or a
+        // repository that merely carries a symlink becomes uninstallable.
+        let fixture = tempfile::NamedTempFile::new().unwrap();
+        let mut builder = tar::Builder::new(GzEncoder::new(
+            fs::File::create(fixture.path()).unwrap(),
+            Compression::default(),
+        ));
+        let mut manifest = tar::Header::new_ustar();
+        manifest.set_size(FIXTURE_MANIFEST.len() as u64);
+        manifest.set_mode(0o644);
+        builder
+            .append_data(
+                &mut manifest,
+                "owls-interfaces-0.1.1/.zpkg.toml",
+                FIXTURE_MANIFEST,
+            )
+            .unwrap();
+        let body = b"pub fn owls() {}\n".as_slice();
+        let mut file = tar::Header::new_ustar();
+        file.set_size(body.len() as u64);
+        file.set_mode(0o644);
+        builder
+            .append_data(&mut file, "owls-interfaces-0.1.1/rust/src/lib.rs", body)
+            .unwrap();
+        let mut link = tar::Header::new_ustar();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_size(0);
+        builder
+            .append_link(
+                &mut link,
+                "owls-interfaces-0.1.1/clients/publish.sh",
+                "/etc/passwd",
+            )
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let packed = out.path().join("a.tar.gz");
+        repack(fixture.path(), "owls-interfaces", &packed).unwrap();
+
+        let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(&packed).unwrap()));
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(entries.iter().any(|path| path == "pkg/rust/src/lib.rs"));
+        assert!(
+            !entries.iter().any(|path| path.contains("publish.sh")),
+            "{entries:?}"
+        );
+    }
+
+    #[test]
+    fn fallback_mirrors_use_object_store_bases_not_object_urls() {
+        use zed_interfaces::mirror::MirrorKindV1;
+        let query = ArtifactQuery {
+            org: "ores-wasm-loaders",
+            name: "owls-interfaces",
+            version: "0.1.1",
+            vcs_tag: "v0.1.1",
+            sha256: None,
+            format: ArtifactFormat::TarGz,
+            repo_url: Some("https://github.com/ores-wasm-loaders/owls-interfaces"),
+            artifacts: None,
+            registry_base: None,
+            r2_public_base: Some("https://cdn.zpkg.net"),
+            r2_public_key: None,
+        };
+        let locators = artifact_locators(&query);
+        assert!(
+            locators
+                .iter()
+                .filter(|locator| locator.kind == ArtifactSourceKind::R2)
+                .count()
+                > 1
+        );
+        let mirrors = fallback_mirrors(&locators, "https://cdn.zpkg.net/");
+        let stores: Vec<_> = mirrors
+            .iter()
+            .filter(|mirror| mirror.kind == MirrorKindV1::ObjectStore)
+            .collect();
+        assert_eq!(stores.len(), 1);
+        assert_eq!(stores[0].url.as_deref(), Some("https://cdn.zpkg.net"));
+        assert!(
+            mirrors
+                .iter()
+                .all(|mirror| mirror.kind != MirrorKindV1::ZedRegistry)
         );
     }
 }

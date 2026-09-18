@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: role-contract-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -39,14 +39,18 @@ jobs:
 
   branch-fixup:
     if: github.event_name == 'pull_request' && github.head_ref == 'feat/role-contract-fix'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: feat/role-contract-fix
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: stable
@@ -67,6 +71,8 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Commit tested fixes and restore the permanent workflow
         run: |
+          set -euo pipefail
+          gh auth setup-git
           git fetch origin main --depth=1
           git show FETCH_HEAD:.github/workflows/role-contract.yml > .github/workflows/role-contract.yml
           rm -f .github/workflows/branch-fixup.yml tools/branch_fixup.py

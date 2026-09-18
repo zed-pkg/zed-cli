@@ -7,6 +7,7 @@ use toml::Value;
 struct CliArg {
     path: Vec<String>,
     long: String,
+    env: Option<String>,
 }
 
 #[derive(Debug)]
@@ -15,6 +16,7 @@ struct ContractFlag {
     path: Vec<String>,
     name: String,
     spellings: Vec<String>,
+    env: Option<String>,
 }
 
 fn contract_paths() -> Vec<PathBuf> {
@@ -60,6 +62,10 @@ fn collect_clap(
         args.push(CliArg {
             path: path.clone(),
             long: long.to_owned(),
+            env: arg
+                .get_env()
+                .and_then(|env| env.to_str())
+                .map(str::to_owned),
         });
     }
 
@@ -102,6 +108,7 @@ fn collect_contract(
                 path: path.clone(),
                 name: name.clone(),
                 spellings,
+                env: flag.get("env").and_then(Value::as_str).map(str::to_owned),
             });
         }
     }
@@ -129,6 +136,39 @@ fn flag_scope_applies(contract_path: &[String], clap_path: &[String]) -> bool {
         || (contract_path.len() < clap_path.len() && clap_path.starts_with(contract_path))
 }
 
+fn root_name(path: &[String]) -> Option<&str> {
+    path.first().map(String::as_str)
+}
+
+fn command_roots(command: &Command) -> BTreeSet<String> {
+    command
+        .get_subcommands()
+        .filter(|child| child.get_name() != "help")
+        .map(|child| child.get_name().to_owned())
+        .collect()
+}
+
+fn non_flags2env_public_roots() -> BTreeSet<String> {
+    let typed = zed_cli::cli_model::command();
+    let typed_roots = command_roots(&typed);
+    let external_model = zed_cli::external_subcommands::augment_root_command(typed.clone());
+    let external_roots = command_roots(&external_model);
+    let external = external_roots
+        .difference(&typed_roots)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(external, BTreeSet::from(["gitops".to_owned()]));
+
+    let inspect = zed_cli::inspect::command().get_name().to_owned();
+    assert_eq!(inspect, "inspect");
+    assert!(typed_roots.contains(&inspect));
+
+    let mut boundaries = external;
+    boundaries.insert(inspect);
+    boundaries
+}
+
 #[test]
 fn scope_matching_accepts_ancestors_but_not_siblings() {
     let release = vec!["release".to_owned()];
@@ -148,12 +188,7 @@ fn scope_matching_accepts_ancestors_but_not_siblings() {
 }
 
 #[test]
-fn public_cli_is_owned_by_repository_flags_contracts() {
-    // The public `zed` CLI is intentionally composed from the core parser and
-    // modular command families. Only contracts whose parser exports
-    // `ZED_PKG_COMMAND` belong to that root command namespace. Helper binaries
-    // such as `zed-task` and `zed-tool` own independent `ZED_TASK_COMMAND` /
-    // `ZED_TOOL_COMMAND` namespaces and must not be projected onto root `zed`.
+fn public_cli_that_reaches_flags2env_is_owned_by_repository_contracts() {
     let mut clap_commands = BTreeSet::new();
     let mut clap_args = Vec::new();
     collect_clap(
@@ -161,6 +196,12 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
         &mut Vec::new(),
         &mut clap_commands,
         &mut clap_args,
+    );
+
+    let non_flags2env = non_flags2env_public_roots();
+    assert_eq!(
+        non_flags2env,
+        BTreeSet::from(["gitops".to_owned(), "inspect".to_owned()])
     );
 
     let paths = contract_paths();
@@ -204,9 +245,17 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
         "expected independent helper-binary flags2env namespaces"
     );
 
+    for boundary in &non_flags2env {
+        assert!(
+            !contract_commands
+                .iter()
+                .any(|command| command == boundary || command.starts_with(&format!("{boundary} "))),
+            "non-flags2env namespace `{boundary}` was accidentally claimed by a root contract"
+        );
+    }
+
     let mut failures = Vec::new();
 
-    // Every explicitly modeled root-contract command must still exist publicly.
     for command in &contract_commands {
         if !clap_commands.contains(command) {
             failures.push(format!(
@@ -215,56 +264,82 @@ fn public_cli_is_owned_by_repository_flags_contracts() {
         }
     }
 
-    // A root contract command owns its public subtree. This allows intentionally
-    // coarser modular contracts such as `interop` to govern nested Nix command
-    // paths without pretending the core root contract owns every public family.
     for command in &clap_commands {
         let public_path = command.split(' ').map(str::to_owned).collect::<Vec<_>>();
+        if root_name(&public_path).is_some_and(|root| non_flags2env.contains(root)) {
+            continue;
+        }
         let owned = contract_commands.iter().any(|owner| {
             let owner_path = owner.split(' ').map(str::to_owned).collect::<Vec<_>>();
             scope_is_ancestor_or_same(&owner_path, &public_path)
         });
         if !owned {
             failures.push(format!(
-                "public Clap command `{command}` has no repository-owned ZED_PKG_COMMAND flags2env contract"
+                "public Clap command `{command}` reaches flags2env but has no repository-owned ZED_PKG_COMMAND contract"
             ));
         }
     }
 
     for arg in &clap_args {
-        let matched = contract_flags.iter().any(|flag| {
-            flag.spellings.iter().any(|spelling| spelling == &arg.long)
-                && flag_scope_applies(&flag.path, &arg.path)
-        });
-        if matched {
+        if root_name(&arg.path).is_some_and(|root| non_flags2env.contains(root)) {
             continue;
         }
 
-        let same_spelling_elsewhere = contract_flags
+        let candidates = contract_flags
             .iter()
-            .filter(|flag| flag.spellings.iter().any(|spelling| spelling == &arg.long))
-            .map(|flag| {
-                format!(
-                    "{}:{} ({})",
-                    flag.contract,
-                    if flag.path.is_empty() {
-                        "<root>".to_owned()
-                    } else {
-                        flag.path.join(" ")
-                    },
-                    flag.name
-                )
+            .filter(|flag| {
+                flag.spellings.iter().any(|spelling| spelling == &arg.long)
+                    && flag_scope_applies(&flag.path, &arg.path)
             })
             .collect::<Vec<_>>();
-        failures.push(format!(
-            "public Clap option `--{}` at `{}` has no matching root/ancestor/same-scope ZED_PKG_COMMAND flags2env spelling; elsewhere={same_spelling_elsewhere:?}",
-            arg.long,
-            if arg.path.is_empty() {
-                "<root>".to_owned()
-            } else {
-                arg.path.join(" ")
-            }
-        ));
+        if candidates.is_empty() {
+            let same_spelling_elsewhere = contract_flags
+                .iter()
+                .filter(|flag| flag.spellings.iter().any(|spelling| spelling == &arg.long))
+                .map(|flag| {
+                    format!(
+                        "{}:{} ({})",
+                        flag.contract,
+                        if flag.path.is_empty() {
+                            "<root>".to_owned()
+                        } else {
+                            flag.path.join(" ")
+                        },
+                        flag.name
+                    )
+                })
+                .collect::<Vec<_>>();
+            failures.push(format!(
+                "public Clap option `--{}` at `{}` has no matching root/ancestor/same-scope ZED_PKG_COMMAND flags2env spelling; elsewhere={same_spelling_elsewhere:?}",
+                arg.long,
+                if arg.path.is_empty() {
+                    "<root>".to_owned()
+                } else {
+                    arg.path.join(" ")
+                }
+            ));
+            continue;
+        }
+
+        if let Some(clap_env) = &arg.env
+            && !candidates
+                .iter()
+                .any(|flag| flag.env.as_deref() == Some(clap_env.as_str()))
+        {
+            failures.push(format!(
+                "public Clap option `--{}` at `{}` binds env `{clap_env}` but matching flags2env owners bind {:?}",
+                arg.long,
+                if arg.path.is_empty() {
+                    "<root>".to_owned()
+                } else {
+                    arg.path.join(" ")
+                },
+                candidates
+                    .iter()
+                    .map(|flag| flag.env.as_deref().unwrap_or("<none>"))
+                    .collect::<Vec<_>>()
+            ));
+        }
     }
 
     assert!(
