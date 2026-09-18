@@ -13,7 +13,7 @@ Why it exists:
   CI config, `.github/`, and READMEs are stripped by default. Licenses are
   always kept.
 - **pnpm philosophy.** One content-addressed copy per machine under
-  `~/.zed-pkg/store`, symlinked into each project's `zed_modules/`. No more
+  `$ZED_PKG_HOME/store` (normally `~/.zpkg/store`), symlinked into each project's configured Zed dependency tree. Existing machines with only the legacy `~/.zed-pkg` store keep using it automatically. No more
   hefty per-project dependency folders.
 - **Provenance by tags.** Publishing requires a VCS tag matching the version
   (`v{version}` by default) pointing at the exact published commit; the tag
@@ -545,7 +545,7 @@ The lifecycle order is native prerequisites → `pre-install` hooks → build �
 `post-install` hooks → cache promotion → project materialization. Hooks and
 builds run in an isolated staging copy—never inside the immutable source store
 or consumer project—and results cache by source hash, platform, lifecycle
-commands, selected target, and native route under `~/.zed-pkg/builds/`.
+commands, selected target, and native route under `$ZED_PKG_HOME/builds/` (normally `~/.zpkg/builds/`).
 Because a build runs arbitrary author code, it remains independently opt-in:
 pass `--allow-build` (or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or
 replace a
@@ -630,13 +630,13 @@ shared-auth directly.
 Passwords are read from a hidden terminal prompt and never stored. For
 non-interactive use, pass `--password-stdin` or inject
 `ZED_PKG_AUTH_PASSWORD`. Access and rotating refresh tokens are stored in
-`~/.zed-pkg/auth/sessions.toml`; the directory is mode `0700` and the file is
+`$ZED_PKG_HOME/auth/sessions.toml` (normally `~/.zpkg/auth/sessions.toml`); the directory is mode `0700` and the file is
 mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
 always removes the local session.
 
 ## Containers & OCI
 
-Symlinks into `$HOME/.zed-pkg` do not survive a `COPY --from=build` between
+Symlinks into the host Zed store (`$ZED_PKG_HOME`, normally `$HOME/.zpkg`) do not survive a `COPY --from=build` between
 image stages. Project-owned CLI runtimes therefore default to copy mode: their
 complete runtime roots, command links, and portable environment lock all live
 below the workspace. The published builder image supports an intentionally
@@ -660,7 +660,7 @@ ENV PATH="/app/.zed/tools/bin:${PATH}"
 RUN node --version \
  && python3 --version \
  && ! command -v zed \
- && test ! -e /home/zed/.zed-pkg
+ && test ! -e /home/zed/.zpkg
 ```
 
 `node`/`nodejs`, `npm`, `npx`, and `corepack` come from the locked Node.js
@@ -715,7 +715,7 @@ consumer would:
    pointing at the installed package.
 
 The whole workspace lives under your home directory at
-`~/.zed-pkg/r2g/<org>-<name>-<uuid-v4>/` (registry + consumer + store). Unique
+`$ZED_PKG_HOME/r2g/<org>-<name>-<uuid-v4>/` (normally `~/.zpkg/r2g/...`; registry + consumer + store). Unique
 run directories prevent stale or concurrent state from masking a failure and
 are left behind for inspection (pass `--clean`, or set `--r2g-root` to
 relocate them). `zed test-local` is a backwards-compatible alias.
@@ -767,7 +767,7 @@ If the smoke test passes here, it will pass for your users.
 `zed install` is safe to run from many processes at once (two terminals,
 parallel CI runners). Store extraction and reference updates retain their
 existing advisory locks. A dependency-bearing first install also takes a
-project-scoped manifest lock under `~/.zed-pkg/locks/projects/`, keyed by the
+project-scoped manifest lock under `$ZED_PKG_HOME/locks/projects/` (normally `~/.zpkg/locks/projects/`), keyed by the
 canonical project path. Two simultaneous first installs therefore create one
 valid manifest and merge distinct direct dependencies instead of losing one
 caller's intent. Exact conflicting requirements fail rather than choosing a
