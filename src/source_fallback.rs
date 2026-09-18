@@ -38,6 +38,14 @@ use crate::registry::{HttpRegistry, Registry};
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_GITHUB_REPO_CANDIDATES: usize = 12;
 const GITHUB_REPOSITORY_SEARCH_URL: &str = "https://api.github.com/search/repositories";
+/// Public repository, under the package's own organization, whose index maps a
+/// package name to the repository that publishes it. Overridable for test orgs.
+const ORG_PACKAGE_INDEX_REPO: &str = "zed-packages";
+const ORG_PACKAGE_INDEX_FILE: &str = "packages.json";
+/// The index is small, operator-authored JSON; a hostile or corrupted one must
+/// not be able to turn resolution into an out-of-memory abort.
+const MAX_ORG_INDEX_BYTES: u64 = 256 * 1024;
+const ORG_PACKAGE_INDEX_SCHEMA: &str = "zed.org-package-index/v1";
 
 thread_local! {
     static CLI_OVERRIDES: RefCell<Option<CliFallbackOverrides>> = const { RefCell::new(None) };
@@ -298,11 +306,70 @@ impl FallbackRegistry {
             Err(error) => format!("{} was unavailable: {error:#}", guessed.web_url()),
         };
 
+        // A package's repository need not be named after it: `next-loggers` is
+        // published from `ores-otel/ores.otel.log`, and a repository name is
+        // not a valid package slug anyway when it carries dots. The owning
+        // organization declares that mapping in a public index, which is read
+        // over raw.githubusercontent.com — no API call, so it keeps working
+        // when GitHub's unauthenticated API budget is exhausted. The mapping
+        // only *locates* a repository: the committed manifest there must still
+        // self-claim this exact package, so a wrong entry cannot hijack it.
+        let index_failure = match self.index_github_identity(org, name) {
+            Ok(identity) => {
+                self.remember_github_identity(org, name, &identity);
+                return Ok(identity);
+            }
+            Err(error) => format!("{guessed_failure}; org package index: {error:#}"),
+        };
+
         let discovered = self
             .search_github_identity(org, name)
-            .with_context(|| guessed_failure)?;
+            .with_context(|| index_failure)?;
         self.remember_github_identity(org, name, &discovered);
         Ok(discovered)
+    }
+
+    /// Resolve a package through its organization's declared package index.
+    fn index_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
+        if !env_bool("ZED_PKG_ORG_PACKAGE_INDEX", true) {
+            bail!("org package index lookups are disabled");
+        }
+        let url = org_package_index_url(org);
+        let response = self
+            .client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .with_context(|| format!("fetch org package index {url}"))?;
+        if !response.status().is_success() {
+            bail!("org package index {url} returned {}", response.status());
+        }
+        let mut body = Vec::new();
+        response
+            .take(MAX_ORG_INDEX_BYTES.saturating_add(1))
+            .read_to_end(&mut body)
+            .with_context(|| format!("read org package index {url}"))?;
+        if body.len() as u64 > MAX_ORG_INDEX_BYTES {
+            bail!("org package index {url} exceeds {MAX_ORG_INDEX_BYTES} bytes");
+        }
+        let index: OrgPackageIndex = serde_json::from_slice(&body)
+            .with_context(|| format!("decode org package index {url}"))?;
+        let identity = index_repository_for(&index, org, name)?;
+        // raw.githubusercontent.com again: locating a package must not spend
+        // the API budget the artifact and release lookups still need.
+        let manifest = self.fetch_manifest(&identity, "HEAD").with_context(|| {
+            format!(
+                "org package index names {}, which has no admissible {MANIFEST_FILE}",
+                identity.web_url()
+            )
+        })?;
+        if !manifest_self_claims_github_identity(&manifest, org, name, &identity) {
+            bail!(
+                "org package index names {}, whose committed {MANIFEST_FILE} does not self-claim package {org}/{name}",
+                identity.web_url()
+            );
+        }
+        Ok(identity)
     }
 
     fn search_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
@@ -948,14 +1015,42 @@ fn repack_tag_archive(raw: &Path, org: &str, name: &str, version: &str, dest: &P
     // checkout's untracked inputs, which a tag archive cannot contain.
     let manifest =
         crate::pack_inputs::harden_manifest(crate::pack_guard::harden_manifest(manifest));
-    let packages = crate::pack::pack_all(&tree, &manifest, Some(&staging.path().join("out")))
-        .context("repack GitHub tag archive")?;
-    let root = packages
-        .into_iter()
-        .find(|package| package.manifest.package.name == name)
-        .with_context(|| {
-            format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
+    let out = staging.path().join("out");
+    // Pack only the target that provides the requested package. Packing every
+    // declared target would fail on a sibling rooted at generated output that
+    // a source tag cannot contain, making this package unresolvable for a
+    // reason that has nothing to do with it.
+    let root = if manifest.is_polyglot() {
+        let mut selected = None;
+        for (target, target_package) in manifest.target_package_names() {
+            let is_root = manifest
+                .targets
+                .get(&target)
+                .is_some_and(|section| section.dir == ".");
+            let provided = if is_root {
+                manifest.package.name.clone()
+            } else {
+                target_package
+            };
+            if provided == name {
+                selected = Some(target);
+                break;
+            }
+        }
+        let target = selected.with_context(|| {
+            format!("GitHub tag archive for {org}/{name}@{version} publishes no such package")
         })?;
+        crate::pack::pack_target(&tree, &manifest, &target, Some(&out))
+            .context("repack GitHub tag archive")?
+    } else {
+        crate::pack::pack_all(&tree, &manifest, Some(&out))
+            .context("repack GitHub tag archive")?
+            .into_iter()
+            .find(|package| package.manifest.package.name == name)
+            .with_context(|| {
+                format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
+            })?
+    };
     // Callers hand over a store cache path whose directory may not exist yet
     // (a frozen fetch uses a fresh isolated store); `download_url` creates it
     // for the other locators, so this one must too.
@@ -985,12 +1080,13 @@ fn extract_tag_archive(raw: &Path, tree: &Path) -> Result<()> {
         ) {
             continue;
         }
+        // `zed pack` walks the working tree and takes regular files only, so a
+        // published artifact never contains links or specials. Skipping them
+        // here keeps a repacked tag byte-identical to what publishing that tag
+        // produces; failing instead would make any repository that merely
+        // carries a symlink unresolvable from github.com.
         if kind != tar::EntryType::Regular {
-            bail!(
-                "GitHub tag archive entry `{}` has unsupported type {kind:?} \
-                 (only files and directories are allowed)",
-                path.display()
-            );
+            continue;
         }
         let mut components = path.components();
         if !matches!(components.next(), Some(Component::Normal(_))) {
@@ -1071,6 +1167,47 @@ fn fallback_mirrors(locators: &[ArtifactLocator], r2_base: &str) -> Vec<MirrorDe
         }
     }
     mirrors
+}
+
+/// An organization's declaration of where its packages are published.
+#[derive(Debug, Deserialize)]
+struct OrgPackageIndex {
+    #[serde(default)]
+    schema: String,
+    #[serde(default)]
+    packages: std::collections::BTreeMap<String, OrgPackageEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrgPackageEntry {
+    #[serde(default)]
+    repository: String,
+}
+
+/// Where an organization declares its package index.
+fn org_package_index_url(org: &str) -> String {
+    let repo = env_nonempty("ZED_PKG_ORG_PACKAGE_INDEX_REPO")
+        .unwrap_or_else(|| ORG_PACKAGE_INDEX_REPO.to_string());
+    format!("https://raw.githubusercontent.com/{org}/{repo}/HEAD/{ORG_PACKAGE_INDEX_FILE}")
+}
+
+/// The repository an index names for one package, rejecting anything that is
+/// not a GitHub repository this organization could legitimately point at.
+fn index_repository_for(index: &OrgPackageIndex, org: &str, name: &str) -> Result<GithubIdentity> {
+    if index.schema != ORG_PACKAGE_INDEX_SCHEMA {
+        bail!(
+            "org package index for {org} declares schema `{}`, expected `{ORG_PACKAGE_INDEX_SCHEMA}`",
+            index.schema
+        );
+    }
+    let entry = index
+        .packages
+        .get(name)
+        .with_context(|| format!("org package index for {org} does not declare `{name}`"))?;
+    let identity = parse_github_identity(&entry.repository).with_context(|| {
+        format!("org package index entry for {org}/{name} is not a GitHub repository URL")
+    })?;
+    Ok(identity)
 }
 
 fn versions_from_tags(tags: &[GithubTag]) -> Vec<String> {
@@ -1579,6 +1716,65 @@ dir = "."
     }
 
     #[test]
+    fn the_org_package_index_lives_in_a_public_org_repository() {
+        assert_eq!(
+            org_package_index_url("oresoftware"),
+            "https://raw.githubusercontent.com/oresoftware/zed-packages/HEAD/packages.json"
+        );
+    }
+
+    #[test]
+    fn an_index_locates_a_repository_that_is_not_named_after_the_package() {
+        let index: OrgPackageIndex = serde_json::from_str(
+            r#"{
+                "schema": "zed.org-package-index/v1",
+                "packages": {
+                    "next-loggers": {
+                        "repository": "https://github.com/ores-otel/ores.otel.log"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let identity = index_repository_for(&index, "oresoftware", "next-loggers").unwrap();
+        assert_eq!(identity.owner, "ores-otel");
+        assert_eq!(identity.repo, "ores.otel.log");
+
+        // A package the organization has not declared is not resolvable, and a
+        // stale or hostile schema is refused outright rather than guessed at.
+        let missing = index_repository_for(&index, "oresoftware", "not-declared")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("does not declare"), "{missing}");
+
+        let wrong_schema: OrgPackageIndex =
+            serde_json::from_str(r#"{"schema": "something-else", "packages": {}}"#).unwrap();
+        let error = index_repository_for(&wrong_schema, "oresoftware", "next-loggers")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected"), "{error}");
+    }
+
+    #[test]
+    fn an_index_entry_must_be_a_github_repository_url() {
+        for repository in [
+            "https://example.test/ores-otel/ores.otel.log",
+            "not a url",
+            "",
+        ] {
+            let index: OrgPackageIndex = serde_json::from_str(&format!(
+                r#"{{"schema": "zed.org-package-index/v1",
+                     "packages": {{"next-loggers": {{"repository": "{repository}"}}}}}}"#
+            ))
+            .unwrap();
+            assert!(
+                index_repository_for(&index, "oresoftware", "next-loggers").is_err(),
+                "{repository} must not resolve"
+            );
+        }
+    }
+
+    #[test]
     fn tag_commits_must_be_full_lowercase_git_ids() {
         let sha = "291406191b55606e34b7980b42112e9c77ab690b";
         assert_eq!(commit_sha(sha).as_deref(), Some(sha));
@@ -1605,24 +1801,66 @@ dir = "."
     }
 
     #[test]
-    fn tag_archive_links_fail_closed() {
+    fn tag_archive_links_are_skipped_like_publish_does() {
+        // `zed pack` takes regular files only, so a link in the source tree is
+        // absent from the published artifact. A repacked tag must agree, or a
+        // repository that merely carries a symlink becomes uninstallable.
         let fixture = tempfile::NamedTempFile::new().unwrap();
         let mut builder = tar::Builder::new(GzEncoder::new(
             fs::File::create(fixture.path()).unwrap(),
             Compression::default(),
         ));
+        let mut manifest = tar::Header::new_ustar();
+        manifest.set_size(FIXTURE_MANIFEST.len() as u64);
+        manifest.set_mode(0o644);
+        builder
+            .append_data(
+                &mut manifest,
+                "owls-interfaces-0.1.1/.zpkg.toml",
+                FIXTURE_MANIFEST,
+            )
+            .unwrap();
+        let body = b"pub fn owls() {}\n".as_slice();
+        let mut file = tar::Header::new_ustar();
+        file.set_size(body.len() as u64);
+        file.set_mode(0o644);
+        builder
+            .append_data(&mut file, "owls-interfaces-0.1.1/rust/src/lib.rs", body)
+            .unwrap();
         let mut link = tar::Header::new_ustar();
         link.set_entry_type(tar::EntryType::Symlink);
         link.set_size(0);
         builder
-            .append_link(&mut link, "repo-1.0.0/escape", "/etc/passwd")
+            .append_link(
+                &mut link,
+                "owls-interfaces-0.1.1/clients/publish.sh",
+                "/etc/passwd",
+            )
             .unwrap();
         builder.into_inner().unwrap().finish().unwrap();
+
         let out = tempfile::tempdir().unwrap();
-        let error = repack(fixture.path(), "repo", &out.path().join("a.tar.gz"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("unsupported type"), "{error}");
+        let packed = out.path().join("a.tar.gz");
+        repack(fixture.path(), "owls-interfaces", &packed).unwrap();
+
+        let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(&packed).unwrap()));
+        let entries: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert!(entries.iter().any(|path| path == "pkg/rust/src/lib.rs"));
+        assert!(
+            !entries.iter().any(|path| path.contains("publish.sh")),
+            "{entries:?}"
+        );
     }
 
     #[test]

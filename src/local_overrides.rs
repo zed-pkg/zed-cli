@@ -8,9 +8,20 @@ use zed_interfaces::paths::MANIFEST_FILE;
 /// Read the optional [overrides.path] table without requiring a newer
 /// zed-interfaces crate at this parsing boundary. The shared interface owns the
 /// schema; this compatibility reader keeps the CLI rollout contract-first.
+///
+/// Manifestless installs intentionally provide their root manifest through
+/// `config::with_manifest_override` and never create `.zpkg.toml`. The normal
+/// installer parses that in-memory manifest before calling this compatibility
+/// reader. A missing file therefore means there can be no authored local path
+/// override to recover here; treat it as an empty table rather than violating
+/// the manifestless contract by requiring a disk manifest.
 pub(crate) fn read(project: &Path) -> Result<BTreeMap<String, String>> {
     let path = project.join(MANIFEST_FILE);
-    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+    };
     let document: toml::Value =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let Some(table) = document
@@ -187,13 +198,20 @@ pub(crate) fn resolve(
 mod tests {
     use anyhow::{Result, bail};
 
-    use super::expand_env_with;
+    use super::{expand_env_with, read};
 
     fn test_lookup(name: &str) -> Result<String> {
         match name {
             "ZED_OVERRIDE_ROOT" => Ok("/tmp/zed-root".to_string()),
             other => bail!("unexpected variable {other}"),
         }
+    }
+
+    #[test]
+    fn missing_manifest_has_no_authored_path_overrides() -> Result<()> {
+        let project = tempfile::tempdir()?;
+        assert!(read(project.path())?.is_empty());
+        Ok(())
     }
 
     #[test]
