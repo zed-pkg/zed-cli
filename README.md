@@ -366,6 +366,49 @@ zed install --frozen --do-not-write-new-manifest
 Without the flag, Zed fails instead of inventing a misleading manifest from the
 whole locked graph.
 
+### Manifest-authoritative VCS source composition
+
+Repository composition belongs in `.zpkg.toml`; native VCS metadata is a
+projection or migration input, not a second dependency graph authority:
+
+```toml
+[interop.source-composition]
+checkout_dir = ".zed/vcs"
+git_submodule_dir = "submodules"
+
+[interop.source-composition.sources.lib]
+vcs = "git"
+url = "https://github.com/acme/lib.git"
+role = "workspace"
+projection = "git-submodule"
+path = "apps/lib"
+package = "acme/lib"
+branch = "main"
+recursive = true
+
+[interop.source-composition.sources.docs]
+vcs = "hg"
+url = "https://example.com/hg/docs"
+role = "inventory"
+```
+
+`zed workspace sync` reconciles these declarations. Git-submodule projections
+produce a deterministic `.gitmodules` with a generated header, run Git's
+submodule config/sync/init/update plumbing, and create a missing gitlink when
+the declared path is absent. Existing authored `.gitmodules` is never silently
+overwritten; migrate it explicitly with `zed overtake --git-submodules` first.
+
+Ordinary checkout sources support Git, Mercurial, Jujutsu, and Sapling in the
+initial certified transport path. Dirty checkouts fail closed. Git-submodule
+exact commits are owned by the superproject gitlink and Zed lock; the manifest
+may name a branch as transport intent but may not provide a competing mutable
+`revision`.
+
+Package materialization roots, ordinary VCS checkout roots, Git-submodule roots,
+and individual source roots must be disjoint. New generated consumers use
+`.zed/pkg`; ordinary VCS checkouts default to `.zed/vcs`; Git-submodule
+projections default to `submodules`.
+
 ### Local development overrides
 
 A developer may replace a registry dependency with a local checkout:
