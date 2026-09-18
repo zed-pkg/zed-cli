@@ -1,0 +1,39 @@
+name: Temporary rustfmt materializer
+
+on:
+  push:
+    branches:
+      - fix/rustfmt-cargo-source-provenance-20260918
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out formatting branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: fix/rustfmt-cargo-source-provenance-20260918
+          fetch-depth: 0
+      - name: Install exact Rust toolchain with rustfmt
+        uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Apply rustfmt and remove this temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          git diff --exit-code --quiet -- src/ops.rs && {
+            echo '::error::expected rustfmt to change src/ops.rs'
+            exit 1
+          }
+          git rm .github/workflows/rustfmt-autofix-temp.yml
+          git config user.name 'ORESoftware'
+          git config user.email 'alex@oresoftware.com'
+          git add src/ops.rs
+          git commit -m 'style(rust): apply rustfmt to Cargo source provenance hardening'
+          git push origin HEAD:fix/rustfmt-cargo-source-provenance-20260918
