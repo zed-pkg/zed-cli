@@ -4136,6 +4136,30 @@ version = "0.1.0"
 edition = "2021"
 "#,
         )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "canonical-cloud"
+name = "canonical-lib"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/canonical-cloud/canonical-lib-core"
+"#,
+        )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "canonical-cloud"
+name = "canonical-lib"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/canonical-cloud/canonical-lib-core"
+"#,
+        )?;
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
 
         write_toolchain_wiring(&project, &roots)?;
@@ -4187,6 +4211,105 @@ edition = "2021"
                 ["canonical-lib"]["path"]
                 .as_str(),
             Some("zed_modules/canonical-cloud/canonical-lib-core")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_does_not_patch_same_crate_name_from_different_repository() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/lookalike");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "canonical-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "acme"
+name = "lookalike"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/lookalike"
+"#,
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(
+            !generated.contains("[patch.\"https://github.com/canonical-cloud/canonical-lib-core\"]"),
+            "{generated}"
+        );
+        assert!(generated.contains("[patch.crates-io]"), "{generated}");
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_git_patch_normalizes_trailing_dot_git() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tool = { version = "=1.0.0", git = "https://github.com/acme/tool.git/" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "tool"
+version = "1.0.0"
+edition = "2021"
+"#,
+        )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "acme"
+name = "tool"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/tool"
+"#,
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(
+            generated.contains("[patch.\"https://github.com/acme/tool.git/\"]"),
+            "{generated}"
         );
         Ok(())
     }
