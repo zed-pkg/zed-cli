@@ -38,6 +38,14 @@ use crate::registry::{HttpRegistry, Registry};
 const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_GITHUB_REPO_CANDIDATES: usize = 12;
 const GITHUB_REPOSITORY_SEARCH_URL: &str = "https://api.github.com/search/repositories";
+/// Public repository, under the package's own organization, whose index maps a
+/// package name to the repository that publishes it. Overridable for test orgs.
+const ORG_PACKAGE_INDEX_REPO: &str = "zed-packages";
+const ORG_PACKAGE_INDEX_FILE: &str = "packages.json";
+/// The index is small, operator-authored JSON; a hostile or corrupted one must
+/// not be able to turn resolution into an out-of-memory abort.
+const MAX_ORG_INDEX_BYTES: u64 = 256 * 1024;
+const ORG_PACKAGE_INDEX_SCHEMA: &str = "zed.org-package-index/v1";
 
 thread_local! {
     static CLI_OVERRIDES: RefCell<Option<CliFallbackOverrides>> = const { RefCell::new(None) };
@@ -298,11 +306,70 @@ impl FallbackRegistry {
             Err(error) => format!("{} was unavailable: {error:#}", guessed.web_url()),
         };
 
+        // A package's repository need not be named after it: `next-loggers` is
+        // published from `ores-otel/ores.otel.log`, and a repository name is
+        // not a valid package slug anyway when it carries dots. The owning
+        // organization declares that mapping in a public index, which is read
+        // over raw.githubusercontent.com — no API call, so it keeps working
+        // when GitHub's unauthenticated API budget is exhausted. The mapping
+        // only *locates* a repository: the committed manifest there must still
+        // self-claim this exact package, so a wrong entry cannot hijack it.
+        let index_failure = match self.index_github_identity(org, name) {
+            Ok(identity) => {
+                self.remember_github_identity(org, name, &identity);
+                return Ok(identity);
+            }
+            Err(error) => format!("{guessed_failure}; org package index: {error:#}"),
+        };
+
         let discovered = self
             .search_github_identity(org, name)
-            .with_context(|| guessed_failure)?;
+            .with_context(|| index_failure)?;
         self.remember_github_identity(org, name, &discovered);
         Ok(discovered)
+    }
+
+    /// Resolve a package through its organization's declared package index.
+    fn index_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
+        if !env_bool("ZED_PKG_ORG_PACKAGE_INDEX", true) {
+            bail!("org package index lookups are disabled");
+        }
+        let url = org_package_index_url(org);
+        let response = self
+            .client
+            .get(&url)
+            .header("Accept", "application/json")
+            .send()
+            .with_context(|| format!("fetch org package index {url}"))?;
+        if !response.status().is_success() {
+            bail!("org package index {url} returned {}", response.status());
+        }
+        let mut body = Vec::new();
+        response
+            .take(MAX_ORG_INDEX_BYTES.saturating_add(1))
+            .read_to_end(&mut body)
+            .with_context(|| format!("read org package index {url}"))?;
+        if body.len() as u64 > MAX_ORG_INDEX_BYTES {
+            bail!("org package index {url} exceeds {MAX_ORG_INDEX_BYTES} bytes");
+        }
+        let index: OrgPackageIndex = serde_json::from_slice(&body)
+            .with_context(|| format!("decode org package index {url}"))?;
+        let identity = index_repository_for(&index, org, name)?;
+        // raw.githubusercontent.com again: locating a package must not spend
+        // the API budget the artifact and release lookups still need.
+        let manifest = self.fetch_manifest(&identity, "HEAD").with_context(|| {
+            format!(
+                "org package index names {}, which has no admissible {MANIFEST_FILE}",
+                identity.web_url()
+            )
+        })?;
+        if !manifest_self_claims_github_identity(&manifest, org, name, &identity) {
+            bail!(
+                "org package index names {}, whose committed {MANIFEST_FILE} does not self-claim package {org}/{name}",
+                identity.web_url()
+            );
+        }
+        Ok(identity)
     }
 
     fn search_github_identity(&self, org: &str, name: &str) -> Result<GithubIdentity> {
@@ -1102,6 +1169,47 @@ fn fallback_mirrors(locators: &[ArtifactLocator], r2_base: &str) -> Vec<MirrorDe
     mirrors
 }
 
+/// An organization's declaration of where its packages are published.
+#[derive(Debug, Deserialize)]
+struct OrgPackageIndex {
+    #[serde(default)]
+    schema: String,
+    #[serde(default)]
+    packages: std::collections::BTreeMap<String, OrgPackageEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OrgPackageEntry {
+    #[serde(default)]
+    repository: String,
+}
+
+/// Where an organization declares its package index.
+fn org_package_index_url(org: &str) -> String {
+    let repo = env_nonempty("ZED_PKG_ORG_PACKAGE_INDEX_REPO")
+        .unwrap_or_else(|| ORG_PACKAGE_INDEX_REPO.to_string());
+    format!("https://raw.githubusercontent.com/{org}/{repo}/HEAD/{ORG_PACKAGE_INDEX_FILE}")
+}
+
+/// The repository an index names for one package, rejecting anything that is
+/// not a GitHub repository this organization could legitimately point at.
+fn index_repository_for(index: &OrgPackageIndex, org: &str, name: &str) -> Result<GithubIdentity> {
+    if index.schema != ORG_PACKAGE_INDEX_SCHEMA {
+        bail!(
+            "org package index for {org} declares schema `{}`, expected `{ORG_PACKAGE_INDEX_SCHEMA}`",
+            index.schema
+        );
+    }
+    let entry = index
+        .packages
+        .get(name)
+        .with_context(|| format!("org package index for {org} does not declare `{name}`"))?;
+    let identity = parse_github_identity(&entry.repository).with_context(|| {
+        format!("org package index entry for {org}/{name} is not a GitHub repository URL")
+    })?;
+    Ok(identity)
+}
+
 fn versions_from_tags(tags: &[GithubTag]) -> Vec<String> {
     let mut versions: Vec<String> = tags
         .iter()
@@ -1603,6 +1711,65 @@ dir = "."
                 manifest.publish.exclude.iter().any(|rule| rule == hardened),
                 "{:?}",
                 manifest.publish.exclude
+            );
+        }
+    }
+
+    #[test]
+    fn the_org_package_index_lives_in_a_public_org_repository() {
+        assert_eq!(
+            org_package_index_url("oresoftware"),
+            "https://raw.githubusercontent.com/oresoftware/zed-packages/HEAD/packages.json"
+        );
+    }
+
+    #[test]
+    fn an_index_locates_a_repository_that_is_not_named_after_the_package() {
+        let index: OrgPackageIndex = serde_json::from_str(
+            r#"{
+                "schema": "zed.org-package-index/v1",
+                "packages": {
+                    "next-loggers": {
+                        "repository": "https://github.com/ores-otel/ores.otel.log"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let identity = index_repository_for(&index, "oresoftware", "next-loggers").unwrap();
+        assert_eq!(identity.owner, "ores-otel");
+        assert_eq!(identity.repo, "ores.otel.log");
+
+        // A package the organization has not declared is not resolvable, and a
+        // stale or hostile schema is refused outright rather than guessed at.
+        let missing = index_repository_for(&index, "oresoftware", "not-declared")
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("does not declare"), "{missing}");
+
+        let wrong_schema: OrgPackageIndex =
+            serde_json::from_str(r#"{"schema": "something-else", "packages": {}}"#).unwrap();
+        let error = index_repository_for(&wrong_schema, "oresoftware", "next-loggers")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected"), "{error}");
+    }
+
+    #[test]
+    fn an_index_entry_must_be_a_github_repository_url() {
+        for repository in [
+            "https://example.test/ores-otel/ores.otel.log",
+            "not a url",
+            "",
+        ] {
+            let index: OrgPackageIndex = serde_json::from_str(&format!(
+                r#"{{"schema": "zed.org-package-index/v1",
+                     "packages": {{"next-loggers": {{"repository": "{repository}"}}}}}}"#
+            ))
+            .unwrap();
+            assert!(
+                index_repository_for(&index, "oresoftware", "next-loggers").is_err(),
+                "{repository} must not resolve"
             );
         }
     }
