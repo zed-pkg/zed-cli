@@ -17,21 +17,29 @@ use crate::registry::Registry;
 
 const CANONICAL_ZED_HOME_DIR_NAME: &str = ".zpkg";
 
-fn default_zed_home() -> Result<PathBuf> {
-    let user_home =
-        dirs::home_dir().context("could not determine home directory; set ZED_PKG_HOME")?;
+fn select_default_zed_home(user_home: &Path) -> PathBuf {
     let canonical = user_home.join(CANONICAL_ZED_HOME_DIR_NAME);
     let legacy = user_home.join(ZED_HOME_DIR_NAME);
     if canonical.exists() || !legacy.exists() {
-        Ok(canonical)
+        canonical
     } else {
+        legacy
+    }
+}
+
+fn default_zed_home() -> Result<PathBuf> {
+    let user_home =
+        dirs::home_dir().context("could not determine home directory; set ZED_PKG_HOME")?;
+    let selected = select_default_zed_home(&user_home);
+    let legacy = user_home.join(ZED_HOME_DIR_NAME);
+    if selected == legacy {
         eprintln!(
             "note: using legacy Zed home {}; set ZED_PKG_HOME={} or migrate it to use the new default",
             legacy.display(),
-            canonical.display()
+            user_home.join(CANONICAL_ZED_HOME_DIR_NAME).display()
         );
-        Ok(legacy)
     }
+    Ok(selected)
 }
 
 #[derive(Debug, Clone)]
@@ -647,6 +655,27 @@ url = "https://localhost/manifestless/consumer"
         assert!(cfg.home.is_absolute());
         assert_eq!(cfg.home, std::env::current_dir().unwrap().join(".zed-home"));
         assert_eq!(cfg.registry, "https://reg.example.com");
+    }
+
+    #[test]
+    fn default_home_prefers_new_location_but_preserves_legacy_only_store() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            select_default_zed_home(home.path()),
+            home.path().join(CANONICAL_ZED_HOME_DIR_NAME)
+        );
+
+        fs::create_dir_all(home.path().join(ZED_HOME_DIR_NAME)).unwrap();
+        assert_eq!(
+            select_default_zed_home(home.path()),
+            home.path().join(ZED_HOME_DIR_NAME)
+        );
+
+        fs::create_dir_all(home.path().join(CANONICAL_ZED_HOME_DIR_NAME)).unwrap();
+        assert_eq!(
+            select_default_zed_home(home.path()),
+            home.path().join(CANONICAL_ZED_HOME_DIR_NAME)
+        );
     }
 
     #[test]
