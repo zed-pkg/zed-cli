@@ -317,11 +317,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 };
                 let _guard = zed_cli::project_lock::acquire(&project, operation)?;
                 zed_cli::transaction::recover_pending(&project)?;
-                if frozen {
-                    source_composition::sync_frozen(&project)?;
-                } else {
-                    source_composition::sync(&project)?;
-                }
+                source_composition::sync_for_install(&project, frozen)?;
                 managed_install::install_with_permissions(
                     &project,
                     &cfg,
