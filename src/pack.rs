@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,102 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
+fn slash_relative(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn source_relative_submodule<'a>(submodule: &'a str, source_root: &str) -> Option<&'a str> {
+    let source_root = source_root.trim_matches('/');
+    if source_root.is_empty() {
+        return Some(submodule);
+    }
+    if submodule == source_root {
+        return Some("");
+    }
+    submodule
+        .strip_prefix(source_root)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .or_else(|| {
+            source_root
+                .strip_prefix(submodule)
+                .and_then(|suffix| suffix.strip_prefix('/'))
+                .map(|_| "")
+        })
+}
+
+fn subtree_is_conclusively_excluded(relative: &str, excludes: &[String]) -> bool {
+    if relative.is_empty() {
+        return false;
+    }
+    let canonical = format!("{}/**", relative.trim_matches('/'));
+    excludes
+        .iter()
+        .any(|pattern| pattern.eq_ignore_ascii_case(&canonical))
+}
+
+fn verify_git_submodules_for_pack(project: &Path, manifest: &Manifest) -> Result<()> {
+    let Some(submodules) = crate::git_submodules::pack_submodules(project)? else {
+        return Ok(());
+    };
+    let canonical_project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing package root {}", project.display()))?;
+    let project_prefix = canonical_project
+        .strip_prefix(submodules.canonical_root())
+        .with_context(|| {
+            format!(
+                "package root {} is outside Git superproject {}",
+                canonical_project.display(),
+                submodules.canonical_root().display()
+            )
+        })?;
+    let project_prefix = slash_relative(project_prefix);
+
+    let mut included = BTreeSet::<String>::new();
+    let mut consider_source = |source_dir: &str, source: &Path, derived: &Manifest| -> Result<()> {
+        let root_relative = if source_dir == "." || source_dir.is_empty() {
+            project_prefix.clone()
+        } else if project_prefix.is_empty() {
+            source_dir.trim_matches('/').to_string()
+        } else {
+            format!("{}/{}", project_prefix, source_dir.trim_matches('/'))
+        };
+        let ignore_rules = crate::publish_ignore::read_rules(source)?;
+        let excludes = crate::publish_ignore::effective_artifact_excludes(derived, &ignore_rules);
+        for submodule in submodules.paths() {
+            let Some(relative) = source_relative_submodule(submodule, &root_relative) else {
+                continue;
+            };
+            if !subtree_is_conclusively_excluded(relative, &excludes) {
+                included.insert(submodule.to_string());
+            }
+        }
+        Ok(())
+    };
+
+    if !manifest.is_polyglot() {
+        consider_source(".", project, manifest)?;
+    } else {
+        for (target, _) in manifest.target_package_names() {
+            let derived = manifest
+                .manifest_for_target(&target)
+                .with_context(|| format!("target `{target}` disappeared during pack preflight"))?;
+            let section = manifest
+                .targets
+                .get(&target)
+                .with_context(|| format!("target `{target}` disappeared during pack preflight"))?;
+            consider_source(&section.dir, &project.join(&section.dir), &derived)?;
+        }
+    }
+
+    submodules.verify(&included.into_iter().collect::<Vec<_>>())
+}
+
 /// Build the pruned, deterministic `tar.gz` artifact (the default format).
 pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Result<PackResult> {
     pack_format(project, manifest, out_dir, ArtifactFormat::TarGz)
@@ -66,6 +163,7 @@ pub fn pack_all(
     manifest: &Manifest,
     out_dir: Option<&Path>,
 ) -> Result<Vec<PackagedTarget>> {
+    verify_git_submodules_for_pack(project, manifest)?;
     if !manifest.is_polyglot() {
         return Ok(vec![PackagedTarget {
             target: None,
