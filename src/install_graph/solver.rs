@@ -1,5 +1,6 @@
 use super::artifact::{split_key, validate_version_identity};
 use super::*;
+use zed_interfaces::manifest::{WorkspaceSection, WorkspaceSourceRole};
 use zed_interfaces::registry::PackageMetadata;
 use zed_interfaces::version::VersionScheme;
 use zed_lib::requirement_matches;
@@ -68,23 +69,34 @@ struct SolverWorkspace {
 }
 
 impl SolverWorkspace {
-    fn discover(project: &Path) -> Self {
+    fn discover(project: &Path) -> Result<Self> {
+        let mut discovered = Self::default();
         let mut current = Some(project);
         while let Some(directory) = current {
             if directory.join(MANIFEST_FILE).is_file()
                 && let Ok(manifest) = read_manifest(directory)
                 && let Some(workspace) = manifest.workspace.as_ref()
             {
-                return Self::collect(directory, &workspace.members);
+                discovered = Self::collect(directory, workspace)?;
+                break;
             }
             current = directory.parent();
         }
-        Self::default()
+
+        // Explicit local overrides belong to the manifest being installed and
+        // intentionally outrank ambient/ancestor workspace discovery.
+        if project.join(MANIFEST_FILE).is_file() {
+            let manifest = read_manifest(project)?;
+            for (key, path) in crate::local_paths::resolve(project, &manifest)? {
+                discovered.insert_member(&path, Some(&key))?;
+            }
+        }
+        Ok(discovered)
     }
 
-    fn collect(root: &Path, patterns: &[String]) -> Self {
+    fn collect(root: &Path, workspace_section: &WorkspaceSection) -> Result<Self> {
         let mut workspace = Self::default();
-        for pattern in patterns {
+        for pattern in &workspace_section.members {
             let mut candidates = vec![root.to_path_buf()];
             for segment in pattern.split('/') {
                 let mut next = Vec::new();
@@ -115,19 +127,55 @@ impl SolverWorkspace {
                 candidates = next;
             }
             for member_dir in candidates {
-                if let Ok(member) = read_manifest(&member_dir) {
-                    workspace.members.insert(
-                        member.full_name(),
-                        WorkspaceMember {
-                            version: member.package.version,
-                            scheme: member.package.version_scheme,
-                            dependencies: member.dependencies,
-                        },
-                    );
+                // Preserve historical glob behavior: unrelated directories
+                // without valid package manifests are not workspace members.
+                if read_manifest(&member_dir).is_ok() {
+                    workspace.insert_member(&member_dir, None)?;
                 }
             }
         }
-        workspace
+
+        for (name, source) in &workspace_section.sources {
+            if source.role != WorkspaceSourceRole::Workspace {
+                continue;
+            }
+            let path = root.join(workspace_section.source_path(name, source));
+            let expected = source.package.as_deref().with_context(|| {
+                format!("workspace source `{name}` has no package identity")
+            })?;
+            if !path.is_dir() {
+                bail!(
+                    "workspace source `{name}` for `{expected}` is not materialized at {}; run `zed workspace sync`",
+                    path.display()
+                );
+            }
+            workspace.insert_member(&path, Some(expected))?;
+        }
+
+        Ok(workspace)
+    }
+
+    fn insert_member(&mut self, member_dir: &Path, expected: Option<&str>) -> Result<()> {
+        let member = read_manifest(member_dir)
+            .with_context(|| format!("reading workspace package {}", member_dir.display()))?;
+        let key = member.full_name();
+        if let Some(expected) = expected
+            && key != expected
+        {
+            bail!(
+                "workspace source expected package `{expected}` but {} provides `{key}`",
+                member_dir.display()
+            );
+        }
+        self.members.insert(
+            key,
+            WorkspaceMember {
+                version: member.package.version,
+                scheme: member.package.version_scheme,
+                dependencies: member.dependencies,
+            },
+        );
+        Ok(())
     }
 }
 
@@ -712,7 +760,7 @@ pub(super) fn solve_install(
         )?;
     }
 
-    let mut workspace = SolverWorkspace::discover(project);
+    let mut workspace = SolverWorkspace::discover(project)?;
     let root_key = manifest.full_name();
     if manifest.dependencies.contains_key(&root_key) {
         // A direct self-dependency is an explicit published-artifact test.
