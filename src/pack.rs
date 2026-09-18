@@ -589,6 +589,11 @@ exclude = ["vendor/child/**"]
 "#,
         )
         .unwrap();
+        fs::write(
+            root.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            excluded.to_toml_string().unwrap(),
+        )
+        .unwrap();
         let packed = pack_all(root.path(), &excluded, None).unwrap();
         let files = archive_files(&packed[0].packed.path);
         assert!(!files.iter().any(|path| path.starts_with("pkg/vendor/child/")));
