@@ -162,6 +162,8 @@ fn validate_name(name: &str) -> Result<()> {
 fn validate_safe_relative(path: &str, field: &str) -> Result<()> {
     let p = Path::new(path);
     if path.trim().is_empty()
+        || path.len() > 4096
+        || path.chars().any(char::is_control)
         || p.is_absolute()
         || path.contains('\\')
         || p.components().any(|component| {
@@ -173,7 +175,7 @@ fn validate_safe_relative(path: &str, field: &str) -> Result<()> {
             )
         })
     {
-        bail!("{field} `{path}` must be a safe project-relative path");
+        bail!("{field} `{path}` must be a safe project-relative path of at most 4096 bytes without control characters");
     }
     Ok(())
 }
@@ -217,11 +219,19 @@ fn is_reserved_source_path(path: &str) -> bool {
 }
 
 fn is_allowed_repo_url(url: &str) -> bool {
-    !url.chars().any(char::is_whitespace)
-        && (["https://", "http://", "ssh://", "git://", "git+ssh://"]
-            .iter()
-            .any(|scheme| url.starts_with(scheme))
-            || (url.contains('@') && url.contains(':') && !url.contains("://")))
+    if url.chars().any(char::is_whitespace) || url.chars().any(char::is_control) {
+        return false;
+    }
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = url.strip_prefix(scheme) {
+            let authority = rest.split('/').next().unwrap_or_default();
+            return !authority.is_empty() && !authority.contains('@');
+        }
+    }
+    ["ssh://", "git://", "git+ssh://"]
+        .iter()
+        .any(|scheme| url.starts_with(scheme))
+        || (url.contains('@') && url.contains(':') && !url.contains("://"))
 }
 
 fn validate_scalar(value: &str, field: &str, source: &str) -> Result<()> {
@@ -566,6 +576,7 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
             owned.extend([
                 "--name".to_string(),
                 name,
+                "--".to_string(),
                 source.url.clone(),
                 source.path.clone(),
             ]);
@@ -732,7 +743,7 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
             if let Some(revision) = source.revision.as_deref() {
                 run(&path, "git", &["checkout", "--detach", revision])?;
             } else if let Some(branch) = source.branch.as_deref() {
-                run(&path, "git", &["checkout", "--", branch])?;
+                run(&path, "git", &["switch", branch])?;
                 run(
                     &path,
                     "git",
