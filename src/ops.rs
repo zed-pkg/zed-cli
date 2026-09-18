@@ -784,6 +784,7 @@ fn required_go_work_version(project: &Path, paths: &[PathBuf]) -> String {
 struct CargoPatchEntry {
     package: String,
     config_path: String,
+    git_sources: BTreeSet<String>,
 }
 
 fn cargo_package_name(root: &Path) -> Result<Option<String>> {
@@ -814,12 +815,76 @@ fn cargo_package_name(root: &Path) -> Result<Option<String>> {
     Ok(Some(name.to_string()))
 }
 
+fn collect_cargo_git_sources(
+    dependencies: Option<&toml::value::Table>,
+    sources: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    let Some(dependencies) = dependencies else {
+        return;
+    };
+    for (dependency_name, specification) in dependencies {
+        let Some(specification) = specification.as_table() else {
+            continue;
+        };
+        let Some(git) = specification.get("git").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        let package = specification
+            .get("package")
+            .and_then(toml::Value::as_str)
+            .unwrap_or(dependency_name);
+        sources
+            .entry(package.to_owned())
+            .or_default()
+            .insert(git.to_owned());
+    }
+}
+
+fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let manifest_path = project.join("Cargo.toml");
+    if !manifest_path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let document = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let document: toml::Value = toml::from_str(&document)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let mut sources = BTreeMap::new();
+
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        collect_cargo_git_sources(
+            document.get(section).and_then(toml::Value::as_table),
+            &mut sources,
+        );
+    }
+    collect_cargo_git_sources(
+        document
+            .get("workspace")
+            .and_then(toml::Value::as_table)
+            .and_then(|workspace| workspace.get("dependencies"))
+            .and_then(toml::Value::as_table),
+        &mut sources,
+    );
+    if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values().filter_map(toml::Value::as_table) {
+            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                collect_cargo_git_sources(
+                    target.get(section).and_then(toml::Value::as_table),
+                    &mut sources,
+                );
+            }
+        }
+    }
+    Ok(sources)
+}
+
 fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
+    let git_sources = cargo_git_sources_by_package(project)?;
     let mut entries: BTreeMap<String, String> = BTreeMap::new();
     for path in paths {
         let Some(package) = cargo_package_name(path)? else {
             eprintln!(
-                "warning: {} has no root [package].name; emitting a Cargo paths override without a crates.io patch entry",
+                "warning: {} has no root [package].name; emitting a Cargo paths override without a Cargo patch entry",
                 path.display()
             );
             continue;
@@ -839,6 +904,7 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
     Ok(entries
         .into_iter()
         .map(|(package, config_path)| CargoPatchEntry {
+            git_sources: git_sources.get(&package).cloned().unwrap_or_default(),
             package,
             config_path,
         })
@@ -911,9 +977,10 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                 // Cargo's `paths` override can replace a package that already
                 // participates in resolution, but it cannot introduce an
                 // unpublished crate by itself. Pair it with config-level
-                // `[patch.crates-io]` entries so a normal version dependency can
-                // resolve to the installed Zed crate without touching the
-                // consumer's Cargo.toml.
+                // patches for crates.io and for any matching Git dependency
+                // sources already declared by the consumer. This lets Zed
+                // materialize a private Git-backed crate locally without
+                // rewriting the consumer's Cargo.toml or embedding credentials.
                 let mut config_paths: Vec<String> = paths
                     .iter()
                     .map(|path| relative_to(project, path))
@@ -940,6 +1007,24 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                             toml_basic_string(&patch.package)?,
                             toml_basic_string(&patch.config_path)?,
                         ));
+                    }
+
+                    let source_urls: BTreeSet<&str> = patches
+                        .iter()
+                        .flat_map(|patch| patch.git_sources.iter().map(String::as_str))
+                        .collect();
+                    for source in source_urls {
+                        doc.push_str(&format!("\n[patch.{}]\n", toml_basic_string(source)?));
+                        for patch in patches
+                            .iter()
+                            .filter(|patch| patch.git_sources.contains(source))
+                        {
+                            doc.push_str(&format!(
+                                "{} = {{ path = {} }}\n",
+                                toml_basic_string(&patch.package)?,
+                                toml_basic_string(&patch.config_path)?,
+                            ));
+                        }
                     }
                 }
                 let path = zed_dir.join("cargo-paths.toml");
@@ -1367,6 +1452,17 @@ fn install_locked(
 ) -> Result<InstallOutcome> {
     let mode = effective_install_mode(mode);
     let manifest = read_manifest(project)?;
+    let raw_local_overrides = crate::local_overrides::read(project)?;
+    if frozen && !raw_local_overrides.is_empty() {
+        bail!(
+            "--frozen refuses mutable [overrides.path] sources; remove the local overrides or run a non-frozen developer install"
+        );
+    }
+    let local_overrides = if raw_local_overrides.is_empty() {
+        BTreeMap::new()
+    } else {
+        crate::local_overrides::resolve(project, manifest.modules_dir(), &raw_local_overrides)?
+    };
     let configured_adapter = manifest
         .install
         .adapter
@@ -1460,6 +1556,43 @@ fn install_locked(
         }
         while let Some((org, name, req_str)) = queue.pop_front() {
             let key = format!("{org}/{name}");
+
+            if let Some(local_dir) = local_overrides.get(&key) {
+                if workspace_member_for_dependency(&manifest, workspace.as_ref(), &key).is_some() {
+                    bail!(
+                        "dependency `{key}` is both a workspace member and [overrides.path] source; choose one local authority"
+                    );
+                }
+                let local_manifest = read_manifest(local_dir).with_context(|| {
+                    format!(
+                        "reading local path override `{key}` from {}",
+                        local_dir.display()
+                    )
+                })?;
+                if local_manifest.full_name() != key {
+                    bail!(
+                        "local path override `{key}` points to package `{}` at {}",
+                        local_manifest.full_name(),
+                        local_dir.display()
+                    );
+                }
+                let requirement = Requirement::parse(&req_str);
+                if !requirement.matches(&local_manifest.package.version) {
+                    bail!(
+                        "local path override {key}@{} does not satisfy `{req_str}`",
+                        local_manifest.package.version
+                    );
+                }
+                if !workspace_links.contains_key(&key) {
+                    workspace_links.insert(key.clone(), local_dir.clone());
+                    for (sub_key, sub_req) in local_manifest.dependencies {
+                        let (sub_org, sub_name) = split_key(&sub_key)?;
+                        queue.push_back((sub_org, sub_name, sub_req));
+                    }
+                }
+                continue;
+            }
+
             // Workspace members short-circuit the registry entirely: link
             // the member's source tree, then keep resolving its deps.
             if let Some(member_dir) =
@@ -1582,6 +1715,17 @@ fn install_locked(
                 let (sub_org, sub_name) = split_key(&sub_key)?;
                 queue.push_back((sub_org, sub_name, sub_req));
             }
+        }
+        let unused: Vec<&str> = local_overrides
+            .keys()
+            .filter(|key| !workspace_links.contains_key(*key))
+            .map(String::as_str)
+            .collect();
+        if !unused.is_empty() {
+            bail!(
+                "[overrides.path] contains package(s) not reachable from the dependency graph: {}",
+                unused.join(", ")
+            );
         }
     }
 
@@ -4130,6 +4274,86 @@ edition = "2021"
             Some("zed_modules/acme/tool")
         );
         assert!(generated.contains("merge this fragment into .cargo/config.toml"));
+    }
+
+    #[test]
+    fn rust_cargo_config_patches_matching_git_source_to_zed_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/canonical-cloud/canonical-lib-core");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+domain = { package = "canonical-lib", version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "canonical-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        let parsed: toml::Value = toml::from_str(&generated)?;
+        assert_eq!(
+            parsed["patch"]["https://github.com/canonical-cloud/canonical-lib-core"]
+                ["canonical-lib"]["path"]
+                .as_str(),
+            Some("zed_modules/canonical-cloud/canonical-lib-core")
+        );
+        assert!(!generated.contains("x-access-token"));
+        assert!(!generated.contains("d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_patches_workspace_git_dependency() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/canonical-cloud/canonical-lib-core");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[workspace]
+members = ["app"]
+
+[workspace.dependencies]
+canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "canonical-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        let parsed: toml::Value = toml::from_str(&generated)?;
+        assert_eq!(
+            parsed["patch"]["https://github.com/canonical-cloud/canonical-lib-core"]
+                ["canonical-lib"]["path"]
+                .as_str(),
+            Some("zed_modules/canonical-cloud/canonical-lib-core")
+        );
+        Ok(())
     }
 
     #[test]

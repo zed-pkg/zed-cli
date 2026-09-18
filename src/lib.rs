@@ -29,6 +29,7 @@ pub mod install_graph;
 pub mod interactive;
 pub mod lifecycle;
 pub mod local_cli;
+pub(crate) mod local_overrides;
 pub mod local_registry;
 pub mod lock_waiter;
 pub mod managed_install;
