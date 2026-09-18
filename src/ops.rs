@@ -247,13 +247,15 @@ fn workspace_with_local_overrides(
     if overrides.is_empty() {
         return Ok(workspace);
     }
-    let workspace = workspace.get_or_insert_with(|| WorkspaceInfo {
-        root: project.to_path_buf(),
-        members: BTreeMap::new(),
-    });
+    workspace
+        .get_or_insert_with(|| WorkspaceInfo {
+            root: project.to_path_buf(),
+            members: BTreeMap::new(),
+        })
+        .members
+        .extend(overrides);
     // Explicit local overrides intentionally outrank ambient workspace members.
-    workspace.members.extend(overrides);
-    Ok(Some(workspace.clone()))
+    Ok(workspace)
 }
 
 fn expand_glob_segment(candidates: Vec<PathBuf>, segment: &str) -> Vec<PathBuf> {
