@@ -666,6 +666,15 @@ struct CargoPatchEntry {
     git_sources: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CargoGitSelector {
+    rev: Option<String>,
+    tag: Option<String>,
+    branch: Option<String>,
+}
+
+type CargoGitSources = BTreeMap<String, BTreeMap<String, CargoGitSelector>>;
+
 fn cargo_package_name(root: &Path) -> Result<Option<String>> {
     let manifest_path = root.join("Cargo.toml");
     if !manifest_path.is_file() {
@@ -694,12 +703,42 @@ fn cargo_package_name(root: &Path) -> Result<Option<String>> {
     Ok(Some(name.to_string()))
 }
 
+fn safe_cargo_git_source(dependency_name: &str, raw: &str) -> Result<String> {
+    match reqwest::Url::parse(raw) {
+        Ok(url) => {
+            let http_like = matches!(url.scheme(), "http" | "https" | "git+http" | "git+https");
+            if url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || (http_like && !url.username().is_empty())
+            {
+                bail!(
+                    "Cargo dependency `{dependency_name}` uses a credential-bearing or ambiguous Git URL; keep credentials outside Cargo.toml before generating Zed Cargo patches"
+                );
+            }
+            Ok(raw.to_owned())
+        }
+        Err(_) if raw.contains("://") => bail!(
+            "Cargo dependency `{dependency_name}` has a malformed Git URL; refusing to copy it into generated Zed Cargo configuration"
+        ),
+        // Cargo also accepts SCP-style SSH identities such as
+        // git@github.com:org/repo.git. The username is transport identity, not
+        // an embedded secret, and must remain byte-for-byte identical for the
+        // source patch to match Cargo's source identity. Query/fragment text is
+        // ambiguous in this syntax and can carry credentials, so fail closed.
+        Err(_) if raw.contains('?') || raw.contains('#') => bail!(
+            "Cargo dependency `{dependency_name}` uses an ambiguous SCP-style Git source; query/fragment text is not copied into generated Zed Cargo configuration"
+        ),
+        Err(_) => Ok(raw.to_owned()),
+    }
+}
+
 fn collect_cargo_git_sources(
     dependencies: Option<&toml::value::Table>,
-    sources: &mut BTreeMap<String, BTreeSet<String>>,
-) {
+    sources: &mut CargoGitSources,
+) -> Result<()> {
     let Some(dependencies) = dependencies else {
-        return;
+        return Ok(());
     };
     for (dependency_name, specification) in dependencies {
         let Some(specification) = specification.as_table() else {
@@ -712,14 +751,161 @@ fn collect_cargo_git_sources(
             .get("package")
             .and_then(toml::Value::as_str)
             .unwrap_or(dependency_name);
-        sources
-            .entry(package.to_owned())
-            .or_default()
-            .insert(git.to_owned());
+        let selector = CargoGitSelector {
+            rev: specification
+                .get("rev")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned),
+            tag: specification
+                .get("tag")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned),
+            branch: specification
+                .get("branch")
+                .and_then(toml::Value::as_str)
+                .map(str::to_owned),
+        };
+        let selector_count = [
+            selector.rev.is_some(),
+            selector.tag.is_some(),
+            selector.branch.is_some(),
+        ]
+        .into_iter()
+        .filter(|present| *present)
+        .count();
+        if selector_count > 1 {
+            bail!(
+                "Cargo dependency `{dependency_name}` declares multiple Git selectors; refusing ambiguous Zed source substitution"
+            );
+        }
+
+        let git = safe_cargo_git_source(dependency_name, git)?;
+        let entry = sources.entry(package.to_owned()).or_default();
+        if let Some(existing) = entry.get(&git)
+            && existing != &selector
+        {
+            bail!(
+                "Cargo package `{package}` declares the same Git source with conflicting selectors; refusing ambiguous Zed source substitution"
+            );
+        }
+        entry.insert(git, selector);
     }
+    Ok(())
 }
 
-fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTreeSet<String>>> {
+fn collect_cargo_git_sources_from_document(
+    document: &toml::Value,
+    sources: &mut CargoGitSources,
+) -> Result<()> {
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        collect_cargo_git_sources(
+            document.get(section).and_then(toml::Value::as_table),
+            sources,
+        )?;
+    }
+    collect_cargo_git_sources(
+        document
+            .get("workspace")
+            .and_then(toml::Value::as_table)
+            .and_then(|workspace| workspace.get("dependencies"))
+            .and_then(toml::Value::as_table),
+        sources,
+    )?;
+    if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
+        for target in targets.values().filter_map(toml::Value::as_table) {
+            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                collect_cargo_git_sources(
+                    target.get(section).and_then(toml::Value::as_table),
+                    sources,
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cargo_workspace_globset(
+    workspace: &toml::value::Table,
+    field: &str,
+) -> Result<Option<globset::GlobSet>> {
+    let Some(value) = workspace.get(field) else {
+        return Ok(None);
+    };
+    let entries = value
+        .as_array()
+        .with_context(|| format!("[workspace].{field} must be an array"))?;
+    let mut builder = globset::GlobSetBuilder::new();
+    for entry in entries {
+        let pattern = entry
+            .as_str()
+            .with_context(|| format!("[workspace].{field} entries must be strings"))?;
+        builder.add(
+            globset::Glob::new(pattern)
+                .with_context(|| format!("invalid [workspace].{field} glob"))?,
+        );
+    }
+    Ok(Some(builder.build().with_context(|| {
+        format!("building [workspace].{field} glob set")
+    })?))
+}
+
+fn cargo_workspace_member_manifests(
+    project: &Path,
+    document: &toml::Value,
+) -> Result<Vec<PathBuf>> {
+    let Some(workspace) = document.get("workspace").and_then(toml::Value::as_table) else {
+        return Ok(Vec::new());
+    };
+    let Some(members) = cargo_workspace_globset(workspace, "members")? else {
+        return Ok(Vec::new());
+    };
+    let excludes = cargo_workspace_globset(workspace, "exclude")?;
+    let mut manifests = Vec::new();
+
+    for entry in walkdir::WalkDir::new(project)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.path() == project || !entry.file_type().is_dir() {
+                return true;
+            }
+            !matches!(
+                entry.file_name().to_str(),
+                Some(".git" | ".zed" | ".vendor" | "node_modules" | "target" | "zed_modules")
+            )
+        })
+    {
+        let entry =
+            entry.with_context(|| format!("walking Cargo workspace {}", project.display()))?;
+        if !entry.file_type().is_file() || entry.file_name().to_str() != Some("Cargo.toml") {
+            continue;
+        }
+        let manifest_path = entry.path();
+        if manifest_path == project.join("Cargo.toml") {
+            continue;
+        }
+        let parent = manifest_path
+            .parent()
+            .context("workspace member Cargo.toml has no parent")?;
+        let relative = parent
+            .strip_prefix(project)
+            .context("workspace member escaped the project root")?;
+        let normalized = relative.to_string_lossy().replace('\\', "/");
+        if !members.is_match(&normalized)
+            || excludes
+                .as_ref()
+                .is_some_and(|patterns| patterns.is_match(&normalized))
+        {
+            continue;
+        }
+        manifests.push(manifest_path.to_path_buf());
+    }
+    manifests.sort();
+    manifests.dedup();
+    Ok(manifests)
+}
+
+fn cargo_git_sources_by_package(project: &Path) -> Result<CargoGitSources> {
     let manifest_path = project.join("Cargo.toml");
     if !manifest_path.is_file() {
         return Ok(BTreeMap::new());
@@ -729,37 +915,235 @@ fn cargo_git_sources_by_package(project: &Path) -> Result<BTreeMap<String, BTree
     let document: toml::Value = toml::from_str(&document)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
     let mut sources = BTreeMap::new();
+    collect_cargo_git_sources_from_document(&document, &mut sources)?;
 
-    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        collect_cargo_git_sources(
-            document.get(section).and_then(toml::Value::as_table),
-            &mut sources,
-        );
-    }
-    collect_cargo_git_sources(
-        document
-            .get("workspace")
-            .and_then(toml::Value::as_table)
-            .and_then(|workspace| workspace.get("dependencies"))
-            .and_then(toml::Value::as_table),
-        &mut sources,
-    );
-    if let Some(targets) = document.get("target").and_then(toml::Value::as_table) {
-        for target in targets.values().filter_map(toml::Value::as_table) {
-            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
-                collect_cargo_git_sources(
-                    target.get(section).and_then(toml::Value::as_table),
-                    &mut sources,
-                );
-            }
-        }
+    for member_manifest in cargo_workspace_member_manifests(project, &document)? {
+        let member = fs::read_to_string(&member_manifest)
+            .with_context(|| format!("reading {}", member_manifest.display()))?;
+        let member: toml::Value = toml::from_str(&member)
+            .with_context(|| format!("parsing {}", member_manifest.display()))?;
+        collect_cargo_git_sources_from_document(&member, &mut sources)?;
     }
     Ok(sources)
 }
 
-fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
+fn normalized_git_repository_identity(raw: &str) -> Option<String> {
+    if let Ok(url) = reqwest::Url::parse(raw) {
+        let host = url.host_str()?.to_ascii_lowercase();
+        let host = match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host,
+        };
+        let mut path = url.path().trim_matches('/').to_owned();
+        if let Some(stripped) = path.strip_suffix(".git") {
+            path = stripped.to_owned();
+        }
+        if path.is_empty() {
+            return None;
+        }
+        return Some(format!("{host}/{path}"));
+    }
+
+    // Cargo accepts SCP-style SSH source identities such as
+    // git@github.com:org/repo.git. Normalize only the transport wrapper; keep
+    // host and repository path exact so unrelated repositories cannot collide.
+    let (authority, path) = raw.split_once(':')?;
+    if authority.contains('/') || path.is_empty() {
+        return None;
+    }
+    let host = authority
+        .rsplit_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(authority)
+        .to_ascii_lowercase();
+    let mut path = path.trim_matches('/').to_owned();
+    if let Some(stripped) = path.strip_suffix(".git") {
+        path = stripped.to_owned();
+    }
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("{host}/{path}"))
+}
+
+fn immutable_git_rev_matches(declared: &str, resolved: &str) -> bool {
+    let declared = declared.trim();
+    let resolved = resolved.trim();
+    let is_hex_revision = |value: &str| {
+        (7..=64).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    };
+    if !is_hex_revision(declared) || !is_hex_revision(resolved) {
+        return false;
+    }
+    resolved
+        .to_ascii_lowercase()
+        .starts_with(&declared.to_ascii_lowercase())
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalGitProvenance {
+    commit: Option<String>,
+    tags: BTreeSet<String>,
+}
+
+fn git_command_stdout(root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn git_worktree_is_pristine(root: &Path) -> bool {
+    let Ok(output) = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignored=matching",
+            "--ignore-submodules=none",
+        ])
+        .output()
+    else {
+        return false;
+    };
+    output.status.success() && output.stdout.is_empty()
+}
+
+fn local_git_provenance(
+    package_root: &Path,
+    expected_repository_identity: &str,
+) -> LocalGitProvenance {
+    if !git_worktree_is_pristine(package_root) {
+        return LocalGitProvenance::default();
+    }
+    let Some(origin) = git_command_stdout(package_root, &["config", "--get", "remote.origin.url"])
+    else {
+        return LocalGitProvenance::default();
+    };
+    if normalized_git_repository_identity(&origin).as_deref() != Some(expected_repository_identity)
+    {
+        return LocalGitProvenance::default();
+    }
+
+    let commit = git_command_stdout(package_root, &["rev-parse", "HEAD"]);
+    let tags = git_command_stdout(package_root, &["tag", "--points-at", "HEAD"])
+        .map(|output| {
+            output
+                .lines()
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    LocalGitProvenance { commit, tags }
+}
+
+fn matching_cargo_git_sources(
+    package: &str,
+    package_root: &Path,
+    declared_sources: &BTreeMap<String, CargoGitSelector>,
+    resolved: &BTreeMap<String, VersionMetadata>,
+) -> Result<BTreeSet<String>> {
+    if declared_sources.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+
+    let manifest = read_manifest(package_root).with_context(|| {
+        format!(
+            "reading Zed package provenance for Rust crate `{package}` from {}",
+            package_root.display()
+        )
+    })?;
+    if !manifest.package.repository.vcs.uses_git_tags() {
+        bail!(
+            "installed Zed package `{}/{}` declares non-Git-compatible repository provenance; refusing to patch Cargo Git dependency `{package}`",
+            manifest.package.org,
+            manifest.package.name
+        );
+    }
+    let repository_identity =
+        normalized_git_repository_identity(&manifest.package.repository.url).with_context(|| {
+            format!(
+                "installed Zed package `{}/{}` has repository provenance that cannot be matched safely to Cargo Git sources",
+                manifest.package.org, manifest.package.name
+            )
+        })?;
+    let resolved_key = manifest.full_name();
+    let resolved_package = resolved.get(&resolved_key);
+    let local = if resolved_package.is_none() {
+        local_git_provenance(package_root, &repository_identity)
+    } else {
+        LocalGitProvenance::default()
+    };
+    let mut admitted = BTreeSet::new();
+
+    for (source, selector) in declared_sources {
+        if normalized_git_repository_identity(source).as_deref()
+            != Some(repository_identity.as_str())
+        {
+            continue;
+        }
+
+        let selector_matches = match selector {
+            CargoGitSelector {
+                rev: Some(rev),
+                tag: None,
+                branch: None,
+            } => resolved_package
+                .and_then(|version| version.vcs_commit.as_deref())
+                .or(local.commit.as_deref())
+                .is_some_and(|commit| immutable_git_rev_matches(rev, commit)),
+            CargoGitSelector {
+                rev: None,
+                tag: Some(tag),
+                branch: None,
+            } => {
+                resolved_package.is_some_and(|version| version.vcs_tag == *tag)
+                    || local.tags.contains(tag)
+            }
+            CargoGitSelector {
+                rev: None,
+                tag: None,
+                branch: Some(_),
+            }
+            | CargoGitSelector {
+                rev: None,
+                tag: None,
+                branch: None,
+            } => false,
+            _ => false,
+        };
+
+        if selector_matches {
+            admitted.insert(source.clone());
+        } else {
+            eprintln!(
+                "warning: Cargo Git dependency `{package}` matches Zed repository provenance but not an immutable resolved rev/tag; no Git-source patch was emitted"
+            );
+        }
+    }
+    Ok(admitted)
+}
+
+fn cargo_patch_entries(
+    project: &Path,
+    paths: &[PathBuf],
+    resolved: &BTreeMap<String, VersionMetadata>,
+) -> Result<Vec<CargoPatchEntry>> {
     let git_sources = cargo_git_sources_by_package(project)?;
-    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+    let mut entries: BTreeMap<String, (String, PathBuf)> = BTreeMap::new();
     for path in paths {
         let Some(package) = cargo_package_name(path)? else {
             eprintln!(
@@ -769,7 +1153,7 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
             continue;
         };
         let config_path = relative_to(project, path);
-        if let Some(existing) = entries.get(&package)
+        if let Some((existing, _)) = entries.get(&package)
             && existing != &config_path
         {
             bail!(
@@ -778,16 +1162,26 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
                 config_path
             );
         }
-        entries.insert(package, config_path);
+        entries.insert(package, (config_path, path.clone()));
     }
-    Ok(entries
-        .into_iter()
-        .map(|(package, config_path)| CargoPatchEntry {
-            git_sources: git_sources.get(&package).cloned().unwrap_or_default(),
+
+    let mut patches = Vec::with_capacity(entries.len());
+    for (package, (config_path, package_root)) in entries {
+        let declared_sources = git_sources.get(&package).cloned().unwrap_or_default();
+        let matched_sources =
+            matching_cargo_git_sources(&package, &package_root, &declared_sources, resolved)?;
+        if !declared_sources.is_empty() && matched_sources.is_empty() {
+            eprintln!(
+                "warning: installed Rust crate `{package}` shares a Cargo package name with a Git dependency, but repository provenance does not match; no Git-source patch was emitted"
+            );
+        }
+        patches.push(CargoPatchEntry {
+            git_sources: matched_sources,
             package,
             config_path,
-        })
-        .collect())
+        });
+    }
+    Ok(patches)
 }
 
 fn toml_basic_string(value: &str) -> Result<String> {
@@ -803,6 +1197,14 @@ fn toml_basic_string(value: &str) -> Result<String> {
 /// fragment plus the one line to paste. Saying so is better than emitting a
 /// file that silently does nothing.
 fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>>) -> Result<()> {
+    write_toolchain_wiring_with_resolution(project, roots, &BTreeMap::new())
+}
+
+fn write_toolchain_wiring_with_resolution(
+    project: &Path,
+    roots: &BTreeMap<Adapter, Vec<PathBuf>>,
+    resolved: &BTreeMap<String, VersionMetadata>,
+) -> Result<()> {
     let zed_dir = project.join(".zed");
     for (adapter, paths) in roots {
         if paths.is_empty() {
@@ -866,7 +1268,7 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                     .collect();
                 config_paths.sort();
                 config_paths.dedup();
-                let patches = cargo_patch_entries(project, paths)?;
+                let patches = cargo_patch_entries(project, paths, resolved)?;
 
                 let mut doc = String::from(
                     "# Generated by `zed install` for this project root.\n\
@@ -1989,7 +2391,7 @@ fn install_locked(
             node_path_file.display()
         );
     }
-    write_toolchain_wiring(project, &wired_roots)?;
+    write_toolchain_wiring_with_resolution(project, &wired_roots, &resolved)?;
     write_paths_index(project, modules_dir, &wired_packages)?;
 
     let transaction_summary = if frozen {
@@ -4028,6 +4430,56 @@ go 1.24.1 // minimum toolchain
         assert!(parse_go_directive("go 1").is_none());
     }
 
+    fn write_test_zed_manifest(
+        root: &Path,
+        org: &str,
+        name: &str,
+        repository_url: &str,
+    ) -> Result<()> {
+        fs::write(
+            root.join(MANIFEST_FILE),
+            format!(
+                "[package]\norg = \"{org}\"\nname = \"{name}\"\nversion = \"0.1.0\"\n\n[package.repository]\nvcs = \"git\"\nurl = \"{repository_url}\"\n"
+            ),
+        )?;
+        Ok(())
+    }
+
+    fn test_resolved_version(
+        org: &str,
+        name: &str,
+        vcs_tag: &str,
+        vcs_commit: &str,
+    ) -> VersionMetadata {
+        VersionMetadata {
+            org: org.to_owned(),
+            name: name.to_owned(),
+            version: "0.1.0".to_owned(),
+            sha256: "a".repeat(64),
+            size: 1,
+            format: Default::default(),
+            vcs_tag: vcs_tag.to_owned(),
+            vcs_commit: Some(vcs_commit.to_owned()),
+            download_url: "/v1/artifacts/test".to_owned(),
+            published_at: "2026-09-17T00:00:00Z".to_owned(),
+            yanked: false,
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
+        }
+    }
+
+    fn test_resolution(
+        org: &str,
+        name: &str,
+        vcs_tag: &str,
+        vcs_commit: &str,
+    ) -> BTreeMap<String, VersionMetadata> {
+        BTreeMap::from([(
+            format!("{org}/{name}"),
+            test_resolved_version(org, name, vcs_tag, vcs_commit),
+        )])
+    }
+
     #[test]
     fn rust_cargo_config_introduces_an_unpublished_crate_by_package_name() {
         let temp = tempfile::tempdir().unwrap();
@@ -4058,6 +4510,376 @@ edition = "2021"
     }
 
     #[test]
+    fn rust_cargo_config_rejects_credential_bearing_https_git_sources() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { git = "https://x-access-token:super-secret@github.com/acme/private-lib" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let error = write_toolchain_wiring(&project, &roots)
+            .expect_err("credential-bearing Git sources must fail closed");
+        let rendered = error.to_string();
+        assert!(rendered.contains("credential-bearing or ambiguous Git URL"));
+        assert!(!rendered.contains("super-secret"));
+        assert!(!project.join(".zed/cargo-paths.toml").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_preserves_scp_style_ssh_source_identity() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { git = "git@github.com:acme/private-lib.git", rev = "1111111111111111111111111111111111111111" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "acme",
+            "private-lib",
+            "v0.1.0",
+            "1111111111111111111111111111111111111111",
+        );
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        let parsed: toml::Value = toml::from_str(&generated)?;
+        assert_eq!(
+            parsed["patch"]["git@github.com:acme/private-lib.git"]["private-lib"]["path"].as_str(),
+            Some("zed_modules/acme/private-lib")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_does_not_patch_same_named_crate_from_other_repository() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { git = "https://github.com/other/private-lib", rev = "2222222222222222222222222222222222222222" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "acme",
+            "private-lib",
+            "v0.1.0",
+            "2222222222222222222222222222222222222222",
+        );
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(!generated.contains("[patch.\"https://github.com/other/private-lib\"]"));
+        assert!(generated.contains("[patch.crates-io]"));
+        Ok(())
+    }
+
+    fn commit_test_git_package(root: &Path, origin: &str) -> Result<String> {
+        let run = |args: &[&str]| -> Result<()> {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args(args)
+                .status()
+                .with_context(|| format!("running git {}", args.join(" ")))?;
+            if !status.success() {
+                bail!("git {} failed for test fixture", args.join(" "));
+            }
+            Ok(())
+        };
+        run(&["init", "-q"])?;
+        run(&["config", "user.name", "zed-test"])?;
+        run(&["config", "user.email", "zed-test@example.invalid"])?;
+        run(&["remote", "add", "origin", origin])?;
+        run(&["add", "Cargo.toml", ".zpkg.toml"])?;
+        run(&["commit", "-q", "-m", "fixture"])?;
+        git_command_stdout(root, &["rev-parse", "HEAD"])
+            .context("reading committed fixture revision")
+    }
+
+    #[test]
+    fn rust_cargo_config_accepts_pristine_exact_workspace_checkout() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+        let head = commit_test_git_package(&package, "https://github.com/acme/private-lib")?;
+        fs::write(
+            project.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprivate-lib = {{ git = \"https://github.com/acme/private-lib\", rev = \"{head}\" }}\n"
+            ),
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(generated.contains("[patch.\"https://github.com/acme/private-lib\"]"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_rejects_dirty_exact_workspace_checkout() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+        let head = commit_test_git_package(&package, "https://github.com/acme/private-lib")?;
+        fs::write(
+            package.join("UNTRACKED_GENERATED.rs"),
+            "pub const DRIFT: bool = true;\n",
+        )?;
+        fs::write(
+            project.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"consumer\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprivate-lib = {{ git = \"https://github.com/acme/private-lib\", rev = \"{head}\" }}\n"
+            ),
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(!generated.contains("[patch.\"https://github.com/acme/private-lib\"]"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_rejects_same_repository_with_wrong_rev() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { git = "https://github.com/acme/private-lib", rev = "3333333333333333333333333333333333333333" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "acme",
+            "private-lib",
+            "v0.1.0",
+            "4444444444444444444444444444444444444444",
+        );
+
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(!generated.contains("[patch.\"https://github.com/acme/private-lib\"]"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_does_not_replace_floating_branch_git_dependency() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { git = "https://github.com/acme/private-lib", branch = "main" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "acme",
+            "private-lib",
+            "v0.1.0",
+            "5555555555555555555555555555555555555555",
+        );
+
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(!generated.contains("[patch.\"https://github.com/acme/private-lib\"]"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_accepts_matching_immutable_tag() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/private-lib");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+private-lib = { git = "https://github.com/acme/private-lib", tag = "v0.1.0" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "private-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "acme",
+            "private-lib",
+            "https://github.com/acme/private-lib",
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "acme",
+            "private-lib",
+            "v0.1.0",
+            "6666666666666666666666666666666666666666",
+        );
+
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(generated.contains("[patch.\"https://github.com/acme/private-lib\"]"));
+        Ok(())
+    }
+
+    #[test]
     fn rust_cargo_config_patches_matching_git_source_to_zed_path() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let project = temp.path().join("consumer");
@@ -4082,9 +4904,21 @@ version = "0.1.0"
 edition = "2021"
 "#,
         )?;
+        write_test_zed_manifest(
+            &package,
+            "canonical-cloud",
+            "canonical-lib-core",
+            "https://github.com/canonical-cloud/canonical-lib-core",
+        )?;
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "canonical-cloud",
+            "canonical-lib-core",
+            "v0.1.0",
+            "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4",
+        );
 
-        write_toolchain_wiring(&project, &roots)?;
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
 
         let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
         let parsed: toml::Value = toml::from_str(&generated)?;
@@ -4096,6 +4930,82 @@ edition = "2021"
         );
         assert!(!generated.contains("x-access-token"));
         assert!(!generated.contains("d2f7371f01f257fbaee532b923f4c4b0d2c4dff4"));
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_config_patches_git_dependency_declared_by_workspace_member() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let app = project.join("apps/app");
+        let ignored = project.join("apps/ignored");
+        let package = project.join("zed_modules/canonical-cloud/canonical-lib-core");
+        fs::create_dir_all(&app)?;
+        fs::create_dir_all(&ignored)?;
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[workspace]
+members = ["apps/*"]
+exclude = ["apps/ignored"]
+resolver = "3"
+"#,
+        )?;
+        fs::write(
+            app.join("Cargo.toml"),
+            r#"[package]
+name = "app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+canonical-lib = { git = "https://github.com/canonical-cloud/canonical-lib-core", rev = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4" }
+"#,
+        )?;
+        fs::write(
+            ignored.join("Cargo.toml"),
+            r#"[package]
+name = "ignored"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+canonical-lib = { git = "https://example.invalid/should-not-be-considered" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "canonical-lib"
+version = "0.1.0"
+edition = "2021"
+"#,
+        )?;
+        write_test_zed_manifest(
+            &package,
+            "canonical-cloud",
+            "canonical-lib-core",
+            "https://github.com/canonical-cloud/canonical-lib-core",
+        )?;
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "canonical-cloud",
+            "canonical-lib-core",
+            "v0.1.0",
+            "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4",
+        );
+
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        let parsed: toml::Value = toml::from_str(&generated)?;
+        assert_eq!(
+            parsed["patch"]["https://github.com/canonical-cloud/canonical-lib-core"]
+                ["canonical-lib"]["path"]
+                .as_str(),
+            Some("zed_modules/canonical-cloud/canonical-lib-core")
+        );
+        assert!(!generated.contains("should-not-be-considered"));
         Ok(())
     }
 
@@ -4122,9 +5032,21 @@ version = "0.1.0"
 edition = "2021"
 "#,
         )?;
+        write_test_zed_manifest(
+            &package,
+            "canonical-cloud",
+            "canonical-lib-core",
+            "https://github.com/canonical-cloud/canonical-lib-core",
+        )?;
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        let resolved = test_resolution(
+            "canonical-cloud",
+            "canonical-lib-core",
+            "v0.1.0",
+            "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4",
+        );
 
-        write_toolchain_wiring(&project, &roots)?;
+        write_toolchain_wiring_with_resolution(&project, &roots, &resolved)?;
 
         let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
         let parsed: toml::Value = toml::from_str(&generated)?;
