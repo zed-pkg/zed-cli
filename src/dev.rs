@@ -1791,7 +1791,9 @@ path = "zed_modules/acme/private-lib"
             .status()
             .context("running Cargo offline against the Zed Git-source patch")?;
         if !status.success() {
-            bail!("Cargo attempted or required the unreachable Git source instead of the Zed patch");
+            bail!(
+                "Cargo attempted or required the unreachable Git source instead of the Zed patch"
+            );
         }
         Ok(())
     }
