@@ -4,7 +4,7 @@
 //! generated compatibility state or migration input, never a parallel package
 //! graph authority.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -340,6 +340,42 @@ fn resolve(project: &Path) -> Result<Vec<ResolvedSource>> {
     Ok(out)
 }
 
+fn ensure_destination_parent_contained(project: &Path, destination: &Path) -> Result<()> {
+    let canonical_project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing project {}", project.display()))?;
+    let parent = destination
+        .parent()
+        .context("source destination must have a parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating source parent {}", parent.display()))?;
+    let canonical_parent = fs::canonicalize(parent)
+        .with_context(|| format!("canonicalizing source parent {}", parent.display()))?;
+    if !canonical_parent.starts_with(&canonical_project) {
+        bail!(
+            "source destination parent {} resolves outside project {}",
+            canonical_parent.display(),
+            canonical_project.display()
+        );
+    }
+    Ok(())
+}
+
+fn ensure_existing_source_contained(project: &Path, source: &ResolvedSource) -> Result<PathBuf> {
+    let canonical_project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing project {}", project.display()))?;
+    let path = project.join(&source.path);
+    let canonical = fs::canonicalize(&path)
+        .with_context(|| format!("canonicalizing source {}", path.display()))?;
+    if !canonical.starts_with(&canonical_project) {
+        bail!(
+            "source `{}` resolves outside the project: {}",
+            source.name,
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
 fn git_config_quote(value: &str) -> Result<String> {
     if value.is_empty() || value.chars().any(char::is_control) {
         bail!("Git config value must be non-empty and contain no control characters");
@@ -418,15 +454,24 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
 
     for source in &entries {
         let child = project.join(&source.path);
+        ensure_destination_parent_contained(project, &child)?;
+        let has_gitlink = gitlink_exists(project, &source.path)?;
+        if !has_gitlink && child.exists() {
+            bail!(
+                "source `{}` path {} already exists but is not a Git gitlink; refusing to take ownership",
+                source.name,
+                child.display()
+            );
+        }
+        if has_gitlink && child.exists() {
+            ensure_existing_source_contained(project, source)?;
+        }
+    }
+
+    for source in &entries {
+        let child = project.join(&source.path);
         let has_gitlink = gitlink_exists(project, &source.path)?;
         if !has_gitlink {
-            if child.exists() {
-                bail!(
-                    "source `{}` path {} already exists but is not a Git gitlink; refusing to take ownership",
-                    source.name,
-                    child.display()
-                );
-            }
             let name = format!("zed:{}", source.name);
             let mut owned = vec!["submodule".to_string(), "add".to_string()];
             if let Some(branch) = source.branch.as_deref() {
@@ -544,9 +589,7 @@ fn is_clean(vcs: Vcs, path: &Path) -> Result<bool> {
 
 fn clone_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
     let path = project.join(&source.path);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    ensure_destination_parent_contained(project, &path)?;
     let dest = path
         .to_str()
         .context("source checkout destination is not valid UTF-8")?;
@@ -581,6 +624,7 @@ fn sync_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
     if !path.is_dir() {
         bail!("source `{}` path {} is not a directory", source.name, path.display());
     }
+    let path = ensure_existing_source_contained(project, source)?;
     if !is_clean(source.vcs, &path)? {
         bail!(
             "source `{}` at {} has local changes; refusing destructive VCS synchronization",
