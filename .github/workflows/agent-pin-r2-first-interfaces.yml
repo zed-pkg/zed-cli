@@ -1,0 +1,73 @@
+name: Pin R2-first interfaces
+
+on:
+  push:
+    branches:
+      - fix/pin-r2-first-interfaces-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out pin branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: fix/pin-r2-first-interfaces-20260910
+          fetch-depth: 1
+          persist-credentials: true
+          show-progress: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt,clippy
+
+      - name: Pin verified interface revision
+        env:
+          OLD_REF: 3c54298fc7a8c1b2f9c1d74f588c6118b38f197e
+          NEW_REF: 7c5eaddef74b55d8061bf416e92d2182f099b487
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path('Cargo.toml')
+          text = path.read_text(encoding='utf-8')
+          old = os.environ['OLD_REF']
+          new = os.environ['NEW_REF']
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one zed-interfaces Cargo pin, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          cargo update -p zed-interfaces --precise "$NEW_REF"
+
+      - name: Verify exact source tuple and tests
+        env:
+          NEW_REF: 7c5eaddef74b55d8061bf416e92d2182f099b487
+        run: |
+          set -euo pipefail
+          grep -Fq "zed-interfaces.git?rev=${NEW_REF}#${NEW_REF}" Cargo.lock
+          grep -Fq "rev = \"${NEW_REF}\"" Cargo.toml
+          cargo metadata --locked --format-version 1 >/dev/null
+          cargo fmt --all --check
+          cargo test --locked --lib source_fallback
+          cargo test --locked --lib artifact_locators
+          cargo clippy --locked --lib -- -D warnings
+          git diff --check
+
+      - name: Commit verified pin
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock
+          git diff --cached --quiet && exit 0
+          git commit -m 'fix: pin R2-first artifact locator contract'
+          git push origin HEAD:fix/pin-r2-first-interfaces-20260910
