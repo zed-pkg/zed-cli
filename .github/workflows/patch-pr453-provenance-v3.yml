@@ -1,0 +1,70 @@
+name: one-shot harden PR 453 provenance v3
+
+on:
+  push:
+    branches:
+      - automation/harden-pr453-provenance
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read vetted v2 transformation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: automation/harden-pr453-provenance
+          persist-credentials: true
+
+      - name: Extract deterministic Rust transformation and enable formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          ruby -ryaml -e '
+            doc = YAML.load_file(ARGV[0])
+            step = doc.fetch("jobs").fetch("patch").fetch("steps").find { |entry| entry["name"] == "Apply provenance hardening deterministically" }
+            abort "missing v2 transformation" unless step && step["run"]
+            script = step["run"].sub("cargo fmt --all -- --check", "cargo fmt --all\ncargo fmt --all -- --check")
+            File.write(ARGV[1], script)
+          ' .github/workflows/patch-pr453-provenance-v2.yml "$RUNNER_TEMP/apply-pr453.sh"
+          chmod 700 "$RUNNER_TEMP/apply-pr453.sh"
+
+      - name: Check out exact PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: harden/cargo-git-patch-provenance
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify expected input head and apply transformation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3fc2bc4f6654d25c336ddd4a4b3e1cf5da781b5c"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          "$RUNNER_TEMP/apply-pr453.sh"
+          test "$(git diff --name-only)" = "src/ops.rs"
+          git diff --check
+
+      - name: Run focused provenance regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --lib cargo_git_source_rejects_invalid_repository_identities
+          cargo test --locked --lib live_git_checkout_requires_matching_origin_and_clean_tree
+          cargo test --locked --lib live_git_checkout_precedes_stale_or_malformed_project_lock
+          cargo test --locked --lib rust_cargo_config_discovers_git_dependency_in_workspace_member
+          cargo test --locked --lib cargo_git_source_selector_requires_exact_materialized_rev
+          cargo test --locked --lib cargo_git_patch_requires_all_same_url_selectors_to_agree
+
+      - name: Commit hardened source to PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "3fc2bc4f6654d25c336ddd4a4b3e1cf5da781b5c"
+          test "$(git diff --name-only)" = "src/ops.rs"
+          git add src/ops.rs
+          git -c user.name='ORESoftware' -c user.email='alex@oresoftware.com' commit -m 'fix(rust): close Cargo Git provenance gaps'
+          git push origin HEAD:harden/cargo-git-patch-provenance
