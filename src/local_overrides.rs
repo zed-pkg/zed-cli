@@ -130,7 +130,8 @@ pub(crate) fn resolve(
 ) -> Result<BTreeMap<String, PathBuf>> {
     let canonical_project = fs::canonicalize(project)
         .with_context(|| format!("canonicalizing project {}", project.display()))?;
-    let modules = canonical_project.join(modules_dir);
+    let modules_path = canonical_project.join(modules_dir);
+    let modules = fs::canonicalize(&modules_path).unwrap_or(modules_path);
     let mut resolved = BTreeMap::new();
 
     for (package, configured) in raw {
