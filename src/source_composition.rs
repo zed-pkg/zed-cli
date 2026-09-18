@@ -460,9 +460,73 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
         }
         update.extend(["--", source.path.as_str()]);
         run(project, "git", &update)?;
-        if let Some(revision) = source.revision.as_deref() {
-            run(&project.join(&source.path), "git", &["checkout", "--detach", revision])?;
+        verify_gitlink_checkout(project, source)?;
+    }
+    Ok(entries.len())
+}
+
+fn verify_gitlink_checkout(project: &Path, source: &ResolvedSource) -> Result<()> {
+    let expected = run(
+        project,
+        "git",
+        &["rev-parse", &format!("HEAD:{}", source.path)],
+    )?;
+    let actual = run(&project.join(&source.path), "git", &["rev-parse", "HEAD"])?;
+    if expected != actual {
+        bail!(
+            "Git submodule source `{}` is at {actual}, expected superproject gitlink {expected}",
+            source.name
+        );
+    }
+    Ok(())
+}
+
+fn sync_git_submodules_frozen(project: &Path, sources: &[ResolvedSource]) -> Result<usize> {
+    let entries: Vec<_> = sources
+        .iter()
+        .filter(|source| source.projection == Projection::GitSubmodule)
+        .collect();
+    if entries.is_empty() {
+        return Ok(0);
+    }
+    run(project, "git", &["rev-parse", "--show-toplevel"])
+        .context("Git-submodule projections require a Git superproject")?;
+
+    let expected_projection = render_gitmodules(sources)?;
+    let path = project.join(".gitmodules");
+    let current = fs::read_to_string(&path).with_context(|| {
+        format!(
+            "--frozen source composition requires the generated {} to already exist",
+            path.display()
+        )
+    })?;
+    if current != expected_projection || !current.starts_with(GENERATED_GITMODULES_HEADER) {
+        bail!(
+            "--frozen source composition refuses missing, authored, or drifted .gitmodules; run `zed workspace sync` and commit the projection first"
+        );
+    }
+
+    for source in &entries {
+        if !gitlink_exists(project, &source.path)? {
+            bail!(
+                "--frozen source composition requires committed Git gitlink `{}` for source `{}`",
+                source.path,
+                source.name
+            );
         }
+    }
+
+    run(project, "git", &["submodule", "sync", "--recursive"])?;
+    for source in &entries {
+        let name = format!("submodule.zed:{}.url", source.name);
+        run(project, "git", &["config", "--local", &name, &source.url])?;
+        let mut update = vec!["submodule", "update", "--init", "--checkout"];
+        if source.recursive {
+            update.push("--recursive");
+        }
+        update.extend(["--", source.path.as_str()]);
+        run(project, "git", &update)?;
+        verify_gitlink_checkout(project, source)?;
     }
     Ok(entries.len())
 }
@@ -633,6 +697,27 @@ pub fn sync(project: &Path) -> Result<SyncReport> {
         sources: sources.len(),
         git_submodules,
         checkouts,
+    })
+}
+
+pub fn sync_frozen(project: &Path) -> Result<SyncReport> {
+    let sources = resolve(project)?;
+    let checkout_sources: Vec<_> = sources
+        .iter()
+        .filter(|source| source.projection == Projection::Checkout)
+        .map(|source| source.name.as_str())
+        .collect();
+    if !checkout_sources.is_empty() {
+        bail!(
+            "--frozen source composition does not yet have an immutable workspace-source lock for ordinary VCS checkouts ({}); use Git-submodule projections or run a reviewed non-frozen `zed workspace sync`",
+            checkout_sources.join(", ")
+        );
+    }
+    let git_submodules = sync_git_submodules_frozen(project, &sources)?;
+    Ok(SyncReport {
+        sources: sources.len(),
+        git_submodules,
+        checkouts: 0,
     })
 }
 
