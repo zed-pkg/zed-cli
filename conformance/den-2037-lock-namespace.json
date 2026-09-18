@@ -1,0 +1,48 @@
+{
+  "schema": "zed.den-2037.lock-namespace.v1",
+  "policy": {
+    "project_mutation": "canonical project operation lock",
+    "shared_refs_and_lockfile": "<zed-home>/locks/install.lock",
+    "artifact_store": "<zed-home>/locks/<sha256>.lock",
+    "build_cache": "<zed-home>/locks/build-<platform>-<validated-build-key>.lock",
+    "package_name_in_artifact_lock": false,
+    "automatic_stale_breaking": false
+  },
+  "cases": [
+    {
+      "name": "same-artifact-different-package-spelling",
+      "package_a": "acme/tool",
+      "package_b": "ACME/tool",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected_artifact_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "unicode-package-name-does-not-enter-artifact-lock-path",
+      "package_a": "org/café",
+      "package_b": "org/café",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expected_artifact_identity": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "different-artifacts-remain-independent",
+      "package_a": "org/pkg-a",
+      "package_b": "org/pkg-b",
+      "sha256_a": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "sha256_b": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "expect_same_lock": false
+    },
+    {
+      "name": "same-build-key-serializes",
+      "platform": "linux-x86_64",
+      "build_key": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expect_same_lock": true
+    },
+    {
+      "name": "different-build-key-progresses-independently",
+      "platform": "linux-x86_64",
+      "build_key_a": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "build_key_b": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expect_same_lock": false
+    }
+  ]
+}

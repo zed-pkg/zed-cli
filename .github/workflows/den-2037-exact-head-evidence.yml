@@ -1,0 +1,108 @@
+name: DEN-2037 exact-head consumer evidence
+
+on:
+  pull_request:
+    paths:
+      - 'conformance/den-2037-*.json'
+      - 'docs/locking.md'
+      - 'docs/lock-telemetry.md'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - 'tests/den_2037_lock_consumer.rs'
+      - 'tests/store_lock_evented.rs'
+      - 'tests/frozen_offline_prefetch.rs'
+      - 'src/store.rs'
+      - 'src/transaction.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/den-2037-exact-head-evidence.yml'
+  push:
+    branches:
+      - den-2037-consumer-local-lock-e2e-v1
+    paths:
+      - 'conformance/den-2037-*.json'
+      - 'docs/locking.md'
+      - 'docs/lock-telemetry.md'
+      - 'scripts/check-den-2037-local-lock-consumer.py'
+      - 'tests/den_2037_lock_consumer.rs'
+      - 'tests/store_lock_evented.rs'
+      - 'tests/frozen_offline-prefetch.rs'
+      - 'src/store.rs'
+      - 'src/transaction.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/den-2037-exact-head-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: den-2037-exact-head-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  native:
+    name: exact head / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out exact candidate head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+      - name: Assert exact candidate head
+        env:
+          INTENDED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          printf 'intended=%s\nactual=%s\n' "$INTENDED_SHA" "$actual"
+          test "$actual" = "$INTENDED_SHA"
+      - name: Install Rust quality components
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version --verbose
+          cargo --version --verbose
+      - name: Admit evidence manifest and dependency pins
+        run: python3 scripts/check-den-2037-local-lock-consumer.py
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run DEN-2037 contention and bootstrap suite
+        run: cargo test --locked --test den_2037_lock_consumer -- --nocapture
+      - name: Re-run process queue and crash contracts
+        run: cargo test --locked --test store_lock_evented -- --nocapture
+      - name: Re-run offline replay contract
+        run: cargo test --locked --test frozen_offline_prefetch -- --nocapture
+      - name: Re-run interrupted transaction recovery
+        run: cargo test --locked -p zed-cli --lib transaction::tests::interrupted_uuid_transaction_is_recovered_on_next_begin -- --exact --nocapture
+      - name: Prove exact lock graph is packable
+        run: cargo package --locked --allow-dirty --no-verify --list >/dev/null
+      - name: Strict clippy on consumer suite
+        run: cargo clippy --locked --test den_2037_lock_consumer -- -D warnings
+
+  summary:
+    name: require exact-head native evidence
+    if: always()
+    needs: [native]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Enforce executable native evidence
+        env:
+          NATIVE: ${{ needs.native.result }}
+        run: |
+          set -euo pipefail
+          printf 'exact-head-native=%s\n' "$NATIVE"
+          test "$NATIVE" = success

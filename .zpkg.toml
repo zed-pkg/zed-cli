@@ -17,12 +17,14 @@ outputs = [
   "target/release/zed",
   "target/release/zed-gitops",
   "target/release/zed-git-install",
+  "target/release/zed-doctor",
 ]
 
 [bin]
 zed = "target/release/zed"
 "zed-gitops" = "target/release/zed-gitops"
 "zed-git-install" = "target/release/zed-git-install"
+"zed-doctor" = "target/release/zed-doctor"
 
 [install]
 adapter = "none"
@@ -37,7 +39,7 @@ dir = ".vendor/.zed"
 [publish]
 include_readme = true
 tag_format = "v{version}"
-smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/.auth-shared.toml\" && test ! -e \"$ZED_PKG_TEST_TARGET/.shared-auth.toml\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help && \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" --help >/dev/null"
+smoke_test = "test -f \"$ZED_PKG_TEST_TARGET/.auth-shared.toml\" && test ! -e \"$ZED_PKG_TEST_TARGET/.shared-auth.toml\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-gitops\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" && test -x \"$ZED_PKG_TEST_TARGET/target/release/zed-doctor\" && \"$ZED_PKG_TEST_TARGET/target/release/zed\" --version && \"$ZED_PKG_TEST_TARGET/target/release/zed\" validate --manifest \"$ZED_PKG_TEST_TARGET/.zpkg.toml\" --lock \"$ZED_PKG_TEST_TARGET/.zpkg.lock\" --json >/dev/null && \"$ZED_PKG_TEST_TARGET/target/release/zed\" gitops validate --help && \"$ZED_PKG_TEST_TARGET/target/release/zed-git-install\" --help >/dev/null && ZED_PKG_HOME=\"$ZED_PKG_TEST_TARGET/.doctor-home-missing\" \"$ZED_PKG_TEST_TARGET/target/release/zed-doctor\" locks --json >/dev/null && test ! -e \"$ZED_PKG_TEST_TARGET/.doctor-home-missing\""
 exclude = [
   ".env",
   ".env.*",
