@@ -1780,21 +1780,43 @@ path = "zed_modules/acme/private-lib"
         prepare_cargo_adapter(&root)?;
 
         let cargo_home = root.join(".zed/dev/cargo/home");
-        let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+        let output = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
             .current_dir(&root)
             .env("CARGO_HOME", &cargo_home)
             .arg("metadata")
             .arg("--offline")
             .arg("--format-version")
             .arg("1")
-            .arg("--no-deps")
-            .status()
+            .output()
             .context("running Cargo offline against the Zed Git-source patch")?;
-        if !status.success() {
+        if !output.status.success() {
             bail!(
-                "Cargo attempted or required the unreachable Git source instead of the Zed patch"
+                "Cargo attempted or required the unreachable Git source instead of the Zed patch: {}",
+                String::from_utf8_lossy(&output.stderr)
             );
         }
+
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output.stdout).context("decoding Cargo metadata")?;
+        let packages = metadata["packages"]
+            .as_array()
+            .context("Cargo metadata packages must be an array")?;
+        let patched = packages
+            .iter()
+            .find(|package| package["name"].as_str() == Some("private-lib"))
+            .context("Cargo metadata omitted the patched private-lib dependency")?;
+        assert!(
+            patched["source"].is_null(),
+            "patched dependency must resolve as a local path source"
+        );
+        let manifest_path = patched["manifest_path"]
+            .as_str()
+            .context("patched dependency manifest_path must be a string")?;
+        assert_eq!(
+            Path::new(manifest_path),
+            dependency.join("Cargo.toml"),
+            "Cargo metadata must resolve private-lib from the Zed materialization"
+        );
         Ok(())
     }
 
