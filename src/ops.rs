@@ -710,12 +710,19 @@ fn zed_repository_url(root: &Path) -> Result<Option<String>> {
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let document: toml::Value = toml::from_str(&document)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    Ok(document
+    let Some(repository) = document
         .get("package")
         .and_then(toml::Value::as_table)
         .and_then(|package| package.get("repository"))
         .and_then(toml::Value::as_table)
-        .and_then(|repository| repository.get("url"))
+    else {
+        return Ok(None);
+    };
+    if repository.get("vcs").and_then(toml::Value::as_str) != Some("git") {
+        return Ok(None);
+    }
+    Ok(repository
+        .get("url")
         .and_then(toml::Value::as_str)
         .map(str::to_owned))
 }
@@ -4296,6 +4303,55 @@ url = "https://github.com/acme/lookalike"
             "{generated}"
         );
         assert!(!generated.contains("[patch.crates-io]"), "{generated}");
+        Ok(())
+    }
+
+    #[test]
+    fn rust_cargo_git_patch_requires_git_provider_vcs() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tool = { version = "=1.0.0", git = "https://github.com/acme/tool" }
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "tool"
+version = "1.0.0"
+edition = "2021"
+"#,
+        )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "acme"
+name = "tool"
+version = "1.0.0"
+
+[package.repository]
+vcs = "hg"
+url = "https://github.com/acme/tool"
+"#,
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        write_toolchain_wiring(&project, &roots)?;
+
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(
+            !generated.contains("[patch.\"https://github.com/acme/tool\"]"),
+            "{generated}"
+        );
         Ok(())
     }
 
