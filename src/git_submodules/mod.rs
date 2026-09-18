@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use zed_interfaces::manifest::{Manifest, WorkspaceSection};
-use zed_interfaces::paths::MANIFEST_FILE;
+use zed_interfaces::paths::{LOCKFILE_FILE, MANIFEST_FILE};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{Config, read_manifest};
@@ -65,7 +65,7 @@ pub fn find_root(requested: &Path) -> Option<PathBuf> {
 
 fn find_locked_git_root(requested: &Path) -> Result<Option<PathBuf>> {
     for candidate in requested.ancestors() {
-        if !candidate.join(MANIFEST_FILE).is_file() || !candidate.join(".zpkg.lock").is_file() {
+        if !candidate.join(MANIFEST_FILE).is_file() || !candidate.join(LOCKFILE_FILE).is_file() {
             continue;
         }
         if !lock::read_lock_extensions(candidate)?.is_empty() {
@@ -91,7 +91,7 @@ fn paths_overlap(left: &str, right: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-pub(crate) fn validate_submodule_install_layout(
+fn validate_submodule_install_layout(
     manifest: &Manifest,
     modules: &[git::SubmoduleConfig],
 ) -> Result<()> {
@@ -108,19 +108,28 @@ pub(crate) fn validate_submodule_install_layout(
     Ok(())
 }
 
+fn git_config_string(value: &str, field: &str) -> Result<String> {
+    if value.is_empty() || value.chars().any(char::is_control) {
+        bail!("Git submodule {field} contains an empty or control-character value");
+    }
+    Ok(format!(
+        "\"{}\"",
+        value.replace('\\', "\\\\").replace('"', "\\\"")
+    ))
+}
+
 fn render_gitmodules_projection(entries: &[lock::GitSubmoduleLock]) -> Result<String> {
     let mut out = String::from(GENERATED_GITMODULES_HEADER);
     for entry in entries {
         git::validate_relative_path(&entry.path)?;
         let package = entry.package.replace('/', "__");
+        let path = git_config_string(&entry.path, "path")?;
+        let url = git_config_string(&entry.url, "url")?;
         out.push_str(&format!(
-            "\n[submodule \"zed:{package}\"]\n\tpath = {}\n\turl = {}\n",
-            entry.path, entry.url
+            "\n[submodule \"zed:{package}\"]\n\tpath = {path}\n\turl = {url}\n"
         ));
         if let Some(branch) = entry.branch.as_deref() {
-            if branch.contains(['\n', '\r', '\0']) {
-                bail!("Git submodule `{}` has an unsafe branch value", entry.package);
-            }
+            let branch = git_config_string(branch, "branch")?;
             out.push_str(&format!("\tbranch = {branch}\n"));
         }
     }
