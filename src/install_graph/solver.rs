@@ -713,6 +713,41 @@ pub(super) fn solve_install(
     }
 
     let mut workspace = SolverWorkspace::discover(project);
+    // `[overrides.path]` resolves a dependency from a developer-controlled
+    // checkout instead of the registry. The solver runs before the installer's
+    // own override handling, so without this it would still ask the registry
+    // for an overridden package — and fail when the registry is unreachable or
+    // the package's repository cannot be guessed from its identity. A local
+    // checkout is the same kind of authority as a workspace member, so it
+    // enters the solve the same way.
+    let raw_overrides = crate::local_overrides::read(project)?;
+    if !raw_overrides.is_empty() {
+        let resolved =
+            crate::local_overrides::resolve(project, manifest.modules_dir(), &raw_overrides)?;
+        for (key, directory) in resolved {
+            let local = read_manifest(&directory).with_context(|| {
+                format!(
+                    "reading local path override `{key}` from {}",
+                    directory.display()
+                )
+            })?;
+            if local.full_name() != key {
+                bail!(
+                    "local path override `{key}` points to package `{}` at {}",
+                    local.full_name(),
+                    directory.display()
+                );
+            }
+            workspace.members.insert(
+                key,
+                WorkspaceMember {
+                    version: local.package.version,
+                    scheme: local.package.version_scheme,
+                    dependencies: local.dependencies,
+                },
+            );
+        }
+    }
     let root_key = manifest.full_name();
     if manifest.dependencies.contains_key(&root_key) {
         // A direct self-dependency is an explicit published-artifact test.
