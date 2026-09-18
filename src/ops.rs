@@ -4188,18 +4188,6 @@ vcs = "git"
 url = "https://github.com/canonical-cloud/canonical-lib-core"
 "#,
         )?;
-        fs::write(
-            package.join(MANIFEST_FILE),
-            r#"[package]
-org = "canonical-cloud"
-name = "canonical-lib"
-version = "0.1.0"
-
-[package.repository]
-vcs = "git"
-url = "https://github.com/canonical-cloud/canonical-lib-core"
-"#,
-        )?;
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
 
         write_toolchain_wiring(&project, &roots)?;
@@ -4238,6 +4226,18 @@ canonical-lib = { version = "=0.1.0", git = "https://github.com/canonical-cloud/
 name = "canonical-lib"
 version = "0.1.0"
 edition = "2021"
+"#,
+        )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "canonical-cloud"
+name = "canonical-lib"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/canonical-cloud/canonical-lib-core"
 "#,
         )?;
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
