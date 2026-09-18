@@ -32,7 +32,8 @@ use zed_interfaces::version::VersionScheme;
 use crate::cli::{Adapter, ContainerRuntime, InstallMode, R2gRegistryMode};
 use crate::config::{Config, read_manifest, write_manifest};
 use crate::interactive;
-use crate::ops::{build_publish_meta, install};
+use crate::local_registry::LocalRegistryMode;
+use crate::ops::{InstallPermissions, build_publish_meta, install_with_permissions};
 use crate::pack;
 use crate::registry::registry_for;
 use crate::store::human_size;
@@ -261,6 +262,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         interactive: cfg.interactive,
         mirrors: cfg.mirrors.clone(),
         fallback: cfg.fallback,
+        local: Default::default(),
     };
     // The author is roundtripping their own package, so running its [build]
     // step is consented — that's part of "as close to a real install as
@@ -278,13 +280,22 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
             }
         ),
     )?;
-    install(
+    install_with_permissions(
         &consumer_dir,
         &test_cfg,
         false,
         mode,
         Adapter::None,
-        true,
+        &InstallPermissions {
+            allow_build: true,
+            // A roundtrip exists to prove that the *published* artifact
+            // installs. A machine-local registration of the same package would
+            // substitute source for that artifact and quietly turn the
+            // guarantee into a tautology, so the mock consumer never consults
+            // the local registry regardless of how this machine is configured.
+            local_registry: LocalRegistryMode::Off,
+            ..InstallPermissions::default()
+        },
         None,
         // r2g deliberately installs whatever package is under test into a
         // synthetic consumer that has no toolchain of its own, so the
@@ -626,6 +637,7 @@ mod tests {
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         }
     }
 
