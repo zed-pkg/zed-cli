@@ -1365,7 +1365,6 @@ fn install_locked(
     let workspace = find_workspace(project);
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
-    let mut used_local_overrides = BTreeSet::new();
 
     if frozen {
         let text = fs::read_to_string(&lock_path)
@@ -1445,7 +1444,6 @@ fn install_locked(
                         local_manifest.package.version
                     );
                 }
-                used_local_overrides.insert(key.clone());
                 if !workspace_links.contains_key(&key) {
                     workspace_links.insert(key.clone(), local_dir.clone());
                     for (sub_key, sub_req) in local_manifest.dependencies {
@@ -1536,7 +1534,7 @@ fn install_locked(
         }
         let unused: Vec<&str> = local_overrides
             .keys()
-            .filter(|key| !used_local_overrides.contains(*key))
+            .filter(|key| !workspace_links.contains_key(*key))
             .map(String::as_str)
             .collect();
         if !unused.is_empty() {
