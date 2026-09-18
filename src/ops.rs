@@ -12,7 +12,8 @@ use zed_interfaces::language::{Ecosystem, Language, detect_ecosystems};
 use zed_interfaces::lockfile::{LockedPackage, Lockfile};
 use zed_interfaces::manifest::{
     BuildSection, InstallHooksSection, Manifest, NativeDependencies, PackageSection,
-    PublishSection, RepositorySection, ScriptsSection, is_slug,
+    PublishSection, RepositorySection, ScriptsSection, WorkspaceSection, WorkspaceSourceRole,
+    is_slug,
 };
 use zed_interfaces::paths::{BIN_DIR, LOCKFILE_FILE, MANIFEST_FILE, MODULES_DIR, current_platform};
 use zed_interfaces::registry::{PublishMeta, VersionMetadata};
@@ -161,40 +162,95 @@ pub struct WorkspaceInfo {
 }
 
 /// Walk up from `project` looking for a manifest with a `[workspace]`
-/// section; expand its member globs into packages. Members are linked from
-/// source instead of the registry so edits show up in consumers instantly.
-fn find_workspace(project: &Path) -> Option<WorkspaceInfo> {
+/// section; expand local members and declared source-composition members.
+/// Declared workspace sources are authoritative: if they are not materialized,
+/// installation fails with a sync instruction instead of falling back to the
+/// registry and silently changing the dependency source.
+fn find_workspace(project: &Path) -> Result<Option<WorkspaceInfo>> {
     let mut dir: Option<&Path> = Some(project);
     while let Some(d) = dir {
-        if d.join(MANIFEST_FILE).exists()
-            && let Ok(manifest) = read_manifest(d)
-            && let Some(ws) = &manifest.workspace
-        {
-            return Some(collect_members(d, &ws.members));
+        if d.join(MANIFEST_FILE).exists() {
+            let manifest = read_manifest(d)?;
+            if let Some(ws) = &manifest.workspace {
+                return collect_members(d, ws).map(Some);
+            }
         }
         dir = d.parent();
     }
-    None
+    Ok(None)
 }
 
-fn collect_members(root: &Path, globs: &[String]) -> WorkspaceInfo {
-    let members = globs.iter().flat_map(|pattern| {
-        // Member globs are directory patterns like `packages/*`; expand one
-        // path segment at a time so we never walk unrelated trees.
-        pattern
-            .split('/')
-            .fold(vec![root.to_path_buf()], expand_glob_segment)
-            .into_iter()
-            .filter_map(|member_dir| {
-                read_manifest(&member_dir)
-                    .ok()
-                    .map(|member| (member.full_name(), member_dir))
-            })
-    });
-    WorkspaceInfo {
-        root: root.to_path_buf(),
-        members: members.collect(),
+fn collect_members(root: &Path, workspace: &WorkspaceSection) -> Result<WorkspaceInfo> {
+    let mut members: BTreeMap<String, PathBuf> = workspace
+        .members
+        .iter()
+        .flat_map(|pattern| {
+            // Member globs are directory patterns like `packages/*`; expand one
+            // path segment at a time so we never walk unrelated trees.
+            pattern
+                .split('/')
+                .fold(vec![root.to_path_buf()], expand_glob_segment)
+                .into_iter()
+                .filter_map(|member_dir| {
+                    read_manifest(&member_dir)
+                        .ok()
+                        .map(|member| (member.full_name(), member_dir))
+                })
+        })
+        .collect();
+
+    for (name, source) in &workspace.sources {
+        if source.role != WorkspaceSourceRole::Workspace {
+            continue;
+        }
+        let expected = source.package.as_deref().with_context(|| {
+            format!("workspace source `{name}` has no package identity")
+        })?;
+        let member_dir = root.join(workspace.source_path(name, source));
+        if !member_dir.is_dir() {
+            bail!(
+                "workspace source `{name}` for `{expected}` is not materialized at {}; run `zed workspace sync`",
+                member_dir.display()
+            );
+        }
+        let member = read_manifest(&member_dir).with_context(|| {
+            format!(
+                "reading declared workspace source `{name}` from {}",
+                member_dir.display()
+            )
+        })?;
+        let actual = member.full_name();
+        if actual != expected {
+            bail!(
+                "workspace source `{name}` expected package `{expected}` but {} provides `{actual}`",
+                member_dir.display()
+            );
+        }
+        members.insert(actual, member_dir);
     }
+
+    Ok(WorkspaceInfo {
+        root: root.to_path_buf(),
+        members,
+    })
+}
+
+fn workspace_with_local_overrides(
+    project: &Path,
+    manifest: &Manifest,
+) -> Result<Option<WorkspaceInfo>> {
+    let overrides = crate::local_paths::resolve(project, manifest)?;
+    let mut workspace = find_workspace(project)?;
+    if overrides.is_empty() {
+        return Ok(workspace);
+    }
+    let workspace = workspace.get_or_insert_with(|| WorkspaceInfo {
+        root: project.to_path_buf(),
+        members: BTreeMap::new(),
+    });
+    // Explicit local overrides intentionally outrank ambient workspace members.
+    workspace.members.extend(overrides);
+    Ok(Some(workspace.clone()))
 }
 
 fn expand_glob_segment(candidates: Vec<PathBuf>, segment: &str) -> Vec<PathBuf> {
@@ -1351,7 +1407,12 @@ fn install_locked(
     let reg = cfg.open_registry()?;
     let lock_path = project.join(LOCKFILE_FILE);
 
-    let workspace = find_workspace(project);
+    if frozen && !manifest.overrides.path.is_empty() {
+        bail!(
+            "--frozen refuses live [overrides.path] dependencies because the current lock format cannot pin mutable local checkout bytes; remove the override or use a non-frozen development install"
+        );
+    }
+    let workspace = workspace_with_local_overrides(project, &manifest)?;
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
 
@@ -1999,7 +2060,10 @@ pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
     // manifest boundary used by frozen install so a workspace-only project can
     // still uninstall and later restore its exact materialized graph.
     let manifest = read_manifest(project).ok();
-    let workspace = find_workspace(project);
+    let workspace = match manifest.as_ref() {
+        Some(manifest) => workspace_with_local_overrides(project, manifest)?,
+        None => find_workspace(project)?,
+    };
     let workspace_links = match manifest.as_ref() {
         Some(manifest) => {
             collect_workspace_links_for_frozen(project, manifest, workspace.as_ref())?
@@ -4178,7 +4242,7 @@ url = "https://example.invalid/ws-cli"
         .unwrap();
 
         let manifest = read_manifest(&app).unwrap();
-        let workspace = find_workspace(&app).unwrap();
+        let workspace = find_workspace(&app).unwrap().unwrap();
         let links = collect_workspace_links_for_frozen(&app, &manifest, Some(&workspace)).unwrap();
         assert_eq!(
             links.keys().cloned().collect::<Vec<_>>(),
