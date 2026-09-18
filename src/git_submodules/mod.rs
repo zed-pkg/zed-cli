@@ -763,7 +763,7 @@ mod manifest_kind_tests {
     }
 
     #[test]
-    fn generated_git_config_values_are_quoted_and_control_safe() -> Result<()> {
+    fn generated_git_config_values_are_quoted_and_control_safe() -> anyhow::Result<()> {
         assert_eq!(
             git_config_string("ssh://git@example.com/org/repo.git", "url")?,
             "\"ssh://git@example.com/org/repo.git\""
