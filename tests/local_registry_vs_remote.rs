@@ -115,6 +115,8 @@ fn publish(registry: &Path, source: &Path, staging: &Path) {
         download_url: format!("file://{}", artifact.display()),
         published_at: "1970-01-01T00:00:00Z".to_string(),
         yanked: false,
+        mirrors: Vec::new(),
+        signatures: Vec::new(),
     };
     fs::write(
         package_dir
@@ -133,6 +135,8 @@ fn publish(registry: &Path, source: &Path, staging: &Path) {
         latest: Some(manifest.package.version.clone()),
         tags: Vec::new(),
         versions: vec![manifest.package.version.clone()],
+        mirrors: Vec::new(),
+        signing_keys: Vec::new(),
     };
     fs::write(
         package_dir.join("package.json"),
