@@ -15,6 +15,25 @@ use crate::mirrored_registry::{FallbackPolicy, MirrorContext, TrustAnchors};
 use crate::publisher_keys::TrustCache;
 use crate::registry::Registry;
 
+const CANONICAL_ZED_HOME_DIR_NAME: &str = ".zpkg";
+
+fn default_zed_home() -> Result<PathBuf> {
+    let user_home =
+        dirs::home_dir().context("could not determine home directory; set ZED_PKG_HOME")?;
+    let canonical = user_home.join(CANONICAL_ZED_HOME_DIR_NAME);
+    let legacy = user_home.join(ZED_HOME_DIR_NAME);
+    if canonical.exists() || !legacy.exists() {
+        Ok(canonical)
+    } else {
+        eprintln!(
+            "note: using legacy Zed home {}; set ZED_PKG_HOME={} or migrate it to use the new default",
+            legacy.display(),
+            canonical.display()
+        );
+        Ok(legacy)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub registry: String,
@@ -36,9 +55,7 @@ impl Config {
     pub fn from_globals(globals: &Globals) -> Result<Self> {
         let configured_home = match &globals.home {
             Some(h) => h.clone(),
-            None => dirs::home_dir()
-                .context("could not determine home directory; set ZED_PKG_HOME")?
-                .join(ZED_HOME_DIR_NAME),
+            None => default_zed_home()?,
         };
         // Store paths become symlink targets during installation. Keeping a
         // relative --home here would make that target relative to the nested
