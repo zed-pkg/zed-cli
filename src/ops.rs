@@ -716,6 +716,32 @@ fn cargo_package_name(root: &Path) -> Result<Option<String>> {
     Ok(Some(name.to_string()))
 }
 
+fn zed_crates_io_package(root: &Path) -> Result<Option<String>> {
+    let manifest_path = root.join(MANIFEST_FILE);
+    if !manifest_path.is_file() {
+        return Ok(None);
+    }
+    let document = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("reading {}", manifest_path.display()))?;
+    let document: toml::Value = toml::from_str(&document)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let Some(native) = document
+        .get("publish")
+        .and_then(toml::Value::as_table)
+        .and_then(|publish| publish.get("native"))
+        .and_then(toml::Value::as_table)
+    else {
+        return Ok(None);
+    };
+    if native.get("registry").and_then(toml::Value::as_str) != Some("crates-io") {
+        return Ok(None);
+    }
+    Ok(native
+        .get("package")
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned))
+}
+
 fn git_checkout_identity(root: &Path) -> (Option<String>, BTreeSet<String>) {
     if !root.join(".git").exists() {
         return (None, BTreeSet::new());
@@ -987,7 +1013,8 @@ fn cargo_dependency_sources_by_package(
 
 fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPatchEntry>> {
     let dependency_sources = cargo_dependency_sources_by_package(project)?;
-    let mut entries: BTreeMap<String, (String, Option<ZedGitProvenance>)> = BTreeMap::new();
+    let mut entries: BTreeMap<String, (String, Option<ZedGitProvenance>, Option<String>)> =
+        BTreeMap::new();
     for path in paths {
         let Some(package) = cargo_package_name(path)? else {
             eprintln!(
@@ -998,7 +1025,8 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
         };
         let config_path = relative_to(project, path);
         let provenance = zed_git_provenance(project, path)?;
-        if let Some((existing, _)) = entries.get(&package)
+        let crates_io_package = zed_crates_io_package(path)?;
+        if let Some((existing, _, _)) = entries.get(&package)
             && existing != &config_path
         {
             bail!(
@@ -1007,18 +1035,19 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
                 config_path
             );
         }
-        entries.insert(package, (config_path, provenance));
+        entries.insert(package, (config_path, provenance, crates_io_package));
     }
     Ok(entries
         .into_iter()
-        .map(|(package, (config_path, provenance))| {
+        .map(|(package, (config_path, provenance, crates_io_package))| {
             let declared_sources = dependency_sources.get(&package).cloned().unwrap_or_default();
             let matching_sources = matching_cargo_git_source_urls(
                 declared_sources.git_sources,
                 provenance.as_ref(),
             );
             CargoPatchEntry {
-                crates_io: declared_sources.crates_io,
+                crates_io: declared_sources.crates_io
+                    && crates_io_package.as_deref() == Some(package.as_str()),
                 git_sources: matching_sources,
                 package,
                 config_path,
@@ -4291,6 +4320,19 @@ edition = "2021"
 "#,
         )
         .unwrap();
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "acme"
+name = "tool"
+version = "1.2.3"
+
+[publish.native]
+registry = "crates-io"
+package = "tool-crate"
+"#,
+        )
+        .unwrap();
         let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
 
         write_toolchain_wiring(&project, &roots).unwrap();
@@ -4302,6 +4344,47 @@ edition = "2021"
             Some("zed_modules/acme/tool")
         );
         assert!(generated.contains("merge this fragment into .cargo/config.toml"));
+    }
+
+    #[test]
+    fn rust_cargo_config_does_not_patch_crates_io_without_declared_native_route() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/lookalike");
+        fs::create_dir_all(&package)?;
+        fs::write(
+            project.join("Cargo.toml"),
+            r#"[package]
+name = "consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tool-crate = "1.2.3"
+"#,
+        )?;
+        fs::write(
+            package.join("Cargo.toml"),
+            r#"[package]
+name = "tool-crate"
+version = "1.2.3"
+edition = "2021"
+"#,
+        )?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "acme"
+name = "lookalike"
+version = "1.2.3"
+"#,
+        )?;
+
+        let roots = BTreeMap::from([(Adapter::Rust, vec![package])]);
+        write_toolchain_wiring(&project, &roots)?;
+        let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml"))?;
+        assert!(!generated.contains("[patch.crates-io]"), "{generated}");
+        Ok(())
     }
 
     #[test]
