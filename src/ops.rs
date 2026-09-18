@@ -1417,6 +1417,16 @@ fn install_locked(
             "--frozen refuses live [overrides.path] dependencies because the current lock format cannot pin mutable local checkout bytes; remove the override or use a non-frozen development install"
         );
     }
+    if frozen
+        && manifest
+            .workspace
+            .as_ref()
+            .is_some_and(|workspace| !workspace.sources.is_empty())
+    {
+        bail!(
+            "--frozen refuses [workspace.sources] until the workspace-source lock records immutable VCS revisions; use local [workspace].members or a non-frozen source-composition install"
+        );
+    }
     let workspace = workspace_with_local_overrides(project, &manifest)?;
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
