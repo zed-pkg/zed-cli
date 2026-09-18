@@ -777,6 +777,15 @@ fn zed_git_provenance(project: &Path, root: &Path) -> Result<Option<ZedGitProven
         return Ok(None);
     };
 
+    let (checkout_commit, checkout_tags) = git_checkout_identity(root);
+    if checkout_commit.is_some() {
+        return Ok(Some(ZedGitProvenance {
+            url,
+            commit: checkout_commit,
+            tags: checkout_tags,
+        }));
+    }
+
     let identity = match (
         package.get("org").and_then(toml::Value::as_str),
         package.get("name").and_then(toml::Value::as_str),
@@ -804,8 +813,11 @@ fn zed_git_provenance(project: &Path, root: &Path) -> Result<Option<ZedGitProven
         }
     }
 
-    let (commit, tags) = git_checkout_identity(root);
-    Ok(Some(ZedGitProvenance { url, commit, tags }))
+    Ok(Some(ZedGitProvenance {
+        url,
+        commit: None,
+        tags: BTreeSet::new(),
+    }))
 }
 
 fn cargo_git_source_matches(source: &CargoGitSource, provider: &ZedGitProvenance) -> bool {
