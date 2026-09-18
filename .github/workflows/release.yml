@@ -5,6 +5,13 @@
 name: release
 
 on:
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/dev.rs
+      - src/ops.rs
+      - .github/workflows/release.yml
   push:
     branches:
       - "release/**"
@@ -20,7 +27,41 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact release candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Verify exact clean source head
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
+
+      - name: Install reviewed Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+
+      - name: Prove Zed replaces an unreachable Cargo Git source offline
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked cargo_adapter_resolves_git_dependency_offline_from_zed_patch
+          cargo test --locked rust_cargo_config_patches_matching_git_source_to_zed_path
+          cargo test --locked rust_cargo_config_patches_workspace_git_dependency
+
   build:
+    needs: preflight
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
@@ -42,16 +83,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out exact release candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           path: zed-cli
           persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: zed-pkg/zed-interfaces
-          ref: 0c51d732cb01a377b2bc00e8d945b355e41961c1
-          path: zed-interfaces
-          persist-credentials: false
+      - name: Verify exact release candidate revision
+        working-directory: zed-cli
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           # Match rust-toolchain.toml so release artifacts use the reviewed compiler.
