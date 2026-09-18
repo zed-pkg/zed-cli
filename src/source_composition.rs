@@ -199,7 +199,21 @@ fn is_reserved_source_path(path: &str) -> bool {
     let first = normalized.split('/').next().unwrap_or_default();
     matches!(first, ".git" | ".hg" | ".svn" | ".zpkg-staging")
         || matches!(normalized, ".zpkg.toml" | ".zpkg.lock" | ".gitmodules")
-        || paths_overlap(normalized, ".zed/operation.lock")
+        || [
+            ".zed/operation.lock",
+            ".zed/pack",
+            ".zed/tools",
+            ".zed/environment.lock.toml",
+            ".zed/paths.json",
+            ".zed/node_path",
+            ".zed/classpath",
+            ".zed/go.work",
+            ".zed/pythonpath",
+            ".zed/cargo-paths.toml",
+            ".zed/pub-deps.yaml",
+        ]
+        .iter()
+        .any(|reserved| paths_overlap(normalized, reserved))
 }
 
 fn is_allowed_repo_url(url: &str) -> bool {
@@ -263,6 +277,7 @@ fn resolve(project: &Path) -> Result<Vec<ResolvedSource>> {
     }
 
     let mut paths = BTreeMap::<String, String>::new();
+    let mut packages = BTreeMap::<String, String>::new();
     let mut out = Vec::with_capacity(raw.sources.len());
     for (name, source) in raw.sources {
         validate_name(&name)?;
@@ -287,6 +302,11 @@ fn resolve(project: &Path) -> Result<Vec<ResolvedSource>> {
         }
         if let Some(package) = source.package.as_deref() {
             crate::ops::split_key(package)?;
+            if let Some(previous_name) = packages.insert(package.to_string(), name.clone()) {
+                bail!(
+                    "package `{package}` is declared by both source `{previous_name}` and source `{name}`"
+                );
+            }
         }
         if source.revision.is_some() && source.branch.is_some() {
             bail!("source `{name}` may declare revision or branch, not both");
@@ -421,6 +441,50 @@ fn generated_gitmodules(project: &Path) -> Result<bool> {
     }
 }
 
+fn generated_gitmodule_paths(project: &Path) -> Result<BTreeMap<String, String>> {
+    if !generated_gitmodules(project)? {
+        return Ok(BTreeMap::new());
+    }
+    let path = project.join(".gitmodules");
+    let output = run(
+        project,
+        "git",
+        &[
+            "config",
+            "-f",
+            path.to_str().context(".gitmodules path is not UTF-8")?,
+            "--get-regexp",
+            r"^submodule\..*\.path$",
+        ],
+    )
+    .or_else(|error| {
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("reading generated {}", path.display()))?;
+        if text.trim() == GENERATED_GITMODULES_HEADER.trim() {
+            Ok(String::new())
+        } else {
+            Err(error)
+        }
+    })?;
+
+    let mut out = BTreeMap::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let (key, value) = line
+            .split_once(char::is_whitespace)
+            .context("generated .gitmodules path record is malformed")?;
+        let name = key
+            .strip_prefix("submodule.")
+            .and_then(|value| value.strip_suffix(".path"))
+            .context("generated .gitmodules path key is malformed")?
+            .trim_matches('"')
+            .strip_prefix("zed:")
+            .context("generated .gitmodules contains a non-Zed submodule section")?
+            .to_string();
+        out.insert(name, value.trim().to_string());
+    }
+    Ok(out)
+}
+
 fn write_gitmodules(project: &Path, entries: &[ResolvedSource]) -> Result<()> {
     let path = project.join(".gitmodules");
     let rendered = render_gitmodules(entries)?;
@@ -456,6 +520,22 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
         bail!(
             "authored .gitmodules conflicts with manifest-authoritative source composition; run `zed overtake --git-submodules` first"
         );
+    }
+
+    let desired_paths: BTreeMap<_, _> = entries
+        .iter()
+        .map(|source| (source.name.as_str(), source.path.as_str()))
+        .collect();
+    for (name, previous_path) in generated_gitmodule_paths(project)? {
+        match desired_paths.get(name.as_str()) {
+            Some(current_path) if *current_path == previous_path => {}
+            Some(current_path) => bail!(
+                "Git-submodule source `{name}` moved from `{previous_path}` to `{current_path}`; remove the old gitlink explicitly before synchronizing the new path"
+            ),
+            None => bail!(
+                "generated Git submodule `{name}` at `{previous_path}` was removed from .zpkg.toml; remove the old gitlink explicitly before synchronizing"
+            ),
+        }
     }
 
     for source in &entries {
