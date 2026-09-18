@@ -4409,6 +4409,68 @@ url = "https://github.com/canonical-cloud/canonical-lib-core"
     }
 
     #[test]
+    fn live_git_checkout_precedes_stale_or_malformed_project_lock() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let project = temp.path().join("consumer");
+        let package = project.join("zed_modules/acme/tool");
+        fs::create_dir_all(&package)?;
+        fs::write(project.join(LOCKFILE_FILE), "not valid lock data")?;
+        fs::write(
+            package.join(MANIFEST_FILE),
+            r#"[package]
+org = "acme"
+name = "tool"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/acme/tool"
+"#,
+        )?;
+        fs::write(package.join("README.md"), "materialized checkout\n")?;
+
+        let run = |args: &[&str]| -> Result<()> {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&package)
+                .status()
+                .with_context(|| format!("running git {}", args.join(" ")))?;
+            if !status.success() {
+                bail!("git {} failed with {status}", args.join(" "));
+            }
+            Ok(())
+        };
+        run(&["init", "-q"])?;
+        run(&["add", "."])?;
+        let status = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Zed Test",
+                "-c",
+                "user.email=zed-test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ])
+            .current_dir(&package)
+            .status()?;
+        if !status.success() {
+            bail!("git fixture commit failed with {status}");
+        }
+        let expected = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&package)
+            .output()?;
+        let expected = String::from_utf8(expected.stdout)?.trim().to_owned();
+
+        let provenance = zed_git_provenance(&project, &package)?
+            .context("live checkout must produce Git provenance")?;
+        assert_eq!(provenance.commit.as_deref(), Some(expected.as_str()));
+        assert_eq!(provenance.url, "https://github.com/acme/tool");
+        Ok(())
+    }
+
+    #[test]
     fn cargo_git_source_selector_requires_exact_materialized_rev() {
         let commit = "d2f7371f01f257fbaee532b923f4c4b0d2c4dff4";
         let provider = ZedGitProvenance {
