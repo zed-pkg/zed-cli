@@ -1,8 +1,75 @@
 # Git submodule interoperability
 
-Zed and Git submodules can coexist in one repository. Git remains a supported
-checkout transport, while Zed can become the authority for dependency identity,
-workspace resolution, integrity, and frozen replay.
+Zed and Git submodules can coexist in one repository, but they do not share
+authority. The Zed manifest owns package/workspace/source-composition intent;
+Git metadata is either a generated transport projection or explicit migration
+input.
+
+## Canonical manifest-first source composition
+
+New Zed-managed repository composition is declared in `.zpkg.toml`:
+
+```toml
+[interop.source-composition]
+checkout_dir = ".zed/vcs"
+git_submodule_dir = "submodules"
+
+[interop.source-composition.sources.lib]
+vcs = "git"
+url = "https://github.com/acme/lib.git"
+role = "workspace"
+projection = "git-submodule"
+path = "apps/lib"
+package = "acme/lib"
+branch = "main"
+recursive = true
+
+[interop.source-composition.sources.docs]
+vcs = "hg"
+url = "https://example.com/hg/docs"
+role = "inventory"
+```
+
+Run `zed workspace sync` to reconcile that authored state. For a Git-submodule
+projection Zed generates `.gitmodules` with a Zed-owned header, configures the
+submodule URL, creates a missing gitlink, then uses explicit checkout-mode
+sync/init/update. It never silently overwrites an authored `.gitmodules`; use
+the legacy takeover path below to import reviewed existing Git metadata first.
+
+The safety boundary is fail-closed:
+
+- source paths, package materialization, ordinary checkout roots, and
+  Git-submodule roots must be pairwise non-overlapping;
+- source paths may not target VCS control data, Zed transaction state, package
+  output state, or generated adapter/tool files;
+- source URLs and branch/revision tokens are validated as data, never shell
+  fragments;
+- one canonical Zed package identity may be owned by only one source entry;
+- workspace sources must contain a regular `.zpkg.toml` whose package identity
+  matches the declaration before the package resolver links them;
+- an existing checkout must be clean and must retain the manifest-declared
+  remote before Zed fetches or pulls it;
+- removing or moving a previously generated Git-submodule path requires an
+  explicit Git gitlink removal rather than silently orphaning the old gitlink.
+
+A normal `zed install` synchronizes manifest-declared sources before resolving
+the dependency graph. `zed install --frozen` is intentionally stricter:
+ordinary VCS checkouts are refused until a dedicated immutable workspace-source
+lock exists, while Git-submodule projections must already have the exact
+generated `.gitmodules` and committed gitlinks and are checked out to those
+gitlink commits. Frozen mode does not create new source declarations or advance
+a mutable branch.
+
+Git, Mercurial, Jujutsu, and Sapling are the initial checkout transports.
+Fossil and Pijul remain declared VCS values but automated source checkout is
+fail-closed until their clone/update semantics are certified.
+
+## Legacy `.gitmodules` compatibility
+
+The `--git-submodules` and `zed overtake --git-submodules` flows below are
+migration/compatibility surfaces for repositories that already author
+`.gitmodules`. They are not the preferred source of truth for new Zed-managed
+composition.
 
 ## Cooperative install mode
 

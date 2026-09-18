@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,102 @@ fn glob_set(patterns: &[String]) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
+fn slash_relative(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn source_relative_submodule<'a>(submodule: &'a str, source_root: &str) -> Option<&'a str> {
+    let source_root = source_root.trim_matches('/');
+    if source_root.is_empty() {
+        return Some(submodule);
+    }
+    if submodule == source_root {
+        return Some("");
+    }
+    submodule
+        .strip_prefix(source_root)
+        .and_then(|suffix| suffix.strip_prefix('/'))
+        .or_else(|| {
+            source_root
+                .strip_prefix(submodule)
+                .and_then(|suffix| suffix.strip_prefix('/'))
+                .map(|_| "")
+        })
+}
+
+fn subtree_is_conclusively_excluded(relative: &str, excludes: &[String]) -> bool {
+    if relative.is_empty() {
+        return false;
+    }
+    let canonical = format!("{}/**", relative.trim_matches('/'));
+    excludes
+        .iter()
+        .any(|pattern| pattern.eq_ignore_ascii_case(&canonical))
+}
+
+fn verify_git_submodules_for_pack(project: &Path, manifest: &Manifest) -> Result<()> {
+    let Some(submodules) = crate::git_submodules::pack_submodules(project)? else {
+        return Ok(());
+    };
+    let canonical_project = fs::canonicalize(project)
+        .with_context(|| format!("canonicalizing package root {}", project.display()))?;
+    let project_prefix = canonical_project
+        .strip_prefix(submodules.canonical_root())
+        .with_context(|| {
+            format!(
+                "package root {} is outside Git superproject {}",
+                canonical_project.display(),
+                submodules.canonical_root().display()
+            )
+        })?;
+    let project_prefix = slash_relative(project_prefix);
+
+    let mut included = BTreeSet::<String>::new();
+    let mut consider_source = |source_dir: &str, source: &Path, derived: &Manifest| -> Result<()> {
+        let root_relative = if source_dir == "." || source_dir.is_empty() {
+            project_prefix.clone()
+        } else if project_prefix.is_empty() {
+            source_dir.trim_matches('/').to_string()
+        } else {
+            format!("{}/{}", project_prefix, source_dir.trim_matches('/'))
+        };
+        let ignore_rules = crate::publish_ignore::read_rules(source)?;
+        let excludes = crate::publish_ignore::effective_artifact_excludes(derived, &ignore_rules);
+        for submodule in submodules.paths() {
+            let Some(relative) = source_relative_submodule(submodule, &root_relative) else {
+                continue;
+            };
+            if !subtree_is_conclusively_excluded(relative, &excludes) {
+                included.insert(submodule.to_string());
+            }
+        }
+        Ok(())
+    };
+
+    if !manifest.is_polyglot() {
+        consider_source(".", project, manifest)?;
+    } else {
+        for (target, _) in manifest.target_package_names() {
+            let derived = manifest
+                .manifest_for_target(&target)
+                .with_context(|| format!("target `{target}` disappeared during pack preflight"))?;
+            let section = manifest
+                .targets
+                .get(&target)
+                .with_context(|| format!("target `{target}` disappeared during pack preflight"))?;
+            consider_source(&section.dir, &project.join(&section.dir), &derived)?;
+        }
+    }
+
+    submodules.verify(&included.into_iter().collect::<Vec<_>>())
+}
+
 /// Build the pruned, deterministic `tar.gz` artifact (the default format).
 pub fn pack(project: &Path, manifest: &Manifest, out_dir: Option<&Path>) -> Result<PackResult> {
     pack_format(project, manifest, out_dir, ArtifactFormat::TarGz)
@@ -66,6 +163,7 @@ pub fn pack_all(
     manifest: &Manifest,
     out_dir: Option<&Path>,
 ) -> Result<Vec<PackagedTarget>> {
+    verify_git_submodules_for_pack(project, manifest)?;
     if !manifest.is_polyglot() {
         return Ok(vec![PackagedTarget {
             target: None,
@@ -383,6 +481,8 @@ pub fn sha256_file(path: &Path) -> Result<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    #[cfg(unix)]
+    use std::process::Command;
 
     use flate2::read::GzDecoder;
 
@@ -396,6 +496,124 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path().unwrap().to_string_lossy().to_string())
             .collect()
+    }
+
+    #[cfg(unix)]
+    fn git(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    fn committed_submodule_fixture() -> (tempfile::TempDir, Manifest) {
+        let root = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+
+        git(child.path(), &["init"]);
+        git(child.path(), &["config", "user.name", "Zed Test"]);
+        git(child.path(), &["config", "user.email", "zed@example.invalid"]);
+        fs::write(child.path().join("payload.txt"), "submodule payload\n").unwrap();
+        git(child.path(), &["add", "payload.txt"]);
+        git(child.path(), &["commit", "-m", "fixture child"]);
+
+        git(root.path(), &["init"]);
+        git(root.path(), &["config", "user.name", "Zed Test"]);
+        git(root.path(), &["config", "user.email", "zed@example.invalid"]);
+        let source_manifest = r#"
+[package]
+org = "acme"
+name = "superproject"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/superproject"
+"#;
+        fs::write(
+            root.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            source_manifest,
+        )
+        .unwrap();
+        let child_path = child.path().to_str().unwrap();
+        git(
+            root.path(),
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--",
+                child_path,
+                "vendor/child",
+            ],
+        );
+        git(
+            root.path(),
+            &[
+                "add",
+                zed_interfaces::paths::MANIFEST_FILE,
+                ".gitmodules",
+                "vendor/child",
+            ],
+        );
+        git(root.path(), &["commit", "-m", "fixture superproject"]);
+        (root, Manifest::parse(source_manifest).unwrap())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_requires_included_submodules_but_allows_canonical_subtree_exclusion() {
+        let (root, manifest) = committed_submodule_fixture();
+
+        let packed = pack_all(root.path(), &manifest, None).unwrap();
+        let files = archive_files(&packed[0].packed.path);
+        assert!(files.contains("pkg/vendor/child/payload.txt"));
+        assert!(!files.iter().any(|path| path.ends_with("/.git")));
+        assert!(!files.iter().any(|path| path.contains("/.git/")));
+        assert!(!files.iter().any(|path| path.ends_with("/.gitmodules")));
+
+        git(
+            root.path(),
+            &["submodule", "deinit", "-f", "--", "vendor/child"],
+        );
+        let error = match pack_all(root.path(), &manifest, None) {
+            Ok(_) => panic!("packing an included deinitialized submodule unexpectedly succeeded"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("not initialized"), "{error}");
+
+        let excluded = Manifest::parse(
+            r#"
+[package]
+org = "acme"
+name = "superproject"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/superproject"
+
+[publish]
+exclude = ["vendor/child/**"]
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            excluded.to_toml_string().unwrap(),
+        )
+        .unwrap();
+        let packed = pack_all(root.path(), &excluded, None).unwrap();
+        let files = archive_files(&packed[0].packed.path);
+        assert!(!files.iter().any(|path| path.starts_with("pkg/vendor/child/")));
     }
 
     #[test]

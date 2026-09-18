@@ -141,6 +141,7 @@ pub mod publisher_keys;
 pub mod r2g;
 pub mod registry;
 pub mod release;
+pub mod source_composition;
 pub mod source_fallback;
 pub mod store;
 pub mod task_cli;

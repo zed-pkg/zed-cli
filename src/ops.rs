@@ -177,6 +177,52 @@ fn find_workspace(project: &Path) -> Option<WorkspaceInfo> {
     None
 }
 
+fn workspace_with_source_composition(
+    project: &Path,
+    workspace: Option<WorkspaceInfo>,
+) -> Result<Option<WorkspaceInfo>> {
+    let Some(source_root) = crate::source_composition::find_root(project)? else {
+        return Ok(workspace);
+    };
+    let source_members = crate::source_composition::workspace_members(&source_root)?;
+    if source_members.is_empty() {
+        return Ok(workspace);
+    }
+
+    let mut combined = match workspace {
+        Some(workspace) => {
+            if workspace.root != source_root {
+                bail!(
+                    "source-composition workspace root {} conflicts with local workspace root {}",
+                    source_root.display(),
+                    workspace.root.display()
+                );
+            }
+            workspace
+        }
+        None => WorkspaceInfo {
+            root: source_root.clone(),
+            members: BTreeMap::new(),
+        },
+    };
+
+    for (package, path) in source_members {
+        if let Some(previous) = combined.members.get(&package) {
+            let previous = fs::canonicalize(previous).unwrap_or_else(|_| previous.clone());
+            if previous != path {
+                bail!(
+                    "workspace package `{package}` has conflicting local and source-composition paths: {} vs {}",
+                    previous.display(),
+                    path.display()
+                );
+            }
+            continue;
+        }
+        combined.members.insert(package, path);
+    }
+    Ok(Some(combined))
+}
+
 fn collect_members(root: &Path, globs: &[String]) -> WorkspaceInfo {
     let members = globs.iter().flat_map(|pattern| {
         // Member globs are directory patterns like `packages/*`; expand one
@@ -1362,7 +1408,7 @@ fn install_locked(
     let reg = cfg.open_registry()?;
     let lock_path = project.join(LOCKFILE_FILE);
 
-    let workspace = find_workspace(project);
+    let workspace = workspace_with_source_composition(project, find_workspace(project))?;
     let mut workspace_links: BTreeMap<String, PathBuf> = BTreeMap::new();
     let mut resolved: BTreeMap<String, VersionMetadata> = BTreeMap::new();
 
@@ -2058,7 +2104,7 @@ pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
     // manifest boundary used by frozen install so a workspace-only project can
     // still uninstall and later restore its exact materialized graph.
     let manifest = read_manifest(project).ok();
-    let workspace = find_workspace(project);
+    let workspace = workspace_with_source_composition(project, find_workspace(project))?;
     let workspace_links = match manifest.as_ref() {
         Some(manifest) => {
             collect_workspace_links_for_frozen(project, manifest, workspace.as_ref())?
