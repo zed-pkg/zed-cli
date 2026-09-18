@@ -951,11 +951,6 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                      # Copy or merge this fragment into .cargo/config.toml.\n\
                      # The consumer's Cargo.toml remains unchanged.\n",
                 );
-                doc.push_str("paths = [\n");
-                for path in &config_paths {
-                    doc.push_str(&format!("    {},\n", toml_basic_string(path)?));
-                }
-                doc.push_str("]\n");
                 let crates_io_patches: Vec<&CargoPatchEntry> =
                     patches.iter().filter(|patch| patch.crates_io).collect();
                 if !crates_io_patches.is_empty() {
@@ -4143,7 +4138,6 @@ edition = "2021"
 
         let generated = fs::read_to_string(project.join(".zed/cargo-paths.toml")).unwrap();
         let parsed: toml::Value = toml::from_str(&generated).unwrap();
-        assert_eq!(parsed["paths"][0].as_str(), Some("zed_modules/acme/tool"));
         assert_eq!(
             parsed["patch"]["crates-io"]["tool-crate"]["path"].as_str(),
             Some("zed_modules/acme/tool")
