@@ -1,0 +1,33 @@
+name: repair one-shot PR 453 helper
+
+on:
+  push:
+    branches:
+      - automation/harden-pr453-provenance
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: automation/harden-pr453-provenance
+          persist-credentials: true
+      - name: Repair nested Rust raw strings
+        shell: bash
+        run: |
+          set -euo pipefail
+          file=.github/workflows/patch-pr453-provenance.yml
+          sed -i 's/let new_tests = r#"/let new_tests = r###"/' "$file"
+          sed -i 's/let workspace_test = r#"/let workspace_test = r###"/' "$file"
+          sed -i 's/^              "#;$/              "###;/' "$file"
+          git diff --check
+          git add "$file"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git -c user.name='ORESoftware' -c user.email='alex@oresoftware.com' commit -m 'fix(ci): repair PR 453 patcher delimiters'
+          git push origin HEAD:automation/harden-pr453-provenance
