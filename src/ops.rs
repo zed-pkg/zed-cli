@@ -1119,13 +1119,13 @@ fn write_toolchain_wiring(project: &Path, roots: &BTreeMap<Adapter, Vec<PathBuf>
                 );
             }
             Adapter::Rust => {
-                // Cargo's `paths` override can replace a package that already
-                // participates in resolution, but it cannot introduce an
-                // unpublished crate by itself. Pair it with config-level
-                // patches for crates.io and for any matching Git dependency
-                // sources already declared by the consumer. This lets Zed
-                // materialize a private Git-backed crate locally without
-                // rewriting the consumer's Cargo.toml or embedding credentials.
+                // Cargo patch tables are source-specific and can redirect an
+                // already-declared dependency to Zed's local materialization
+                // without rewriting the consumer's Cargo.toml. Emit crates.io
+                // patches only when the Zed package declares that native route,
+                // and Git patches only when repository plus immutable selector
+                // provenance agrees. New wiring deliberately avoids Cargo's
+                // source-agnostic top-level `paths` override.
                 let mut config_paths: Vec<String> = paths
                     .iter()
                     .map(|path| relative_to(project, path))
