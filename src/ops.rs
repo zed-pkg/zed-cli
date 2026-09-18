@@ -667,10 +667,25 @@ struct CargoPatchEntry {
     git_sources: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CargoGitSource {
+    url: String,
+    rev: Option<String>,
+    tag: Option<String>,
+    branch: Option<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct CargoDependencySources {
     crates_io: bool,
-    git_sources: BTreeSet<String>,
+    git_sources: BTreeSet<CargoGitSource>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZedGitProvenance {
+    url: String,
+    commit: Option<String>,
+    tags: BTreeSet<String>,
 }
 
 fn cargo_package_name(root: &Path) -> Result<Option<String>> {
@@ -701,7 +716,39 @@ fn cargo_package_name(root: &Path) -> Result<Option<String>> {
     Ok(Some(name.to_string()))
 }
 
-fn zed_repository_url(root: &Path) -> Result<Option<String>> {
+fn git_checkout_identity(root: &Path) -> (Option<String>, BTreeSet<String>) {
+    if !root.join(".git").exists() {
+        return (None, BTreeSet::new());
+    }
+    let commit = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty());
+    let tags = Command::new("git")
+        .args(["tag", "--points-at", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|output| {
+            output
+                .lines()
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+    (commit, tags)
+}
+
+fn zed_git_provenance(project: &Path, root: &Path) -> Result<Option<ZedGitProvenance>> {
     let manifest_path = root.join(MANIFEST_FILE);
     if !manifest_path.is_file() {
         return Ok(None);
@@ -710,10 +757,11 @@ fn zed_repository_url(root: &Path) -> Result<Option<String>> {
         .with_context(|| format!("reading {}", manifest_path.display()))?;
     let document: toml::Value = toml::from_str(&document)
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
-    let Some(repository) = document
-        .get("package")
-        .and_then(toml::Value::as_table)
-        .and_then(|package| package.get("repository"))
+    let Some(package) = document.get("package").and_then(toml::Value::as_table) else {
+        return Ok(None);
+    };
+    let Some(repository) = package
+        .get("repository")
         .and_then(toml::Value::as_table)
     else {
         return Ok(None);
@@ -721,10 +769,71 @@ fn zed_repository_url(root: &Path) -> Result<Option<String>> {
     if repository.get("vcs").and_then(toml::Value::as_str) != Some("git") {
         return Ok(None);
     }
-    Ok(repository
+    let Some(url) = repository
         .get("url")
         .and_then(toml::Value::as_str)
-        .map(str::to_owned))
+        .map(str::to_owned)
+    else {
+        return Ok(None);
+    };
+
+    let identity = match (
+        package.get("org").and_then(toml::Value::as_str),
+        package.get("name").and_then(toml::Value::as_str),
+    ) {
+        (Some(org), Some(name)) => Some((org, name)),
+        _ => None,
+    };
+    if let Some((org, name)) = identity {
+        let lock_path = project.join(LOCKFILE_FILE);
+        if lock_path.is_file() {
+            let text = fs::read_to_string(&lock_path)
+                .with_context(|| format!("reading {}", lock_path.display()))?;
+            let lock = Lockfile::parse(&text)
+                .with_context(|| format!("parsing {}", lock_path.display()))?;
+            if let Some(locked) = lock.find(org, name) {
+                let tags = std::iter::once(locked.vcs_tag.clone())
+                    .filter(|tag| !tag.is_empty())
+                    .collect();
+                return Ok(Some(ZedGitProvenance {
+                    url,
+                    commit: locked.vcs_commit.clone(),
+                    tags,
+                }));
+            }
+        }
+    }
+
+    let (commit, tags) = git_checkout_identity(root);
+    Ok(Some(ZedGitProvenance { url, commit, tags }))
+}
+
+fn cargo_git_source_matches(source: &CargoGitSource, provider: &ZedGitProvenance) -> bool {
+    if normalized_git_repository_url(&source.url)
+        != normalized_git_repository_url(&provider.url)
+    {
+        return false;
+    }
+    if source.branch.is_some() {
+        return false;
+    }
+    if let Some(rev) = source.rev.as_deref() {
+        let valid_full_commit = rev.len() == 40 && rev.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if !valid_full_commit
+            || provider
+                .commit
+                .as_deref()
+                .is_none_or(|commit| !commit.eq_ignore_ascii_case(rev))
+        {
+            return false;
+        }
+    }
+    if let Some(tag) = source.tag.as_deref()
+        && !provider.tags.contains(tag)
+    {
+        return false;
+    }
+    true
 }
 
 fn normalized_git_repository_url(raw: &str) -> Option<String> {
@@ -769,7 +878,21 @@ fn collect_cargo_dependency_sources(
                         .entry(package.to_owned())
                         .or_default()
                         .git_sources
-                        .insert(git.to_owned());
+                        .insert(CargoGitSource {
+                            url: git.to_owned(),
+                            rev: specification
+                                .get("rev")
+                                .and_then(toml::Value::as_str)
+                                .map(str::to_owned),
+                            tag: specification
+                                .get("tag")
+                                .and_then(toml::Value::as_str)
+                                .map(str::to_owned),
+                            branch: specification
+                                .get("branch")
+                                .and_then(toml::Value::as_str)
+                                .map(str::to_owned),
+                        });
                 } else if specification.get("path").is_none()
                     && specification.get("registry").is_none()
                     && !specification
@@ -837,7 +960,7 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
             continue;
         };
         let config_path = relative_to(project, path);
-        let repository_url = zed_repository_url(path)?;
+        let provenance = zed_git_provenance(project, path)?;
         if let Some((existing, _)) = entries.get(&package)
             && existing != &config_path
         {
@@ -847,23 +970,21 @@ fn cargo_patch_entries(project: &Path, paths: &[PathBuf]) -> Result<Vec<CargoPat
                 config_path
             );
         }
-        entries.insert(package, (config_path, repository_url));
+        entries.insert(package, (config_path, provenance));
     }
     Ok(entries
         .into_iter()
-        .map(|(package, (config_path, repository_url))| {
-            let provider = repository_url
-                .as_deref()
-                .and_then(normalized_git_repository_url);
+        .map(|(package, (config_path, provenance))| {
             let declared_sources = dependency_sources.get(&package).cloned().unwrap_or_default();
             let matching_sources = declared_sources
                 .git_sources
                 .into_iter()
                 .filter(|source| {
-                    provider.as_ref().is_some_and(|provider| {
-                        normalized_git_repository_url(source).as_ref() == Some(provider)
-                    })
+                    provenance
+                        .as_ref()
+                        .is_some_and(|provider| cargo_git_source_matches(source, provider))
                 })
+                .map(|source| source.url)
                 .collect();
             CargoPatchEntry {
                 crates_io: declared_sources.crates_io,
