@@ -22,16 +22,17 @@ pub(crate) fn read(project: &Path) -> Result<BTreeMap<String, String>> {
     let table = table
         .as_table()
         .context("[overrides.path] must be a TOML table")?;
-    let mut out = BTreeMap::new();
-    for (package, value) in table {
-        crate::ops::split_key(package)?;
-        let raw = value
-            .as_str()
-            .with_context(|| format!("[overrides.path].{package} must be a string"))?;
-        validate_raw(package, raw)?;
-        out.insert(package.clone(), raw.to_string());
-    }
-    Ok(out)
+    table
+        .iter()
+        .map(|(package, value)| {
+            crate::ops::split_key(package)?;
+            let raw = value
+                .as_str()
+                .with_context(|| format!("[overrides.path].{package} must be a string"))?;
+            validate_raw(package, raw)?;
+            Ok((package.clone(), raw.to_string()))
+        })
+        .collect()
 }
 
 fn validate_raw(package: &str, raw: &str) -> Result<()> {
@@ -65,62 +66,57 @@ fn env_value(name: &str) -> Result<String> {
 
 fn expand_env_with(
     raw: &str,
-    lookup: impl Fn(&str) -> Result<String>,
+    lookup: impl Fn(&str) -> Result<String> + Copy,
 ) -> Result<String> {
-    validate_raw("<path>", raw)?;
-    let bytes = raw.as_bytes();
-    let mut out = String::with_capacity(raw.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'$' {
-            let ch = raw[index..]
-                .chars()
-                .next()
-                .context("invalid UTF-8 character boundary")?;
-            out.push(ch);
-            index += ch.len_utf8();
-            continue;
-        }
-
-        if index + 1 >= bytes.len() {
+    fn expand_tail(
+        raw: &str,
+        lookup: impl Fn(&str) -> Result<String> + Copy,
+    ) -> Result<String> {
+        let Some(dollar) = raw.find('$') else {
+            return Ok(raw.to_string());
+        };
+        let prefix = &raw[..dollar];
+        let after_dollar = &raw[dollar + 1..];
+        if after_dollar.is_empty() {
             bail!("local path override ends with a bare `$`");
         }
-        if bytes[index + 1] == b'{' {
-            let name_start = index + 2;
-            let Some(close_offset) = bytes[name_start..].iter().position(|byte| *byte == b'}')
-            else {
-                bail!("local path override has an unclosed `${{...}}` reference");
-            };
-            let close = name_start + close_offset;
-            let name = &raw[name_start..close];
-            let name_bytes = name.as_bytes();
-            if name_bytes.is_empty()
-                || !is_var_start(name_bytes[0])
-                || !name_bytes.iter().skip(1).all(|byte| is_var_continue(*byte))
-            {
-                bail!("local path override has invalid environment variable name `{name}`");
+
+        let (name, tail) = if let Some(braced) = after_dollar.strip_prefix('{') {
+            let close = braced
+                .find('}')
+                .context("local path override has an unclosed `${...}` reference")?;
+            (&braced[..close], &braced[close + 1..])
+        } else {
+            let bytes = after_dollar.as_bytes();
+            if !is_var_start(bytes[0]) {
+                bail!("local path override has unsupported shell syntax after `$`");
             }
-            out.push_str(&lookup(name)?);
-            index = close + 1;
-            continue;
+            let end = bytes
+                .iter()
+                .position(|byte| !is_var_continue(*byte))
+                .unwrap_or(bytes.len());
+            (&after_dollar[..end], &after_dollar[end..])
+        };
+
+        let name_bytes = name.as_bytes();
+        if name_bytes.is_empty()
+            || !is_var_start(name_bytes[0])
+            || !name_bytes.iter().skip(1).all(|byte| is_var_continue(*byte))
+        {
+            bail!("local path override has invalid environment variable name `{name}`");
         }
 
-        let name_start = index + 1;
-        if !is_var_start(bytes[name_start]) {
-            bail!("local path override has unsupported shell syntax after `$`");
-        }
-        let mut end = name_start + 1;
-        while end < bytes.len() && is_var_continue(bytes[end]) {
-            end += 1;
-        }
-        let name = &raw[name_start..end];
-        out.push_str(&lookup(name)?);
-        index = end;
+        let value = lookup(name)?;
+        let suffix = expand_tail(tail, lookup)?;
+        Ok([prefix, value.as_str(), suffix.as_str()].concat())
     }
-    if out.chars().any(char::is_control) {
+
+    validate_raw("<path>", raw)?;
+    let expanded = expand_tail(raw, lookup)?;
+    if expanded.chars().any(char::is_control) {
         bail!("expanded local path override contains control characters");
     }
-    Ok(out)
+    Ok(expanded)
 }
 
 /// Expand only $VAR and ${VAR}. This is deliberately not shell expansion:
@@ -143,54 +139,56 @@ pub(crate) fn resolve(
     let modules_path = canonical_project.join(modules_dir);
     let modules = fs::canonicalize(&modules_path).unwrap_or(modules_path);
     let staging = canonical_project.join(crate::transaction::STAGING_DIR);
-    let mut resolved = BTreeMap::new();
 
-    for (package, configured) in raw {
-        let expanded = expand_env(configured)
-            .with_context(|| format!("expanding local path override for `{package}`"))?;
-        let candidate = PathBuf::from(expanded);
-        let candidate = if candidate.is_absolute() {
-            candidate
-        } else {
-            canonical_project.join(candidate)
-        };
-        let canonical = fs::canonicalize(&candidate).with_context(|| {
-            format!(
-                "local path override for `{package}` does not resolve to an existing path: {}",
-                candidate.display()
-            )
-        })?;
-        if !canonical.is_dir() {
-            bail!(
-                "local path override for `{package}` is not a directory: {}",
-                canonical.display()
-            );
-        }
-        if paths_overlap(&canonical, &modules) {
-            bail!(
-                "local path override for `{package}` overlaps Zed package install directory {}",
-                modules.display()
-            );
-        }
-        if canonical.starts_with(&staging) {
-            bail!(
-                "local path override for `{package}` points into Zed transaction staging {}",
-                staging.display()
-            );
-        }
-        let manifest = canonical.join(MANIFEST_FILE);
-        let metadata = fs::symlink_metadata(&manifest).with_context(|| {
-            format!(
-                "local path override for `{package}` has no {}",
-                manifest.display()
-            )
-        })?;
-        if !metadata.file_type().is_file() {
-            bail!("local path override for `{package}` must contain a regular {MANIFEST_FILE}");
-        }
-        resolved.insert(package.clone(), canonical);
-    }
-    Ok(resolved)
+    raw.iter()
+        .map(|(package, configured)| {
+            let expanded = expand_env(configured)
+                .with_context(|| format!("expanding local path override for `{package}`"))?;
+            let candidate = PathBuf::from(expanded);
+            let candidate = if candidate.is_absolute() {
+                candidate
+            } else {
+                canonical_project.join(candidate)
+            };
+            let canonical = fs::canonicalize(&candidate).with_context(|| {
+                format!(
+                    "local path override for `{package}` does not resolve to an existing path: {}",
+                    candidate.display()
+                )
+            })?;
+            if !canonical.is_dir() {
+                bail!(
+                    "local path override for `{package}` is not a directory: {}",
+                    canonical.display()
+                );
+            }
+            if paths_overlap(&canonical, &modules) {
+                bail!(
+                    "local path override for `{package}` overlaps Zed package install directory {}",
+                    modules.display()
+                );
+            }
+            if canonical.starts_with(&staging) {
+                bail!(
+                    "local path override for `{package}` points into Zed transaction staging {}",
+                    staging.display()
+                );
+            }
+            let manifest = canonical.join(MANIFEST_FILE);
+            let metadata = fs::symlink_metadata(&manifest).with_context(|| {
+                format!(
+                    "local path override for `{package}` has no {}",
+                    manifest.display()
+                )
+            })?;
+            if !metadata.file_type().is_file() {
+                bail!(
+                    "local path override for `{package}` must contain a regular {MANIFEST_FILE}"
+                );
+            }
+            Ok((package.clone(), canonical))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -207,15 +205,16 @@ mod tests {
     }
 
     #[test]
-    fn expands_only_named_environment_variables() {
+    fn expands_only_named_environment_variables() -> Result<()> {
         assert_eq!(
-            expand_env_with("${ZED_OVERRIDE_ROOT}/pkg", test_lookup).unwrap(),
+            expand_env_with("${ZED_OVERRIDE_ROOT}/pkg", test_lookup)?,
             "/tmp/zed-root/pkg"
         );
         assert_eq!(
-            expand_env_with("$ZED_OVERRIDE_ROOT/pkg", test_lookup).unwrap(),
+            expand_env_with("$ZED_OVERRIDE_ROOT/pkg", test_lookup)?,
             "/tmp/zed-root/pkg"
         );
+        Ok(())
     }
 
     #[test]
