@@ -948,14 +948,42 @@ fn repack_tag_archive(raw: &Path, org: &str, name: &str, version: &str, dest: &P
     // checkout's untracked inputs, which a tag archive cannot contain.
     let manifest =
         crate::pack_inputs::harden_manifest(crate::pack_guard::harden_manifest(manifest));
-    let packages = crate::pack::pack_all(&tree, &manifest, Some(&staging.path().join("out")))
-        .context("repack GitHub tag archive")?;
-    let root = packages
-        .into_iter()
-        .find(|package| package.manifest.package.name == name)
-        .with_context(|| {
-            format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
+    let out = staging.path().join("out");
+    // Pack only the target that provides the requested package. Packing every
+    // declared target would fail on a sibling rooted at generated output that
+    // a source tag cannot contain, making this package unresolvable for a
+    // reason that has nothing to do with it.
+    let root = if manifest.is_polyglot() {
+        let mut selected = None;
+        for (target, target_package) in manifest.target_package_names() {
+            let is_root = manifest
+                .targets
+                .get(&target)
+                .is_some_and(|section| section.dir == ".");
+            let provided = if is_root {
+                manifest.package.name.clone()
+            } else {
+                target_package
+            };
+            if provided == name {
+                selected = Some(target);
+                break;
+            }
+        }
+        let target = selected.with_context(|| {
+            format!("GitHub tag archive for {org}/{name}@{version} publishes no such package")
         })?;
+        crate::pack::pack_target(&tree, &manifest, &target, Some(&out))
+            .context("repack GitHub tag archive")?
+    } else {
+        crate::pack::pack_all(&tree, &manifest, Some(&out))
+            .context("repack GitHub tag archive")?
+            .into_iter()
+            .find(|package| package.manifest.package.name == name)
+            .with_context(|| {
+                format!("GitHub tag archive for {org}/{name}@{version} publishes no root package")
+            })?
+    };
     // Callers hand over a store cache path whose directory may not exist yet
     // (a frozen fetch uses a fresh isolated store); `download_url` creates it
     // for the other locators, so this one must too.
