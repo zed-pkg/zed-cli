@@ -8,6 +8,9 @@ fn run(dir: &Path, program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
         .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("HGPLAIN", "1")
+        .env("PAGER", "cat")
         .output()
         .with_context(|| format!("failed to run `{program}` (is it installed?)"))?;
     if !output.status.success() {
@@ -37,6 +40,17 @@ pub fn ensure_clean(vcs: Vcs, dir: &Path) -> Result<()> {
     Ok(())
 }
 
+fn hg_tag_commit(dir: &Path, tag: &str) -> Result<Option<String>> {
+    if tag.is_empty() || tag.chars().any(char::is_control) {
+        bail!("Mercurial tag must be non-empty and contain no control characters");
+    }
+    let tags = run(dir, "hg", &["tags", "-T", "{tag}\t{node}\n"])?;
+    Ok(tags.lines().find_map(|line| {
+        let (name, node) = line.split_once('\t')?;
+        (name == tag && !node.is_empty()).then(|| node.to_string())
+    }))
+}
+
 /// Commit id the tag points at, if the tag exists.
 pub fn tag_commit(vcs: Vcs, dir: &Path, tag: &str) -> Result<Option<String>> {
     match vcs {
@@ -47,13 +61,7 @@ pub fn tag_commit(vcs: Vcs, dir: &Path, tag: &str) -> Result<Option<String>> {
                 _ => Ok(None),
             }
         }
-        Vcs::Hg => {
-            let revset = format!("tag('{tag}')");
-            match run(dir, "hg", &["log", "-r", &revset, "-T", "{node}"]) {
-                Ok(node) if !node.is_empty() => Ok(Some(node)),
-                _ => Ok(None),
-            }
-        }
+        Vcs::Hg => hg_tag_commit(dir, tag),
         Vcs::Fossil | Vcs::Pijul => {
             bail!("tag verification for {vcs} is not supported yet; use --skip-vcs-checks")
         }
@@ -64,7 +72,7 @@ pub fn tag_commit(vcs: Vcs, dir: &Path, tag: &str) -> Result<Option<String>> {
 pub fn head_commit(vcs: Vcs, dir: &Path) -> Result<String> {
     match vcs {
         v if v.uses_git_tags() => run(dir, "git", &["rev-parse", "HEAD"]),
-        Vcs::Hg => run(dir, "hg", &["id", "-i", "--debug"]),
+        Vcs::Hg => run(dir, "hg", &["log", "-r", ".", "-T", "{node}"]),
         Vcs::Fossil | Vcs::Pijul => {
             bail!("head lookup for {vcs} is not supported yet; use --skip-vcs-checks")
         }
@@ -97,4 +105,18 @@ pub fn verify_publish_provenance(
         );
     }
     Ok(tag_commit)
+}
+ 
+
+#[cfg(test)]
+mod tests {
+    use super::hg_tag_commit;
+
+    #[test]
+    fn mercurial_tag_lookup_rejects_control_characters_before_spawning() {
+        let error = hg_tag_commit(Path::new("."), "bad\ntag");
+        assert!(error.is_err());
+    }
+
+    use std::path::Path;
 }
