@@ -443,6 +443,22 @@ fn validate_lock_entries(entries: &[GitSubmoduleLock]) -> Result<()> {
         if entry.url.trim().is_empty() {
             bail!("Git submodule `{}` has an empty URL", entry.package);
         }
+        if entry.url.chars().any(char::is_control) {
+            bail!(
+                "Git submodule `{}` URL contains control characters",
+                entry.package
+            );
+        }
+        if entry
+            .branch
+            .as_deref()
+            .is_some_and(|branch| branch.is_empty() || branch.chars().any(char::is_control))
+        {
+            bail!(
+                "Git submodule `{}` branch contains an empty or control-character value",
+                entry.package
+            );
+        }
         if !is_git_object_id(&entry.commit) {
             bail!(
                 "Git submodule `{}` has invalid immutable commit `{}`",
