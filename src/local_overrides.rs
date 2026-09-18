@@ -10,8 +10,7 @@ use zed_interfaces::paths::MANIFEST_FILE;
 /// schema; this compatibility reader keeps the CLI rollout contract-first.
 pub(crate) fn read(project: &Path) -> Result<BTreeMap<String, String>> {
     let path = project.join(MANIFEST_FILE);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text = fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let document: toml::Value =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
     let Some(table) = document
@@ -87,7 +86,8 @@ pub(crate) fn expand_env(raw: &str) -> Result<String> {
         }
         if bytes[index + 1] == b'{' {
             let name_start = index + 2;
-            let Some(close_offset) = bytes[name_start..].iter().position(|byte| *byte == b'}') else {
+            let Some(close_offset) = bytes[name_start..].iter().position(|byte| *byte == b'}')
+            else {
                 bail!("local path override has an unclosed `${...}` reference");
             };
             let close = name_start + close_offset;
@@ -179,9 +179,7 @@ pub(crate) fn resolve(
             )
         })?;
         if !metadata.file_type().is_file() {
-            bail!(
-                "local path override for `{package}` must contain a regular {MANIFEST_FILE}"
-            );
+            bail!("local path override for `{package}` must contain a regular {MANIFEST_FILE}");
         }
         resolved.insert(package.clone(), canonical);
     }
