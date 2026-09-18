@@ -118,21 +118,24 @@ fn git_config_string(value: &str, field: &str) -> Result<String> {
 }
 
 fn render_gitmodules_projection(entries: &[lock::GitSubmoduleLock]) -> Result<String> {
-    let mut out = String::from(GENERATED_GITMODULES_HEADER);
-    for entry in entries {
-        git::validate_relative_path(&entry.path)?;
-        let package = entry.package.replace('/', "__");
-        let path = git_config_string(&entry.path, "path")?;
-        let url = git_config_string(&entry.url, "url")?;
-        out.push_str(&format!(
-            "\n[submodule \"zed:{package}\"]\n\tpath = {path}\n\turl = {url}\n"
-        ));
-        if let Some(branch) = entry.branch.as_deref() {
-            let branch = git_config_string(branch, "branch")?;
-            out.push_str(&format!("\tbranch = {branch}\n"));
-        }
-    }
-    Ok(out)
+    entries
+        .iter()
+        .try_fold(String::from(GENERATED_GITMODULES_HEADER), |out, entry| {
+            git::validate_relative_path(&entry.path)?;
+            let package = entry.package.replace('/', "__");
+            let path = git_config_string(&entry.path, "path")?;
+            let url = git_config_string(&entry.url, "url")?;
+            let branch = entry
+                .branch
+                .as_deref()
+                .map(|value| git_config_string(value, "branch"))
+                .transpose()?
+                .map(|value| format!("\tbranch = {value}\n"))
+                .unwrap_or_default();
+            Ok(format!(
+                "{out}\n[submodule \"zed:{package}\"]\n\tpath = {path}\n\turl = {url}\n{branch}"
+            ))
+        })
 }
 
 pub(crate) fn is_generated_gitmodules_projection(project: &Path) -> Result<bool> {
@@ -160,18 +163,13 @@ fn ensure_gitmodules_projection(project: &Path) -> Result<bool> {
         return Ok(false);
     }
     let rendered = render_gitmodules_projection(&entries)?;
-    let mut file = fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)
         .with_context(|| format!("creating generated {}", path.display()))?;
-    use std::io::Write as _;
-    file.write_all(rendered.as_bytes())
+    std::io::Write::write_all(&mut &file, rendered.as_bytes())
         .with_context(|| format!("writing generated {}", path.display()))?;
-    eprintln!(
-        "generated .gitmodules compatibility projection from Zed lock metadata in {}",
-        project.display()
-    );
     Ok(true)
 }
 
@@ -765,17 +763,18 @@ mod manifest_kind_tests {
     }
 
     #[test]
-    fn generated_git_config_values_are_quoted_and_control_safe() {
+    fn generated_git_config_values_are_quoted_and_control_safe() -> Result<()> {
         assert_eq!(
-            git_config_string("ssh://git@example.com/org/repo.git", "url").unwrap(),
+            git_config_string("ssh://git@example.com/org/repo.git", "url")?,
             "\"ssh://git@example.com/org/repo.git\""
         );
         assert_eq!(
-            git_config_string("path with \"quotes\" and \\slashes", "path").unwrap(),
+            git_config_string("path with \"quotes\" and \\slashes", "path")?,
             "\"path with \\\"quotes\\\" and \\\\slashes\""
         );
         assert!(git_config_string("bad\nvalue", "url").is_err());
         assert!(git_config_string("", "url").is_err());
+        Ok(())
     }
 
     #[test]
