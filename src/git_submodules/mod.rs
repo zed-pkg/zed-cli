@@ -345,9 +345,16 @@ impl PackSubmodules {
                     "included submodule `{relative}` is not initialized; run `zed install --git-submodules` before packing"
                 )
             })?;
-            if marker_metadata.file_type().is_symlink() {
+            if !marker_metadata.file_type().is_file() || marker_metadata.len() > 4096 {
                 bail!(
-                    "included submodule `{relative}` has a symlinked .git control path; refusing to package it"
+                    "included submodule `{relative}` must use a regular bounded .git pointer file; refusing alternate or indirect Git control metadata"
+                );
+            }
+            let marker_text = fs::read_to_string(&marker)
+                .with_context(|| format!("reading included submodule `{relative}` .git pointer"))?;
+            if !marker_text.trim_start().starts_with("gitdir: ") {
+                bail!(
+                    "included submodule `{relative}` has a malformed .git pointer; refusing to package it"
                 );
             }
 
