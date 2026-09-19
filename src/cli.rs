@@ -967,23 +967,49 @@ pub enum CacheCmd {
 
 #[cfg(test)]
 mod tests {
-    /// Secrets must never be CLI options, because argv is readable by any
-    /// process on the host. This also pins the shape the failure message in
+    /// A secret *value* must never be a CLI option, because argv is readable
+    /// by any process on the host. This pins the shape the failure message in
     /// `ops::login` describes: the two drifted apart once, and the message
     /// told operators to pass a `--token` that has never existed.
+    ///
+    /// Every spelling an argument answers to is checked — its id, its long
+    /// name and each alias — since an alias is as observable as the name. The
+    /// list is exact rather than a substring match on purpose: `--password-stdin`
+    /// is the safe alternative this rule exists to push people toward, and a
+    /// substring rule would forbid it.
     #[test]
     fn secret_values_are_not_command_line_options() {
-        let command = Cli::command();
-        let mut named = vec![command.clone()];
-        while let Some(current) = named.pop() {
+        const FORBIDDEN: [&str; 8] = [
+            "token",
+            "password",
+            "secret",
+            "api-token",
+            "auth-token",
+            "access-token",
+            "api-key",
+            "private-key",
+        ];
+        let mut pending = vec![Cli::command()];
+        while let Some(current) = pending.pop() {
             for argument in current.get_arguments() {
-                let long = argument.get_long().unwrap_or_default();
-                assert!(
-                    !matches!(long, "token" | "password" | "secret"),
-                    "{long} must not be a CLI option: argv is observable"
-                );
+                let spellings = std::iter::once(argument.get_id().as_str().replace('_', "-"))
+                    .chain(argument.get_long().map(str::to_owned))
+                    .chain(
+                        argument
+                            .get_all_aliases()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(str::to_owned),
+                    );
+                for spelling in spellings {
+                    assert!(
+                        !FORBIDDEN.contains(&spelling.as_str()),
+                        "`{spelling}` on `{}` would put a secret value in argv",
+                        current.get_name()
+                    );
+                }
             }
-            named.extend(current.get_subcommands().cloned());
+            pending.extend(current.get_subcommands().cloned());
         }
     }
 
