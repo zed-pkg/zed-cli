@@ -967,6 +967,41 @@ pub enum CacheCmd {
 
 #[cfg(test)]
 mod tests {
+    /// Secrets must never be CLI options, because argv is readable by any
+    /// process on the host. This also pins the shape the failure message in
+    /// `ops::login` describes: the two drifted apart once, and the message
+    /// told operators to pass a `--token` that has never existed.
+    #[test]
+    fn secret_values_are_not_command_line_options() {
+        let command = Cli::command();
+        let mut named = vec![command.clone()];
+        while let Some(current) = named.pop() {
+            for argument in current.get_arguments() {
+                let long = argument.get_long().unwrap_or_default();
+                assert!(
+                    !matches!(long, "token" | "password" | "secret"),
+                    "{long} must not be a CLI option: argv is observable"
+                );
+            }
+            named.extend(current.get_subcommands().cloned());
+        }
+    }
+
+    /// The guidance an operator sees has to name a mechanism that exists.
+    #[test]
+    fn the_missing_token_message_names_only_real_mechanisms() {
+        const OPS: &str = include_str!("ops.rs");
+        let message = OPS
+            .lines()
+            .find(|line| line.contains("no token provided"))
+            .expect("login reports a missing token");
+        assert!(
+            !message.contains("--token"),
+            "the message names a flag that does not exist: {message}"
+        );
+        assert!(message.contains("ZED_PKG_TOKEN"), "{message}");
+    }
+
     use std::collections::BTreeSet;
     use std::path::Path;
 
