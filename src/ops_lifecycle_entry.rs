@@ -8,8 +8,9 @@
 //! Repository-owned `contracts/` and `conformance/` are also admitted here so
 //! every public package lifecycle uses the same boundary policy. Install/build
 //! perform a structural preflight before mutation and execute conformance after
-//! success. Pack/publish execute conformance before producing or publishing an
-//! artifact, so a package cannot bypass the boundary by omitting a Git hook.
+//! success. Test does the same around `zed run test`. Pack/publish execute
+//! conformance before producing or publishing an artifact, so a package cannot
+//! bypass the boundary by omitting a Git hook.
 
 use std::path::Path;
 
@@ -25,7 +26,7 @@ mod core;
 
 pub use core::{
     InstallOutcome, InstallPermissions, WorkspaceInfo, build_publish_meta, cache_clean, find, gc,
-    init, login, org_audit, org_claim, run, split_key, store_prune, store_status, yank,
+    init, login, org_audit, org_claim, split_key, store_prune, store_status, yank,
 };
 
 pub(crate) use core::{
@@ -76,6 +77,25 @@ pub fn build_cmd(
             )
         },
     )
+}
+
+/// `zed run test` is the canonical project-test lifecycle. Arbitrary `zed run`
+/// commands remain simple command execution; only the explicit `test` script
+/// owns pre-test/post-test hooks and conformance admission.
+pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
+    if command != "test" {
+        return core::run(project, command, args);
+    }
+
+    project_boundary::check(project, BoundaryMode::Structural)?;
+    lifecycle::run_phase(project, LifecyclePhase::PreTest)?;
+    let code = core::run(project, command, args)?;
+    if code != 0 {
+        return Ok(code);
+    }
+    lifecycle::run_phase(project, LifecyclePhase::PostTest)?;
+    project_boundary::check(project, BoundaryMode::Execute)?;
+    Ok(code)
 }
 
 pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<crate::pack::PackagedTarget>> {
