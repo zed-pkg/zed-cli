@@ -1,0 +1,10 @@
+{
+  "schema": "ores.conformance.bootstrap/v1",
+  "repository": "zed-pkg/zed-cli",
+  "id": "authority-boundary",
+  "status": "bootstrap-only",
+  "notes": [
+    "Policy metadata only; not a behavioral case.",
+    "Authority pins are checked against consumed Cargo revisions before boundary digests are admitted."
+  ]
+}
