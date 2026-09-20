@@ -1,0 +1,29 @@
+#!/bin/sh
+# Zed-managed pre-push gate. This is intentionally read-only: validate the
+# package descriptors and consume the repository's contract/conformance entry
+# point, but never update locks or install packages during a Git push.
+set -eu
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$root"
+
+[ -f .zpkg.toml ] || exit 0
+
+zed_bin="${ZED_BIN:-$(command -v zed 2>/dev/null || true)}"
+if [ -z "$zed_bin" ]; then
+  echo "[zed-pre-push] zed not found on PATH; refusing to bypass package validation" >&2
+  exit 1
+fi
+
+if [ -f .zpkg.lock ]; then
+  "$zed_bin" validate --require-lock
+else
+  "$zed_bin" validate
+fi
+
+if [ -f conformance/check.sh ]; then
+  sh conformance/check.sh --full
+elif [ -e contracts ] || [ -e conformance ]; then
+  echo "[zed-pre-push] contracts/conformance boundary exists but conformance/check.sh is missing" >&2
+  exit 1
+fi
