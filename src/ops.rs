@@ -4231,7 +4231,10 @@ pub fn login(cfg: &Config) -> Result<()> {
         }
     };
     if token.is_empty() {
-        bail!("no token provided (pass --token, set ZED_PKG_TOKEN, or type one)");
+        // No --token flag exists, and deliberately so: argv is observable by
+        // any process on the host. Naming one here sends operators down a
+        // path that ends in "unexpected argument".
+        bail!("no token provided (set ZED_PKG_TOKEN, pipe it on stdin, or type one)");
     }
     let mut credentials = Credentials::load(&cfg.home)?;
     credentials.set_token(&cfg.registry, token);
