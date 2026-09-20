@@ -16,8 +16,9 @@ cd "$top"
 if [ -d .githooks ]; then dest=.githooks; git config core.hooksPath .githooks; mode=githooks
 else dest="$gitdir/hooks"; mkdir -p "$dest"; mode=gitdir; fi
 cp "$src/zed-git-hook.sh" "$dest/zed-git-hook.sh"; chmod +x "$dest/zed-git-hook.sh"
-for h in post-checkout post-merge post-rewrite; do
-  if [ -f "$dest/$h" ] && ! grep -q 'zed-git-hook.sh' "$dest/$h"; then
+for h in post-checkout post-merge post-rewrite pre-push; do
+  marker='zed-git-hook.sh'; [ "$h" = pre-push ] && marker='zed-pre-push'
+  if [ -f "$dest/$h" ] && ! grep -q "$marker" "$dest/$h"; then
     mv "$dest/$h" "$dest/$h.pre-zed"
     { cat "$src/$h"; echo; echo '# chained pre-existing hook'; echo "[ -x \"\$here/$h.pre-zed\" ] && \"\$here/$h.pre-zed\" \"\$@\""; } > "$dest/$h"
   else
@@ -25,4 +26,4 @@ for h in post-checkout post-merge post-rewrite; do
   fi
   chmod +x "$dest/$h"
 done
-echo "[install-git-hooks] installed post-checkout/post-merge/post-rewrite into $dest ($mode) for $top"
+echo "[install-git-hooks] installed pre-push/post-checkout/post-merge/post-rewrite into $dest ($mode) for $top"
