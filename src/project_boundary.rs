@@ -215,9 +215,12 @@ fn execute_checker(project: &Path, checker: &Path) -> Result<()> {
     }
 
     let executable = project.join(checker);
-    let executable = executable
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("conformance checker path is not valid UTF-8: {}", executable.display()))?;
+    let executable = executable.to_str().ok_or_else(|| {
+        anyhow::anyhow!(
+            "conformance checker path is not valid UTF-8: {}",
+            executable.display()
+        )
+    })?;
     run_command(project, executable, &[], &rendered)
 }
 
@@ -279,13 +282,20 @@ mod tests {
         fs::create_dir(dir.path().join("contracts")).unwrap();
         fs::write(dir.path().join("contracts/schema.json"), "{}\n").unwrap();
         fs::create_dir(dir.path().join("conformance")).unwrap();
-        fs::write(dir.path().join("conformance/check.mjs"), "console.log('ok');\n").unwrap();
+        fs::write(
+            dir.path().join("conformance/check.mjs"),
+            "console.log('ok');\n",
+        )
+        .unwrap();
         fs::write(dir.path().join("conformance/check.sh"), "exit 99\n").unwrap();
         let report = check(dir.path(), BoundaryMode::Structural).unwrap();
         assert!(report.enabled);
         assert_eq!(report.contracts_file_count, 1);
         assert_eq!(report.conformance_file_count, 2);
-        assert_eq!(report.selected_checker.as_deref(), Some("conformance/check.mjs"));
+        assert_eq!(
+            report.selected_checker.as_deref(),
+            Some("conformance/check.mjs")
+        );
         assert!(!report.checker_executed);
     }
 
@@ -297,9 +307,17 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("contracts")).unwrap();
         fs::write(dir.path().join("real.json"), "{}\n").unwrap();
-        symlink(dir.path().join("real.json"), dir.path().join("contracts/schema.json")).unwrap();
+        symlink(
+            dir.path().join("real.json"),
+            dir.path().join("contracts/schema.json"),
+        )
+        .unwrap();
         fs::create_dir(dir.path().join("conformance")).unwrap();
-        fs::write(dir.path().join("conformance/check.mjs"), "console.log('ok');\n").unwrap();
+        fs::write(
+            dir.path().join("conformance/check.mjs"),
+            "console.log('ok');\n",
+        )
+        .unwrap();
         let error = check(dir.path(), BoundaryMode::Structural).unwrap_err();
         assert!(error.to_string().contains("forbidden symlink"));
     }
