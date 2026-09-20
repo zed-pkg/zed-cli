@@ -70,4 +70,4 @@ commands = ["sh ./conformance/check.sh --full"]
 commands = ["sh ./conformance/check.sh --full"]
 
 [scripts]
-test = "cargo test --test toml_contract --locked && bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
+test = "bash scripts/test-contract-conformance.sh && cargo test --test toml_contract --locked && bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
