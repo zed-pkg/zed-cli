@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ores.dev/schemas/conformance-case.v1.json",
+  "title": "ORES shared behavioral conformance case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "id", "version", "input", "expected"],
+  "properties": {
+    "schema": {"const": "ores.conformance.case/v1"},
+    "kind": {"const": "behavior"},
+    "id": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "input": {},
+    "expected": {},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}
