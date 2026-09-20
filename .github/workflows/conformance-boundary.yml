@@ -9,6 +9,8 @@ on:
       - 'src/project_boundary.rs'
       - 'src/ops_lifecycle_entry.rs'
       - '.githooks/**'
+      - 'scripts/install-git-hooks.sh'
+      - 'scripts/test-git-hook-installation.sh'
       - '.github/workflows/conformance-boundary.yml'
   push:
     branches: [main]
@@ -19,11 +21,17 @@ on:
       - 'src/project_boundary.rs'
       - 'src/ops_lifecycle_entry.rs'
       - '.githooks/**'
+      - 'scripts/install-git-hooks.sh'
+      - 'scripts/test-git-hook-installation.sh'
       - '.github/workflows/conformance-boundary.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: conformance-boundary-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   boundary:
@@ -40,3 +48,6 @@ jobs:
           node conformance/check.mjs
           bash -n .githooks/pre-commit
           bash -n .githooks/pre-push
+          sh -n scripts/install-git-hooks.sh
+          sh -n scripts/test-git-hook-installation.sh
+          sh scripts/test-git-hook-installation.sh
