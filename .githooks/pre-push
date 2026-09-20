@@ -17,6 +17,16 @@ command -v zed >/dev/null 2>&1 || {
   exit 1
 }
 
+# Keep the cheap contract/conformance boundary invariant ahead of any
+# dependency mutation. Full behavioral conformance is attached to `zed build`
+# through .zpkg.toml and therefore runs after the frozen graph is materialized.
+if [[ -f conformance/check.sh ]]; then
+  sh conformance/check.sh --structural-only
+elif [[ -e contracts || -e conformance ]]; then
+  echo 'contracts/conformance boundary exists but conformance/check.sh is missing' >&2
+  exit 1
+fi
+
 pack_dir="${TMPDIR:-/tmp}/zed-latest-deps-pack-$$"
 ephemeral_lock=0
 cleanup() {
@@ -120,5 +130,6 @@ if [[ -f gradlew ]]; then
 fi
 
 # Packaging is a final structural assertion over the same manifest/materialized graph.
+# The pre-pack lifecycle gate runs full contract/conformance again at the release boundary.
 mkdir -p "$pack_dir"
 zed pack --out "$pack_dir"
