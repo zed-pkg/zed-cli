@@ -4,6 +4,7 @@
 # point, but never update locks or install packages during a Git push.
 set -eu
 
+here=$(cd "$(dirname "$0")" && pwd)
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root"
 
