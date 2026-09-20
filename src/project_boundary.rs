@@ -3,9 +3,9 @@
 //! Zed treats these roots as a paired trust boundary. Repositories that do not
 //! use either root remain unaffected. Once either root is present, both must be
 //! present as real directories, their trees must be free of symlinks, contracts
-//! must contain at least one real file, and conformance must expose at least one
-//! supported executable checker. Lifecycle phases can request structural-only
-//! admission (before dependency materialization) or executable admission.
+//! must contain at least one real file, and conformance must expose a supported
+//! executable checker. Lifecycle phases can request structural-only admission
+//! (before dependency materialization) or executable admission.
 
 use std::env;
 use std::fs;
@@ -20,6 +20,9 @@ const CONTRACTS_ROOT: &str = "contracts";
 const CONFORMANCE_ROOT: &str = "conformance";
 const EXECUTION_STACK_ENV: &str = "ZED_PKG_BOUNDARY_STACK";
 
+// Ordered by fleet preference. Exactly one checker is selected so repositories
+// may carry compatibility helpers without Zed accidentally running several
+// independent programs with different platform/tool requirements.
 const CHECKERS: &[&str] = &[
     "conformance/check.mjs",
     "conformance/check.js",
@@ -40,7 +43,8 @@ pub struct BoundaryReport {
     pub enabled: bool,
     pub contracts_file_count: usize,
     pub conformance_file_count: usize,
-    pub executed_checkers: Vec<String>,
+    pub selected_checker: Option<String>,
+    pub checker_executed: bool,
 }
 
 impl BoundaryReport {
@@ -49,7 +53,8 @@ impl BoundaryReport {
             enabled: false,
             contracts_file_count: 0,
             conformance_file_count: 0,
-            executed_checkers: Vec::new(),
+            selected_checker: None,
+            checker_executed: false,
         }
     }
 }
@@ -83,29 +88,28 @@ pub fn check(project: &Path, mode: BoundaryMode) -> Result<BoundaryReport> {
         "`{CONFORMANCE_ROOT}/` is present but contains no regular conformance files"
     );
 
-    let checkers = discover_checkers(project)?;
-    ensure!(
-        !checkers.is_empty(),
-        "`{CONFORMANCE_ROOT}/` has no supported checker; add one of: {}",
-        CHECKERS.join(", ")
-    );
+    let checker = discover_checker(project)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "`{CONFORMANCE_ROOT}/` has no supported checker; add one of: {}",
+            CHECKERS.join(", ")
+        )
+    })?;
+    let selected_checker = render_relative(&checker);
 
     let nested = env::var(EXECUTION_STACK_ENV)
         .ok()
         .is_some_and(|value| !value.trim().is_empty());
-    let mut executed_checkers = Vec::new();
-    if mode == BoundaryMode::Execute && !nested {
-        for checker in &checkers {
-            execute_checker(project, checker)?;
-            executed_checkers.push(render_relative(checker));
-        }
+    let checker_executed = mode == BoundaryMode::Execute && !nested;
+    if checker_executed {
+        execute_checker(project, &checker)?;
     }
 
     Ok(BoundaryReport {
         enabled: true,
         contracts_file_count,
         conformance_file_count,
-        executed_checkers,
+        selected_checker: Some(selected_checker),
+        checker_executed,
     })
 }
 
@@ -122,14 +126,12 @@ pub fn run_cli(project: &Path, structural_only: bool, json: bool) -> Result<()> 
         println!("project boundary: not configured (no contracts/ or conformance/ root)");
     } else {
         println!(
-            "project boundary: ok ({} contract files, {} conformance files, {} checker(s) executed)",
+            "project boundary: ok ({} contract files, {} conformance files, checker {}, executed={})",
             report.contracts_file_count,
             report.conformance_file_count,
-            report.executed_checkers.len()
+            report.selected_checker.as_deref().unwrap_or("none"),
+            report.checker_executed
         );
-        for checker in report.executed_checkers {
-            println!("conformance checker: {checker}");
-        }
     }
     Ok(())
 }
@@ -170,8 +172,7 @@ fn inspect_tree(root: &Path, label: &str) -> Result<usize> {
     Ok(files)
 }
 
-fn discover_checkers(project: &Path) -> Result<Vec<PathBuf>> {
-    let mut found = Vec::new();
+fn discover_checker(project: &Path) -> Result<Option<PathBuf>> {
     for relative in CHECKERS {
         let path = project.join(relative);
         match fs::symlink_metadata(&path) {
@@ -180,7 +181,7 @@ fn discover_checkers(project: &Path) -> Result<Vec<PathBuf>> {
                     !metadata.file_type().is_symlink() && metadata.is_file(),
                     "conformance checker `{relative}` must be a regular non-symlink file"
                 );
-                found.push(PathBuf::from(relative));
+                return Ok(Some(PathBuf::from(relative)));
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
@@ -188,7 +189,7 @@ fn discover_checkers(project: &Path) -> Result<Vec<PathBuf>> {
             }
         }
     }
-    Ok(found)
+    Ok(None)
 }
 
 fn execute_checker(project: &Path, checker: &Path) -> Result<()> {
@@ -238,6 +239,7 @@ fn render_relative(path: &Path) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::fs;
 
@@ -272,17 +274,19 @@ mod tests {
     }
 
     #[test]
-    fn structural_admission_accepts_real_paired_boundary() {
+    fn structural_admission_selects_canonical_checker() {
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("contracts")).unwrap();
         fs::write(dir.path().join("contracts/schema.json"), "{}\n").unwrap();
         fs::create_dir(dir.path().join("conformance")).unwrap();
         fs::write(dir.path().join("conformance/check.mjs"), "console.log('ok');\n").unwrap();
+        fs::write(dir.path().join("conformance/check.sh"), "exit 99\n").unwrap();
         let report = check(dir.path(), BoundaryMode::Structural).unwrap();
         assert!(report.enabled);
         assert_eq!(report.contracts_file_count, 1);
-        assert_eq!(report.conformance_file_count, 1);
-        assert!(report.executed_checkers.is_empty());
+        assert_eq!(report.conformance_file_count, 2);
+        assert_eq!(report.selected_checker.as_deref(), Some("conformance/check.mjs"));
+        assert!(!report.checker_executed);
     }
 
     #[cfg(unix)]
