@@ -55,5 +55,19 @@ exclude = [
 registry = "crates-io"
 package = "zed-cli"
 
+# Cheap structural checks run after dependency materialization. Full behavioral
+# conformance runs before artifacts are built, packed, or published.
+[lifecycle.post-install]
+commands = ["sh ./conformance/check.sh --structural-only"]
+
+[lifecycle.pre-build]
+commands = ["sh ./conformance/check.sh --full"]
+
+[lifecycle.pre-pack]
+commands = ["sh ./conformance/check.sh --full"]
+
+[lifecycle.pre-publish]
+commands = ["sh ./conformance/check.sh --full"]
+
 [scripts]
 test = "cargo test --test toml_contract --locked && bash scripts/validate-zed-package-graph.sh && cargo test --all-targets --locked"
