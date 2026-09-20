@@ -1,0 +1,12 @@
+{
+  "schema": "ores.conformance.manifest/v1",
+  "repository": "zed-pkg/zed-cli",
+  "contractRoots": ["contracts/"],
+  "caseRoots": ["conformance/cases"],
+  "caseSchema": "conformance/case.schema.json",
+  "evidenceDir": "artifacts/conformance/evidence",
+  "requiredParticipants": [],
+  "coverage": {"status": "scaffold-only", "behavioralCasesRequired": false},
+  "evidence": {"bindToContractDigests": true, "bindToCaseDigests": true, "missingRequiredEvidenceFails": true, "staleEvidenceFails": true},
+  "policy": {"runtimeSpecificGoldensAllowed": false, "generatedEvidenceIsAuthority": false}
+}
