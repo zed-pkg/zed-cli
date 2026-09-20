@@ -9,6 +9,8 @@ on:
       - 'src/project_boundary.rs'
       - 'src/ops_lifecycle_entry.rs'
       - '.githooks/**'
+      - 'scripts/install-git-hooks.sh'
+      - 'scripts/test-git-hook-installation.sh'
       - '.github/workflows/conformance-boundary.yml'
   push:
     branches: [main]
@@ -19,6 +21,8 @@ on:
       - 'src/project_boundary.rs'
       - 'src/ops_lifecycle_entry.rs'
       - '.githooks/**'
+      - 'scripts/install-git-hooks.sh'
+      - 'scripts/test-git-hook-installation.sh'
       - '.github/workflows/conformance-boundary.yml'
   workflow_dispatch:
 
@@ -40,3 +44,6 @@ jobs:
           node conformance/check.mjs
           bash -n .githooks/pre-commit
           bash -n .githooks/pre-push
+          sh -n scripts/install-git-hooks.sh
+          sh -n scripts/test-git-hook-installation.sh
+          sh scripts/test-git-hook-installation.sh
