@@ -6,8 +6,19 @@ cd "$repo_root"
 
 if [[ "${1:-}" == "--install" ]]; then
   chmod +x .githooks/pre-push .githooks/pre-commit
-  git config core.hooksPath .githooks
-  printf 'installed Zed pre-commit + pre-push hooks via core.hooksPath=.githooks\n'
+  hooks_path="$(git config --get core.hooksPath 2>/dev/null || true)"
+  case "$hooks_path" in
+    '')
+      git config core.hooksPath .githooks
+      printf 'installed Zed pre-commit + pre-push hooks via core.hooksPath=.githooks\n'
+      ;;
+    .githooks)
+      printf 'Zed pre-commit + pre-push hooks already use core.hooksPath=.githooks\n'
+      ;;
+    *)
+      printf 'preserving existing core.hooksPath=%s; tracked .githooks hooks were not activated\n' "$hooks_path" >&2
+      ;;
+  esac
   exit 0
 fi
 
