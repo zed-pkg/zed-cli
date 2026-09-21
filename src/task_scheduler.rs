@@ -268,8 +268,8 @@ impl SchedulerHandle {
 
         let (sender, receiver) = mpsc::sync_channel(1);
         let wrapped: Job = Box::new(move || {
-            let result = panic::catch_unwind(AssertUnwindSafe(job))
-                .map_err(|_| JobJoinError::Panicked);
+            let result =
+                panic::catch_unwind(AssertUnwindSafe(job)).map_err(|_| JobJoinError::Panicked);
             let _send_result = sender.send(result);
         });
 
@@ -726,10 +726,7 @@ mod tests {
 
     #[test]
     fn nested_inline_execution_has_a_stack_safety_limit() -> TestResult {
-        fn submit_next(
-            handle: SchedulerHandle,
-            remaining: usize,
-        ) -> Result<(), SubmitError> {
+        fn submit_next(handle: SchedulerHandle, remaining: usize) -> Result<(), SubmitError> {
             if remaining == 0 {
                 return Ok(());
             }
@@ -780,7 +777,9 @@ mod tests {
         let scheduler = BoundedScheduler::new(one_worker_one_slot()?)?;
         {
             let mut state = lock_state(&scheduler.shared);
-            state.queue.push_back(Box::new(|| panic!("simulated internal worker failure")));
+            state
+                .queue
+                .push_back(Box::new(|| panic!("simulated internal worker failure")));
             scheduler.shared.work_ready.notify_one();
         }
 
