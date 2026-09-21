@@ -281,9 +281,7 @@ fn validate_cargo_manifest_path_dependencies(
                     staged_root,
                     manifest_path,
                     &section_name,
-                    selector_table
-                        .get(section)
-                        .and_then(toml::Value::as_table),
+                    selector_table.get(section).and_then(toml::Value::as_table),
                 )?;
             }
         }
@@ -636,7 +634,10 @@ edition = "2024"
         assert!(message.contains("Cargo.toml"), "{message}");
         assert!(message.contains("dependency `shared`"), "{message}");
         assert!(message.contains("../shared"), "{message}");
-        assert!(message.contains("escapes the staged target artifact"), "{message}");
+        assert!(
+            message.contains("escapes the staged target artifact"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -665,7 +666,10 @@ edition = "2024"
 
         let error = pack_target(project.path(), &manifest, "rust", None).unwrap_err();
         let message = format!("{error:#}");
-        assert!(message.contains("target.cfg(unix).build-dependencies"), "{message}");
+        assert!(
+            message.contains("target.cfg(unix).build-dependencies"),
+            "{message}"
+        );
         assert!(message.contains("dependency `helper`"), "{message}");
         assert!(message.contains("../helper"), "{message}");
     }
