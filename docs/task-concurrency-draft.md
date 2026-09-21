@@ -9,7 +9,8 @@ This draft defines the resource and scheduling invariants for replacing per-grou
 - The number of live worker threads is bounded by the configured worker count and an absolute safety ceiling.
 - The number of concurrently running child processes is bounded independently from worker count.
 - The runnable-job queue has a finite capacity derived from the worker count and an absolute safety ceiling.
-- Queue saturation applies backpressure; graph size must not translate into unbounded memory growth.
+- The number of admitted-but-unreaped jobs/results is bounded; callers must not retain O(graph_size) `JobHandle`s while workers continue draining the queue.
+- Queue saturation applies backpressure; graph size must not translate into unbounded memory growth in either queued jobs or completion/result state.
 - Task identity deduplication remains race-safe and preserves the existing `Mutex + Condvar` execution-state contract.
 - Nested task execution cannot deadlock by filling or waiting on the same worker pool.
 - Inline nested execution cannot recurse without a finite depth bound.
@@ -46,6 +47,24 @@ A positive integer alone is not a sufficient safety contract. `--jobs 1844674407
 The draft scheduler therefore rejects values above an explicit absolute worker ceiling and rejects queue capacities above an explicit queue ceiling. It also avoids eagerly allocating the full queue capacity: `VecDeque::new()` grows only as bounded work is actually admitted.
 
 The preliminary constants are implementation details pending review; the key requirement is that the ceiling exists, is validated before worker creation, and is surfaced as an error rather than silently clamped.
+
+## Bounded admission and completion state
+
+A bounded runnable queue does **not** by itself prove bounded scheduler memory.
+
+For example, a coordinator could continuously submit new work whenever one queue slot opens, keep every returned `JobHandle`, and never reap completed results until a 100,000-node graph has been fully admitted. Worker count and queue length would remain bounded while result receivers and other caller-owned completion state grow with graph size.
+
+`TaskRuntime` integration therefore needs an explicit admission window. The coordinator must cap the number of externally admitted jobs whose results have not yet been reaped. A straightforward compatibility rule is:
+
+```text
+max_unreaped_external_jobs <= worker_count + queue_capacity
+```
+
+The exact formula can change after measurement, but it must be finite, derived from validated scheduler limits, and independent of dependency-graph size. When the admission window is full, the coordinator reaps at least one result before submitting more work.
+
+This is a coordinator/runtime invariant rather than something the low-level `JobHandle` type can enforce after ownership has been handed to an arbitrary caller. For that reason the preliminary scheduler primitive is not considered sufficient for production `TaskRuntime` integration until the bounded admission/reaping layer exists and is stress-tested.
+
+An alternative future API is a scheduler-owned completion stream or bounded batch/scope API that makes unreaped completion count part of the type-level execution surface. That may be preferable if the coordinator otherwise has too much freedom to retain handles.
 
 ## Scheduler ownership and self-join prevention
 
@@ -90,21 +109,25 @@ The queue must be bounded. The current draft derives queue capacity as a small m
 
 Changing queue capacity should not alter task semantics; it only changes how much runnable work can wait in memory before producers apply backpressure.
 
+Queue capacity and completion-window capacity are separate limits: queue capacity bounds work waiting to run; the completion window bounds admitted jobs/results retained by the coordinator.
+
 ## Migration sequence
 
 1. Add the scheduler primitive and focused unit tests for worker bounds, queue bounds, extreme input validation, nested submission, nested-depth safety, panic containment, shutdown, and blocked-producer wakeup.
 2. Compile the scheduler through the normal library module graph; do not rely on a test-only `#[path = ...]` copy of the source.
-3. Route parallel task groups through the scheduler while preserving the existing execution-state deduplication logic.
-4. Keep child process execution behind `CommandLimiter` and add peak-concurrency tests.
-5. Remove per-chunk `thread::scope(...scope.spawn...)` fan-out only after nested task tests prove the replacement cannot deadlock.
-6. Add repository policy/static checks that flag new task-path ad hoc spawning outside the scheduler.
-7. Stress a large synthetic task graph and assert that worker count, queue occupancy, and process concurrency remain within configured bounds.
+3. Add a bounded coordinator admission/reaping window so `JobHandle`/completion state cannot grow with graph size.
+4. Route parallel task groups through the scheduler while preserving the existing execution-state deduplication logic.
+5. Keep child process execution behind `CommandLimiter` and add peak-concurrency tests.
+6. Remove per-chunk `thread::scope(...scope.spawn...)` fan-out only after nested task tests prove the replacement cannot deadlock.
+7. Add repository policy/static checks that flag new task-path ad hoc spawning outside the scheduler.
+8. Stress a large synthetic task graph and assert that worker count, queue occupancy, unreaped completion count, and process concurrency remain within configured bounds.
 
 ## Draft acceptance tests
 
 The implementation PR should eventually contain tests equivalent to:
 
 - 10,000 runnable nodes with `jobs = 4` never create more than four scheduler workers;
+- the same 10,000-node run never retains more than the configured admission-window number of unreaped job/result handles;
 - worker and queue requests above their absolute ceilings fail before allocation/spawn;
 - queue occupancy never exceeds configured capacity;
 - when the queue is full, producers do not allocate an unbounded spill queue;
@@ -119,4 +142,4 @@ The implementation PR should eventually contain tests equivalent to:
 
 ## Explicit non-goals for the preliminary draft
 
-This document does not claim the runtime has already migrated to a fixed pool. Until the scheduler implementation and nested-task tests land and pass normal repository validation, the existing bounded scoped-thread behavior remains authoritative. This draft exists to make the replacement invariants reviewable before changing execution semantics.
+This document does not claim the runtime has already migrated to a fixed pool. Until the scheduler implementation, bounded coordinator admission/reaping, and nested-task tests land and pass normal repository validation, the existing bounded scoped-thread behavior remains authoritative. This draft exists to make the replacement invariants reviewable before changing execution semantics.
