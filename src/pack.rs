@@ -18,6 +18,7 @@ use zed_interfaces::paths::{ARCHIVE_ROOT, PACK_OUT_DIR};
 /// polyglot manifest yields one item per declared target. A target rooted at
 /// `dir = "."` is the canonical whole-repository package and is published
 /// under the root manifest's exact `org/name` identity.
+#[derive(Debug)]
 pub struct PackagedTarget {
     pub target: Option<String>,
     pub manifest: Manifest,
@@ -952,7 +953,7 @@ url = "https://github.com/acme/root-output"
         )
         .unwrap();
         fs::write(project.path().join("payload.txt"), "stable payload\n").unwrap();
-        let manifest = Manifest::parse(source_manifest).unwrap();
+        let manifest = Manifest::parse(source_manifest()).unwrap();
 
         let first = pack(project.path(), &manifest, Some(project.path())).unwrap();
         let second = pack(project.path(), &manifest, Some(project.path())).unwrap();
