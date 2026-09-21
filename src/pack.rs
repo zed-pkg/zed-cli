@@ -953,7 +953,7 @@ url = "https://github.com/acme/root-output"
         )
         .unwrap();
         fs::write(project.path().join("payload.txt"), "stable payload\n").unwrap();
-        let manifest = Manifest::parse(source_manifest()).unwrap();
+        let manifest = Manifest::parse(source_manifest).unwrap();
 
         let first = pack(project.path(), &manifest, Some(project.path())).unwrap();
         let second = pack(project.path(), &manifest, Some(project.path())).unwrap();
