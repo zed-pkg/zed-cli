@@ -9,16 +9,14 @@ const FETCH: &str = include_str!("../src/fetch.rs");
 
 #[test]
 fn private_github_token_has_one_canonical_environment_boundary() {
-    assert!(FALLBACK.contains("env_nonempty(\"ZED_PKG_GITHUB_TOKEN\")"));
-    assert!(FALLBACK.contains("env_nonempty(\"GITHUB_TOKEN\")"));
-    assert!(FALLBACK.contains("env_nonempty(\"GH_TOKEN\")"));
+    let zed = FALLBACK.find("env_nonempty(\"ZED_PKG_GITHUB_TOKEN\")");
+    let github = FALLBACK.find("env_nonempty(\"GITHUB_TOKEN\")");
+    let gh = FALLBACK.find("env_nonempty(\"GH_TOKEN\")");
 
-    let zed = FALLBACK
-        .find("env_nonempty(\"ZED_PKG_GITHUB_TOKEN\")")
-        .unwrap();
-    let github = FALLBACK.find("env_nonempty(\"GITHUB_TOKEN\")").unwrap();
-    let gh = FALLBACK.find("env_nonempty(\"GH_TOKEN\")").unwrap();
-    assert!(zed < github && github < gh, "token precedence changed");
+    assert!(matches!(
+        (zed, github, gh),
+        (Some(zed), Some(github), Some(gh)) if zed < github && github < gh
+    ));
 }
 
 #[test]
