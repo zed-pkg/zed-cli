@@ -13,7 +13,9 @@ fn private_github_token_has_one_canonical_environment_boundary() {
     assert!(FALLBACK.contains("env_nonempty(\"GITHUB_TOKEN\")"));
     assert!(FALLBACK.contains("env_nonempty(\"GH_TOKEN\")"));
 
-    let zed = FALLBACK.find("env_nonempty(\"ZED_PKG_GITHUB_TOKEN\")").unwrap();
+    let zed = FALLBACK
+        .find("env_nonempty(\"ZED_PKG_GITHUB_TOKEN\")")
+        .unwrap();
     let github = FALLBACK.find("env_nonempty(\"GITHUB_TOKEN\")").unwrap();
     let gh = FALLBACK.find("env_nonempty(\"GH_TOKEN\")").unwrap();
     assert!(zed < github && github < gh, "token precedence changed");
@@ -29,7 +31,10 @@ fn private_tag_archives_use_authenticated_github_rest() {
 #[test]
 fn fallback_download_bearer_is_scoped_to_api_github_com() {
     let guard = "matches!(parsed.host_str(), Some(\"api.github.com\"))";
-    assert!(FALLBACK.contains(guard), "GitHub bearer host guard disappeared");
+    assert!(
+        FALLBACK.contains(guard),
+        "GitHub bearer host guard disappeared"
+    );
     assert!(FALLBACK.contains("request = request.bearer_auth(token)"));
     assert!(FALLBACK.contains("reqwest drops Authorization on the cross-host redirect"));
 }
@@ -44,10 +49,18 @@ fn frozen_sources_forbid_embedded_credentials() {
 
 #[test]
 fn private_repo_failures_name_the_environment_fix_without_echoing_a_token() {
-    assert!(FALLBACK.contains(
-        "private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN"
-    ));
-    for forbidden in ["{token}@github.com", "?token={token}", "access_token={token}"] {
-        assert!(!FALLBACK.contains(forbidden), "credentialized URL pattern returned: {forbidden}");
+    assert!(
+        FALLBACK
+            .contains("private repositories need ZED_PKG_GITHUB_TOKEN, GITHUB_TOKEN, or GH_TOKEN")
+    );
+    for forbidden in [
+        "{token}@github.com",
+        "?token={token}",
+        "access_token={token}",
+    ] {
+        assert!(
+            !FALLBACK.contains(forbidden),
+            "credentialized URL pattern returned: {forbidden}"
+        );
     }
 }
