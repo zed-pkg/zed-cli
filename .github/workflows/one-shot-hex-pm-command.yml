@@ -1,0 +1,110 @@
+name: one-shot hex.pm command rename
+
+on:
+  push:
+    branches:
+      - feat/hex-read-parity
+
+permissions:
+  contents: write
+
+jobs:
+  rename:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+      - name: Rename public compatibility command and harden dispatcher mapping
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected exactly one occurrence in {path}: {old!r}; got {text.count(old)}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "Cargo.toml",
+              'name = "zed-hex"\npath = "src/bin/zed-hex.rs"',
+              'name = "zed-hex-pm"\npath = "src/bin/zed-hex.rs"',
+          )
+
+          hex_path = Path("src/bin/zed-hex.rs")
+          hex_text = hex_path.read_text()
+          for old, new in [
+              ('name = "zed-hex",', 'name = "zed-hex-pm",'),
+              ('bin_name = "zed hex",', 'bin_name = "zed hex.pm",'),
+              ('"cli": "zed-hex",', '"cli": "zed hex.pm",'),
+          ]:
+              if old not in hex_text:
+                  raise SystemExit(f"missing expected Hex CLI spelling: {old!r}")
+              hex_text = hex_text.replace(old, new)
+          hex_text = hex_text.replace("Hex-compatible package workflows", "Hex.pm-compatible package workflows")
+          hex_path.write_text(hex_text)
+
+          path = Path("src/external_subcommands.rs")
+          text = path.read_text()
+          old = 'const KNOWN_EXTERNAL_COMMAND: &str = "gitops";'
+          new = '''const GITOPS_EXTERNAL_COMMAND: &str = "gitops";\nconst HEX_PM_EXTERNAL_COMMAND: &str = "hex.pm";'''
+          if old not in text:
+              raise SystemExit("external command constant drifted")
+          text = text.replace(old, new, 1)
+
+          old = '''        None if route.name == KNOWN_EXTERNAL_COMMAND => Some(Err(anyhow!(\n            "external subcommand `gitops` requires `zed-gitops` beside the `zed` executable or in an absolute PATH directory"\n        ))),'''
+          new = '''        None if is_known_external_name(&route.name) => {\n            let executable = external_executable_stem(&route.name);\n            Some(Err(anyhow!(\n                "external subcommand `{}` requires `{}` beside the `zed` executable or in an absolute PATH directory",\n                route.name, executable\n            )))\n        },'''
+          if old not in text:
+              raise SystemExit("known external dispatch arm drifted")
+          text = text.replace(old, new, 1)
+
+          old = '''pub fn augment_root_command(command: ClapCommand) -> ClapCommand {\n    if command.find_subcommand(KNOWN_EXTERNAL_COMMAND).is_some() {\n        return command;\n    }'''
+          new = '''pub fn augment_root_command(command: ClapCommand) -> ClapCommand {\n    let mut command = command;\n    if command.find_subcommand(HEX_PM_EXTERNAL_COMMAND).is_none() {\n        command = command.subcommand(\n            ClapCommand::new(HEX_PM_EXTERNAL_COMMAND)\n                .about("Hex.pm interoperability and compatibility workflows")\n                .after_help("Run `zed hex.pm --help` for package, release, repository, and audit commands. Runtime execution is provided by the sibling `zed-hex-pm` executable."),\n        );\n    }\n    if command.find_subcommand(GITOPS_EXTERNAL_COMMAND).is_some() {\n        return command;\n    }'''
+          if old not in text:
+              raise SystemExit("root command augmentation drifted")
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              'ClapCommand::new(KNOWN_EXTERNAL_COMMAND)',
+              'ClapCommand::new(GITOPS_EXTERNAL_COMMAND)',
+              1,
+          )
+
+          old = '''fn valid_external_name(name: &str) -> bool {\n    let mut characters = name.chars();'''
+          new = '''fn valid_external_name(name: &str) -> bool {\n    if name == HEX_PM_EXTERNAL_COMMAND {\n        return true;\n    }\n    let mut characters = name.chars();'''
+          if old not in text:
+              raise SystemExit("external name validator drifted")
+          text = text.replace(old, new, 1)
+
+          old = '''fn is_builtin_name(name: &str) -> bool {'''
+          new = '''fn is_known_external_name(name: &str) -> bool {\n    matches!(name, GITOPS_EXTERNAL_COMMAND | HEX_PM_EXTERNAL_COMMAND)\n}\n\nfn external_executable_stem(name: &str) -> String {\n    let executable_name = match name {\n        HEX_PM_EXTERNAL_COMMAND => "hex-pm",\n        _ => name,\n    };\n    format!("{EXTERNAL_PREFIX}{executable_name}")\n}\n\nfn is_builtin_name(name: &str) -> bool {'''
+          if old not in text:
+              raise SystemExit("is_builtin_name insertion point drifted")
+          text = text.replace(old, new, 1)
+
+          old = '    let stem = format!("{EXTERNAL_PREFIX}{name}");'
+          new = '    let stem = external_executable_stem(name);'
+          if old not in text:
+              raise SystemExit("external executable stem construction drifted")
+          text = text.replace(old, new, 1)
+
+          marker = '''    #[test]\n    fn routes_plugin_arguments_without_shell_rewriting() {'''
+          tests = '''    #[test]\n    fn routes_hex_pm_without_allowing_arbitrary_dotted_plugin_names() {\n        let route = external_route(&os_args(&["zed", "hex.pm", "info", "plug"]))\n            .expect("hex.pm external route");\n        assert_eq!(route.name, "hex.pm");\n        assert_eq!(route.arguments, os_args(&["info", "plug"]));\n        assert!(valid_external_name("hex.pm"));\n        assert!(!valid_external_name("foo.bar"));\n        assert_eq!(external_executable_stem("hex.pm"), "zed-hex-pm");\n    }\n\n'''
+          if marker not in text:
+              raise SystemExit("external dispatcher test insertion point drifted")
+          text = text.replace(marker, tests + marker, 1)
+          path.write_text(text)
+          PY
+
+          cargo fmt --all
+          rm .github/workflows/one-shot-hex-pm-command.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'feat: expose Hex compatibility as zed hex.pm'
+          git push origin HEAD:feat/hex-read-parity
