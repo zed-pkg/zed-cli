@@ -178,9 +178,10 @@ fn search(
     limit: u32,
 ) -> Result<()> {
     let url = absolute_url(registry, &search_path());
+    let limit = limit.to_string();
     let response = client
         .get(&url)
-        .query(&[("q", query), ("limit", &limit.to_string())])
+        .query(&[("q", query), ("limit", limit.as_str())])
         .send()
         .with_context(|| format!("GET {url}"))?;
     let mut result: SearchResponse = decode_json(response, &url)?;
@@ -217,7 +218,7 @@ fn fetch_package(
     let archive = get_bytes(client, &archive_url)?;
     verify_artifact(&metadata, &archive)?;
 
-    let format = artifact_format_name(&metadata)?;
+    let format = metadata.format.to_string();
     let destination = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| default_destination(&name, &version, &format, unpack));
@@ -319,14 +320,6 @@ fn verify_artifact(metadata: &VersionMetadata, archive: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn artifact_format_name(metadata: &VersionMetadata) -> Result<String> {
-    let value = serde_json::to_value(&metadata.format).context("serialize artifact format")?;
-    value
-        .as_str()
-        .map(str::to_string)
-        .context("artifact format must serialize as a string")
-}
-
 fn default_destination(name: &str, version: &str, format: &str, unpack: bool) -> PathBuf {
     if unpack {
         return PathBuf::from(format!("{name}-{version}"));
@@ -369,7 +362,6 @@ fn unpack_zip(bytes: &[u8], destination: &Path) -> Result<()> {
         let mut entry = archive.by_index(index).context("read zip entry")?;
         let relative = entry
             .enclosed_name()
-            .map(Path::to_path_buf)
             .context("zip entry attempted to escape extraction directory")?;
         let output = destination.join(relative);
         if entry.is_dir() {
@@ -444,12 +436,12 @@ mod tests {
     #[test]
     fn package_coordinates_support_hex_style_bare_names_with_org_flag() {
         assert_eq!(
-            package_coordinate("plug", Some("hexpm")),
-            Ok(("hexpm".into(), "plug".into()))
+            package_coordinate("plug", Some("hexpm")).ok(),
+            Some(("hexpm".into(), "plug".into()))
         );
         assert_eq!(
-            package_coordinate("hexpm/plug", None),
-            Ok(("hexpm".into(), "plug".into()))
+            package_coordinate("hexpm/plug", None).ok(),
+            Some(("hexpm".into(), "plug".into()))
         );
         assert!(package_coordinate("plug", None).is_err());
         assert!(package_coordinate("hexpm/plug", Some("other")).is_err());
