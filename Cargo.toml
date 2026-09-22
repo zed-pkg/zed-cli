@@ -26,7 +26,7 @@ name = "zed-git-install"
 path = "src/bin/zed-git-install.rs"
 
 [[bin]]
-name = "zed-hex"
+name = "zed-hex-pm"
 path = "src/bin/zed-hex.rs"
 
 [lib]

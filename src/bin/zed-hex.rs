@@ -18,9 +18,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "zed-hex",
-    bin_name = "zed hex",
-    about = "Hex-compatible package workflows backed by the Zed registry"
+    name = "zed-hex-pm",
+    bin_name = "zed hex.pm",
+    about = "Hex.pm-compatible package workflows backed by the Zed registry"
 )]
 struct Cli {
     /// Registry base URL. Mirrors `zed --registry` / `ZED_PKG_REGISTRY`.
@@ -150,7 +150,7 @@ fn info(
         }
         let health: Value = get_json(client, registry, &healthz_path())?;
         let value = serde_json::json!({
-            "cli": "zed-hex",
+            "cli": "zed hex.pm",
             "version": env!("CARGO_PKG_VERSION"),
             "registry": registry,
             "health": health,
