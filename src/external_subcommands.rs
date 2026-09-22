@@ -466,14 +466,15 @@ mod tests {
     }
 
     #[test]
-    fn routes_hex_pm_without_allowing_arbitrary_dotted_plugin_names() {
+    fn routes_hex_pm_without_allowing_arbitrary_dotted_plugin_names() -> Result<()> {
         let route = external_route(&os_args(&["zed", "hex.pm", "info", "plug"]))
-            .expect("hex.pm external route");
+            .ok_or_else(|| anyhow!("hex.pm external route should be recognized"))?;
         assert_eq!(route.name, "hex.pm");
         assert_eq!(route.arguments, os_args(&["info", "plug"]));
         assert!(valid_external_name("hex.pm"));
         assert!(!valid_external_name("foo.bar"));
         assert_eq!(external_executable_stem("hex.pm"), "zed-hex-pm");
+        Ok(())
     }
 
     #[test]
