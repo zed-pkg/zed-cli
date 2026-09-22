@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use flate2::Compression;
@@ -18,6 +18,7 @@ use zed_interfaces::paths::{ARCHIVE_ROOT, PACK_OUT_DIR};
 /// polyglot manifest yields one item per declared target. A target rooted at
 /// `dir = "."` is the canonical whole-repository package and is published
 /// under the root manifest's exact `org/name` identity.
+#[derive(Debug)]
 pub struct PackagedTarget {
     pub target: Option<String>,
     pub manifest: Manifest,
@@ -135,6 +136,7 @@ pub(crate) fn pack_target(
         staging.path().join(zed_interfaces::paths::MANIFEST_FILE),
         derived.to_toml_string()?,
     )?;
+    validate_staged_cargo_path_dependencies(target, staging.path())?;
 
     let packed = pack_format_with_ignore_rules(
         staging.path(),
@@ -208,6 +210,184 @@ fn copy_root_legal_files(project: &Path, destination: &Path) -> Result<()> {
         if !dest.exists() {
             fs::copy(entry.path(), dest)?;
         }
+    }
+    Ok(())
+}
+
+/// Validate native Cargo path dependencies against the artifact as staged,
+/// not the larger source checkout. A path may walk upward inside the staged
+/// tree (for example `crates/a -> ../b`) but must never escape the artifact or
+/// refer to a directory that the artifact does not actually contain.
+fn validate_staged_cargo_path_dependencies(target: &str, staged_root: &Path) -> Result<()> {
+    for entry in WalkDir::new(staged_root)
+        .sort_by_file_name()
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        if !entry.file_type().is_file() || entry.file_name() != "Cargo.toml" {
+            continue;
+        }
+        validate_cargo_manifest_path_dependencies(target, staged_root, entry.path())?;
+    }
+    Ok(())
+}
+
+fn validate_cargo_manifest_path_dependencies(
+    target: &str,
+    staged_root: &Path,
+    manifest_path: &Path,
+) -> Result<()> {
+    let contents = fs::read_to_string(manifest_path)
+        .with_context(|| format!("read staged Cargo manifest {}", manifest_path.display()))?;
+    let document: toml::Value = toml::from_str(&contents)
+        .with_context(|| format!("parse staged Cargo manifest {}", manifest_path.display()))?;
+    let root = document.as_table().with_context(|| {
+        format!(
+            "staged Cargo manifest {} must contain a TOML table",
+            manifest_path.display()
+        )
+    })?;
+
+    for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+        validate_cargo_dependency_table(
+            target,
+            staged_root,
+            manifest_path,
+            section,
+            root.get(section).and_then(toml::Value::as_table),
+        )?;
+    }
+
+    if let Some(workspace) = root.get("workspace").and_then(toml::Value::as_table) {
+        validate_cargo_dependency_table(
+            target,
+            staged_root,
+            manifest_path,
+            "workspace.dependencies",
+            workspace
+                .get("dependencies")
+                .and_then(toml::Value::as_table),
+        )?;
+    }
+
+    if let Some(target_sections) = root.get("target").and_then(toml::Value::as_table) {
+        for (selector, value) in target_sections {
+            let Some(selector_table) = value.as_table() else {
+                continue;
+            };
+            for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+                let section_name = format!("target.{selector}.{section}");
+                validate_cargo_dependency_table(
+                    target,
+                    staged_root,
+                    manifest_path,
+                    &section_name,
+                    selector_table.get(section).and_then(toml::Value::as_table),
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_cargo_dependency_table(
+    target: &str,
+    staged_root: &Path,
+    manifest_path: &Path,
+    section: &str,
+    dependencies: Option<&toml::value::Table>,
+) -> Result<()> {
+    let Some(dependencies) = dependencies else {
+        return Ok(());
+    };
+    for (dependency, value) in dependencies {
+        let Some(specification) = value.as_table() else {
+            continue;
+        };
+        let Some(declared_path) = specification.get("path").and_then(toml::Value::as_str) else {
+            continue;
+        };
+        validate_cargo_dependency_path(
+            target,
+            staged_root,
+            manifest_path,
+            section,
+            dependency,
+            declared_path,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_cargo_dependency_path(
+    target: &str,
+    staged_root: &Path,
+    manifest_path: &Path,
+    section: &str,
+    dependency: &str,
+    declared_path: &str,
+) -> Result<()> {
+    let manifest_relative = manifest_path
+        .strip_prefix(staged_root)
+        .unwrap_or(manifest_path);
+    let manifest_dir = manifest_path
+        .parent()
+        .context("staged Cargo manifest has no parent directory")?;
+    let mut relative = manifest_dir
+        .strip_prefix(staged_root)
+        .with_context(|| {
+            format!(
+                "staged Cargo manifest {} is outside target root {}",
+                manifest_path.display(),
+                staged_root.display()
+            )
+        })?
+        .to_path_buf();
+
+    let declared = Path::new(declared_path);
+    if declared.is_absolute() {
+        bail!(
+            "target `{target}` staged Cargo manifest `{}` dependency `{dependency}` in [{section}] uses absolute path `{declared_path}`; native path dependencies must stay inside the staged target artifact",
+            manifest_relative.display()
+        );
+    }
+
+    for component in declared.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => relative.push(part),
+            Component::ParentDir => {
+                if !relative.pop() {
+                    bail!(
+                        "target `{target}` staged Cargo manifest `{}` dependency `{dependency}` in [{section}] path `{declared_path}` escapes the staged target artifact",
+                        manifest_relative.display()
+                    );
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                bail!(
+                    "target `{target}` staged Cargo manifest `{}` dependency `{dependency}` in [{section}] uses non-relative path `{declared_path}`; native path dependencies must stay inside the staged target artifact",
+                    manifest_relative.display()
+                );
+            }
+        }
+    }
+
+    let resolved = staged_root.join(&relative);
+    if !resolved.is_dir() {
+        bail!(
+            "target `{target}` staged Cargo manifest `{}` dependency `{dependency}` in [{section}] path `{declared_path}` resolves to missing staged directory `{}`",
+            manifest_relative.display(),
+            relative.display()
+        );
+    }
+    if !resolved.join("Cargo.toml").is_file() {
+        bail!(
+            "target `{target}` staged Cargo manifest `{}` dependency `{dependency}` in [{section}] path `{declared_path}` resolves to `{}` without Cargo.toml",
+            manifest_relative.display(),
+            relative.display()
+        );
     }
     Ok(())
 }
@@ -396,6 +576,172 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().path().unwrap().to_string_lossy().to_string())
             .collect()
+    }
+
+    fn rust_target_manifest() -> &'static str {
+        r#"
+[package]
+org = "acme"
+name = "rust-client"
+version = "1.0.0"
+
+[package.repository]
+url = "https://github.com/acme/rust-client"
+
+[targets.rust]
+dir = "client"
+adapter = "rust"
+"#
+    }
+
+    fn write_minimal_crate(path: &Path, manifest: &str) {
+        fs::create_dir_all(path.join("src")).unwrap();
+        fs::write(path.join("Cargo.toml"), manifest).unwrap();
+        fs::write(path.join("src/lib.rs"), "pub fn ready() -> bool { true }\n").unwrap();
+    }
+
+    #[test]
+    fn target_pack_rejects_cargo_path_dependency_outside_staged_root() {
+        let project = tempfile::tempdir().unwrap();
+        write_minimal_crate(
+            &project.path().join("client"),
+            r#"[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = { path = "../shared" }
+"#,
+        );
+        write_minimal_crate(
+            &project.path().join("shared"),
+            r#"[package]
+name = "shared"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        fs::write(
+            project.path().join(zed_interfaces::paths::MANIFEST_FILE),
+            rust_target_manifest(),
+        )
+        .unwrap();
+        let manifest = Manifest::parse(rust_target_manifest()).unwrap();
+
+        let error = pack_target(project.path(), &manifest, "rust", None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("target `rust`"), "{message}");
+        assert!(message.contains("Cargo.toml"), "{message}");
+        assert!(message.contains("dependency `shared`"), "{message}");
+        assert!(message.contains("../shared"), "{message}");
+        assert!(
+            message.contains("escapes the staged target artifact"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn target_pack_rejects_target_specific_escaping_path_dependency() {
+        let project = tempfile::tempdir().unwrap();
+        write_minimal_crate(
+            &project.path().join("client"),
+            r#"[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[target.'cfg(unix)'.build-dependencies]
+helper = { path = "../helper" }
+"#,
+        );
+        write_minimal_crate(
+            &project.path().join("helper"),
+            r#"[package]
+name = "helper"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        let manifest = Manifest::parse(rust_target_manifest()).unwrap();
+
+        let error = pack_target(project.path(), &manifest, "rust", None).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("target.cfg(unix).build-dependencies"),
+            "{message}"
+        );
+        assert!(message.contains("dependency `helper`"), "{message}");
+        assert!(message.contains("../helper"), "{message}");
+    }
+
+    #[test]
+    fn target_pack_accepts_contained_cargo_path_dependency() {
+        let project = tempfile::tempdir().unwrap();
+        write_minimal_crate(
+            &project.path().join("client"),
+            r#"[package]
+name = "client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = { path = "vendor/shared" }
+"#,
+        );
+        write_minimal_crate(
+            &project.path().join("client/vendor/shared"),
+            r#"[package]
+name = "shared"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        let manifest = Manifest::parse(rust_target_manifest()).unwrap();
+
+        let packed = pack_target(project.path(), &manifest, "rust", None).unwrap();
+        let files = archive_files(&packed.packed.path);
+        assert!(files.contains("pkg/Cargo.toml"));
+        assert!(files.contains("pkg/vendor/shared/Cargo.toml"));
+    }
+
+    #[test]
+    fn target_pack_accepts_parent_segments_that_stay_inside_staged_root() {
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir_all(project.path().join("client/crates/a/src")).unwrap();
+        fs::write(
+            project.path().join("client/Cargo.toml"),
+            r#"[workspace]
+members = ["crates/a", "crates/b"]
+resolver = "2"
+"#,
+        )
+        .unwrap();
+        write_minimal_crate(
+            &project.path().join("client/crates/a"),
+            r#"[package]
+name = "a"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+b = { path = "../b" }
+"#,
+        );
+        write_minimal_crate(
+            &project.path().join("client/crates/b"),
+            r#"[package]
+name = "b"
+version = "0.1.0"
+edition = "2024"
+"#,
+        );
+        let manifest = Manifest::parse(rust_target_manifest()).unwrap();
+
+        let packed = pack_target(project.path(), &manifest, "rust", None).unwrap();
+        let files = archive_files(&packed.packed.path);
+        assert!(files.contains("pkg/crates/a/Cargo.toml"));
+        assert!(files.contains("pkg/crates/b/Cargo.toml"));
     }
 
     #[test]
