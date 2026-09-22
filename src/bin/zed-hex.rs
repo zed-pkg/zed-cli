@@ -257,9 +257,8 @@ fn package_coordinate(package: &str, organization: Option<&str>) -> Result<(Stri
         }
         return Ok((org.to_string(), name.to_string()));
     }
-    let org = organization.context(
-        "Zed package names are namespaced; use ORG/NAME or pass --organization ORG",
-    )?;
+    let org = organization
+        .context("Zed package names are namespaced; use ORG/NAME or pass --organization ORG")?;
     if package.is_empty() || org.is_empty() {
         bail!("organization and package name must not be empty");
     }
@@ -332,8 +331,7 @@ fn default_destination(name: &str, version: &str, format: &str, unpack: bool) ->
 }
 
 fn unpack_artifact(bytes: &[u8], format: &str, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination)
-        .with_context(|| format!("create {}", destination.display()))?;
+    fs::create_dir_all(destination).with_context(|| format!("create {}", destination.display()))?;
     match format {
         "tar.gz" => unpack_tar_gz(bytes, destination),
         "zip" => unpack_zip(bytes, destination),
@@ -365,16 +363,14 @@ fn unpack_zip(bytes: &[u8], destination: &Path) -> Result<()> {
             .context("zip entry attempted to escape extraction directory")?;
         let output = destination.join(relative);
         if entry.is_dir() {
-            fs::create_dir_all(&output)
-                .with_context(|| format!("create {}", output.display()))?;
+            fs::create_dir_all(&output).with_context(|| format!("create {}", output.display()))?;
             continue;
         }
         if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
         }
-        let mut file = File::create(&output)
-            .with_context(|| format!("create {}", output.display()))?;
+        let mut file =
+            File::create(&output).with_context(|| format!("create {}", output.display()))?;
         std::io::copy(&mut entry, &mut file)
             .with_context(|| format!("write {}", output.display()))?;
     }
@@ -424,7 +420,11 @@ fn print_value(value: &Value, json: bool) -> Result<()> {
 fn human_value(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
-        Value::Array(values) => values.iter().map(human_value).collect::<Vec<_>>().join(", "),
+        Value::Array(values) => values
+            .iter()
+            .map(human_value)
+            .collect::<Vec<_>>()
+            .join(", "),
         _ => value.to_string(),
     }
 }
