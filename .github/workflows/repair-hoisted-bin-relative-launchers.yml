@@ -1,0 +1,176 @@
+name: repair hoisted bin relative launchers
+
+on:
+  push:
+    branches:
+      - fix/hoisted-bin-relative-launchers-20260923
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/hoisted-bin-relative-launchers-20260923
+          fetch-depth: 0
+
+      - name: Patch bin hoisting and add regression test
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/ops.rs')
+          text = path.read_text()
+          old = r'''/// Hoist package-declared executables into `zed_modules/.bin/<name>` so
+/// `zed run` and PATH-prepending wrappers find them without polluting the OS
+/// PATH.
+///
+/// Hoisted bins are deliberately project-owned copies in both install modes.
+/// In symlink mode the package target may resolve into the immutable global
+/// store; chmod'ing that target would mutate the shared store inode for every
+/// consumer. Copying the usually-small executable and setting permissions on
+/// the destination preserves the store while retaining runnable bins.
+fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, _mode: InstallMode) -> Result<()> {
+    if bins.is_empty() {
+        return Ok(());
+    }
+    let bin_dir = modules.join(BIN_DIR);
+    fs::create_dir_all(&bin_dir)?;
+    for (name, target) in bins {
+        if !target.exists() {
+            eprintln!(
+                "warning: bin `{name}` points at missing {}; skipping",
+                target.display()
+            );
+            continue;
+        }
+        let destination = bin_dir.join(name);
+        replace_dest(&destination)?;
+        fs::copy(target, &destination)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&destination)?.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            fs::set_permissions(&destination, permissions)?;
+        }
+    }
+    Ok(())
+}
+'''
+          new = r'''/// Hoist package-declared executables into `zed_modules/.bin/<name>` so
+/// `zed run` and PATH-prepending wrappers find them without polluting the OS
+/// PATH.
+///
+/// On Unix the hoisted entry is a project-local shim that execs the executable
+/// at its package path. Byte-copying script launchers into `.bin` changes their
+/// directory and breaks package-relative imports/resources (for example an ESM
+/// launcher importing `../src/cli.mjs`). The relative shim keeps copy-mode
+/// projects relocatable while preserving the launcher's package context.
+///
+/// Windows retains a project-owned copy because `zed run` already performs
+/// extension/shebang dispatch there and portable symlink semantics are not
+/// available.
+fn hoist_bins(modules: &Path, bins: &BTreeMap<String, PathBuf>, _mode: InstallMode) -> Result<()> {
+    if bins.is_empty() {
+        return Ok(());
+    }
+    let bin_dir = modules.join(BIN_DIR);
+    fs::create_dir_all(&bin_dir)?;
+    for (name, target) in bins {
+        if !target.exists() {
+            eprintln!(
+                "warning: bin `{name}` points at missing {}; skipping",
+                target.display()
+            );
+            continue;
+        }
+        let destination = bin_dir.join(name);
+        replace_dest(&destination)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let relative = pathdiff_relative(&bin_dir, target)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let quoted = relative.replace('\'', "'\"'\"'");
+            fs::write(
+                &destination,
+                format!("#!/bin/sh\nexec \"$(dirname \"$0\")\"/'{quoted}' \"$@\"\n"),
+            )?;
+            let mut permissions = fs::metadata(&destination)?.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            fs::set_permissions(&destination, permissions)?;
+        }
+        #[cfg(not(unix))]
+        fs::copy(target, &destination)?;
+    }
+    Ok(())
+}
+'''
+          if old not in text:
+              raise SystemExit('expected hoist_bins implementation not found; refusing non-exact patch')
+          text = text.replace(old, new, 1)
+
+          marker = '''    #[test]\n    fn parse_age_units_and_default() {\n'''
+          test = r'''    #[cfg(unix)]
+    #[test]
+    fn hoisted_bin_preserves_package_relative_launcher_context() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir()?;
+        let modules = temp.path().join("zed_modules");
+        let package = modules.join("acme/tool");
+        fs::create_dir_all(package.join("bin"))?;
+        fs::create_dir_all(package.join("src"))?;
+        fs::write(package.join("src/payload.txt"), "package-relative-ok\n")?;
+        let launcher = package.join("bin/tool");
+        fs::write(
+            &launcher,
+            "#!/bin/sh\ncat \"$(dirname \"$0\")/../src/payload.txt\"\n",
+        )?;
+        let mut permissions = fs::metadata(&launcher)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        fs::set_permissions(&launcher, permissions)?;
+
+        let bins = BTreeMap::from([("tool".to_string(), launcher)]);
+        hoist_bins(&modules, &bins, InstallMode::Copy)?;
+
+        let hoisted = modules.join(BIN_DIR).join("tool");
+        let output = Command::new(&hoisted).output()?;
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(String::from_utf8(output.stdout)?, "package-relative-ok\n");
+        let shim = fs::read_to_string(hoisted)?;
+        assert!(shim.contains("exec \"$(dirname \"$0\")\"/"), "{shim}");
+        assert!(shim.contains("../acme/tool/bin/tool"), "{shim}");
+        Ok(())
+    }
+
+'''
+          if marker not in text:
+              raise SystemExit('test insertion marker not found; refusing non-exact patch')
+          text = text.replace(marker, test + marker, 1)
+          path.write_text(text)
+          PY
+
+          cargo fmt --all
+          git diff --check
+
+      - name: Prove regression test
+        run: cargo test hoisted_bin_preserves_package_relative_launcher_context -- --exact --nocapture
+
+      - name: Commit repaired source
+        shell: bash
+        run: |
+          git config user.name "zed-pkg automation"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/repair-hoisted-bin-relative-launchers.yml
+          git add src/ops.rs
+          git diff --cached --check
+          git commit -m "fix: preserve package-relative bin launcher context"
+          git push origin HEAD:fix/hoisted-bin-relative-launchers-20260923
