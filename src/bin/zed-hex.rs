@@ -282,9 +282,7 @@ fn validate_path_segment(label: &str, value: &str) -> Result<()> {
         bail!("{label} must be a non-empty URL path segment");
     }
     if value.chars().any(|ch| {
-        ch.is_control()
-            || ch.is_whitespace()
-            || matches!(ch, '/' | '\\' | '?' | '#' | '%')
+        ch.is_control() || ch.is_whitespace() || matches!(ch, '/' | '\\' | '?' | '#' | '%')
     }) {
         bail!("{label} contains characters that are not safe in a registry path segment");
     }
@@ -598,7 +596,10 @@ mod tests {
             "hexpm/%2e%2e",
             "hexpm\\plug",
         ] {
-            assert!(package_coordinate(coordinate, None).is_err(), "{coordinate}");
+            assert!(
+                package_coordinate(coordinate, None).is_err(),
+                "{coordinate}"
+            );
         }
         assert!(package_coordinate("plug", Some("../hexpm")).is_err());
     }
