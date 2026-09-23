@@ -25,6 +25,10 @@ path = "src/bin/zed-binary.rs"
 name = "zed-git-install"
 path = "src/bin/zed-git-install.rs"
 
+[[bin]]
+name = "zed-hex-pm"
+path = "src/bin/zed-hex.rs"
+
 [lib]
 name = "zed_cli"
 path = "src/lib.rs"

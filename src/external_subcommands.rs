@@ -15,7 +15,8 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Arg, ArgAction, Command as ClapCommand};
 
 const EXTERNAL_PREFIX: &str = "zed-";
-const KNOWN_EXTERNAL_COMMAND: &str = "gitops";
+const GITOPS_EXTERNAL_COMMAND: &str = "gitops";
+const HEX_PM_EXTERNAL_COMMAND: &str = "hex.pm";
 const EXTERNAL_COMMAND_ENV: &str = "ZED_EXTERNAL_SUBCOMMAND";
 
 const ROOT_VALUE_OPTIONS: &[(&str, &str)] = &[
@@ -57,9 +58,14 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     let executable = resolve_external(&route.name);
     match executable {
         Some(executable) => Some(run_external(&executable, &route)),
-        None if route.name == KNOWN_EXTERNAL_COMMAND => Some(Err(anyhow!(
-            "external subcommand `gitops` requires `zed-gitops` beside the `zed` executable or in an absolute PATH directory"
-        ))),
+        None if is_known_external_name(&route.name) => {
+            let executable = external_executable_stem(&route.name);
+            Some(Err(anyhow!(
+                "external subcommand `{}` requires `{}` beside the `zed` executable or in an absolute PATH directory",
+                route.name,
+                executable
+            )))
+        }
         None => None,
     }
 }
@@ -68,7 +74,15 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
 /// completions. Runtime execution still resolves the separately installed
 /// `zed-gitops` executable.
 pub fn augment_root_command(command: ClapCommand) -> ClapCommand {
-    if command.find_subcommand(KNOWN_EXTERNAL_COMMAND).is_some() {
+    let mut command = command;
+    if command.find_subcommand(HEX_PM_EXTERNAL_COMMAND).is_none() {
+        command = command.subcommand(
+            ClapCommand::new(HEX_PM_EXTERNAL_COMMAND)
+                .about("Hex.pm interoperability and compatibility workflows")
+                .after_help("Run `zed hex.pm --help` for package, release, repository, and audit commands. Runtime execution is provided by the sibling `zed-hex-pm` executable."),
+        );
+    }
+    if command.find_subcommand(GITOPS_EXTERNAL_COMMAND).is_some() {
         return command;
     }
 
@@ -122,7 +136,7 @@ pub fn augment_root_command(command: ClapCommand) -> ClapCommand {
         );
 
     command.subcommand(
-        ClapCommand::new(KNOWN_EXTERNAL_COMMAND)
+        ClapCommand::new(GITOPS_EXTERNAL_COMMAND)
             .about("Validate GitOps composition through the external zed-gitops executable")
             .after_help("Install `zed` and `zed-gitops` into the same bin directory, or place `zed-gitops` in an absolute PATH directory.")
             .subcommand_required(true)
@@ -309,6 +323,9 @@ fn normalize_boolean(value: &str) -> Option<&'static str> {
 }
 
 fn valid_external_name(name: &str) -> bool {
+    if name == HEX_PM_EXTERNAL_COMMAND {
+        return true;
+    }
     let mut characters = name.chars();
     let Some(first) = characters.next() else {
         return false;
@@ -317,6 +334,18 @@ fn valid_external_name(name: &str) -> bool {
         && first.is_ascii_alphanumeric()
         && characters
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn is_known_external_name(name: &str) -> bool {
+    matches!(name, GITOPS_EXTERNAL_COMMAND | HEX_PM_EXTERNAL_COMMAND)
+}
+
+fn external_executable_stem(name: &str) -> String {
+    let executable_name = match name {
+        HEX_PM_EXTERNAL_COMMAND => "hex-pm",
+        _ => name,
+    };
+    format!("{EXTERNAL_PREFIX}{executable_name}")
 }
 
 fn is_builtin_name(name: &str) -> bool {
@@ -338,7 +367,7 @@ fn resolve_in_locations(
     sibling: Option<&Path>,
     path: Option<&OsStr>,
 ) -> Option<PathBuf> {
-    let stem = format!("{EXTERNAL_PREFIX}{name}");
+    let stem = external_executable_stem(name);
 
     if let Some(executable) = sibling
         .filter(|directory| directory.is_absolute())
@@ -434,6 +463,18 @@ mod tests {
 
     fn os_args(values: &[&str]) -> Vec<OsString> {
         values.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn routes_hex_pm_without_allowing_arbitrary_dotted_plugin_names() -> Result<()> {
+        let route = external_route(&os_args(&["zed", "hex.pm", "info", "plug"]))
+            .ok_or_else(|| anyhow!("hex.pm external route should be recognized"))?;
+        assert_eq!(route.name, "hex.pm");
+        assert_eq!(route.arguments, os_args(&["info", "plug"]));
+        assert!(valid_external_name("hex.pm"));
+        assert!(!valid_external_name("foo.bar"));
+        assert_eq!(external_executable_stem("hex.pm"), "zed-hex-pm");
+        Ok(())
     }
 
     #[test]
