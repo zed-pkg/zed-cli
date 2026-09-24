@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+# Regression: the hoisted entry point must preserve this package-relative lookup.
 script_dir=${0%/*}
 test -f "$script_dir/../src/index.js"
 printf 'docker-node-tool-ok\n'
