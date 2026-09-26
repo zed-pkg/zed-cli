@@ -242,6 +242,7 @@ fn overtake_imports_manifest_workspace_and_git_lock() {
         interactive: false,
         mirrors: Vec::new(),
         fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+        local: Default::default(),
     };
     let report = overtake(root.path(), &cfg).unwrap();
     assert_eq!(report.adopted, 1);
@@ -354,6 +355,7 @@ url = "https://example.invalid/acme/root.git"
         interactive: false,
         mirrors: Vec::new(),
         fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+        local: Default::default(),
     };
     let error = overtake(root.path(), &cfg).unwrap_err();
     assert!(
