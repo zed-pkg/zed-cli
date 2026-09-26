@@ -24,6 +24,9 @@ use crate::config::Config;
 
 const REFRESH_SKEW_SECS: u64 = 60;
 const MAX_AUTH_RESPONSE_BYTES: u64 = 1024 * 1024;
+const ZED_DELEGATION_CLIENT_ID: &str = "zpkg-cli";
+const ZED_DELEGATION_AUDIENCE: &str = "zed-pkg";
+const ZED_REGISTRY_SCOPE: &str = "zpkg:registry";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenPair {
@@ -58,14 +61,23 @@ pub struct AuthSession {
     pub shared_auth: Option<TokenPair>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supabase: Option<TokenPair>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zed_registry: Option<TokenPair>,
 }
 
 impl AuthSession {
-    fn bearer(&self, now: u64) -> Option<&str> {
+    fn identity_bearer(&self, now: u64) -> Option<&str> {
         self.shared_auth
             .as_ref()
             .filter(|pair| pair.usable_at(now))
             .or_else(|| self.supabase.as_ref().filter(|pair| pair.usable_at(now)))
+            .map(|pair| pair.access_token.as_str())
+    }
+
+    fn registry_bearer(&self, now: u64) -> Option<&str> {
+        self.zed_registry
+            .as_ref()
+            .filter(|pair| pair.usable_at(now))
             .map(|pair| pair.access_token.as_str())
     }
 }
@@ -90,6 +102,15 @@ struct SharedAuthResponse {
     provider: Option<String>,
     #[serde(default)]
     roles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DelegationResponse {
+    access_token: String,
+    token_type: String,
+    expires_at: u64,
+    audience: String,
+    scope: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +208,18 @@ impl AuthClient {
             &format!("{}/auth/refresh", self.auth_url),
             &serde_json::json!({ "refresh_token": refresh_token }),
             &[],
+        )
+    }
+
+    fn shared_delegate(&self, subject_token: &str) -> Result<DelegationResponse> {
+        self.post_json(
+            &format!("{}/auth/delegate", self.auth_url),
+            &serde_json::json!({
+                "client_id": ZED_DELEGATION_CLIENT_ID,
+                "audience": ZED_DELEGATION_AUDIENCE,
+                "scopes": [ZED_REGISTRY_SCOPE],
+            }),
+            &[("authorization", format!("Bearer {subject_token}"))],
         )
     }
 
@@ -302,7 +335,7 @@ pub fn login(
     let password = read_password(password_stdin, false)?;
     let client = AuthClient::new(cfg)?;
     let provider = resolve_provider(&client, provider);
-    let session = match provider {
+    let mut session = match provider {
         AuthProvider::SharedAuth => {
             session_from_shared(client.shared_login(&email, &password)?, Some(email.clone()))
         }
@@ -313,6 +346,9 @@ pub fn login(
         }
         AuthProvider::Auto => unreachable!("auto provider is resolved above"),
     };
+    if let Err(error) = refresh_zed_delegation(&client, &mut session, true) {
+        eprintln!("warning: Zed registry delegation unavailable: {error}");
+    }
     save_session(cfg, session)?;
     println!("signed in as {email}");
     Ok(())
@@ -329,7 +365,7 @@ pub fn signup(
     let password = read_password(password_stdin, true)?;
     let client = AuthClient::new(cfg)?;
     let provider = resolve_provider(&client, provider);
-    let session = match provider {
+    let mut session = match provider {
         AuthProvider::SharedAuth => session_from_shared(
             client.shared_signup(&email, &password, display_name)?,
             Some(email.clone()),
@@ -347,6 +383,9 @@ pub fn signup(
         }
         AuthProvider::Auto => unreachable!("auto provider is resolved above"),
     };
+    if let Err(error) = refresh_zed_delegation(&client, &mut session, true) {
+        eprintln!("warning: Zed registry delegation unavailable: {error}");
+    }
     save_session(cfg, session)?;
     println!("account created; signed in as {email}");
     Ok(())
@@ -422,6 +461,9 @@ pub fn status(cfg: &Config) -> Result<()> {
     if let Some(pair) = &session.supabase {
         println!("Supabase JWT expires at {}", pair.expires_at);
     }
+    if let Some(pair) = &session.zed_registry {
+        println!("Zed delegated JWT expires at {}", pair.expires_at);
+    }
     println!("session file: {}", store_path(&cfg.home).display());
     Ok(())
 }
@@ -447,10 +489,11 @@ pub fn print_token(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Return the best current bearer token for registry requests. The shared-auth
-/// JWT wins; the Supabase JWT is the outage fallback. Refresh-token rotation is
+/// Return the current Zed-audience delegated bearer for registry requests.
+/// Raw Shared Auth and Supabase identity tokens are never used as registry
+/// product credentials. Refresh-token rotation and delegation refresh are
 /// serialized with a local file lock so concurrent CLI commands cannot replay
-/// the same one-time refresh token.
+/// a one-time refresh token or race delegated-token replacement.
 pub fn resolve_bearer(cfg: &Config) -> Result<Option<String>> {
     if !store_path(&cfg.home).exists() {
         return Ok(None);
@@ -467,12 +510,16 @@ pub fn resolve_bearer(cfg: &Config) -> Result<Option<String>> {
             || session
                 .supabase
                 .as_ref()
-                .is_some_and(|pair| pair.needs_refresh_at(now));
+                .is_some_and(|pair| pair.needs_refresh_at(now))
+            || session
+                .zed_registry
+                .as_ref()
+                .is_none_or(|pair| pair.needs_refresh_at(now));
         if refresh_needed {
             let client = AuthClient::new(cfg)?;
             refresh_session(&client, session, false)?;
         }
-        Ok(session.bearer(unix_now()).map(str::to_owned))
+        Ok(session.registry_bearer(unix_now()).map(str::to_owned))
     })
 }
 
@@ -581,9 +628,13 @@ fn refresh_session(client: &AuthClient, session: &mut AuthSession, force: bool) 
         }
     }
 
-    if session.bearer(unix_now()).is_some() {
+    if let Err(error) = refresh_zed_delegation(client, session, force) {
+        failures.push(format!("Zed delegation: {error}"));
+    }
+
+    if session.identity_bearer(unix_now()).is_some() {
         for failure in failures {
-            eprintln!("warning: {failure}; using the other valid authority");
+            eprintln!("warning: {failure}");
         }
         Ok(())
     } else if failures.is_empty() {
@@ -612,6 +663,7 @@ fn session_from_shared(response: SharedAuthResponse, email: Option<String>) -> A
             refresh_expires_at: response.refresh_expires_at,
         }),
         supabase: None,
+        zed_registry: None,
     }
 }
 
@@ -636,6 +688,7 @@ fn session_from_supabase(
         roles: Vec::new(),
         shared_auth: None,
         supabase: Some(pair.clone()),
+        zed_registry: None,
     };
     match client.shared_exchange(&pair.access_token) {
         Ok(shared) => {
@@ -653,6 +706,83 @@ fn session_from_supabase(
         }
     }
     Ok(Some(session))
+}
+
+fn refresh_zed_delegation(
+    client: &AuthClient,
+    session: &mut AuthSession,
+    force: bool,
+) -> Result<()> {
+    let now = unix_now();
+    let refresh_needed = force
+        || session
+            .zed_registry
+            .as_ref()
+            .is_none_or(|pair| pair.needs_refresh_at(now));
+    if !refresh_needed {
+        return Ok(());
+    }
+
+    let Some(subject_token) = session
+        .shared_auth
+        .as_ref()
+        .filter(|pair| pair.usable_at(now))
+        .map(|pair| pair.access_token.clone())
+    else {
+        if session
+            .zed_registry
+            .as_ref()
+            .is_some_and(|pair| !pair.usable_at(now))
+        {
+            session.zed_registry = None;
+        }
+        return Ok(());
+    };
+
+    match client.shared_delegate(&subject_token) {
+        Ok(response) => {
+            session.zed_registry = Some(delegated_pair(response)?);
+            Ok(())
+        }
+        Err(error) => {
+            if session
+                .zed_registry
+                .as_ref()
+                .is_some_and(|pair| !pair.usable_at(now))
+            {
+                session.zed_registry = None;
+            }
+            Err(error)
+        }
+    }
+}
+
+fn delegated_pair(response: DelegationResponse) -> Result<TokenPair> {
+    if response.token_type != "Bearer" {
+        bail!("Shared Auth delegation returned an unsupported token type");
+    }
+    if response.audience != ZED_DELEGATION_AUDIENCE {
+        bail!("Shared Auth delegation returned the wrong audience");
+    }
+    if !response
+        .scope
+        .split_ascii_whitespace()
+        .any(|scope| scope == ZED_REGISTRY_SCOPE)
+    {
+        bail!("Shared Auth delegation omitted the Zed registry scope");
+    }
+    if response.access_token.is_empty() || response.access_token.len() > 16 * 1024 {
+        bail!("Shared Auth delegation returned an invalid access token");
+    }
+    if response.expires_at <= unix_now() {
+        bail!("Shared Auth delegation returned an expired access token");
+    }
+    Ok(TokenPair {
+        access_token: response.access_token,
+        refresh_token: None,
+        expires_at: response.expires_at,
+        refresh_expires_at: None,
+    })
 }
 
 fn supabase_pair(response: &SupabaseResponse) -> Result<Option<TokenPair>> {
@@ -953,15 +1083,32 @@ mod tests {
                 expires_at: supabase_expiry,
                 refresh_expires_at: None,
             }),
+            zed_registry: Some(TokenPair {
+                access_token: "zed-delegated-jwt".into(),
+                refresh_token: None,
+                expires_at: shared_expiry,
+                refresh_expires_at: None,
+            }),
         }
     }
 
     #[test]
-    fn shared_auth_bearer_wins_and_supabase_is_fallback() {
+    fn identity_bearer_prefers_shared_auth_but_registry_bearer_is_delegated_only() {
         let now = unix_now();
-        assert_eq!(session(now + 60, now + 60).bearer(now), Some("shared-jwt"));
-        assert_eq!(session(now - 1, now + 60).bearer(now), Some("supabase-jwt"));
-        assert_eq!(session(now - 1, now - 1).bearer(now), None);
+        assert_eq!(
+            session(now + 60, now + 60).identity_bearer(now),
+            Some("shared-jwt")
+        );
+        assert_eq!(
+            session(now - 1, now + 60).identity_bearer(now),
+            Some("supabase-jwt")
+        );
+        assert_eq!(session(now - 1, now - 1).identity_bearer(now), None);
+        assert_eq!(
+            session(now + 60, now + 60).registry_bearer(now),
+            Some("zed-delegated-jwt")
+        );
+        assert_eq!(session(now - 1, now + 60).registry_bearer(now), None);
     }
 
     #[test]
@@ -973,7 +1120,26 @@ mod tests {
         let loaded = load_store(temp.path()).unwrap();
         let stored = loaded.sessions.get(&cfg.auth_url).unwrap();
         assert_eq!(stored.email.as_deref(), Some("person@example.com"));
-        assert_eq!(stored.bearer(now), Some("shared-jwt"));
+        assert_eq!(stored.identity_bearer(now), Some("shared-jwt"));
+        assert_eq!(stored.registry_bearer(now), Some("zed-delegated-jwt"));
+    }
+
+    #[test]
+    fn legacy_session_without_delegated_registry_token_still_deserializes() {
+        let text = r#"
+provider = "shared-auth"
+shared_user_id = "shared-1"
+roles = ["user"]
+
+[shared_auth]
+access_token = "shared-jwt"
+expires_at = 4102444800
+"#;
+        let session: AuthSession = toml::from_str(text).unwrap();
+        assert_eq!(session.shared_user_id.as_deref(), Some("shared-1"));
+        assert!(session.shared_auth.is_some());
+        assert!(session.zed_registry.is_none());
+        assert!(session.registry_bearer(unix_now()).is_none());
     }
 
     #[cfg(unix)]
@@ -1007,6 +1173,36 @@ mod tests {
         assert!(validate_base_url("http://127.0.0.1:8120", "auth").is_ok());
         assert!(validate_base_url("http://auth.example.com", "auth").is_err());
         assert!(validate_base_url("https://user:pass@auth.example.com", "auth").is_err());
+    }
+
+    #[test]
+    fn delegated_response_must_match_zed_audience_scope_and_bearer_type() {
+        let valid = DelegationResponse {
+            access_token: "delegated".into(),
+            token_type: "Bearer".into(),
+            expires_at: unix_now() + 300,
+            audience: ZED_DELEGATION_AUDIENCE.into(),
+            scope: format!("{} other", ZED_REGISTRY_SCOPE),
+        };
+        assert_eq!(delegated_pair(valid).unwrap().access_token, "delegated");
+
+        let wrong_audience = DelegationResponse {
+            access_token: "delegated".into(),
+            token_type: "Bearer".into(),
+            expires_at: unix_now() + 300,
+            audience: "other-product".into(),
+            scope: ZED_REGISTRY_SCOPE.into(),
+        };
+        assert!(delegated_pair(wrong_audience).is_err());
+
+        let wrong_scope = DelegationResponse {
+            access_token: "delegated".into(),
+            token_type: "Bearer".into(),
+            expires_at: unix_now() + 300,
+            audience: ZED_DELEGATION_AUDIENCE.into(),
+            scope: "zpkg:account".into(),
+        };
+        assert!(delegated_pair(wrong_scope).is_err());
     }
 
     #[test]
