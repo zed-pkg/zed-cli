@@ -504,14 +504,20 @@ mod tests {
 
         git(child.path(), &["init"]);
         git(child.path(), &["config", "user.name", "Zed Test"]);
-        git(child.path(), &["config", "user.email", "zed@example.invalid"]);
+        git(
+            child.path(),
+            &["config", "user.email", "zed@example.invalid"],
+        );
         fs::write(child.path().join("payload.txt"), "submodule payload\n").unwrap();
         git(child.path(), &["add", "payload.txt"]);
         git(child.path(), &["commit", "-m", "fixture child"]);
 
         git(root.path(), &["init"]);
         git(root.path(), &["config", "user.name", "Zed Test"]);
-        git(root.path(), &["config", "user.email", "zed@example.invalid"]);
+        git(
+            root.path(),
+            &["config", "user.email", "zed@example.invalid"],
+        );
         let source_manifest = r#"
 [package]
 org = "acme"
@@ -596,7 +602,11 @@ exclude = ["vendor/child/**"]
         .unwrap();
         let packed = pack_all(root.path(), &excluded, None).unwrap();
         let files = archive_files(&packed[0].packed.path);
-        assert!(!files.iter().any(|path| path.starts_with("pkg/vendor/child/")));
+        assert!(
+            !files
+                .iter()
+                .any(|path| path.starts_with("pkg/vendor/child/"))
+        );
     }
 
     #[test]
