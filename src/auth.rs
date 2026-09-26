@@ -1184,10 +1184,7 @@ expires_at = 4102444800
             audience: ZED_DELEGATION_AUDIENCE.into(),
             scope: format!("{} other", ZED_REGISTRY_SCOPE),
         };
-        assert_eq!(
-            delegated_pair(valid).unwrap().access_token,
-            "delegated"
-        );
+        assert_eq!(delegated_pair(valid).unwrap().access_token, "delegated");
 
         let wrong_audience = DelegationResponse {
             access_token: "delegated".into(),
