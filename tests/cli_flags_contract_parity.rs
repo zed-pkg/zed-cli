@@ -160,7 +160,7 @@ fn non_flags2env_public_roots() -> BTreeSet<String> {
 
     assert_eq!(
         external,
-        BTreeSet::from(["gitops".to_owned(), "hex.pm".to_owned()])
+        BTreeSet::from(["gitops".to_owned(), "hex.pm".to_owned()]),
     );
 
     let inspect = zed_cli::inspect::command().get_name().to_owned();
