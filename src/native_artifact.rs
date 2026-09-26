@@ -4,11 +4,13 @@
 //! Zed's own published archives are rooted at `pkg/`. Native registries are
 //! not: npm uses `package/`, Cargo crates commonly use `name-version/`, Go
 //! module zips use `module@version/`, and wheels/NuGet archives can have more
-//! than one root entry. The cache must continue to pin the upstream bytes, so
-//! repacking is the wrong fix. Instead, verify the upstream digest first and
-//! normalize only the extracted store tree.
+//! than one root entry. RubyGems and Hex add another layer by shipping a tar
+//! envelope whose package payload is itself a gzip-compressed tar. The cache
+//! continues to pin the exact upstream bytes; only the extracted store tree is
+//! normalized.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -47,6 +49,8 @@ const NATIVE_FILE_HOSTS: &[&str] = &[
 enum NativeLayout {
     Archive,
     Jar,
+    RubyGem,
+    HexPackage,
 }
 
 fn native_layout(version: &VersionMetadata) -> Option<NativeLayout> {
@@ -54,6 +58,7 @@ fn native_layout(version: &VersionMetadata) -> Option<NativeLayout> {
     if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
         return None;
     }
+
     let host = url.host_str()?.to_ascii_lowercase();
     if NATIVE_ARCHIVE_HOSTS.contains(&host.as_str()) {
         return Some(NativeLayout::Archive);
@@ -61,7 +66,13 @@ fn native_layout(version: &VersionMetadata) -> Option<NativeLayout> {
     if NATIVE_FILE_HOSTS.contains(&host.as_str()) && url.path().ends_with(".jar") {
         return Some(NativeLayout::Jar);
     }
-    None
+    if host == "rubygems.org" && url.path().ends_with(".gem") {
+        return Some(NativeLayout::RubyGem);
+    }
+    if (host == "repo.hex.pm" || host == "hex.pm") && url.path().ends_with(".tar") {
+        return Some(NativeLayout::HexPackage);
+    }
+    return None;
 }
 
 /// Add a direct native-registry artifact to the immutable store when its URL
@@ -114,6 +125,17 @@ pub(crate) fn add_if_native(
             let filename = format!("{}-{}.jar", version.name, version.version);
             fs::copy(archive, package_root.join(filename))?;
         }
+        NativeLayout::RubyGem => {
+            extract_nested_tar_gzip(archive, "data.tar.gz", temporary.path(), &package_root)?;
+        }
+        NativeLayout::HexPackage => {
+            extract_nested_tar_gzip(
+                archive,
+                "contents.tar.gz",
+                temporary.path(),
+                &package_root,
+            )?;
+        }
     }
 
     if !package_root.is_dir() {
@@ -136,7 +158,57 @@ pub(crate) fn add_if_native(
             });
         }
     }
-    Ok(Some(store.pkg_dir(&version.sha256)))
+    return Ok(Some(store.pkg_dir(&version.sha256)));
+}
+
+/// RubyGems and Hex both use an uncompressed tar envelope around a single
+/// gzip-compressed tar payload. Read only the named regular-file member, bound
+/// it by its declared size, then hand the nested archive to the hardened Zed
+/// extractor before normalizing its roots.
+fn extract_nested_tar_gzip(
+    archive: &Path,
+    member: &str,
+    temporary_root: &Path,
+    package_root: &Path,
+) -> Result<()> {
+    let file = fs::File::open(archive)?;
+    let mut outer = tar::Archive::new(file);
+    let nested = temporary_root.join("native-payload.tar.gz");
+    let mut found = false;
+
+    for entry in outer.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_path_buf();
+        if path != Path::new(member) {
+            continue;
+        }
+        if !entry.header().entry_type().is_file() {
+            bail!("native package member `{member}` is not a regular file");
+        }
+        let declared = entry.header().size()?;
+        let mut limited = (&mut entry).take(declared.saturating_add(1));
+        let mut output = fs::File::create(&nested)?;
+        let copied = std::io::copy(&mut limited, &mut output)?;
+        if copied != declared {
+            bail!(
+                "native package member `{member}` size mismatch: expected {declared}, got {copied}"
+            );
+        }
+        found = true;
+        break;
+    }
+
+    if !found {
+        bail!("native package is missing required payload `{member}`");
+    }
+
+    let unpacked = temporary_root.join("unpacked");
+    fs::create_dir_all(&unpacked)?;
+    extract_archive_for_update(&nested, &unpacked)
+        .with_context(|| format!("extracting nested native payload `{member}`"))?;
+    fs::remove_file(&nested)?;
+    normalize_extracted_tree(&unpacked, package_root)?;
+    return Ok(());
 }
 
 /// Strip one conventional archive root when there is exactly one top-level
@@ -146,8 +218,7 @@ pub(crate) fn add_if_native(
 /// packages intact. The hardened extractor has already rejected traversal,
 /// links, special files, entry-count abuse, and decompression bombs.
 fn normalize_extracted_tree(unpacked: &Path, package_root: &Path) -> Result<()> {
-    let mut entries = fs::read_dir(unpacked)?
-        .collect::<std::io::Result<Vec<_>>>()?;
+    let mut entries = fs::read_dir(unpacked)?.collect::<std::io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     if entries.is_empty() {
         bail!("native artifact archive is empty");
@@ -164,7 +235,7 @@ fn normalize_extracted_tree(unpacked: &Path, package_root: &Path) -> Result<()> 
         fs::rename(entry.path(), package_root.join(entry.file_name()))?;
     }
     fs::remove_dir(unpacked)?;
-    Ok(())
+    return Ok(());
 }
 
 #[cfg(test)]
@@ -179,7 +250,7 @@ mod tests {
     use super::*;
 
     fn native_version(url: &str, sha256: String) -> VersionMetadata {
-        VersionMetadata {
+        return VersionMetadata {
             org: "npm".to_string(),
             name: "left-pad".to_string(),
             version: "1.3.0".to_string(),
@@ -193,7 +264,7 @@ mod tests {
             yanked: false,
             mirrors: Vec::new(),
             signatures: Vec::new(),
-        }
+        };
     }
 
     fn npm_style_archive(path: &Path) {
@@ -208,6 +279,32 @@ mod tests {
         tar.append_data(&mut header, "package/index.js", &bytes[..])
             .unwrap();
         tar.finish().unwrap();
+    }
+
+    fn nested_package(path: &Path, member: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let payload = temp.path().join("payload.tar.gz");
+        {
+            let file = fs::File::create(&payload).unwrap();
+            let encoder = GzEncoder::new(file, Compression::default());
+            let mut inner = Builder::new(encoder);
+            let bytes = b"native\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            inner.append_data(&mut header, "lib/source.txt", &bytes[..]).unwrap();
+            inner.finish().unwrap();
+        }
+        let payload_bytes = fs::read(&payload).unwrap();
+        let file = fs::File::create(path).unwrap();
+        let mut outer = Builder::new(file);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        outer.append_data(&mut header, member, &payload_bytes[..]).unwrap();
+        outer.finish().unwrap();
     }
 
     #[test]
@@ -268,5 +365,41 @@ mod tests {
             .expect("NuGet is an admitted native source");
         assert!(package.join("lib/a.dll").is_file());
         assert!(package.join("package.nuspec").is_file());
+    }
+
+    #[test]
+    fn rubygem_nested_data_archive_is_normalized() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("demo.gem");
+        nested_package(&archive, "data.tar.gz");
+        let (sha256, _) = sha256_file(&archive).unwrap();
+        let store = Store::new(&temp.path().join("home"));
+        let version = native_version(
+            "https://rubygems.org/gems/demo-1.3.0.gem",
+            sha256.clone(),
+        );
+
+        let package = add_if_native(&store, &archive, &version)
+            .unwrap()
+            .expect("RubyGems is an admitted native source");
+        assert!(package.join("source.txt").is_file() || package.join("lib/source.txt").is_file());
+    }
+
+    #[test]
+    fn hex_nested_contents_archive_is_normalized() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("demo.tar");
+        nested_package(&archive, "contents.tar.gz");
+        let (sha256, _) = sha256_file(&archive).unwrap();
+        let store = Store::new(&temp.path().join("home"));
+        let version = native_version(
+            "https://repo.hex.pm/tarballs/demo-1.3.0.tar",
+            sha256.clone(),
+        );
+
+        let package = add_if_native(&store, &archive, &version)
+            .unwrap()
+            .expect("Hex is an admitted native source");
+        assert!(package.join("source.txt").is_file() || package.join("lib/source.txt").is_file());
     }
 }
