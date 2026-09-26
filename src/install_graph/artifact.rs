@@ -19,7 +19,7 @@ pub(super) fn worker_loop(
             let registry = registry
                 .as_deref()
                 .context("recursive install worker has no registry")?;
-            prefetch_one(registry, &store, task)
+            return prefetch_one(registry, &store, task);
         });
         if results.send(message).is_err() {
             return;
@@ -42,14 +42,14 @@ where
                 .copied()
                 .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
                 .unwrap_or("non-string panic payload");
-            Err(anyhow::anyhow!(
+            return Err(anyhow::anyhow!(
                 "recursive install worker panicked while processing {} (sequence {}): {}",
                 key,
                 sequence,
                 detail
-            ))
+            ));
         });
-    FetchMessage { sequence, result }
+    return FetchMessage { sequence, result };
 }
 
 pub(super) fn prefetch_one(
@@ -84,10 +84,10 @@ pub(super) fn prefetch_one(
         // hide a malformed or identity-mismatched manifest when one is present.
         BTreeMap::new()
     };
-    Ok(FetchResult {
+    return Ok(FetchResult {
         dependencies,
         downloaded,
-    })
+    });
 }
 
 /// Acquire one immutable artifact through the shared cache/store path.
@@ -118,22 +118,39 @@ pub(crate) fn ensure_artifact(
         downloaded = true;
     }
 
-    match store.add_artifact(&cached, &version.sha256) {
-        Ok(package_dir) => Ok((package_dir, downloaded)),
+    match add_to_store(store, &cached, version) {
+        Ok(package_dir) => {
+            return Ok((package_dir, downloaded));
+        }
         Err(first_error) if !downloaded => {
             // A killed legacy client may have left a partial cache file. The
             // per-artifact lock makes removal and replacement safe.
             let _ = fs::remove_file(&cached);
             download_atomic(registry, version, &cached)?;
-            store
-                .add_artifact(&cached, &version.sha256)
+            return add_to_store(store, &cached, version)
                 .with_context(|| {
                     format!("cached artifact was invalid ({first_error:#}); redownload also failed")
                 })
-                .map(|package_dir| (package_dir, true))
+                .map(|package_dir| (package_dir, true));
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            return Err(error);
+        }
     }
+}
+
+/// Preserve the strict Zed `pkg/` archive contract for ordinary registry
+/// objects, while allowing explicitly admitted native-registry artifacts to
+/// normalize their extracted tree without changing the upstream digest.
+fn add_to_store(
+    store: &Store,
+    cached: &Path,
+    version: &VersionMetadata,
+) -> Result<PathBuf> {
+    if let Some(package_dir) = crate::native_artifact::add_if_native(store, cached, version)? {
+        return Ok(package_dir);
+    }
+    return store.add_artifact(cached, &version.sha256);
 }
 
 fn download_atomic(
@@ -164,19 +181,22 @@ fn download_atomic(
         fs::remove_file(cached)?;
     }
     match fs::rename(&staged, cached) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            return Ok(());
+        }
         Err(error) if cached.is_file() => {
             let (cached_sha256, _) = sha256_file(cached)?;
             if cached_sha256 == version.sha256 {
-                Ok(())
-            } else {
-                Err(error).with_context(|| {
-                    format!("publishing downloaded artifact to {}", cached.display())
-                })
+                return Ok(());
             }
+            return Err(error).with_context(|| {
+                format!("publishing downloaded artifact to {}", cached.display())
+            });
         }
-        Err(error) => Err(error)
-            .with_context(|| format!("publishing downloaded artifact to {}", cached.display())),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("publishing downloaded artifact to {}", cached.display()));
+        }
     }
 }
 
@@ -184,11 +204,13 @@ pub(super) fn split_key(key: &str) -> Result<(String, String)> {
     let mut parts = key.splitn(2, '/');
     match (parts.next(), parts.next()) {
         (Some(org), Some(name)) if is_slug(org) && is_slug(name) => {
-            Ok((org.to_string(), name.to_string()))
+            return Ok((org.to_string(), name.to_string()));
         }
-        _ => bail!(
-            "invalid package spec `{key}` (expected slug/slug without path traversal or extra segments)"
-        ),
+        _ => {
+            bail!(
+                "invalid package spec `{key}` (expected slug/slug without path traversal or extra segments)"
+            );
+        }
     }
 }
 
@@ -217,5 +239,5 @@ pub(super) fn validate_version_identity(
             version.version
         );
     }
-    Ok(())
+    return Ok(());
 }
