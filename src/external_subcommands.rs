@@ -18,11 +18,12 @@ const EXTERNAL_PREFIX: &str = "zed-";
 const GITOPS_EXTERNAL_COMMAND: &str = "gitops";
 const HEX_PM_EXTERNAL_COMMAND: &str = "hex.pm";
 const EXTERNAL_COMMAND_ENV: &str = "ZED_EXTERNAL_SUBCOMMAND";
+const REGISTRY_BEARER_ENV: &str = "ZED_PKG_TOKEN";
+const FORBIDDEN_EXTERNAL_ROOT_OPTIONS: &[&str] = &["--token"];
 
 const ROOT_VALUE_OPTIONS: &[(&str, &str)] = &[
     ("--registry", "ZED_PKG_REGISTRY"),
     ("--home", "ZED_PKG_HOME"),
-    ("--token", "ZED_PKG_TOKEN"),
     ("--auth-url", "ZED_PKG_AUTH_URL"),
     ("--supabase-url", "ZED_PKG_SUPABASE_URL"),
     ("--supabase-key", "ZED_PKG_SUPABASE_KEY"),
@@ -154,6 +155,10 @@ fn external_route(args: &[OsString]) -> Option<ExternalRoute> {
             return None;
         }
 
+        if is_forbidden_external_root_option(token) {
+            return None;
+        }
+
         if let Some((key, inline)) = root_value_option(token) {
             let (value, consumed) = match inline {
                 Some(value) if !value.is_empty() => (OsString::from(value), 1),
@@ -241,6 +246,10 @@ fn extract_root_options(args: &[OsString]) -> Option<ParsedExternalArguments> {
             break;
         }
 
+        if is_forbidden_external_root_option(token) {
+            return None;
+        }
+
         if let Some((key, inline)) = root_value_option(token) {
             let (value, consumed) = match inline {
                 Some(value) if !value.is_empty() => (OsString::from(value), 1),
@@ -278,6 +287,15 @@ fn is_root_boolean_spelling(token: &str) -> bool {
     ROOT_BOOLEAN_OPTIONS.iter().any(|(option, _)| {
         token == *option
             || token == format!("--no-{}", option.trim_start_matches('-'))
+            || token
+                .strip_prefix(option)
+                .is_some_and(|tail| tail.starts_with('='))
+    })
+}
+
+fn is_forbidden_external_root_option(token: &str) -> bool {
+    FORBIDDEN_EXTERNAL_ROOT_OPTIONS.iter().any(|option| {
+        token == *option
             || token
                 .strip_prefix(option)
                 .is_some_and(|tail| tail.starts_with('='))
@@ -426,6 +444,11 @@ fn is_executable_file(path: &Path) -> bool {
 fn run_external(executable: &Path, route: &ExternalRoute) -> Result<i32> {
     let mut command = ProcessCommand::new(executable);
     command.args(&route.arguments);
+    // External commands are a separate execution boundary. Do not give them
+    // the registry bearer merely because the parent Zed process received one.
+    // Future signed modules must request narrowly delegated capabilities
+    // explicitly rather than inheriting this credential wholesale.
+    command.env_remove(REGISTRY_BEARER_ENV);
     for (key, value) in &route.environment {
         command.env(key, value);
     }
@@ -522,30 +545,20 @@ mod tests {
     }
 
     #[test]
-    fn root_options_after_plugin_are_lifted_until_double_dash() {
-        let route = external_route(&os_args(&[
-            "zed",
-            "gitops",
-            "validate",
-            "--token",
-            "fixture-value",
-            "--offline",
-            "--",
-            "--home",
-            "child-owned-value",
-        ]))
-        .expect("external route");
-        assert_eq!(
-            route.arguments,
-            os_args(&["validate", "--offline", "--", "--home", "child-owned-value"])
-        );
-        assert_eq!(
-            route.environment,
-            vec![(
-                OsString::from("ZED_PKG_TOKEN"),
-                OsString::from("fixture-value")
-            )]
-        );
+    fn registry_bearer_options_fail_closed_at_the_external_boundary() {
+        for args in [
+            os_args(&["zed", "--token", "fixture-value", "gitops", "validate"]),
+            os_args(&["zed", "gitops", "validate", "--token", "fixture-value"]),
+            os_args(&["zed", "gitops", "validate", "--token=fixture-value"]),
+        ] {
+            assert!(
+                external_route(&args).is_none(),
+                "secret-bearing root option must not be lifted into an external command"
+            );
+        }
+        assert!(is_forbidden_external_root_option("--token"));
+        assert!(is_forbidden_external_root_option("--token=fixture-value"));
+        assert!(!is_forbidden_external_root_option("--home"));
     }
 
     #[test]
