@@ -185,7 +185,7 @@ the legacy version route by default or the additive target-qualified route with
 | `zed logout` / `zed signout` | Revoke and remove the session (`zed auth logout` / `zed auth signout` are identical) |
 | `zed auth status` | Show the current account, authorities, and JWT expiries |
 | `zed auth refresh` | Rotate shared-auth and Supabase refresh tokens now |
-| `zed auth token` | Print the preferred current access JWT for scripting |
+| `zed auth token` | Print the current short-lived `aud=zed-pkg` delegated registry JWT for scripting |
 | `zed auth import-token` | Save a legacy opaque registry token to `credentials.toml` |
 | `zed org claim <slug>` | Claim a namespace |
 | `zed org audit <slug> [--limit N]` | Read the org's audit log — who changed published state, newest first (server registries only; needs an `owner` token) |
@@ -579,17 +579,31 @@ air-gapped mirrors, and the default `zed r2g` mode all use it.
 `zed login` and `zed auth login` are the same operation. With
 `ZED_PKG_SUPABASE_URL` and the public `ZED_PKG_SUPABASE_KEY` configured, zed
 uses Supabase Auth for the credential exchange and then exchanges that provider
-JWT at shared-auth. It retains both independently refreshable sessions:
-shared-auth is preferred, while the Supabase JWT remains available as the
-dual-auth fallback. Without Supabase configuration, login and registration use
-shared-auth directly.
+JWT at Shared Auth. It retains both independently refreshable identity sessions:
+Shared Auth is preferred for canonical identity, while the Supabase JWT remains
+available as the configured provider authority during an outage. Without
+Supabase configuration, login and registration use Shared Auth directly.
+
+Identity credentials and registry credentials are deliberately separate. Before
+a human-authenticated session is used against the Zed registry, the CLI asks
+Shared Auth for a short-lived delegated token bound to `aud=zed-pkg`,
+`azp=zpkg-cli`, and `scope=zpkg:registry`. Raw Shared Auth and Supabase
+identity JWTs are never sent to the registry as product credentials. Shared Auth
+proves the user and delegation lineage; the Zed registry still owns package,
+organization, visibility, and operation authorization. If delegation is
+temporarily unavailable, login may still preserve the valid identity session,
+but registry operations do not widen that identity into product access. An
+explicit `ZED_PKG_TOKEN` or an imported legacy Zed registry token remains a
+separate compatibility credential.
 
 Passwords are read from a hidden terminal prompt and never stored. For
 non-interactive use, pass `--password-stdin` or inject
-`ZED_PKG_AUTH_PASSWORD`. Access and rotating refresh tokens are stored in
-`~/.zed-pkg/auth/sessions.toml`; the directory is mode `0700` and the file is
-mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
-always removes the local session.
+`ZED_PKG_AUTH_PASSWORD`. Access and rotating refresh tokens plus the
+short-lived Zed delegation are stored in `~/.zed-pkg/auth/sessions.toml`; the
+directory is mode `0700` and the file is mode `0600` on Unix. `zed logout`
+attempts revocation at both identity authorities and always removes the local
+session. Delegated Zed tokens carry no refresh token and expire with the bounded
+Shared Auth policy.
 
 ## Containers & OCI
 
