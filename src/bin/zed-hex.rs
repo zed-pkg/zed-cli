@@ -1,5 +1,5 @@
-use std::fs::{self, File};
-use std::io::Cursor;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,6 +15,11 @@ use zed_interfaces::registry::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_JSON_BODY_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024;
+const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -85,6 +90,7 @@ enum PackageCommand {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    validate_registry_url(&cli.registry)?;
     let client = Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -160,6 +166,7 @@ fn info(
 
     let (org, name) = package_coordinate(package, organization)?;
     if let Some(version) = version {
+        validate_path_segment("version", version)?;
         let metadata: VersionMetadata =
             get_json(client, registry, &version_path(&org, &name, version))?;
         print_structured(&metadata, json)
@@ -177,6 +184,9 @@ fn search(
     organization: Option<&str>,
     limit: u32,
 ) -> Result<()> {
+    if let Some(org) = organization {
+        validate_path_segment("organization", org)?;
+    }
     let url = absolute_url(registry, &search_path());
     let limit = limit.to_string();
     let response = client
@@ -212,10 +222,11 @@ fn fetch_package(
                 .context("package has no visible release to fetch")?
         }
     };
+    validate_path_segment("version", &version)?;
     let metadata: VersionMetadata =
         get_json(client, registry, &version_path(&org, &name, &version))?;
     let archive_url = absolute_url(registry, &metadata.download_url);
-    let archive = get_bytes(client, &archive_url)?;
+    let archive = get_bytes(client, &archive_url, metadata.size)?;
     verify_artifact(&metadata, &archive)?;
 
     let format = metadata.format.to_string();
@@ -226,8 +237,7 @@ fn fetch_package(
     if unpack {
         unpack_artifact(&archive, &format, &destination)?;
     } else {
-        fs::write(&destination, &archive)
-            .with_context(|| format!("write {}", destination.display()))?;
+        write_new_file(&destination, &archive)?;
     }
 
     let receipt = serde_json::json!({
@@ -245,10 +255,13 @@ fn fetch_package(
 
 fn package_coordinate(package: &str, organization: Option<&str>) -> Result<(String, String)> {
     if let Some((org, name)) = package.split_once('/') {
-        if org.is_empty() || name.is_empty() || name.contains('/') {
+        if name.contains('/') {
             bail!("package coordinate must be ORG/NAME");
         }
+        validate_path_segment("organization", org)?;
+        validate_path_segment("package name", name)?;
         if let Some(requested_org) = organization {
+            validate_path_segment("organization", requested_org)?;
             if requested_org != org {
                 bail!(
                     "package coordinate organization '{org}' conflicts with --organization '{requested_org}'"
@@ -259,10 +272,35 @@ fn package_coordinate(package: &str, organization: Option<&str>) -> Result<(Stri
     }
     let org = organization
         .context("Zed package names are namespaced; use ORG/NAME or pass --organization ORG")?;
-    if package.is_empty() || org.is_empty() {
-        bail!("organization and package name must not be empty");
-    }
+    validate_path_segment("organization", org)?;
+    validate_path_segment("package name", package)?;
     Ok((org.to_string(), package.to_string()))
+}
+
+fn validate_path_segment(label: &str, value: &str) -> Result<()> {
+    if value.is_empty() || value == "." || value == ".." {
+        bail!("{label} must be a non-empty URL path segment");
+    }
+    if value.chars().any(|ch| {
+        ch.is_control() || ch.is_whitespace() || matches!(ch, '/' | '\\' | '?' | '#' | '%')
+    }) {
+        bail!("{label} contains characters that are not safe in a registry path segment");
+    }
+    Ok(())
+}
+
+fn validate_registry_url(registry: &str) -> Result<()> {
+    let url = reqwest::Url::parse(registry).context("registry must be an absolute URL")?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("registry URL must use http or https");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("registry URL must not embed credentials");
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("registry URL must not contain a query string or fragment");
+    }
+    Ok(())
 }
 
 fn get_json<T: DeserializeOwned>(client: &Client, registry: &str, path: &str) -> Result<T> {
@@ -276,29 +314,70 @@ fn get_json<T: DeserializeOwned>(client: &Client, registry: &str, path: &str) ->
 
 fn decode_json<T: DeserializeOwned>(response: Response, url: &str) -> Result<T> {
     let status = response.status();
-    let body = response
-        .text()
+    let limit = if status.is_success() {
+        MAX_JSON_BODY_BYTES
+    } else {
+        MAX_ERROR_BODY_BYTES
+    };
+    let body = read_response_limited(response, limit, "HTTP response body")
         .with_context(|| format!("read response body from {url}"))?;
     if !status.is_success() {
+        let body = String::from_utf8_lossy(&body);
         bail!("GET {url} returned {status}: {body}");
     }
-    serde_json::from_str(&body).with_context(|| format!("decode JSON from {url}"))
+    serde_json::from_slice(&body).with_context(|| format!("decode JSON from {url}"))
 }
 
-fn get_bytes(client: &Client, url: &str) -> Result<Vec<u8>> {
+fn get_bytes(client: &Client, url: &str, expected_size: u64) -> Result<Vec<u8>> {
+    if expected_size > MAX_ARTIFACT_BYTES {
+        bail!(
+            "artifact is too large: registry declared {expected_size} bytes; safety limit is {MAX_ARTIFACT_BYTES}"
+        );
+    }
     let response = client
         .get(url)
         .send()
         .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().unwrap_or_default();
+        let body = match read_response_limited(
+            response,
+            MAX_ERROR_BODY_BYTES,
+            "error response body",
+        ) {
+            Ok(body) => body,
+            Err(error) => format!("<unable to read bounded error body: {error}>").into_bytes(),
+        };
+        let body = String::from_utf8_lossy(&body);
         bail!("GET {url} returned {status}: {body}");
     }
-    Ok(response
-        .bytes()
-        .with_context(|| format!("read artifact from {url}"))?
-        .to_vec())
+    if let Some(content_length) = response.content_length() {
+        if content_length != expected_size {
+            bail!(
+                "artifact Content-Length mismatch: registry declared {expected_size}, server sent {content_length}"
+            );
+        }
+    }
+    read_response_limited(response, expected_size, "artifact")
+        .with_context(|| format!("read artifact from {url}"))
+}
+
+fn read_response_limited(mut response: Response, limit: u64, label: &str) -> Result<Vec<u8>> {
+    if let Some(content_length) = response.content_length() {
+        if content_length > limit {
+            bail!("{label} exceeds safety limit of {limit} bytes");
+        }
+    }
+    let mut body = Vec::new();
+    response
+        .by_ref()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut body)
+        .with_context(|| format!("read {label}"))?;
+    if body.len() as u64 > limit {
+        bail!("{label} exceeds safety limit of {limit} bytes");
+    }
+    Ok(body)
 }
 
 fn verify_artifact(metadata: &VersionMetadata, archive: &[u8]) -> Result<()> {
@@ -330,20 +409,69 @@ fn default_destination(name: &str, version: &str, format: &str, unpack: bool) ->
     PathBuf::from(format!("{name}-{version}.{suffix}"))
 }
 
+fn write_new_file(destination: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .with_context(|| {
+            format!(
+                "create {}; refusing to overwrite an existing path",
+                destination.display()
+            )
+        })?;
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(destination);
+        return Err(error).with_context(|| format!("write {}", destination.display()));
+    }
+    Ok(())
+}
+
 fn unpack_artifact(bytes: &[u8], format: &str, destination: &Path) -> Result<()> {
-    fs::create_dir_all(destination).with_context(|| format!("create {}", destination.display()))?;
-    match format {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => bail!(
+            "refusing to unpack into existing path {}; choose a new directory",
+            destination.display()
+        ),
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error).with_context(|| format!("inspect {}", destination.display()));
+        }
+        Err(_) => {}
+    }
+    fs::create_dir(destination).with_context(|| format!("create {}", destination.display()))?;
+    let result = match format {
         "tar.gz" => unpack_tar_gz(bytes, destination),
         "zip" => unpack_zip(bytes, destination),
         other => bail!("unsupported artifact format for --unpack: {other}"),
+    };
+    if result.is_err() {
+        let _ = fs::remove_dir_all(destination);
     }
+    result
 }
 
 fn unpack_tar_gz(bytes: &[u8], destination: &Path) -> Result<()> {
     let decoder = flate2::read::GzDecoder::new(Cursor::new(bytes));
     let mut archive = tar::Archive::new(decoder);
+    let mut entries_seen = 0usize;
+    let mut unpacked_bytes = 0u64;
     for entry in archive.entries().context("read tar entries")? {
+        entries_seen = entries_seen.saturating_add(1);
+        if entries_seen > MAX_ARCHIVE_ENTRIES {
+            bail!("tar archive contains too many entries");
+        }
         let mut entry = entry.context("read tar entry")?;
+        let entry_type = entry.header().entry_type();
+        if !(entry_type.is_file() || entry_type.is_dir()) {
+            bail!("tar archive contains a link or unsupported special entry");
+        }
+        unpacked_bytes = unpacked_bytes
+            .checked_add(entry.size())
+            .context("tar unpacked-size overflow")?;
+        if unpacked_bytes > MAX_UNPACKED_BYTES {
+            bail!("tar archive expands beyond the unpacked-size safety limit");
+        }
         if !entry
             .unpack_in(destination)
             .with_context(|| format!("unpack tar entry into {}", destination.display()))?
@@ -356,8 +484,18 @@ fn unpack_tar_gz(bytes: &[u8], destination: &Path) -> Result<()> {
 
 fn unpack_zip(bytes: &[u8], destination: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).context("open zip archive")?;
+    if archive.len() > MAX_ARCHIVE_ENTRIES {
+        bail!("zip archive contains too many entries");
+    }
+    let mut unpacked_bytes = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).context("read zip entry")?;
+        unpacked_bytes = unpacked_bytes
+            .checked_add(entry.size())
+            .context("zip unpacked-size overflow")?;
+        if unpacked_bytes > MAX_UNPACKED_BYTES {
+            bail!("zip archive expands beyond the unpacked-size safety limit");
+        }
         let relative = entry
             .enclosed_name()
             .context("zip entry attempted to escape extraction directory")?;
@@ -432,6 +570,18 @@ fn human_value(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_path(label: &str) -> Result<PathBuf> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before UNIX_EPOCH")?
+            .as_nanos();
+        Ok(std::env::temp_dir().join(format!(
+            "zed-hex-{label}-{}-{nonce}",
+            std::process::id()
+        )))
+    }
 
     #[test]
     fn package_coordinates_support_hex_style_bare_names_with_org_flag() {
@@ -445,6 +595,31 @@ mod tests {
         );
         assert!(package_coordinate("plug", None).is_err());
         assert!(package_coordinate("hexpm/plug", Some("other")).is_err());
+    }
+
+    #[test]
+    fn package_coordinates_reject_registry_path_injection() {
+        for coordinate in [
+            "hexpm/plug?admin=true",
+            "hexpm/plug#fragment",
+            "hexpm/%2e%2e",
+            "hexpm\\plug",
+        ] {
+            assert!(
+                package_coordinate(coordinate, None).is_err(),
+                "{coordinate}"
+            );
+        }
+        assert!(package_coordinate("plug", Some("../hexpm")).is_err());
+    }
+
+    #[test]
+    fn registry_url_rejects_non_http_credentials_and_fragments() {
+        assert!(validate_registry_url("https://zpkg.net").is_ok());
+        assert!(validate_registry_url("http://localhost:8080/prefix").is_ok());
+        assert!(validate_registry_url("file:///tmp/registry").is_err());
+        assert!(validate_registry_url("https://user:pass@zpkg.net").is_err());
+        assert!(validate_registry_url("https://zpkg.net/#frag").is_err());
     }
 
     #[test]
@@ -469,5 +644,125 @@ mod tests {
             default_destination("plug", "1.0.0", "zip", false),
             PathBuf::from("plug-1.0.0.zip")
         );
+    }
+
+    #[test]
+    fn archive_write_refuses_to_clobber_existing_path() -> Result<()> {
+        let path = unique_temp_path("existing-archive")?;
+        fs::write(&path, b"keep me").context("seed existing archive")?;
+        let error = write_new_file(&path, b"replacement")
+            .err()
+            .context("existing archive should not be overwritten")?;
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(fs::read(&path).context("read preserved archive")?, b"keep me");
+        let _ = fs::remove_file(path);
+        Ok(())
+    }
+
+    fn tar_gz(entries: &[(&str, &[u8], tar::EntryType)]) -> Result<Vec<u8>> {
+        use flate2::{Compression, write::GzEncoder};
+
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (path, bytes, entry_type) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(*entry_type);
+            header.set_mode(0o644);
+            header.set_size(bytes.len() as u64);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, *path, Cursor::new(*bytes))
+                .with_context(|| format!("append tar fixture {path}"))?;
+        }
+        let encoder = builder.into_inner().context("finish tar fixture")?;
+        encoder.finish().context("finish gzip fixture")
+    }
+
+    #[test]
+    fn tar_unpack_rejects_parent_traversal_and_removes_partial_destination() -> Result<()> {
+        let archive = tar_gz(&[
+            ("ok.txt", b"ok", tar::EntryType::Regular),
+            ("../escape.txt", b"no", tar::EntryType::Regular),
+        ])?;
+        let destination = unique_temp_path("tar-traversal")?;
+        let error = unpack_artifact(&archive, "tar.gz", &destination)
+            .err()
+            .context("parent traversal should be rejected")?;
+        assert!(
+            error.to_string().contains("escape extraction directory")
+                || error.to_string().contains("unpack tar entry")
+        );
+        assert!(!destination.exists(), "failed extraction must be cleaned up");
+        assert!(!destination.with_file_name("escape.txt").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn tar_unpack_rejects_symlink_entries_and_cleans_destination() -> Result<()> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+
+        let mut regular = tar::Header::new_gnu();
+        regular.set_entry_type(tar::EntryType::Regular);
+        regular.set_mode(0o644);
+        regular.set_size(2);
+        regular.set_cksum();
+        builder
+            .append_data(&mut regular, "ok.txt", Cursor::new(b"ok"))
+            .context("append regular tar fixture")?;
+
+        let mut link = tar::Header::new_gnu();
+        link.set_entry_type(tar::EntryType::Symlink);
+        link.set_mode(0o777);
+        link.set_size(0);
+        link.set_link_name("/etc/passwd")
+            .context("set symlink fixture target")?;
+        link.set_cksum();
+        builder
+            .append_data(&mut link, "link", Cursor::new(Vec::<u8>::new()))
+            .context("append symlink tar fixture")?;
+
+        let encoder = builder.into_inner().context("finish tar fixture")?;
+        let archive = encoder.finish().context("finish gzip fixture")?;
+        let destination = unique_temp_path("tar-symlink")?;
+        let error = unpack_artifact(&archive, "tar.gz", &destination)
+            .err()
+            .context("symlink tar entry should be rejected")?;
+        assert!(error.to_string().contains("link or unsupported special entry"));
+        assert!(!destination.exists(), "failed extraction must be cleaned up");
+        Ok(())
+    }
+
+    #[test]
+    fn declared_artifact_size_limit_rejects_before_download() {
+        assert!(MAX_ARTIFACT_BYTES < u64::MAX);
+        let oversized = MAX_ARTIFACT_BYTES + 1;
+        assert!(oversized > MAX_ARTIFACT_BYTES);
+    }
+
+    #[test]
+    fn bounded_stream_reader_detects_one_byte_overflow() -> Result<()> {
+        let bytes = vec![7u8; 17];
+        let mut reader = Cursor::new(bytes);
+        let mut body = Vec::new();
+        std::io::Read::by_ref(&mut reader)
+            .take(17)
+            .read_to_end(&mut body)
+            .context("read bounded stream fixture")?;
+        assert_eq!(body.len(), 17);
+        assert!(body.len() as u64 > 16);
+        Ok(())
+    }
+
+    #[test]
+    fn unpack_refuses_preexisting_destination_even_if_it_is_empty() -> Result<()> {
+        let path = unique_temp_path("existing-dir")?;
+        fs::create_dir(&path).context("create existing destination fixture")?;
+        let error = unpack_artifact(&[], "tar.gz", &path)
+            .err()
+            .context("preexisting destination should be rejected")?;
+        assert!(error.to_string().contains("existing path"));
+        let _ = fs::remove_dir(path);
+        Ok(())
     }
 }
