@@ -585,7 +585,6 @@ fn sync_git_submodules(project: &Path, sources: &[ResolvedSource]) -> Result<usi
     }
 
     for source in &entries {
-        let child = project.join(&source.path);
         let has_gitlink = gitlink_exists(project, &source.path)?;
         if !has_gitlink {
             let name = format!("zed:{}", source.name);
@@ -888,7 +887,7 @@ pub fn sync(project: &Path) -> Result<SyncReport> {
 pub fn sync_for_install(project: &Path, frozen: bool) -> Result<SyncReport> {
     let sources: Vec<_> = resolve(project)?
         .into_iter()
-        .filter(|source| source.role == "workspace")
+        .filter(|source| source.role == SourceCompositionRole::Workspace)
         .collect();
     if !frozen {
         return sync_sources(project, &sources);
@@ -920,8 +919,9 @@ mod tests {
     use anyhow::Result;
 
     use super::{
-        Projection, is_allowed_repo_url, paths_overlap, render_gitmodules, resolve, validate_name,
-        validate_safe_relative,
+        Projection, ResolvedSource, SourceCompositionRole, Vcs, clone_checkout,
+        is_allowed_repo_url, paths_overlap, render_gitmodules, resolve, run, sync_checkout,
+        validate_name, validate_safe_relative,
     };
 
     fn manifest(source_block: &str) -> String {
