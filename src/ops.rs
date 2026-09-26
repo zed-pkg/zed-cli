@@ -2833,6 +2833,7 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
         package: PackageSection {
             org: "zed-build".to_string(),
             name: "staging".to_string(),
+            kind: None,
             version: "0.0.0".to_string(),
             version_scheme: version::VersionScheme::Semver,
             description: None,
