@@ -24,6 +24,9 @@ use crate::config::Config;
 
 const REFRESH_SKEW_SECS: u64 = 60;
 const MAX_AUTH_RESPONSE_BYTES: u64 = 1024 * 1024;
+const ZPKG_CLI_CLIENT_ID: &str = "zpkg-cli";
+const ZPKG_REGISTRY_AUDIENCE: &str = "zed-pkg";
+const ZPKG_PACKAGES_READ_SCOPE: &str = "zpkg:packages:read";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TokenPair {
@@ -58,6 +61,10 @@ pub struct AuthSession {
     pub shared_auth: Option<TokenPair>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supabase: Option<TokenPair>,
+    /// Short-lived Shared Auth delegation for private registry package reads.
+    /// This is never used for publish/yank/org-owner writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zed_registry_read: Option<TokenPair>,
 }
 
 impl AuthSession {
@@ -179,6 +186,18 @@ impl AuthClient {
             &format!("{}/auth/exchange", self.auth_url),
             &serde_json::json!({ "access_token": provider_token }),
             &[("authorization", format!("Bearer {provider_token}"))],
+        )
+    }
+
+    fn shared_delegate_registry_read(&self, base_token: &str) -> Result<SharedAuthResponse> {
+        self.post_json(
+            &format!("{}/auth/delegate", self.auth_url),
+            &serde_json::json!({
+                "client_id": ZPKG_CLI_CLIENT_ID,
+                "audience": ZPKG_REGISTRY_AUDIENCE,
+                "scopes": [ZPKG_PACKAGES_READ_SCOPE],
+            }),
+            &[("authorization", format!("Bearer {base_token}"))],
         )
     }
 
@@ -422,6 +441,12 @@ pub fn status(cfg: &Config) -> Result<()> {
     if let Some(pair) = &session.supabase {
         println!("Supabase JWT expires at {}", pair.expires_at);
     }
+    if let Some(pair) = &session.zed_registry_read {
+        println!(
+            "Zed registry read delegation expires at {}",
+            pair.expires_at
+        );
+    }
     println!("session file: {}", store_path(&cfg.home).display());
     Ok(())
 }
@@ -473,6 +498,58 @@ pub fn resolve_bearer(cfg: &Config) -> Result<Option<String>> {
             refresh_session(&client, session, false)?;
         }
         Ok(session.bearer(unix_now()).map(str::to_owned))
+    })
+}
+
+/**
+ * Resolve the short-lived Shared Auth delegation used for private package reads.
+ *
+ * Identity tokens are deliberately not returned as a fallback. If no cached
+ * delegation is still valid, Shared Auth must be reachable to mint a token
+ * bound to the Zed registry audience, CLI authorized party, and read scope.
+ * Legacy registry publisher/owner tokens remain a separate credential lane.
+ */
+pub fn resolve_registry_read_bearer(cfg: &Config) -> Result<Option<String>> {
+    if !store_path(&cfg.home).exists() {
+        return Ok(None);
+    }
+    with_locked_store(&cfg.home, |store| {
+        let Some(session) = store.sessions.get_mut(&session_key(cfg)) else {
+            return Ok(None);
+        };
+        let now = unix_now();
+        if let Some(pair) = session
+            .zed_registry_read
+            .as_ref()
+            .filter(|pair| pair.usable_at(now))
+        {
+            return Ok(Some(pair.access_token.clone()));
+        }
+
+        let client = AuthClient::new(cfg)?;
+        refresh_session(&client, session, false)?;
+
+        let base_token = session
+            .shared_auth
+            .as_ref()
+            .filter(|pair| pair.usable_at(unix_now()))
+            .map(|pair| pair.access_token.clone())
+            .ok_or_else(|| anyhow!(
+                "private package access requires Shared Auth delegation;                  no usable Shared Auth session is available"
+            ))?;
+
+        let delegated = client
+            .shared_delegate_registry_read(&base_token)
+            .context("requesting Zed private-registry read delegation from Shared Auth")?;
+        let pair = TokenPair {
+            access_token: delegated.access_token,
+            refresh_token: None,
+            expires_at: delegated.expires_at,
+            refresh_expires_at: None,
+        };
+        let token = pair.access_token.clone();
+        session.zed_registry_read = Some(pair);
+        Ok(Some(token))
     })
 }
 
@@ -612,6 +689,7 @@ fn session_from_shared(response: SharedAuthResponse, email: Option<String>) -> A
             refresh_expires_at: response.refresh_expires_at,
         }),
         supabase: None,
+        zed_registry_read: None,
     }
 }
 
@@ -636,6 +714,7 @@ fn session_from_supabase(
         roles: Vec::new(),
         shared_auth: None,
         supabase: Some(pair.clone()),
+        zed_registry_read: None,
     };
     match client.shared_exchange(&pair.access_token) {
         Ok(shared) => {
@@ -953,6 +1032,7 @@ mod tests {
                 expires_at: supabase_expiry,
                 refresh_expires_at: None,
             }),
+            zed_registry_read: None,
         }
     }
 
