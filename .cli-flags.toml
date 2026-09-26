@@ -397,6 +397,12 @@ help = "Install dependencies."
 [commands.overtake]
 help = "Adopt Git submodule packages into .zpkg.toml and .zpkg.lock."
 
+[commands.workspace]
+help = "Synchronize manifest-authoritative VCS source composition."
+
+[commands.workspace.commands.sync]
+help = "Reconcile .zpkg.toml VCS sources into safe working-tree projections."
+
 [commands.uninstall]
 aliases = ["un"]
 help = "Remove materialized dependencies while retaining the lockfile."

@@ -265,6 +265,12 @@ pub enum EnvironmentExportManagerArg {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum WorkspaceCmd {
+    /// Reconcile VCS checkouts and generated Git-submodule projections from .zpkg.toml
+    Sync,
+}
+
+#[derive(Debug, Subcommand)]
 pub enum Cmd {
     /// Validate package manifest and lock metadata without network or filesystem mutation
     Validate {
@@ -306,6 +312,11 @@ pub enum Cmd {
     },
     /// Remove a dependency
     Remove { spec: String },
+    /// Synchronize manifest-authoritative workspace/source composition
+    Workspace {
+        #[command(subcommand)]
+        cmd: WorkspaceCmd,
+    },
     /// Resolve and install dependencies into the selected project
     #[command(alias = "i")]
     Install {
