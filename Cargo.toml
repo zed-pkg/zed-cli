@@ -36,7 +36,7 @@ path = "src/lib.rs"
 [dependencies]
 # One exact contract, behavior, and transport stack is shared with every Rust
 # SDK consumer. zed-cli keeps only CLI-only publication/binary/fallback edges.
-zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c" }
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "aa0f87be13cdf003600b42a6088202898fcbae8d" }
 zed-lib = { git = "https://github.com/zed-pkg/zed-lib-core.git", rev = "4509f19e1d3242226f28f842f550085864582380" }
 # Unified graph admission: the merged client, direct interfaces crate,
 # and direct behavior crate all resolve through one immutable Rust type authority.
