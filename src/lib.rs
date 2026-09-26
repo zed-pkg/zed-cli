@@ -146,6 +146,7 @@ pub mod source_fallback;
 pub mod store;
 pub mod task_cli;
 pub mod task_runtime;
+pub(crate) mod task_scheduler;
 pub mod terminal_context;
 pub mod tool_profile;
 pub mod transaction;
