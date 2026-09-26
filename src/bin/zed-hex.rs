@@ -665,15 +665,49 @@ mod tests {
 
     #[test]
     fn tar_unpack_rejects_parent_traversal_and_removes_partial_destination() {
+        use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+
+        // The tar crate correctly refuses to author traversal paths. Construct
+        // a valid archive first, then mutate the fixed-width tar name field so
+        // extraction sees the hostile bytes an untrusted registry could send.
         let archive = tar_gz(&[
             ("ok.txt", b"ok", tar::EntryType::Regular),
-            ("../escape.txt", b"no", tar::EntryType::Regular),
+            ("aa/escape.txt", b"no", tar::EntryType::Regular),
         ]);
+        let mut raw = Vec::new();
+        GzDecoder::new(Cursor::new(archive))
+            .read_to_end(&mut raw)
+            .unwrap();
+        let needle = b"aa/escape.txt";
+        let replacement = b"../escape.txt";
+        assert_eq!(needle.len(), replacement.len());
+        let offset = raw
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .expect("fixture tar path must exist");
+        raw[offset..offset + replacement.len()].copy_from_slice(replacement);
+
+        // Recompute the checksum for the mutated second tar header.
+        let header_start = (offset / 512) * 512;
+        raw[header_start + 148..header_start + 156].fill(b' ');
+        let checksum: u32 = raw[header_start..header_start + 512]
+            .iter()
+            .map(|byte| u32::from(*byte))
+            .sum();
+        let rendered = format!("{checksum:06o}\0 ");
+        raw[header_start + 148..header_start + 156]
+            .copy_from_slice(rendered.as_bytes());
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&raw).unwrap();
+        let hostile = encoder.finish().unwrap();
+
         let destination = unique_temp_path("tar-traversal");
-        let error = unpack_artifact(&archive, "tar.gz", &destination).unwrap_err();
+        let error = unpack_artifact(&hostile, "tar.gz", &destination).unwrap_err();
         assert!(
             error.to_string().contains("escape extraction directory")
                 || error.to_string().contains("unpack tar entry")
+                || error.to_string().contains("parent directory")
         );
         assert!(!destination.exists(), "failed extraction must be cleaned up");
         assert!(!destination.with_file_name("escape.txt").exists());
