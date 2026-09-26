@@ -153,6 +153,12 @@ impl Config {
             .ok()
             .and_then(|c| c.token_for(&self.registry)))
     }
+
+    /// Resolve the dedicated Shared Auth delegation used only for private
+    /// package reads. Explicit/legacy registry tokens remain the write lane.
+    pub fn resolve_private_read_token(&self) -> Result<Option<String>> {
+        crate::auth::resolve_registry_read_bearer(self)
+    }
 }
 
 /// Operator-configured mirrors, from `<zed home>/mirrors.toml` and
