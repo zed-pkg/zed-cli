@@ -1,0 +1,49 @@
+name: DEN-3282 Cargo lock regeneration
+
+on:
+  push:
+    branches:
+      - alexanderdmills/den-3282-source-composition-authority
+
+permissions:
+  contents: write
+
+concurrency:
+  group: den-3282-lock-regeneration
+  cancel-in-progress: false
+
+jobs:
+  regenerate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: alexanderdmills/den-3282-source-composition-authority
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: "1.98.1"
+      - name: Regenerate exact interface lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update -p zed-interfaces --precise aa0f87be13cdf003600b42a6088202898fcbae8d
+          git diff --exit-code -- Cargo.toml || {
+            echo "::error::cargo update unexpectedly rewrote Cargo.toml"
+            exit 1
+          }
+          git diff -- Cargo.lock
+      - name: Commit Cargo-generated lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Cargo.lock
+          if git diff --cached --quiet; then
+            echo "Cargo.lock already matches the exact interface pin"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: regenerate lock for source composition interfaces"
+          git push origin HEAD:refs/heads/alexanderdmills/den-3282-source-composition-authority
