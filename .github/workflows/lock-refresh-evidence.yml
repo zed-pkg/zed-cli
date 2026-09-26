@@ -1,0 +1,31 @@
+name: lock-refresh-evidence
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/lock-refresh-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Resolve the manifest graph without broad dependency upgrades
+        run: cargo metadata --format-version 1 --no-deps > /dev/null
+      - name: Show the lock-only evidence diff
+        run: git diff -- Cargo.lock
+      - name: Upload Cargo-produced lockfile
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: den-3282-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
