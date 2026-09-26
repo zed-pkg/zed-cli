@@ -1124,6 +1124,24 @@ mod tests {
         assert_eq!(stored.registry_bearer(now), Some("zed-delegated-jwt"));
     }
 
+    #[test]
+    fn legacy_session_without_delegated_registry_token_still_deserializes() {
+        let text = r#"
+provider = "shared-auth"
+shared_user_id = "shared-1"
+roles = ["user"]
+
+[shared_auth]
+access_token = "shared-jwt"
+expires_at = 4102444800
+"#;
+        let session: AuthSession = toml::from_str(text).unwrap();
+        assert_eq!(session.shared_user_id.as_deref(), Some("shared-1"));
+        assert!(session.shared_auth.is_some());
+        assert!(session.zed_registry.is_none());
+        assert!(session.registry_bearer(unix_now()).is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn auth_directory_and_session_file_have_private_modes() {
