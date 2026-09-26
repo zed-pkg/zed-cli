@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$repo_root"
+
+# Keep ordinary commits fast. Boundary edits are special because they change
+# structural/wire authority or the shared behavioral corpus itself.
+if ! git diff --cached --name-only --diff-filter=ACMR -- \
+  contracts conformance artifacts/conformance/evidence \
+  | grep -q .; then
+  exit 0
+fi
+
+[[ -d contracts && ! -L contracts ]] || {
+  echo 'staged boundary change requires a real, non-symlink contracts/ directory' >&2
+  exit 1
+}
+[[ -d conformance && ! -L conformance ]] || {
+  echo 'staged boundary change requires a real, non-symlink conformance/ directory' >&2
+  exit 1
+}
+
+checker=''
+for candidate in \
+  conformance/check.mjs \
+  conformance/check.js \
+  conformance/check.sh \
+  conformance/check.ps1 \
+  conformance/check.cmd \
+  conformance/check; do
+  if [[ -e "$candidate" || -L "$candidate" ]]; then
+    [[ -f "$candidate" && ! -L "$candidate" ]] || {
+      echo "conformance checker must be a regular non-symlink file: $candidate" >&2
+      exit 1
+    }
+    checker="$candidate"
+    break
+  fi
+done
+
+[[ -n "$checker" ]] || {
+  echo 'staged boundary change has no supported conformance checker' >&2
+  exit 1
+}
+
+case "$checker" in
+  *.mjs|*.js)
+    node --check "$checker"
+    node "$checker"
+    ;;
+  *.sh)
+    sh "$checker"
+    ;;
+  *.ps1)
+    if command -v pwsh >/dev/null 2>&1; then
+      pwsh -NoProfile -NonInteractive -File "$checker"
+    else
+      powershell -NoProfile -NonInteractive -File "$checker"
+    fi
+    ;;
+  *.cmd)
+    cmd /D /C "$checker"
+    ;;
+  *)
+    "$checker"
+    ;;
+esac
