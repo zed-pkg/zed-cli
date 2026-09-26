@@ -346,7 +346,9 @@ pub fn login(
         }
         AuthProvider::Auto => unreachable!("auto provider is resolved above"),
     };
-    refresh_zed_delegation(&client, &mut session, true)?;
+    if let Err(error) = refresh_zed_delegation(&client, &mut session, true) {
+        eprintln!("warning: Zed registry delegation unavailable: {error}");
+    }
     save_session(cfg, session)?;
     println!("signed in as {email}");
     Ok(())
@@ -381,7 +383,9 @@ pub fn signup(
         }
         AuthProvider::Auto => unreachable!("auto provider is resolved above"),
     };
-    refresh_zed_delegation(&client, &mut session, true)?;
+    if let Err(error) = refresh_zed_delegation(&client, &mut session, true) {
+        eprintln!("warning: Zed registry delegation unavailable: {error}");
+    }
     save_session(cfg, session)?;
     println!("account created; signed in as {email}");
     Ok(())
