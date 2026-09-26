@@ -119,6 +119,7 @@ pub mod github_mirror;
 pub mod github_packages;
 pub mod mise_lock;
 pub mod native;
+pub(crate) mod native_artifact;
 pub mod native_host_client;
 pub mod nix_bundle_write;
 pub mod nix_environment_export;
