@@ -724,7 +724,10 @@ mod tests {
         let bytes = vec![7u8; 17];
         let mut reader = Cursor::new(bytes);
         let mut body = Vec::new();
-        reader.by_ref().take(17).read_to_end(&mut body).unwrap();
+        std::io::Read::by_ref(&mut reader)
+            .take(17)
+            .read_to_end(&mut body)
+            .unwrap();
         assert_eq!(body.len(), 17);
         assert!(body.len() as u64 > 16);
     }
