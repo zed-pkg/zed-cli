@@ -442,7 +442,10 @@ pub fn status(cfg: &Config) -> Result<()> {
         println!("Supabase JWT expires at {}", pair.expires_at);
     }
     if let Some(pair) = &session.zed_registry_read {
-        println!("Zed registry read delegation expires at {}", pair.expires_at);
+        println!(
+            "Zed registry read delegation expires at {}",
+            pair.expires_at
+        );
     }
     println!("session file: {}", store_path(&cfg.home).display());
     Ok(())
