@@ -340,8 +340,14 @@ fn get_bytes(client: &Client, url: &str, expected_size: u64) -> Result<Vec<u8>> 
         .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = read_response_limited(response, MAX_ERROR_BODY_BYTES, "error response body")
-            .unwrap_or_default();
+        let body = match read_response_limited(
+            response,
+            MAX_ERROR_BODY_BYTES,
+            "error response body",
+        ) {
+            Ok(body) => body,
+            Err(error) => format!("<unable to read bounded error body: {error}>").into_bytes(),
+        };
         let body = String::from_utf8_lossy(&body);
         bail!("GET {url} returned {status}: {body}");
     }
@@ -566,12 +572,15 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn unique_temp_path(label: &str) -> PathBuf {
+    fn unique_temp_path(label: &str) -> Result<PathBuf> {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .context("system clock is before UNIX_EPOCH")?
             .as_nanos();
-        std::env::temp_dir().join(format!("zed-hex-{label}-{}-{nonce}", std::process::id()))
+        Ok(std::env::temp_dir().join(format!(
+            "zed-hex-{label}-{}-{nonce}",
+            std::process::id()
+        )))
     }
 
     #[test]
@@ -638,17 +647,21 @@ mod tests {
     }
 
     #[test]
-    fn archive_write_refuses_to_clobber_existing_path() {
-        let path = unique_temp_path("existing-archive");
-        fs::write(&path, b"keep me").unwrap();
-        let error = write_new_file(&path, b"replacement").unwrap_err();
+    fn archive_write_refuses_to_clobber_existing_path() -> Result<()> {
+        let path = unique_temp_path("existing-archive")?;
+        fs::write(&path, b"keep me").context("seed existing archive")?;
+        let error = write_new_file(&path, b"replacement")
+            .err()
+            .context("existing archive should not be overwritten")?;
         assert!(error.to_string().contains("refusing to overwrite"));
-        assert_eq!(fs::read(&path).unwrap(), b"keep me");
+        assert_eq!(fs::read(&path).context("read preserved archive")?, b"keep me");
         let _ = fs::remove_file(path);
+        Ok(())
     }
 
-    fn tar_gz(entries: &[(&str, &[u8], tar::EntryType)]) -> Vec<u8> {
+    fn tar_gz(entries: &[(&str, &[u8], tar::EntryType)]) -> Result<Vec<u8>> {
         use flate2::{Compression, write::GzEncoder};
+
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut builder = tar::Builder::new(encoder);
         for (path, bytes, entry_type) in entries {
@@ -657,64 +670,35 @@ mod tests {
             header.set_mode(0o644);
             header.set_size(bytes.len() as u64);
             header.set_cksum();
-            builder.append_data(&mut header, *path, Cursor::new(*bytes)).unwrap();
+            builder
+                .append_data(&mut header, *path, Cursor::new(*bytes))
+                .with_context(|| format!("append tar fixture {path}"))?;
         }
-        let encoder = builder.into_inner().unwrap();
-        encoder.finish().unwrap()
+        let encoder = builder.into_inner().context("finish tar fixture")?;
+        encoder.finish().context("finish gzip fixture")
     }
 
     #[test]
-    fn tar_unpack_rejects_parent_traversal_and_removes_partial_destination() {
-        use flate2::{Compression, read::GzDecoder, write::GzEncoder};
-
-        // The tar crate correctly refuses to author traversal paths. Construct
-        // a valid archive first, then mutate the fixed-width tar name field so
-        // extraction sees the hostile bytes an untrusted registry could send.
+    fn tar_unpack_rejects_parent_traversal_and_removes_partial_destination() -> Result<()> {
         let archive = tar_gz(&[
             ("ok.txt", b"ok", tar::EntryType::Regular),
-            ("aa/escape.txt", b"no", tar::EntryType::Regular),
-        ]);
-        let mut raw = Vec::new();
-        GzDecoder::new(Cursor::new(archive))
-            .read_to_end(&mut raw)
-            .unwrap();
-        let needle = b"aa/escape.txt";
-        let replacement = b"../escape.txt";
-        assert_eq!(needle.len(), replacement.len());
-        let offset = raw
-            .windows(needle.len())
-            .position(|window| window == needle)
-            .expect("fixture tar path must exist");
-        raw[offset..offset + replacement.len()].copy_from_slice(replacement);
-
-        // Recompute the checksum for the mutated second tar header.
-        let header_start = (offset / 512) * 512;
-        raw[header_start + 148..header_start + 156].fill(b' ');
-        let checksum: u32 = raw[header_start..header_start + 512]
-            .iter()
-            .map(|byte| u32::from(*byte))
-            .sum();
-        let rendered = format!("{checksum:06o}\0 ");
-        raw[header_start + 148..header_start + 156]
-            .copy_from_slice(rendered.as_bytes());
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&raw).unwrap();
-        let hostile = encoder.finish().unwrap();
-
-        let destination = unique_temp_path("tar-traversal");
-        let error = unpack_artifact(&hostile, "tar.gz", &destination).unwrap_err();
+            ("../escape.txt", b"no", tar::EntryType::Regular),
+        ])?;
+        let destination = unique_temp_path("tar-traversal")?;
+        let error = unpack_artifact(&archive, "tar.gz", &destination)
+            .err()
+            .context("parent traversal should be rejected")?;
         assert!(
             error.to_string().contains("escape extraction directory")
                 || error.to_string().contains("unpack tar entry")
-                || error.to_string().contains("parent directory")
         );
         assert!(!destination.exists(), "failed extraction must be cleaned up");
         assert!(!destination.with_file_name("escape.txt").exists());
+        Ok(())
     }
 
     #[test]
-    fn tar_unpack_rejects_symlink_entries_and_cleans_destination() {
+    fn tar_unpack_rejects_symlink_entries_and_cleans_destination() -> Result<()> {
         let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         let mut builder = tar::Builder::new(encoder);
 
@@ -725,24 +709,28 @@ mod tests {
         regular.set_cksum();
         builder
             .append_data(&mut regular, "ok.txt", Cursor::new(b"ok"))
-            .unwrap();
+            .context("append regular tar fixture")?;
 
         let mut link = tar::Header::new_gnu();
         link.set_entry_type(tar::EntryType::Symlink);
         link.set_mode(0o777);
         link.set_size(0);
-        link.set_link_name("/etc/passwd").unwrap();
+        link.set_link_name("/etc/passwd")
+            .context("set symlink fixture target")?;
         link.set_cksum();
         builder
             .append_data(&mut link, "link", Cursor::new(Vec::<u8>::new()))
-            .unwrap();
+            .context("append symlink tar fixture")?;
 
-        let encoder = builder.into_inner().unwrap();
-        let archive = encoder.finish().unwrap();
-        let destination = unique_temp_path("tar-symlink");
-        let error = unpack_artifact(&archive, "tar.gz", &destination).unwrap_err();
+        let encoder = builder.into_inner().context("finish tar fixture")?;
+        let archive = encoder.finish().context("finish gzip fixture")?;
+        let destination = unique_temp_path("tar-symlink")?;
+        let error = unpack_artifact(&archive, "tar.gz", &destination)
+            .err()
+            .context("symlink tar entry should be rejected")?;
         assert!(error.to_string().contains("link or unsupported special entry"));
         assert!(!destination.exists(), "failed extraction must be cleaned up");
+        Ok(())
     }
 
     #[test]
@@ -753,25 +741,28 @@ mod tests {
     }
 
     #[test]
-    fn bounded_stream_reader_detects_one_byte_overflow() {
-        // Mirrors the Read::take(limit + 1) boundary used by response decoding.
+    fn bounded_stream_reader_detects_one_byte_overflow() -> Result<()> {
         let bytes = vec![7u8; 17];
         let mut reader = Cursor::new(bytes);
         let mut body = Vec::new();
         std::io::Read::by_ref(&mut reader)
             .take(17)
             .read_to_end(&mut body)
-            .unwrap();
+            .context("read bounded stream fixture")?;
         assert_eq!(body.len(), 17);
         assert!(body.len() as u64 > 16);
+        Ok(())
     }
 
     #[test]
-    fn unpack_refuses_preexisting_destination_even_if_it_is_empty() {
-        let path = unique_temp_path("existing-dir");
-        fs::create_dir(&path).unwrap();
-        let error = unpack_artifact(&[], "tar.gz", &path).unwrap_err();
+    fn unpack_refuses_preexisting_destination_even_if_it_is_empty() -> Result<()> {
+        let path = unique_temp_path("existing-dir")?;
+        fs::create_dir(&path).context("create existing destination fixture")?;
+        let error = unpack_artifact(&[], "tar.gz", &path)
+            .err()
+            .context("preexisting destination should be rejected")?;
         assert!(error.to_string().contains("existing path"));
         let _ = fs::remove_dir(path);
+        Ok(())
     }
 }
