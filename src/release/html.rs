@@ -38,8 +38,9 @@ pub(super) fn write_report(plan: &ReleasePlan, unchecked: &[String], output: &Pa
         escape(&render_human(plan)),
         escape(&unchecked.join("\n")),
     );
-    let mut staged = tempfile::NamedTempFile::new_in(parent).context("stage release report")?;
+    let staged = tempfile::NamedTempFile::new_in(parent).context("stage release report")?;
     staged
+        .as_file()
         .write_all(document.as_bytes())
         .context("write release report")?;
     staged.as_file().sync_all().context("sync release report")?;
