@@ -590,6 +590,12 @@ help = "Emit the release plan as JSON."
 [commands.release.commands.preflight]
 help = "Run fixed credential-free native package preflight adapters."
 
+[commands.release.commands.plan.flags.release_html]
+env = "ZED_PKG_RELEASE_HTML"
+aliases = ["html"]
+type = "string"
+help = "Write a new self-contained HTML release report; conflicts with --json."
+
 [commands.oci]
 help = "Plan, materialize, and distribute immutable Zed packages through OCI registries."
 
