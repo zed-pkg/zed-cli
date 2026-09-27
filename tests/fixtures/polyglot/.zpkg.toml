@@ -38,5 +38,9 @@ name = "poly-fixture-golang"
 [targets.rust]
 dir = "rust"
 
+[targets.rust.native]
+registry = "crates-io"
+package = "zed-poly-fixture"
+
 [targets.ruby]
 dir = "ruby"
