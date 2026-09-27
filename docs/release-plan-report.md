@@ -1,5 +1,12 @@
 # Offline release-plan report
 
+Create a basic, self-contained report directly with
+`zed release plan --html reports/release.html`, or set `ZED_PKG_RELEASE_HTML`.
+This output mode escapes manifest text, includes unverified-input notes, and
+blocks external resources with a Content Security Policy. It requires a new
+output path: existing files and symbolic links are refused. `--html` conflicts
+with `--json`; the default text and JSON output contracts are preserved.
+
 `zed release plan --json` is the authoritative, credential-free release model. The repository-owned renderer turns that exact JSON into a self-contained HTML review artifact without changing release planning or publishing behavior.
 
 ```sh
