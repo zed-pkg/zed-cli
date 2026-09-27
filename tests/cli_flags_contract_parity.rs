@@ -158,7 +158,10 @@ fn non_flags2env_public_roots() -> BTreeSet<String> {
         .cloned()
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(external, BTreeSet::from(["gitops".to_owned()]));
+    assert_eq!(
+        external,
+        BTreeSet::from(["gitops".to_owned(), "hex.pm".to_owned()])
+    );
 
     let inspect = zed_cli::inspect::command().get_name().to_owned();
     assert_eq!(inspect, "inspect");
@@ -201,7 +204,11 @@ fn public_cli_that_reaches_flags2env_is_owned_by_repository_contracts() {
     let non_flags2env = non_flags2env_public_roots();
     assert_eq!(
         non_flags2env,
-        BTreeSet::from(["gitops".to_owned(), "inspect".to_owned()])
+        BTreeSet::from([
+            "gitops".to_owned(),
+            "hex.pm".to_owned(),
+            "inspect".to_owned(),
+        ])
     );
 
     let paths = contract_paths();
