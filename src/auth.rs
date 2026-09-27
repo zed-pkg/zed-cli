@@ -121,6 +121,14 @@ struct SupabaseUser {
     email: Option<String>,
 }
 
+fn registry_read_delegation_request() -> serde_json::Value {
+    serde_json::json!({
+        "client_id": ZPKG_CLI_CLIENT_ID,
+        "audience": ZPKG_REGISTRY_AUDIENCE,
+        "scopes": [ZPKG_PACKAGES_READ_SCOPE],
+    })
+}
+
 struct AuthClient {
     http: Client,
     auth_url: String,
@@ -190,13 +198,10 @@ impl AuthClient {
     }
 
     fn shared_delegate_registry_read(&self, base_token: &str) -> Result<SharedAuthResponse> {
+        let body = registry_read_delegation_request();
         self.post_json(
             &format!("{}/auth/delegate", self.auth_url),
-            &serde_json::json!({
-                "client_id": ZPKG_CLI_CLIENT_ID,
-                "audience": ZPKG_REGISTRY_AUDIENCE,
-                "scopes": [ZPKG_PACKAGES_READ_SCOPE],
-            }),
+            &body,
             &[("authorization", format!("Bearer {base_token}"))],
         )
     }
@@ -518,12 +523,13 @@ pub fn resolve_registry_read_bearer(cfg: &Config) -> Result<Option<String>> {
             return Ok(None);
         };
         let now = unix_now();
-        if let Some(pair) = session
+        if let Some(token) = session
             .zed_registry_read
             .as_ref()
             .filter(|pair| pair.usable_at(now))
+            .map(|pair| pair.access_token.clone())
         {
-            return Ok(Some(pair.access_token.clone()));
+            return Ok(Some(token));
         }
 
         let client = AuthClient::new(cfg)?;
@@ -1094,5 +1100,163 @@ mod tests {
         let response: SupabaseResponse =
             serde_json::from_str(r#"{"user":{"id":"u1","email":"p@example.com"}}"#).unwrap();
         assert!(supabase_pair(&response).unwrap().is_none());
+    }
+
+
+    fn one_shot_auth_server(
+        status: &'static str,
+        response_body: String,
+    ) -> (
+        String,
+        std::sync::mpsc::Receiver<String>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback auth fixture");
+        let address = listener.local_addr().expect("read auth fixture address");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept auth fixture request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set auth fixture read timeout");
+
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let expected_len = loop {
+                let read = stream.read(&mut buffer).expect("read auth fixture request");
+                assert!(read > 0, "auth fixture request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let header_text = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = header_text
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("valid content-length"))
+                    })
+                    .unwrap_or(0);
+                break header_end + 4 + content_length;
+            };
+            while request.len() < expected_len {
+                let read = stream.read(&mut buffer).expect("read auth fixture body");
+                assert!(read > 0, "auth fixture request body ended early");
+                request.extend_from_slice(&buffer[..read]);
+            }
+
+            sender
+                .send(String::from_utf8(request).expect("auth fixture request is utf-8"))
+                .expect("send captured auth fixture request");
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+                response_body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write auth fixture response");
+        });
+        (format!("http://{address}"), receiver, handle)
+    }
+
+    #[test]
+    fn registry_read_delegation_is_read_only_cached_and_outage_tolerant() {
+        let now = unix_now();
+        let response = serde_json::json!({
+            "access_token": "delegated-read-token",
+            "expires_at": now + 3600,
+        })
+        .to_string();
+        let (auth_url, captured, server) = one_shot_auth_server("200 OK", response);
+        let temp = tempfile::tempdir().expect("create auth fixture home");
+        let mut cfg = config(temp.path());
+        cfg.auth_url = auth_url;
+
+        save_session(&cfg, session(now + 3600, now + 3600))
+            .expect("save source auth session");
+        assert_eq!(
+            resolve_registry_read_bearer(&cfg).expect("mint registry read delegation"),
+            Some("delegated-read-token".to_owned())
+        );
+
+        let request = captured
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("capture delegate request");
+        server.join().expect("join auth fixture server");
+        assert!(
+            request.starts_with("POST /auth/delegate HTTP/1.1\r\n"),
+            "unexpected delegate request: {request:?}"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer shared-jwt\r\n"),
+            "delegation must authenticate with the Shared Auth session"
+        );
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("delegate request has body");
+        let body: serde_json::Value =
+            serde_json::from_str(body).expect("delegate request body is json");
+        assert_eq!(body, registry_read_delegation_request());
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "client_id": "zpkg-cli",
+                "audience": "zed-pkg",
+                "scopes": ["zpkg:packages:read"],
+            })
+        );
+
+        // The one-shot server is gone. A second resolution must use the cached
+        // delegation and therefore remain available through a Shared Auth outage.
+        assert_eq!(
+            resolve_registry_read_bearer(&cfg).expect("reuse cached delegation"),
+            Some("delegated-read-token".to_owned())
+        );
+    }
+
+    #[test]
+    fn registry_read_never_returns_a_raw_provider_jwt() {
+        let (auth_url, captured, server) =
+            one_shot_auth_server("503 Service Unavailable", "{}".to_owned());
+        let temp = tempfile::tempdir().expect("create auth fixture home");
+        let mut cfg = config(temp.path());
+        cfg.auth_url = auth_url;
+        let now = unix_now();
+        let mut provider_only = session(now + 3600, now + 3600);
+        provider_only.shared_auth = None;
+        save_session(&cfg, provider_only).expect("save provider-only auth session");
+
+        let error = resolve_registry_read_bearer(&cfg)
+            .expect_err("raw provider jwt must never satisfy private package reads");
+        let request = captured
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("capture Shared Auth exchange request");
+        server.join().expect("join auth fixture server");
+
+        assert!(
+            request.starts_with("POST /auth/exchange HTTP/1.1\r\n"),
+            "provider token may only be sent to Shared Auth for exchange"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer supabase-jwt\r\n")
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("no usable Shared Auth session is available"),
+            "unexpected private-read error: {error:#}"
+        );
+        assert_ne!(error.to_string(), "supabase-jwt");
     }
 }
