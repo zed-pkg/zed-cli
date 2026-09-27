@@ -1,0 +1,38 @@
+name: Polyglot consumer project shapes
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/fixtures/polyglot/**'
+      - 'tests/polyglot-consumer-project-shapes-e2e.sh'
+      - '.github/workflows/polyglot-consumer-project-shapes.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/fixtures/polyglot/**'
+      - 'tests/polyglot-consumer-project-shapes-e2e.sh'
+      - '.github/workflows/polyglot-consumer-project-shapes.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  project-shapes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Zed CLI
+        run: cargo build --release --locked --bin zed
+      - name: Check E2E harness syntax
+        run: bash -n tests/polyglot-consumer-project-shapes-e2e.sh
+      - name: Prove npm, Go, Cargo, Ruby, Python, Gleam, and Dart project shapes
+        run: bash tests/polyglot-consumer-project-shapes-e2e.sh "$PWD/target/release/zed"
