@@ -59,7 +59,7 @@ fn validate_version_metadata(vm: &VersionMetadata) -> Result<()> {
 // ---------------------------------------------------------------------------
 // init
 
-pub fn init(
+pub(crate) fn init(
     dir: &Path,
     org: Option<String>,
     name: Option<String>,
@@ -1453,7 +1453,7 @@ fn ecosystem_mismatch(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn install(
+pub(crate) fn install(
     project: &Path,
     cfg: &Config,
     frozen: bool,
@@ -1480,7 +1480,7 @@ pub fn install(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn install_with_permissions(
+pub(crate) fn install_with_permissions(
     project: &Path,
     cfg: &Config,
     frozen: bool,
@@ -2464,7 +2464,7 @@ fn install_locked(
 /// Keeping `.zpkg.lock` is intentional: `zed install --frozen` is the exact
 /// inverse and proves uninstall/reinstall reproducibility. Every project-tree
 /// mutation is covered by a UUID-v4 transaction.
-pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
+pub(crate) fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
     let lock_path = project.join(LOCKFILE_FILE);
     let text = fs::read_to_string(&lock_path)
         .with_context(|| format!("zed uninstall requires {LOCKFILE_FILE}"))?;
@@ -3216,7 +3216,7 @@ fn prepare_workspace_artifact(
 /// dependency graph. Build commands are explicitly requested by this command;
 /// install hooks and native host packages retain their own independent consent.
 #[allow(clippy::too_many_arguments)]
-pub fn build_cmd(
+pub(crate) fn build_cmd(
     project: &Path,
     cfg: &Config,
     force: bool,
@@ -3538,7 +3538,7 @@ fn command_for_hoisted_bin(path: &Path) -> Command {
 /// `<install.dir>/.bin`, default `zed_modules/.bin`) or any command, with that
 /// directory prepended to PATH — npx-style, without polluting the OS PATH
 /// (zed-docs issue #7). Returns the child's exit code.
-pub fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
+pub(crate) fn run(project: &Path, command: &str, args: &[String]) -> Result<i32> {
     let modules_dir = project_modules_dir(project);
     let bin_dir = project.join(&modules_dir).join(BIN_DIR);
     let hoisted = hoisted_bin_candidate(&bin_dir, command);
@@ -3729,7 +3729,7 @@ const KNOWN_LANGUAGE_TOKENS: &[(&str, Language)] = &[
     ("gleam", Language::Gleam),
 ];
 
-pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+pub(crate) fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let (rest, req) = match spec.split_once('@') {
         Some((rest, req)) => (rest.to_string(), Some(req.to_string())),
         None => (spec.to_string(), None),
@@ -3831,7 +3831,7 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+pub(crate) fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     let (org, name) = split_key(spec)?;
     let mut manifest = read_manifest(project)?;
     if manifest
@@ -3876,7 +3876,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 // pack / publish
 
-pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<pack::PackagedTarget>> {
+pub(crate) fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<pack::PackagedTarget>> {
     let manifest = read_manifest(project)?;
     let packages = pack::pack_all(project, &manifest, out)?;
     for package in &packages {
@@ -3922,7 +3922,7 @@ pub fn build_publish_meta(
 /// package the ability to have its *ranges* resolved while the registry is
 /// down; frozen installs from any mirror keep working either way, because
 /// those are decided by the lockfile digest.
-pub fn build_signed_publish_meta(
+pub(crate) fn build_signed_publish_meta(
     manifest: &Manifest,
     packed: &PackResult,
     commit: Option<String>,
@@ -3991,7 +3991,7 @@ pub fn build_signed_publish_meta(
     (meta, signed)
 }
 
-pub fn publish(
+pub(crate) fn publish(
     project: &Path,
     cfg: &Config,
     dry_run: bool,
