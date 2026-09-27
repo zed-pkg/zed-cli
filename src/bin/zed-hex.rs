@@ -687,7 +687,9 @@ mod tests {
         regular.set_entry_type(tar::EntryType::Regular);
         regular.set_mode(0o644);
         regular.set_size(2);
-        regular.set_path("ok.txt").context("set safe tar fixture path")?;
+        regular
+            .set_path("ok.txt")
+            .context("set safe tar fixture path")?;
         regular.set_cksum();
         builder
             .append(&regular, Cursor::new(b"ok"))
