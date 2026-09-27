@@ -340,14 +340,11 @@ fn get_bytes(client: &Client, url: &str, expected_size: u64) -> Result<Vec<u8>> 
         .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = match read_response_limited(
-            response,
-            MAX_ERROR_BODY_BYTES,
-            "error response body",
-        ) {
-            Ok(body) => body,
-            Err(error) => format!("<unable to read bounded error body: {error}>").into_bytes(),
-        };
+        let body =
+            match read_response_limited(response, MAX_ERROR_BODY_BYTES, "error response body") {
+                Ok(body) => body,
+                Err(error) => format!("<unable to read bounded error body: {error}>").into_bytes(),
+            };
         let body = String::from_utf8_lossy(&body);
         bail!("GET {url} returned {status}: {body}");
     }
@@ -429,6 +426,9 @@ fn write_new_file(destination: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 fn unpack_artifact(bytes: &[u8], format: &str, destination: &Path) -> Result<()> {
+    if !matches!(format, "tar.gz" | "zip") {
+        bail!("unsupported artifact format for --unpack: {format}");
+    }
     match fs::symlink_metadata(destination) {
         Ok(_) => bail!(
             "refusing to unpack into existing path {}; choose a new directory",
@@ -577,10 +577,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .context("system clock is before UNIX_EPOCH")?
             .as_nanos();
-        Ok(std::env::temp_dir().join(format!(
-            "zed-hex-{label}-{}-{nonce}",
-            std::process::id()
-        )))
+        Ok(std::env::temp_dir().join(format!("zed-hex-{label}-{}-{nonce}", std::process::id())))
     }
 
     #[test]
@@ -654,7 +651,10 @@ mod tests {
             .err()
             .context("existing archive should not be overwritten")?;
         assert!(error.to_string().contains("refusing to overwrite"));
-        assert_eq!(fs::read(&path).context("read preserved archive")?, b"keep me");
+        assert_eq!(
+            fs::read(&path).context("read preserved archive")?,
+            b"keep me"
+        );
         let _ = fs::remove_file(path);
         Ok(())
     }
@@ -669,9 +669,19 @@ mod tests {
             header.set_entry_type(*entry_type);
             header.set_mode(0o644);
             header.set_size(bytes.len() as u64);
+            // Builder::append_data validates paths, so it cannot construct the
+            // hostile archives this test must deliver to the real extractor.
+            let name = header
+                .as_mut_bytes()
+                .get_mut(..100)
+                .context("tar name field")?;
+            name.fill(0);
+            name.get_mut(..path.len())
+                .context("fixture tar path is too long")?
+                .copy_from_slice(path.as_bytes());
             header.set_cksum();
             builder
-                .append_data(&mut header, *path, Cursor::new(*bytes))
+                .append(&header, Cursor::new(*bytes))
                 .with_context(|| format!("append tar fixture {path}"))?;
         }
         let encoder = builder.into_inner().context("finish tar fixture")?;
@@ -692,8 +702,22 @@ mod tests {
             error.to_string().contains("escape extraction directory")
                 || error.to_string().contains("unpack tar entry")
         );
-        assert!(!destination.exists(), "failed extraction must be cleaned up");
+        assert!(
+            !destination.exists(),
+            "failed extraction must be cleaned up"
+        );
         assert!(!destination.with_file_name("escape.txt").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_format_does_not_create_a_destination() -> Result<()> {
+        let destination = unique_temp_path("unsupported-format")?;
+        let error = unpack_artifact(b"", "unknown", &destination)
+            .err()
+            .context("unsupported format must be rejected")?;
+        assert!(error.to_string().contains("unsupported artifact format"));
+        assert!(!destination.exists());
         Ok(())
     }
 
@@ -728,8 +752,15 @@ mod tests {
         let error = unpack_artifact(&archive, "tar.gz", &destination)
             .err()
             .context("symlink tar entry should be rejected")?;
-        assert!(error.to_string().contains("link or unsupported special entry"));
-        assert!(!destination.exists(), "failed extraction must be cleaned up");
+        assert!(
+            error
+                .to_string()
+                .contains("link or unsupported special entry")
+        );
+        assert!(
+            !destination.exists(),
+            "failed extraction must be cleaned up"
+        );
         Ok(())
     }
 

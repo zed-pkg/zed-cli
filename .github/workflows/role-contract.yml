@@ -40,11 +40,9 @@ jobs:
   branch-fixup:
     if: github.event_name == 'pull_request' && github.head_ref == 'feat/role-contract-fix'
     permissions:
-      contents: write
+      contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -69,15 +67,19 @@ jobs:
         run: python3 -m unittest tests/role-contract/test_zed_role_contract.py -v
       - name: Lint all production and test targets
         run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Commit tested fixes and restore the permanent workflow
+      - name: Export tested changes for review
         run: |
           set -euo pipefail
-          gh auth setup-git
           git fetch origin main --depth=1
           git show FETCH_HEAD:.github/workflows/role-contract.yml > .github/workflows/role-contract.yml
           rm -f .github/workflows/branch-fixup.yml tools/branch_fixup.py
-          git config user.name "ORESoftware"
-          git config user.email "alex@oresoftware.com"
           git add -A
-          git commit -m "fix: close Zed environment and portability regressions"
-          git push origin HEAD:feat/role-contract-fix
+          git diff --cached --binary > "${RUNNER_TEMP}/zed-maintenance.patch"
+
+      - name: Upload tested maintenance patch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: maintenance-${{ github.job }}
+          path: ${{ runner.temp }}/zed-maintenance.patch
+          if-no-files-found: ignore
+          retention-days: 7
