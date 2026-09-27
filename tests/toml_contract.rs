@@ -63,12 +63,10 @@ fn zed_package_declares_the_canonical_flags_runtime_and_contract() {
     let cargo = parse_toml(&root.join("Cargo.toml"));
     let flags = parse_toml(&root.join(".cli-flags.toml"));
 
-    assert_eq!(
-        string_at(&zpkg, &["cli", "flags_contract"]),
-        ".cli-flags.toml"
-    );
-    assert_eq!(string_at(&zpkg, &["cli", "flags_runtime"]), "flags-2-env");
-    assert_eq!(string_at(&zpkg, &["cli", "primary_bin"]), "zed");
+    // The package schema deliberately has no [cli] table. The repository
+    // owns .cli-flags.toml separately, and Cargo pins its parsing runtime.
+    assert!(zpkg.get("cli").is_none());
+    assert_eq!(string_at(&zpkg, &["bin", "zed"]), "target/release/zed");
 
     let flags2env = cargo
         .get("dependencies")
