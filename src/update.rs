@@ -50,6 +50,7 @@ pub fn asset_target() -> Result<String> {
 /// `/releases` when none do), so this needs no API token and dodges the API
 /// rate limit (same trick as `install.sh`). Returns `None` when there is no
 /// release to point at.
+#[must_use]
 pub fn tag_from_latest_url(url: &str) -> Option<String> {
     let url = reqwest::Url::parse(url).ok()?;
     if url.scheme() != "https"
@@ -68,6 +69,7 @@ pub fn tag_from_latest_url(url: &str) -> Option<String> {
 }
 
 /// Is `latest_tag` (e.g. `v0.1.1`) a newer semver than `current` (`0.1.0`)?
+#[must_use]
 pub fn is_newer(current: &str, latest_tag: &str) -> bool {
     let strip = |s: &str| s.trim().trim_start_matches('v').to_string();
     match (

@@ -210,103 +210,111 @@ fn sha256sums_rejects_missing_or_malformed() {
 }
 
 #[test]
-fn sha256sums_mismatch_is_detectable() {
+fn sha256sums_mismatch_is_detectable() -> Result<()> {
     // Mirrors the self_update comparison: a differing digest must not
     // equal the archive's actual hash, so the update is refused.
     let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
-    let expected = expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").unwrap();
+    let expected = expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz")
+        .context("fixture checksum")?;
     let actual = "1111111111111111111111111111111111111111111111111111111111111111";
     assert_ne!(expected, actual);
+    Ok(())
 }
 
 /// Build an in-memory `.tar.gz` mirroring a release layout: a versioned
 /// top-level directory holding the binary plus decoy files.
-fn release_tar_gz(bin_name: &str, payload: &[u8]) -> Vec<u8> {
+fn release_tar_gz(bin_name: &str, payload: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     {
         let enc = flate2::write::GzEncoder::new(&mut out, flate2::Compression::default());
         let mut builder = tar::Builder::new(enc);
-        let mut add = |path: String, bytes: &[u8]| {
+        let mut add = |path: String, bytes: &[u8]| -> Result<()> {
             let mut header = tar::Header::new_gnu();
             header.set_size(bytes.len() as u64);
             header.set_mode(0o755);
             header.set_cksum();
-            builder.append_data(&mut header, path, bytes).unwrap();
+            builder.append_data(&mut header, path, bytes)?;
+            Ok(())
         };
-        add("zed-test-target/README.md".to_string(), b"decoy docs");
-        add(format!("zed-test-target/{bin_name}"), payload);
-        builder.into_inner().unwrap().finish().unwrap();
+        add("zed-test-target/README.md".to_string(), b"decoy docs")?;
+        add(format!("zed-test-target/{bin_name}"), payload)?;
+        builder.into_inner()?.finish()?;
     }
-    out
+    Ok(out)
 }
 
 #[test]
-fn extract_binary_finds_zed_inside_a_tar_gz() {
+fn extract_binary_finds_zed_inside_a_tar_gz() -> Result<()> {
     let payload = b"#!fake-zed-binary".as_slice();
-    let archive = release_tar_gz("zed", payload);
-    let extracted = extract_binary(&archive, "zed", false).unwrap();
+    let archive = release_tar_gz("zed", payload)?;
+    let extracted = extract_binary(&archive, "zed", false)?;
     assert_eq!(extracted, payload);
+    Ok(())
 }
 
 #[test]
-fn extract_binary_finds_zed_exe_inside_a_zip() {
+fn extract_binary_finds_zed_exe_inside_a_zip() -> Result<()> {
     use std::io::Write as _;
     let payload = b"MZ-fake-windows-binary".as_slice();
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut cursor);
         let opts = zip::write::SimpleFileOptions::default();
-        writer
-            .start_file("zed-test-target/README.md", opts)
-            .unwrap();
-        writer.write_all(b"decoy docs").unwrap();
-        writer.start_file("zed-test-target/zed.exe", opts).unwrap();
-        writer.write_all(payload).unwrap();
-        writer.finish().unwrap();
+        writer.start_file("zed-test-target/README.md", opts)?;
+        writer.write_all(b"decoy docs")?;
+        writer.start_file("zed-test-target/zed.exe", opts)?;
+        writer.write_all(payload)?;
+        writer.finish()?;
     }
-    let extracted = extract_binary(&cursor.into_inner(), "zed.exe", true).unwrap();
+    let extracted = extract_binary(&cursor.into_inner(), "zed.exe", true)?;
     assert_eq!(extracted, payload);
+    Ok(())
 }
 
 #[test]
-fn extract_binary_rejects_an_archive_without_the_binary() {
-    let archive = release_tar_gz("not-zed", b"wrong tool");
-    let err = extract_binary(&archive, "zed", false).unwrap_err();
+fn extract_binary_rejects_an_archive_without_the_binary() -> Result<()> {
+    let archive = release_tar_gz("not-zed", b"wrong tool")?;
+    let err = extract_binary(&archive, "zed", false)
+        .err()
+        .context("must reject missing executable")?;
     assert!(
         err.to_string().contains("did not contain"),
         "unexpected error: {err}"
     );
+    Ok(())
 }
 
 #[test]
-fn replace_exe_swaps_contents_atomically_and_keeps_exec_bit() {
-    let dir = tempfile::tempdir().unwrap();
+fn replace_exe_swaps_contents_atomically_and_keeps_exec_bit() -> Result<()> {
+    let dir = tempfile::tempdir()?;
     let exe = dir.path().join("zed");
-    std::fs::write(&exe, b"old-binary").unwrap();
+    std::fs::write(&exe, b"old-binary")?;
 
-    replace_exe(&exe, b"new-binary").unwrap();
+    replace_exe(&exe, b"new-binary")?;
 
-    assert_eq!(std::fs::read(&exe).unwrap(), b"new-binary");
+    assert_eq!(std::fs::read(&exe)?, b"new-binary");
     // No staging temp file left behind next to the exe.
     assert_eq!(
-        std::fs::read_dir(dir.path()).unwrap().count(),
+        std::fs::read_dir(dir.path())?.count(),
         1,
         "only the replaced exe remains"
     );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
+        let mode = std::fs::metadata(&exe)?.permissions().mode();
         assert_ne!(mode & 0o111, 0, "replaced binary must stay executable");
     }
+    Ok(())
 }
 
 #[test]
-fn asset_target_is_platform_shaped() {
-    let t = asset_target().unwrap();
+fn asset_target_is_platform_shaped() -> Result<()> {
+    let t = asset_target()?;
     assert!(t.contains(std::env::consts::ARCH));
     #[cfg(target_os = "macos")]
     assert!(t.ends_with("apple-darwin"));
     #[cfg(target_os = "linux")]
     assert!(t.contains("unknown-linux-"));
+    Ok(())
 }
