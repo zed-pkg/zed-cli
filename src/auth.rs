@@ -1105,88 +1105,119 @@ mod tests {
     fn one_shot_auth_server(
         status: &'static str,
         response_body: String,
-    ) -> (
+    ) -> Result<(
         String,
         std::sync::mpsc::Receiver<String>,
-        std::thread::JoinHandle<()>,
-    ) {
+        std::thread::JoinHandle<Result<()>>,
+    )> {
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
         use std::time::Duration;
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback auth fixture");
-        let address = listener.local_addr().expect("read auth fixture address");
+        let listener = TcpListener::bind("127.0.0.1:0").context("bind loopback auth fixture")?;
+        let address = listener
+            .local_addr()
+            .context("read loopback auth fixture address")?;
         let (sender, receiver) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept auth fixture request");
+        let handle = std::thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept().context("accept auth fixture request")?;
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("set auth fixture read timeout");
+                .context("set auth fixture read timeout")?;
 
             let mut request = Vec::new();
             let mut buffer = [0_u8; 4096];
             let expected_len = loop {
-                let read = stream.read(&mut buffer).expect("read auth fixture request");
-                assert!(read > 0, "auth fixture request ended before headers");
-                request.extend_from_slice(&buffer[..read]);
+                let read = stream
+                    .read(&mut buffer)
+                    .context("read auth fixture request")?;
+                if read == 0 {
+                    bail!("auth fixture request ended before headers");
+                }
+                let chunk = buffer
+                    .get(..read)
+                    .context("auth fixture read length exceeded buffer")?;
+                request.extend_from_slice(chunk);
+
                 let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
                 else {
                     continue;
                 };
-                let header_text = String::from_utf8_lossy(&request[..header_end]);
-                let content_length = header_text
-                    .lines()
-                    .find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().expect("valid content-length"))
-                    })
-                    .unwrap_or(0);
-                break header_end + 4 + content_length;
+                let header_bytes = request
+                    .get(..header_end)
+                    .context("auth fixture header boundary exceeded request")?;
+                let header_text = String::from_utf8_lossy(header_bytes);
+                let mut content_length = 0_usize;
+                for line in header_text.lines() {
+                    let Some((name, value)) = line.split_once(':') else {
+                        continue;
+                    };
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value
+                            .trim()
+                            .parse::<usize>()
+                            .context("parse auth fixture content-length")?;
+                        break;
+                    }
+                }
+                break header_end
+                    .checked_add(4)
+                    .and_then(|value| value.checked_add(content_length))
+                    .context("auth fixture request length overflow")?;
             };
+
             while request.len() < expected_len {
-                let read = stream.read(&mut buffer).expect("read auth fixture body");
-                assert!(read > 0, "auth fixture request body ended early");
-                request.extend_from_slice(&buffer[..read]);
+                let read = stream.read(&mut buffer).context("read auth fixture body")?;
+                if read == 0 {
+                    bail!("auth fixture request body ended early");
+                }
+                let chunk = buffer
+                    .get(..read)
+                    .context("auth fixture body read length exceeded buffer")?;
+                request.extend_from_slice(chunk);
             }
 
+            let request = String::from_utf8(request).context("auth fixture request is utf-8")?;
             sender
-                .send(String::from_utf8(request).expect("auth fixture request is utf-8"))
-                .expect("send captured auth fixture request");
+                .send(request)
+                .map_err(|_| anyhow!("send captured auth fixture request"))?;
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
                 response_body.len()
             );
             stream
                 .write_all(response.as_bytes())
-                .expect("write auth fixture response");
+                .context("write auth fixture response")?;
+            Ok(())
         });
-        (format!("http://{address}"), receiver, handle)
+        Ok((format!("http://{address}"), receiver, handle))
     }
 
     #[test]
-    fn registry_read_delegation_is_read_only_cached_and_outage_tolerant() {
+    fn registry_read_delegation_is_read_only_cached_and_outage_tolerant() -> Result<()> {
         let now = unix_now();
         let response = serde_json::json!({
             "access_token": "delegated-read-token",
             "expires_at": now + 3600,
         })
         .to_string();
-        let (auth_url, captured, server) = one_shot_auth_server("200 OK", response);
-        let temp = tempfile::tempdir().expect("create auth fixture home");
+        let (auth_url, captured, server) = one_shot_auth_server("200 OK", response)?;
+        let temp = tempfile::tempdir().context("create auth fixture home")?;
         let mut cfg = config(temp.path());
         cfg.auth_url = auth_url;
 
-        save_session(&cfg, session(now + 3600, now + 3600)).expect("save source auth session");
+        save_session(&cfg, session(now + 3600, now + 3600))?;
         assert_eq!(
-            resolve_registry_read_bearer(&cfg).expect("mint registry read delegation"),
+            resolve_registry_read_bearer(&cfg)?,
             Some("delegated-read-token".to_owned())
         );
 
         let request = captured
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("capture delegate request");
-        server.join().expect("join auth fixture server");
+            .context("capture delegate request")?;
+        server
+            .join()
+            .map_err(|_| anyhow!("auth fixture server panicked"))??;
         assert!(
             request.starts_with("POST /auth/delegate HTTP/1.1\r\n"),
             "unexpected delegate request: {request:?}"
@@ -1197,12 +1228,11 @@ mod tests {
                 .contains("authorization: bearer shared-jwt\r\n"),
             "delegation must authenticate with the Shared Auth session"
         );
-        let body = request
+        let (_, body) = request
             .split_once("\r\n\r\n")
-            .map(|(_, body)| body)
-            .expect("delegate request has body");
+            .context("delegate request has a body")?;
         let body: serde_json::Value =
-            serde_json::from_str(body).expect("delegate request body is json");
+            serde_json::from_str(body).context("delegate request body is json")?;
         assert_eq!(body, registry_read_delegation_request());
         assert_eq!(
             body,
@@ -1216,29 +1246,36 @@ mod tests {
         // The one-shot server is gone. A second resolution must use the cached
         // delegation and therefore remain available through a Shared Auth outage.
         assert_eq!(
-            resolve_registry_read_bearer(&cfg).expect("reuse cached delegation"),
+            resolve_registry_read_bearer(&cfg)?,
             Some("delegated-read-token".to_owned())
         );
+        Ok(())
     }
 
     #[test]
-    fn registry_read_never_returns_a_raw_provider_jwt() {
+    fn registry_read_never_returns_a_raw_provider_jwt() -> Result<()> {
         let (auth_url, captured, server) =
-            one_shot_auth_server("503 Service Unavailable", "{}".to_owned());
-        let temp = tempfile::tempdir().expect("create auth fixture home");
+            one_shot_auth_server("503 Service Unavailable", "{}".to_owned())?;
+        let temp = tempfile::tempdir().context("create auth fixture home")?;
         let mut cfg = config(temp.path());
         cfg.auth_url = auth_url;
         let now = unix_now();
         let mut provider_only = session(now + 3600, now + 3600);
         provider_only.shared_auth = None;
-        save_session(&cfg, provider_only).expect("save provider-only auth session");
+        save_session(&cfg, provider_only)?;
 
-        let error = resolve_registry_read_bearer(&cfg)
-            .expect_err("raw provider jwt must never satisfy private package reads");
+        let error = match resolve_registry_read_bearer(&cfg) {
+            Ok(value) => {
+                bail!("raw provider jwt unexpectedly satisfied private package reads: {value:?}")
+            }
+            Err(error) => error,
+        };
         let request = captured
             .recv_timeout(std::time::Duration::from_secs(5))
-            .expect("capture Shared Auth exchange request");
-        server.join().expect("join auth fixture server");
+            .context("capture Shared Auth exchange request")?;
+        server
+            .join()
+            .map_err(|_| anyhow!("auth fixture server panicked"))??;
 
         assert!(
             request.starts_with("POST /auth/exchange HTTP/1.1\r\n"),
@@ -1256,5 +1293,6 @@ mod tests {
             "unexpected private-read error: {error:#}"
         );
         assert_ne!(error.to_string(), "supabase-jwt");
+        Ok(())
     }
 }
