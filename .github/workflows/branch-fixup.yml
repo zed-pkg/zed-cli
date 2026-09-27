@@ -7,17 +7,24 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: maintenance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   patch-test-commit:
+    if: github.ref == 'refs/heads/feat/role-contract-fix'
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: stable
@@ -182,11 +189,16 @@ jobs:
           cargo test --locked cli::tests::cli_flags_toml_is_in_sync_with_clap
           python3 -m unittest tests/role-contract/test_zed_role_contract.py
           cargo clippy --locked --all-targets -- -D warnings
-      - name: Commit tested fixup and remove this temporary workflow
+      - name: Export tested changes for review
         run: |
           rm .github/workflows/branch-fixup.yml
-          git config user.name "ORESoftware"
-          git config user.email "alex@oresoftware.com"
           git add -A
-          git commit -m "fix: close Zed environment and portability regressions"
-          git push origin HEAD:feat/role-contract-fix
+          git diff --cached --binary > "${RUNNER_TEMP}/zed-maintenance.patch"
+
+      - name: Upload tested maintenance patch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: maintenance-${{ github.job }}
+          path: ${{ runner.temp }}/zed-maintenance.patch
+          if-no-files-found: ignore
+          retention-days: 7
