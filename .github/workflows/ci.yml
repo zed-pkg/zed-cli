@@ -622,7 +622,7 @@ jobs:
 
           test -f "$root/.zpkg.toml"
           test -f "$root/.zpkg.lock"
-          test -d "$root/zed_modules/zed-pkg/docker-node-lib"
+          test -d "$root/.zed/pkg/zed-pkg/docker-node-lib"
           test -d "$root/node_modules/@zed-pkg/docker-node-lib"
           grep -F 'org = "zed-local"' "$root/.zpkg.toml"
           grep -F 'keywords = ["zed-generated-consumer"]' "$root/.zpkg.toml"
@@ -681,7 +681,7 @@ jobs:
           fi
           test ! -e "$root/.zpkg.toml"
           test ! -e "$root/.zpkg.lock"
-          test ! -e "$root/zed_modules"
+          test ! -e "$root/.zed/pkg"
           test ! -e "$root/node_modules/@zed-pkg/docker-node-lib"
 
       - name: Canonical flag, canonical environment, and legacy alias preserve ephemeral installs
@@ -782,7 +782,7 @@ jobs:
               --install-mode copy
           test ! -e "$restore_root/.zpkg.toml"
           cmp -s "$source_root/.zpkg.lock" "$restore_root/.zpkg.lock"
-          test -d "$restore_root/zed_modules/zed-pkg/docker-node-lib"
+          test -d "$restore_root/.zed/pkg/zed-pkg/docker-node-lib"
 
       - name: One clear nested native project receives the generated manifest
         shell: bash
@@ -803,7 +803,7 @@ jobs:
           test ! -e "$root/.zpkg.lock"
           test -f "$root/apps/web/.zpkg.toml"
           test -f "$root/apps/web/.zpkg.lock"
-          test -d "$root/apps/web/zed_modules/zed-pkg/docker-node-lib"
+          test -d "$root/apps/web/.zed/pkg/zed-pkg/docker-node-lib"
 
   shell-contract:
     needs: provenance
