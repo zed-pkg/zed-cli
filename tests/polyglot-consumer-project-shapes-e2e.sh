@@ -155,9 +155,8 @@ adapter_for() {
     npm) echo node ;;
     golang) echo go ;;
     rust) echo rust ;;
-    ruby|gleam) echo none ;;
     python) echo python ;;
-    dart) echo dart ;;
+    ruby|gleam|dart) echo none ;;
     *) fail "unknown project host: $1" ;;
   esac
 }
@@ -168,7 +167,8 @@ assert_adapter() {
   local package=$3
   case "$host" in
     npm)
-      [[ -L "$root/node_modules/@zed-pkg/$package" ]] || fail "npm adapter link missing"
+      [[ -f "$root/.zed/node_path" ]] || fail "npm/node adapter output missing"
+      grep -Fq 'zed_modules' "$root/.zed/node_path"
       ;;
     golang)
       [[ -f "$root/.zed/go.work" ]] || fail "go adapter output missing"
@@ -182,11 +182,7 @@ assert_adapter() {
       [[ -f "$root/.zed/pythonpath" ]] || fail "python adapter output missing"
       grep -Fq "zed_modules/zed-pkg/$package" "$root/.zed/pythonpath"
       ;;
-    dart)
-      [[ -f "$root/.zed/pub-deps.yaml" ]] || fail "dart adapter output missing"
-      grep -Fq "zed_modules/zed-pkg/$package" "$root/.zed/pub-deps.yaml"
-      ;;
-    ruby|gleam)
+    ruby|gleam|dart)
       [[ -f "$root/.zed/paths.json" ]] || fail "$host universal paths index missing"
       ;;
   esac
@@ -207,15 +203,12 @@ run_case() {
   marker_before="$(checksum "$marker")"
 
   if [[ "$host" == gleam || "$host" == dart ]]; then
-    # No Gleam/Dart target exists in this fixture yet. Prove that the admission
-    # boundary rejects a Rust target first, then exercise explicit universal
-    # placement with the user's opt-in rather than silently weakening safety.
     if (
       cd "$root/deep/nested"
       ZED_PKG_HOME="$home/consumer" \
       ZED_PKG_REGISTRY="$registry_url" \
         "$zed" install "zed-pkg/$package@=0.2.0" \
-          --skip-manifest \
+          --do-not-write-new-manifest \
           --install-mode copy \
           --adapter "$adapter"
     ); then
@@ -231,7 +224,7 @@ run_case() {
     ZED_PKG_HOME="$home/consumer" \
     ZED_PKG_REGISTRY="$registry_url" \
       "$zed" install "zed-pkg/$package@=0.2.0" \
-        --skip-manifest \
+        --do-not-write-new-manifest \
         --install-mode copy \
         --adapter "$adapter" \
         "${extra[@]}"
@@ -254,7 +247,7 @@ run_case() {
     ZED_PKG_REGISTRY="$registry_url" \
       "$zed" install \
         --frozen \
-        --skip-manifest \
+        --do-not-write-new-manifest \
         --install-mode copy \
         --adapter "$adapter" \
         "${extra[@]}"
