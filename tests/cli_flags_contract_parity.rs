@@ -158,7 +158,10 @@ fn non_flags2env_public_roots() -> BTreeSet<String> {
         .cloned()
         .collect::<BTreeSet<_>>();
 
-    assert_eq!(external, BTreeSet::from(["gitops".to_owned()]));
+    assert_eq!(
+        external,
+        BTreeSet::from(["gitops".to_owned(), "hex.pm".to_owned()])
+    );
 
     let inspect = zed_cli::inspect::command().get_name().to_owned();
     assert_eq!(inspect, "inspect");
