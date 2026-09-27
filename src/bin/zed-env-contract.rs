@@ -111,8 +111,11 @@ fn manifest_path(explicit: Option<PathBuf>) -> Result<PathBuf> {
 fn load_contract(path: &Path) -> Result<BTreeMap<String, EnvVar>> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let root: Value = text
-        .parse()
+    // Parse a TOML document through serde. In toml 1.x, `Value::from_str`
+    // is the value parser; configuration files are documents whose root is a
+    // table. Using the document deserializer keeps leading whitespace, tables,
+    // and arrays-of-tables valid across toml upgrades.
+    let root: Value = toml::from_str(&text)
         .with_context(|| format!("invalid TOML in {}", path.display()))?;
     let Some(env_table) = root.get("env").and_then(Value::as_table) else {
         return Ok(BTreeMap::new());
