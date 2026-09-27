@@ -114,3 +114,42 @@ fn html_output_refuses_to_follow_an_existing_symbolic_link() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("symbolic link"));
     assert_eq!(fs::read_to_string(protected).unwrap(), "do not replace");
 }
+
+#[test]
+fn html_output_preserves_an_existing_regular_file() {
+    let root = tempfile::tempdir().unwrap();
+    write_manifest(root.path());
+    let report = root.path().join("existing.html");
+    fs::write(&report, "keep this report").unwrap();
+    let output = run(
+        root.path(),
+        &["release", "plan", "--html", report.to_str().unwrap()],
+    );
+    assert!(!output.status.success());
+    assert_eq!(fs::read_to_string(report).unwrap(), "keep this report");
+}
+
+#[test]
+fn html_output_escapes_manifest_content() {
+    let root = tempfile::tempdir().unwrap();
+    write_manifest(root.path());
+    let manifest = root.path().join(".zpkg.toml");
+    let source = fs::read_to_string(&manifest).unwrap().replace(
+        "https://github.com/acme/html-report",
+        "https://github.com/acme/<script>alert('x')</script>?a=1&b=2",
+    );
+    fs::write(manifest, source).unwrap();
+    let report = root.path().join("escaped.html");
+    let output = run(
+        root.path(),
+        &["release", "plan", "--html", report.to_str().unwrap()],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let html = fs::read_to_string(report).unwrap();
+    assert!(!html.contains("<script>"));
+    assert!(html.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;?a=1&amp;b=2"));
+}
