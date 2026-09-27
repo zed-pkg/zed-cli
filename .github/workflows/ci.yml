@@ -782,7 +782,8 @@ jobs:
               --install-mode copy
           test ! -e "$restore_root/.zpkg.toml"
           cmp -s "$source_root/.zpkg.lock" "$restore_root/.zpkg.lock"
-          test -d "$restore_root/.zed/pkg/zed-pkg/docker-node-lib"
+          # Lock-only restore preserves the legacy manifestless layout.
+          test -d "$restore_root/zed_modules/zed-pkg/docker-node-lib"
 
       - name: One clear nested native project receives the generated manifest
         shell: bash
