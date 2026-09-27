@@ -769,6 +769,9 @@ pub enum ReleaseCmd {
         /// Emit machine-readable JSON rather than the human summary
         #[arg(long, env = "ZED_PKG_RELEASE_JSON")]
         json: bool,
+        /// Write a new self-contained HTML report without overwriting an existing file
+        #[arg(long, env = "ZED_PKG_RELEASE_HTML", conflicts_with = "json")]
+        html: Option<PathBuf>,
         /// Release track to resolve every native route against
         #[arg(long, value_enum, env = "ZED_PKG_RELEASE_CHANNEL")]
         channel: Option<ChannelArg>,
