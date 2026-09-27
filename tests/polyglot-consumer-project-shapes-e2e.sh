@@ -87,6 +87,9 @@ EOF_GO
 name = "zed-shape-rust"
 version = "0.0.0"
 edition = "2021"
+
+[dependencies]
+zed-poly-fixture = "=0.2.0"
 EOF_RUST
       mkdir -p "$root/src"
       printf 'fn main() {}\n' > "$root/src/main.rs"
@@ -194,6 +197,8 @@ run_case() {
   local root="$projects/$host"
   local package
   local adapter
+  local extra=()
+  local lock_before
   package="$(package_for "$host")"
   adapter="$(adapter_for "$host")"
   write_project "$host" "$root"
@@ -201,7 +206,6 @@ run_case() {
   local marker_before
   marker_before="$(checksum "$marker")"
 
-  extra=()
   if [[ "$host" == gleam || "$host" == dart ]]; then
     # No Gleam/Dart target exists in this fixture yet. Prove that the admission
     # boundary rejects a Rust target first, then exercise explicit universal
