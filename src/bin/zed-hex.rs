@@ -677,10 +677,35 @@ mod tests {
 
     #[test]
     fn tar_unpack_rejects_parent_traversal_and_removes_partial_destination() -> Result<()> {
-        let archive = tar_gz(&[
-            ("ok.txt", b"ok", tar::EntryType::Regular),
-            ("../escape.txt", b"no", tar::EntryType::Regular),
-        ])?;
+        // Newer tar releases correctly reject parent traversal in set_path(), so
+        // construct the hostile header bytes directly. This keeps the test aimed
+        // at our unpacker instead of failing while building the fixture.
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+
+        let mut regular = tar::Header::new_gnu();
+        regular.set_entry_type(tar::EntryType::Regular);
+        regular.set_mode(0o644);
+        regular.set_size(2);
+        regular.set_path("ok.txt").context("set safe tar fixture path")?;
+        regular.set_cksum();
+        builder
+            .append(&regular, Cursor::new(b"ok"))
+            .context("append safe tar fixture")?;
+
+        let mut traversal = tar::Header::new_gnu();
+        traversal.set_entry_type(tar::EntryType::Regular);
+        traversal.set_mode(0o644);
+        traversal.set_size(2);
+        let hostile_path = b"../escape.txt";
+        traversal.as_mut_bytes()[..hostile_path.len()].copy_from_slice(hostile_path);
+        traversal.set_cksum();
+        builder
+            .append(&traversal, Cursor::new(b"no"))
+            .context("append hostile tar fixture")?;
+
+        let encoder = builder.into_inner().context("finish tar fixture")?;
+        let archive = encoder.finish().context("finish gzip fixture")?;
         let destination = unique_temp_path("tar-traversal")?;
         let error = unpack_artifact(&archive, "tar.gz", &destination)
             .err()
