@@ -1,24 +1,18 @@
-use std::{
-    fs,
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, process::Command};
 
-fn fixture(contents: &str) -> std::path::PathBuf {
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("zed-env-contract-{suffix}"));
-    fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(".zpkg.toml");
-    fs::write(&path, contents).unwrap();
-    path
+fn fixture(contents: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("zed-env-contract-")
+        .tempdir()
+        .expect("create isolated env-contract fixture");
+    let path = dir.path().join(".zpkg.toml");
+    fs::write(&path, contents).expect("write env-contract fixture");
+    (dir, path)
 }
 
 #[test]
 fn accepts_conditional_requirements_when_not_selected() {
-    let manifest = fixture(
+    let (_fixture, manifest) = fixture(
         r#"
 [package]
 name = "locks"
@@ -41,13 +35,13 @@ required_when = "ORES_LOCK_BACKEND == 'redis'"
         .env_remove("ORES_LOCK_BACKEND")
         .env_remove("REDIS_URL")
         .status()
-        .unwrap();
+        .expect("run env-contract check");
     assert!(status.success());
 }
 
 #[test]
 fn requires_conditionally_selected_secret() {
-    let manifest = fixture(
+    let (_fixture, manifest) = fixture(
         r#"
 [[env.vars]]
 name = "ORES_LOCK_BACKEND"
@@ -66,14 +60,14 @@ required_when = "ORES_LOCK_BACKEND == 'redis'"
         .env("ORES_LOCK_BACKEND", "redis")
         .env_remove("REDIS_URL")
         .output()
-        .unwrap();
+        .expect("run env-contract check");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("REDIS_URL"));
 }
 
 #[test]
 fn rejects_secret_defaults() {
-    let manifest = fixture(
+    let (_fixture, manifest) = fixture(
         r#"
 [[env.vars]]
 name = "TOKEN"
@@ -85,7 +79,7 @@ default = "do-not-do-this"
         .arg("check")
         .arg(&manifest)
         .output()
-        .unwrap();
+        .expect("run env-contract check");
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("must not declare a default"));
 }
