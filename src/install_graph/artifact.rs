@@ -142,11 +142,7 @@ pub(crate) fn ensure_artifact(
 /// Preserve the strict Zed `pkg/` archive contract for ordinary registry
 /// objects, while allowing explicitly admitted native-registry artifacts to
 /// normalize their extracted tree without changing the upstream digest.
-fn add_to_store(
-    store: &Store,
-    cached: &Path,
-    version: &VersionMetadata,
-) -> Result<PathBuf> {
+fn add_to_store(store: &Store, cached: &Path, version: &VersionMetadata) -> Result<PathBuf> {
     if let Some(package_dir) = crate::native_artifact::add_if_native(store, cached, version)? {
         return Ok(package_dir);
     }
@@ -194,8 +190,9 @@ fn download_atomic(
             });
         }
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("publishing downloaded artifact to {}", cached.display()));
+            return Err(error).with_context(|| {
+                format!("publishing downloaded artifact to {}", cached.display())
+            });
         }
     }
 }
