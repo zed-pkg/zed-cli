@@ -491,9 +491,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Release { cmd } => match cmd {
             ReleaseCmd::Plan {
                 json,
+                html,
                 channel,
                 iteration,
-            } => release::plan(&cwd, json, channel.map(Into::into), iteration),
+            } => release::plan_with_report(
+                &cwd,
+                json,
+                channel.map(Into::into),
+                iteration,
+                html.as_deref(),
+            ),
             ReleaseCmd::Preflight => preflight::preflight(&cwd),
             ReleaseCmd::Publish {
                 channel,
