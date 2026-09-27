@@ -713,10 +713,7 @@ mod tests {
         // Newer tar crate releases correctly refuse to *create* a traversal
         // path through Builder::append_data. Construct the hostile wire bytes
         // directly so this still exercises our extractor's fail-closed boundary.
-        let archive = raw_path_tar_gz(&[
-            ("ok.txt", b"ok"),
-            ("../escape.txt", b"no"),
-        ])?;
+        let archive = raw_path_tar_gz(&[("ok.txt", b"ok"), ("../escape.txt", b"no")])?;
         let destination = unique_temp_path("tar-traversal")?;
         let error = unpack_artifact(&archive, "tar.gz", &destination)
             .err()
