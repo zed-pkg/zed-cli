@@ -1102,7 +1102,6 @@ mod tests {
         assert!(supabase_pair(&response).unwrap().is_none());
     }
 
-
     fn one_shot_auth_server(
         status: &'static str,
         response_body: String,
@@ -1178,8 +1177,7 @@ mod tests {
         let mut cfg = config(temp.path());
         cfg.auth_url = auth_url;
 
-        save_session(&cfg, session(now + 3600, now + 3600))
-            .expect("save source auth session");
+        save_session(&cfg, session(now + 3600, now + 3600)).expect("save source auth session");
         assert_eq!(
             resolve_registry_read_bearer(&cfg).expect("mint registry read delegation"),
             Some("delegated-read-token".to_owned())
