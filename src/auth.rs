@@ -1047,6 +1047,41 @@ mod tests {
     }
 
     #[test]
+    fn private_read_delegation_is_cached_and_never_replaces_identity_bearer() {
+        let temp = tempfile::tempdir().unwrap();
+        let cfg = config(temp.path());
+        let now = unix_now();
+        let mut stored = session(now + 3600, now + 3600);
+        stored.zed_registry_read = Some(TokenPair {
+            access_token: "scoped-read-delegation".into(),
+            refresh_token: None,
+            expires_at: now + 300,
+            refresh_expires_at: None,
+        });
+        save_session(&cfg, stored).unwrap();
+
+        assert_eq!(
+            resolve_registry_read_bearer(&cfg).unwrap().as_deref(),
+            Some("scoped-read-delegation")
+        );
+        assert_eq!(
+            resolve_bearer(&cfg).unwrap().as_deref(),
+            Some("shared-jwt"),
+            "ordinary registry/auth callers must remain on the identity lane"
+        );
+
+        let reloaded = load_store(temp.path()).unwrap();
+        assert_eq!(
+            reloaded
+                .sessions
+                .get(&session_key(&cfg))
+                .and_then(|session| session.zed_registry_read.as_ref())
+                .map(|pair| pair.access_token.as_str()),
+            Some("scoped-read-delegation")
+        );
+    }
+
+    #[test]
     fn store_roundtrip_is_scoped_by_auth_authority() {
         let temp = tempfile::tempdir().unwrap();
         let cfg = config(temp.path());
