@@ -651,4 +651,94 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert_eq!(names, BTreeSet::from(["a.txt".to_string(), "b.txt".to_string()]));
     }
+    fn metadata(url: &str, name: &str, version: &str, sha256: String) -> VersionMetadata {
+        return VersionMetadata {
+            org: "native".to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            sha256,
+            size: 1,
+            format: Default::default(),
+            vcs_tag: format!("v{version}"),
+            vcs_commit: None,
+            download_url: url.to_string(),
+            published_at: "2026-01-01T00:00:00Z".to_string(),
+            yanked: false,
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
+        };
+    }
+
+    #[test]
+    fn audited_npm_strips_package_wrapper() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("npm.tgz");
+        write_tar_gz(&archive, &[("package/index.js", b"ok")]);
+        let sha = digest(&archive);
+        let meta = metadata(
+            "https://registry.npmjs.org/demo/-/demo-1.0.0.tgz",
+            "demo",
+            "1.0.0",
+            sha,
+        );
+        let store = Store::new(&temp.path().join("home"));
+        let package = add_audited_native_artifact(
+            &store,
+            &archive,
+            &meta,
+            NativeArtifactSource::Npm,
+        )
+        .unwrap();
+        assert!(package.join("index.js").is_file());
+        assert!(!package.join("package").exists());
+    }
+
+    #[test]
+    fn audited_nuget_preserves_single_directory_as_package_content() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("demo.nupkg");
+        write_zip(&archive, &[("lib/net8.0/demo.dll", b"dll")]);
+        let sha = digest(&archive);
+        let meta = metadata(
+            "https://api.nuget.org/v3-flatcontainer/demo/1.0.0/demo.1.0.0.nupkg",
+            "demo",
+            "1.0.0",
+            sha,
+        );
+        let store = Store::new(&temp.path().join("home"));
+        let package = add_audited_native_artifact(
+            &store,
+            &archive,
+            &meta,
+            NativeArtifactSource::NuGet,
+        )
+        .unwrap();
+        assert!(package.join("lib/net8.0/demo.dll").is_file());
+        assert!(!package.join("net8.0/demo.dll").exists());
+    }
+
+    #[test]
+    fn audited_maven_keeps_jar_as_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("demo.jar");
+        write_zip(&archive, &[("META-INF/MANIFEST.MF", b"manifest"), ("Demo.class", b"class")]);
+        let sha = digest(&archive);
+        let meta = metadata(
+            "https://repo1.maven.org/maven2/com/acme/demo/1.0.0/demo-1.0.0.jar",
+            "demo",
+            "1.0.0",
+            sha,
+        );
+        let store = Store::new(&temp.path().join("home"));
+        let package = add_audited_native_artifact(
+            &store,
+            &archive,
+            &meta,
+            NativeArtifactSource::MavenCentral,
+        )
+        .unwrap();
+        assert!(package.join("demo-1.0.0.jar").is_file());
+        assert!(!package.join("META-INF").exists());
+    }
+
 }
