@@ -118,15 +118,14 @@ pub(crate) fn ensure_artifact(
         downloaded = true;
     }
 
-    match store.add_artifact(&cached, &version.sha256) {
+    match add_to_store(store, &cached, version) {
         Ok(package_dir) => Ok((package_dir, downloaded)),
         Err(first_error) if !downloaded => {
             // A killed legacy client may have left a partial cache file. The
             // per-artifact lock makes removal and replacement safe.
             let _ = fs::remove_file(&cached);
             download_atomic(registry, version, &cached)?;
-            store
-                .add_artifact(&cached, &version.sha256)
+            add_to_store(store, &cached, version)
                 .with_context(|| {
                     format!("cached artifact was invalid ({first_error:#}); redownload also failed")
                 })
@@ -134,6 +133,15 @@ pub(crate) fn ensure_artifact(
         }
         Err(error) => Err(error),
     }
+}
+
+fn add_to_store(store: &Store, cached: &Path, version: &VersionMetadata) -> Result<PathBuf> {
+    if let Some(source) = crate::native_artifact_source::audited_native_source(version) {
+        return crate::native_artifact_store::add_audited_native_artifact(
+            store, cached, version, source,
+        );
+    }
+    return store.add_artifact(cached, &version.sha256);
 }
 
 fn download_atomic(
