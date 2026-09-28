@@ -26,7 +26,32 @@ pub enum NativeArtifactSource {
 }
 
 pub fn audited_native_source(metadata: &VersionMetadata) -> Option<NativeArtifactSource> {
-    audited_native_download_url(&metadata.download_url)
+    let source = audited_native_download_url(&metadata.download_url)?;
+    if !source_accepts_org(source, &metadata.org) {
+        return None;
+    }
+    return Some(source);
+}
+
+fn source_accepts_org(source: NativeArtifactSource, org: &str) -> bool {
+    let normalized = org.trim().to_ascii_lowercase().replace(['_', ' ', '.'], "-");
+    let aliases: &[&str] = match source {
+        NativeArtifactSource::Npm => &["npm", "npmjs", "npmjs-com"],
+        NativeArtifactSource::CratesIo => &["crates-io", "cargo"],
+        NativeArtifactSource::PyPi => &["pypi", "python", "pip", "poetry", "uv"],
+        NativeArtifactSource::MavenCentral => {
+            &["maven", "maven-central", "gradle", "sbt", "java", "kotlin", "scala"]
+        }
+        NativeArtifactSource::NuGet => &["nuget", "dotnet", "csharp", "fsharp"],
+        NativeArtifactSource::GoProxy => &["go", "golang", "go-proxy", "proxy-golang-org"],
+        NativeArtifactSource::Hackage => &["hackage", "cabal", "stack", "haskell"],
+        NativeArtifactSource::Clojars => &["clojars", "clojure"],
+        NativeArtifactSource::Cpan => &["cpan", "perl"],
+        NativeArtifactSource::Cran => &["cran", "r", "r-project"],
+        NativeArtifactSource::Jsr => &["jsr", "deno", "bun"],
+        NativeArtifactSource::PackagistGithub => &["packagist", "composer", "php"],
+    };
+    return aliases.contains(&normalized.as_str());
 }
 
 pub fn audited_native_download_url(raw_url: &str) -> Option<NativeArtifactSource> {
@@ -158,4 +183,30 @@ mod tests {
             assert_eq!(audited_native_download_url(url), None, "{url}");
         }
     }
+    #[test]
+    fn metadata_ecosystem_must_match_the_audited_download_source() {
+        let mut metadata = VersionMetadata {
+            org: "npm".to_string(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            sha256: "0".repeat(64),
+            size: 1,
+            format: Default::default(),
+            vcs_tag: "v1.0.0".to_string(),
+            vcs_commit: None,
+            download_url: "https://registry.npmjs.org/demo/-/demo-1.0.0.tgz".to_string(),
+            published_at: "2026-01-01T00:00:00Z".to_string(),
+            yanked: false,
+            mirrors: Vec::new(),
+            signatures: Vec::new(),
+        };
+        assert_eq!(audited_native_source(&metadata), Some(NativeArtifactSource::Npm));
+
+        metadata.org = "maven".to_string();
+        assert_eq!(audited_native_source(&metadata), None);
+
+        metadata.org = "acme".to_string();
+        assert_eq!(audited_native_source(&metadata), None);
+    }
+
 }
