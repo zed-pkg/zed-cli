@@ -16,8 +16,10 @@ use anyhow::{Context, Result, bail};
 use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use zed_interfaces::paths::STORE_PKG_DIR;
+use zed_interfaces::registry::VersionMetadata;
 use zed_lock::{LockClass, LockManager, LockRequest};
 
+use crate::native_artifact_source::NativeArtifactSource;
 use crate::store::{Store, require_sha256};
 
 const DEFAULT_MAX_UNPACKED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -42,10 +44,63 @@ pub struct NativeArtifactResult {
     pub unpacked_bytes: u64,
 }
 
-pub fn add_native_artifact(
+pub(crate) fn add_native_artifact(
     store: &Store,
     archive: &Path,
     expected_sha256: &str,
+) -> Result<NativeArtifactResult> {
+    return add_native_archive_artifact(store, archive, expected_sha256, true);
+}
+
+/// Materialize an artifact only after the caller has classified its exact
+/// download URL as one of the protocol-audited native sources.
+///
+/// The source decides the filesystem policy. We never infer permission from
+/// archive shape: NuGet and Python ZIP layouts retain their roots, known
+/// source-distribution wrappers may be stripped, and JVM JARs remain JAR
+/// files instead of being exploded into a class tree.
+pub(crate) fn add_audited_native_artifact(
+    store: &Store,
+    archive: &Path,
+    metadata: &VersionMetadata,
+    source: NativeArtifactSource,
+) -> Result<PathBuf> {
+    let package_dir = match source {
+        NativeArtifactSource::MavenCentral | NativeArtifactSource::Clojars => {
+            add_native_file_artifact(store, archive, metadata, "jar")?
+        }
+        NativeArtifactSource::NuGet => {
+            add_native_archive_artifact(store, archive, &metadata.sha256, false)?.package_dir
+        }
+        NativeArtifactSource::PyPi => {
+            let strip_single_root = metadata.download_url.ends_with(".tar.gz");
+            add_native_archive_artifact(
+                store,
+                archive,
+                &metadata.sha256,
+                strip_single_root,
+            )?
+            .package_dir
+        }
+        NativeArtifactSource::Npm
+        | NativeArtifactSource::CratesIo
+        | NativeArtifactSource::GoProxy
+        | NativeArtifactSource::Hackage
+        | NativeArtifactSource::Cpan
+        | NativeArtifactSource::Cran
+        | NativeArtifactSource::Jsr
+        | NativeArtifactSource::PackagistGithub => {
+            add_native_archive_artifact(store, archive, &metadata.sha256, true)?.package_dir
+        }
+    };
+    return Ok(package_dir);
+}
+
+fn add_native_archive_artifact(
+    store: &Store,
+    archive: &Path,
+    expected_sha256: &str,
+    strip_single_root: bool,
 ) -> Result<NativeArtifactResult> {
     require_sha256(expected_sha256)?;
     verify_sha256(archive, expected_sha256)?;
@@ -89,7 +144,7 @@ pub fn add_native_artifact(
     fs::create_dir(&raw)?;
 
     let stats = extract_native_archive(archive, &raw)?;
-    let layout = normalize_root(&raw, staging.path())?;
+    let layout = normalize_root(&raw, staging.path(), strip_single_root)?;
     let package_dir = staging.path().join(STORE_PKG_DIR);
     if !package_dir.is_dir() {
         bail!("native artifact normalization did not produce `{STORE_PKG_DIR}/`");
@@ -119,6 +174,65 @@ pub fn add_native_artifact(
         entries: stats.entries,
         unpacked_bytes: stats.unpacked_bytes,
     })
+}
+
+fn add_native_file_artifact(
+    store: &Store,
+    archive: &Path,
+    metadata: &VersionMetadata,
+    extension: &str,
+) -> Result<PathBuf> {
+    require_sha256(&metadata.sha256)?;
+    verify_sha256(archive, &metadata.sha256)?;
+    if store.has(&metadata.sha256) {
+        touch_last_used(store, &metadata.sha256);
+        return Ok(store.pkg_dir(&metadata.sha256));
+    }
+
+    let lock_path = store
+        .home()
+        .join("locks")
+        .join(format!("native-{}.lock", metadata.sha256));
+    let _lock = LockManager::global().acquire_blocking(
+        LockRequest::exclusive(&lock_path)
+            .operation(format!("native file materialization of {}", metadata.sha256))
+            .class(LockClass::Artifact)
+            .queue_same_process(),
+    )?;
+    if store.has(&metadata.sha256) {
+        touch_last_used(store, &metadata.sha256);
+        return Ok(store.pkg_dir(&metadata.sha256));
+    }
+
+    let entry = store.entry_dir(&metadata.sha256);
+    let parent = entry.parent().context("native store entry has a parent")?;
+    fs::create_dir_all(parent)?;
+    let staging = tempfile::tempdir_in(parent)?;
+    let package_dir = staging.path().join(STORE_PKG_DIR);
+    fs::create_dir(&package_dir)?;
+
+    let filename = format!("{}-{}.{}", metadata.name, metadata.version, extension);
+    if filename.contains('/') || filename.contains('\\') {
+        bail!("native file artifact produced an unsafe filename");
+    }
+    fs::copy(archive, package_dir.join(filename))?;
+
+    let staging_path = staging.keep();
+    match fs::rename(&staging_path, &entry) {
+        Ok(()) => {}
+        Err(_) if entry.exists() => {
+            let _ = fs::remove_dir_all(&staging_path);
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_path);
+            return Err(error).with_context(|| {
+                format!("publishing native file store entry {}", entry.display())
+            });
+        }
+    }
+
+    touch_last_used(store, &metadata.sha256);
+    return Ok(store.pkg_dir(&metadata.sha256));
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -283,7 +397,11 @@ fn extract_zip<R: Read + Seek>(reader: R, destination: &Path) -> Result<Extracti
     })
 }
 
-fn normalize_root(raw: &Path, staging: &Path) -> Result<NativeArtifactLayout> {
+fn normalize_root(
+    raw: &Path,
+    staging: &Path,
+    strip_single_root: bool,
+) -> Result<NativeArtifactLayout> {
     let mut top_level = fs::read_dir(raw)?
         .map(|entry| entry.map(|value| value.path()))
         .collect::<std::io::Result<Vec<_>>>()?;
@@ -305,7 +423,7 @@ fn normalize_root(raw: &Path, staging: &Path) -> Result<NativeArtifactLayout> {
     let package = staging.join(STORE_PKG_DIR);
     fs::create_dir(&package)?;
 
-    if top_level.len() == 1 && top_level[0].is_dir() {
+    if strip_single_root && top_level.len() == 1 && top_level[0].is_dir() {
         move_directory_contents(&top_level[0], &package)?;
         return Ok(NativeArtifactLayout::SingleRoot);
     }
