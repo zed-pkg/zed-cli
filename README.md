@@ -13,7 +13,7 @@ Why it exists:
   CI config, `.github/`, and READMEs are stripped by default. Licenses are
   always kept.
 - **pnpm philosophy.** One content-addressed copy per machine under
-  `~/.zed-pkg/store`, symlinked into each project's `zed_modules/`. No more
+  `$ZED_PKG_HOME/store` (normally `~/.zpkg/store`), symlinked into each project's configured Zed dependency tree. Existing machines with only the legacy `~/.zed-pkg` store keep using it automatically. No more
   hefty per-project dependency folders.
 - **Provenance by tags.** Publishing requires a VCS tag matching the version
   (`v{version}` by default) pointing at the exact published commit; the tag
@@ -154,6 +154,7 @@ the legacy version route by default or the additive target-qualified route with
 | `zed install [<org>/<name>[@req] ...]` (`zed i`) | Resolve, download once into the store, and install; package operands create a durable consumer manifest when one is missing |
 | `zed install --cli <tool> [--cli <tool> ...]` | Resolve exact project-owned CLI runtimes into `.zed/environment.lock.toml` and copy their complete runtime roots below `.zed/tools`; built-ins are `nodejs` and `python3` |
 | `zed install --frozen` | Install exactly what the manifest/lock pair pins; a manifestless lock-only restore additionally requires `--do-not-write-new-manifest` |
+| `zed workspace sync` | Reconcile manifest-authoritative VCS source composition into ordinary checkouts and generated Git-submodule projections without making native VCS metadata a second package graph |
 | `zed uninstall [<org>/<name> ...]` (`zed un`) | Transactionally remove all or selected materialized packages while retaining the manifest and lockfile for a frozen reinstall |
 | `zed inspect --root ABSOLUTE_PATH [--format json]` | Fully offline, read-only manifest, lock, store, Git-submodule, mise, and Nix analysis for IDEs and automation |
 | `zed env import mise [--config PATH] [--lock PATH] [--frozen] [--json]` | Import the supported project-local mise tool/lock subset as the shared normalized `EnvironmentPlan`; never loads parent/global config or executes hooks |
@@ -366,6 +367,49 @@ zed install --frozen --do-not-write-new-manifest
 Without the flag, Zed fails instead of inventing a misleading manifest from the
 whole locked graph.
 
+### Manifest-authoritative VCS source composition
+
+Repository composition belongs in `.zpkg.toml`; native VCS metadata is a
+projection or migration input, not a second dependency graph authority:
+
+```toml
+[interop.source-composition]
+checkout_dir = ".zed/vcs"
+git_submodule_dir = "submodules"
+
+[interop.source-composition.sources.lib]
+vcs = "git"
+url = "https://github.com/acme/lib.git"
+role = "workspace"
+projection = "git-submodule"
+path = "apps/lib"
+package = "acme/lib"
+branch = "main"
+recursive = true
+
+[interop.source-composition.sources.docs]
+vcs = "hg"
+url = "https://example.com/hg/docs"
+role = "inventory"
+```
+
+`zed workspace sync` reconciles these declarations. Git-submodule projections
+produce a deterministic `.gitmodules` with a generated header, run Git's
+submodule config/sync/init/update plumbing, and create a missing gitlink when
+the declared path is absent. Existing authored `.gitmodules` is never silently
+overwritten; migrate it explicitly with `zed overtake --git-submodules` first.
+
+Ordinary checkout sources support Git, Mercurial, Jujutsu, and Sapling in the
+initial certified transport path. Dirty checkouts fail closed. Git-submodule
+exact commits are owned by the superproject gitlink and Zed lock; the manifest
+may name a branch as transport intent but may not provide a competing mutable
+`revision`.
+
+Package materialization roots, ordinary VCS checkout roots, Git-submodule roots,
+and individual source roots must be disjoint. New generated consumers use
+`.zed/pkg`; ordinary VCS checkouts default to `.zed/vcs`; Git-submodule
+projections default to `submodules`.
+
 ### Local development overrides
 
 A developer may replace a registry dependency with a local checkout:
@@ -502,7 +546,7 @@ The lifecycle order is native prerequisites → `pre-install` hooks → build �
 `post-install` hooks → cache promotion → project materialization. Hooks and
 builds run in an isolated staging copy—never inside the immutable source store
 or consumer project—and results cache by source hash, platform, lifecycle
-commands, selected target, and native route under `~/.zed-pkg/builds/`.
+commands, selected target, and native route under `$ZED_PKG_HOME/builds/` (normally `~/.zpkg/builds/`).
 Because a build runs arbitrary author code, it remains independently opt-in:
 pass `--allow-build` (or set `ZED_PKG_ALLOW_BUILD=1`). A consumer can patch or
 replace a
@@ -528,7 +572,7 @@ actual CLI never drift, so it is always authoritative:
 | `--r2-public-key` | `ZED_PKG_R2_PUBLIC_KEY` | optional hostname, `https://…`, or Cloudflare `pub-<id>` |
 | `--source-fallback` | `ZED_PKG_SOURCE_FALLBACK` | on; retry public R2 and GitHub when the HTTP registry is down (`file://` and loopback stay hermetic) |
 | (env only) | `ZED_PKG_SOURCE_FALLBACK_ALLOW_LOOPBACK` | off; test-org canaries that bind mocks to `127.0.0.1` must set this |
-| `--home` | `ZED_PKG_HOME` | `~/.zed-pkg` |
+| `--home` | `ZED_PKG_HOME` | `~/.zpkg` (legacy `~/.zed-pkg` retained only when it is the sole existing store) |
 | `--token` | `ZED_PKG_TOKEN` | saved credentials |
 | `--auth-url` | `ZED_PKG_AUTH_URL` | `<registry>/shared-auth` |
 | `--supabase-url` | `ZED_PKG_SUPABASE_URL` | optional Supabase project URL |
@@ -587,13 +631,13 @@ shared-auth directly.
 Passwords are read from a hidden terminal prompt and never stored. For
 non-interactive use, pass `--password-stdin` or inject
 `ZED_PKG_AUTH_PASSWORD`. Access and rotating refresh tokens are stored in
-`~/.zed-pkg/auth/sessions.toml`; the directory is mode `0700` and the file is
+`$ZED_PKG_HOME/auth/sessions.toml` (normally `~/.zpkg/auth/sessions.toml`); the directory is mode `0700` and the file is
 mode `0600` on Unix. `zed logout` attempts revocation at both authorities and
 always removes the local session.
 
 ## Containers & OCI
 
-Symlinks into `$HOME/.zed-pkg` do not survive a `COPY --from=build` between
+Symlinks into the host Zed store (`$ZED_PKG_HOME`, normally `$HOME/.zpkg`) do not survive a `COPY --from=build` between
 image stages. Project-owned CLI runtimes therefore default to copy mode: their
 complete runtime roots, command links, and portable environment lock all live
 below the workspace. The published builder image supports an intentionally
@@ -617,7 +661,7 @@ ENV PATH="/app/.zed/tools/bin:${PATH}"
 RUN node --version \
  && python3 --version \
  && ! command -v zed \
- && test ! -e /home/zed/.zed-pkg
+ && test ! -e /home/zed/.zpkg
 ```
 
 `node`/`nodejs`, `npm`, `npx`, and `corepack` come from the locked Node.js
@@ -672,7 +716,7 @@ consumer would:
    pointing at the installed package.
 
 The whole workspace lives under your home directory at
-`~/.zed-pkg/r2g/<org>-<name>-<uuid-v4>/` (registry + consumer + store). Unique
+`$ZED_PKG_HOME/r2g/<org>-<name>-<uuid-v4>/` (normally `~/.zpkg/r2g/...`; registry + consumer + store). Unique
 run directories prevent stale or concurrent state from masking a failure and
 are left behind for inspection (pass `--clean`, or set `--r2g-root` to
 relocate them). `zed test-local` is a backwards-compatible alias.
@@ -724,7 +768,7 @@ If the smoke test passes here, it will pass for your users.
 `zed install` is safe to run from many processes at once (two terminals,
 parallel CI runners). Store extraction and reference updates retain their
 existing advisory locks. A dependency-bearing first install also takes a
-project-scoped manifest lock under `~/.zed-pkg/locks/projects/`, keyed by the
+project-scoped manifest lock under `$ZED_PKG_HOME/locks/projects/` (normally `~/.zpkg/locks/projects/`), keyed by the
 canonical project path. Two simultaneous first installs therefore create one
 valid manifest and merge distinct direct dependencies instead of losing one
 caller's intent. Exact conflicting requirements fail rather than choosing a
@@ -740,7 +784,7 @@ Linux (arm64 + x64, gnu and musl), and Windows via
 ## Store layout
 
 ```
-~/.zed-pkg/
+$ZED_PKG_HOME/                         # normally ~/.zpkg; legacy ~/.zed-pkg may be auto-selected
   store/v1/<aa>/<sha256>/pkg/          extracted source artifacts (content-addressed, immutable)
   builds/v1/<platform>/<aa>/<sha256>/  per-platform build-hook outputs
   cache/<sha256>.tar.gz                downloaded archives
@@ -752,8 +796,8 @@ Linux (arm64 + x64, gnu and musl), and Windows via
 ```
 
 Verified binary downloads additionally receive a human-readable, source- and
-target-qualified view under ~/.zpkg/downloads. The existing
-~/.zed-pkg/store remains the content-addressed byte authority. The host view
+target-qualified view under `~/.zpkg/downloads`. The selected
+`$ZED_PKG_HOME/store` remains the content-addressed byte authority. The host view
 uses Windows-safe typed folders such as
 zed-org--acme/zed-project--payments/zed-package--tool/versions/1.2.3/zed/targets/aarch64-linux-android.
 Projectless packages omit the project segment. Configure the root, delimiter,

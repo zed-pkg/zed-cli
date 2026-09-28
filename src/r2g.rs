@@ -203,6 +203,7 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
         package: PackageSection {
             org: "zed-local".to_string(),
             name: "consumer".to_string(),
+            kind: None,
             version: "0.0.0".to_string(),
             version_scheme: VersionScheme::Semver,
             description: Some(format!("r2g mock consumer of {full}")),

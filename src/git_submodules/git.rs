@@ -337,6 +337,7 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
         package: PackageSection {
             org: GENERATED_ORG.to_string(),
             name: name.clone(),
+            kind: None,
             version: GENERATED_VERSION.to_string(),
             version_scheme: VersionScheme::Semver,
             description: Some(GENERATED_DESCRIPTION.to_string()),

@@ -489,6 +489,7 @@ fn generated_manifest(
         package: PackageSection {
             org: GENERATED_ORG.to_string(),
             name: name.clone(),
+            kind: None,
             version: GENERATED_VERSION.to_string(),
             version_scheme: VersionScheme::Semver,
             description: Some(GENERATED_DESCRIPTION.to_string()),

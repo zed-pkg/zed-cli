@@ -313,6 +313,7 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
         package: PackageSection {
             org: "zed-manifestless".to_string(),
             name: name.clone(),
+            kind: None,
             version: "0.0.0".to_string(),
             version_scheme: VersionScheme::Semver,
             description: Some("Transient manifestless Zed consumer".to_string()),

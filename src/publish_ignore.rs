@@ -16,7 +16,44 @@ use zed_interfaces::paths::IGNORE_FILE;
 /// Ignore-control metadata is never payload. These final rules are appended
 /// after authored negations so neither a manifest nor `.zedignore` can publish
 /// an ignore file accidentally.
-const CONTROL_EXCLUDES: &[&str] = &[IGNORE_FILE, "**/.zedignore"];
+const CONTROL_EXCLUDES: &[&str] = &[
+    IGNORE_FILE,
+    "**/.zedignore",
+    ".git",
+    ".git/**",
+    "**/.git",
+    "**/.git/**",
+    ".gitmodules",
+    "**/.gitmodules",
+    ".hg",
+    ".hg/**",
+    "**/.hg",
+    "**/.hg/**",
+    ".hgsub",
+    ".hgsubstate",
+    "**/.hgsub",
+    "**/.hgsubstate",
+    ".svn",
+    ".svn/**",
+    "**/.svn",
+    "**/.svn/**",
+    ".jj",
+    ".jj/**",
+    "**/.jj",
+    "**/.jj/**",
+    ".sl",
+    ".sl/**",
+    "**/.sl",
+    "**/.sl/**",
+    ".pijul",
+    ".pijul/**",
+    "**/.pijul",
+    "**/.pijul/**",
+    ".fslckout",
+    "_FOSSIL_",
+    "**/.fslckout",
+    "**/_FOSSIL_",
+];
 
 pub(crate) fn parse_rules(contents: &str) -> Vec<String> {
     contents
@@ -98,6 +135,44 @@ url = "https://example.invalid/acme/publish-ignore"
         let excludes = effective_artifact_excludes(&manifest, &["!target".to_string()]);
         assert!(!excludes.iter().any(|rule| rule == "target/**"));
         assert!(!excludes.iter().any(|rule| rule == "**/target/**"));
+    }
+
+    #[test]
+    fn vcs_control_metadata_cannot_be_reincluded() {
+        let manifest = manifest(
+            r#"[publish]
+exclude = ["!.git", "!vendor/.git", "!.gitmodules", "!.hg", "!.jj", "!.sl", "!.pijul"]
+"#,
+        );
+        let excludes = effective_artifact_excludes(
+            &manifest,
+            &[
+                "!.git".to_string(),
+                "!vendor/.git".to_string(),
+                "!.gitmodules".to_string(),
+                "!.hg".to_string(),
+            ],
+        );
+        for required in [
+            ".git",
+            "**/.git",
+            "**/.git/**",
+            ".gitmodules",
+            "**/.gitmodules",
+            ".hg",
+            "**/.hg/**",
+            ".jj",
+            "**/.jj/**",
+            ".sl",
+            "**/.sl/**",
+            ".pijul",
+            "**/.pijul/**",
+        ] {
+            assert!(
+                excludes.iter().any(|rule| rule == required),
+                "missing non-negotiable VCS exclude {required}"
+            );
+        }
     }
 
     #[test]
