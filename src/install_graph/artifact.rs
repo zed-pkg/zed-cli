@@ -135,14 +135,10 @@ pub(crate) fn ensure_artifact(
     }
 }
 
-
 fn add_to_store(store: &Store, cached: &Path, version: &VersionMetadata) -> Result<PathBuf> {
     if let Some(source) = crate::native_artifact_source::audited_native_source(version) {
         return crate::native_artifact_store::add_audited_native_artifact(
-            store,
-            cached,
-            version,
-            source,
+            store, cached, version, source,
         );
     }
     return store.add_artifact(cached, &version.sha256);
