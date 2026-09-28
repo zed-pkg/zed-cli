@@ -340,14 +340,11 @@ fn get_bytes(client: &Client, url: &str, expected_size: u64) -> Result<Vec<u8>> 
         .with_context(|| format!("GET {url}"))?;
     let status = response.status();
     if !status.is_success() {
-        let body = match read_response_limited(
-            response,
-            MAX_ERROR_BODY_BYTES,
-            "error response body",
-        ) {
-            Ok(body) => body,
-            Err(error) => format!("<unable to read bounded error body: {error}>").into_bytes(),
-        };
+        let body =
+            match read_response_limited(response, MAX_ERROR_BODY_BYTES, "error response body") {
+                Ok(body) => body,
+                Err(error) => format!("<unable to read bounded error body: {error}>").into_bytes(),
+            };
         let body = String::from_utf8_lossy(&body);
         bail!("GET {url} returned {status}: {body}");
     }
@@ -577,10 +574,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .context("system clock is before UNIX_EPOCH")?
             .as_nanos();
-        Ok(std::env::temp_dir().join(format!(
-            "zed-hex-{label}-{}-{nonce}",
-            std::process::id()
-        )))
+        Ok(std::env::temp_dir().join(format!("zed-hex-{label}-{}-{nonce}", std::process::id())))
     }
 
     #[test]
@@ -654,7 +648,10 @@ mod tests {
             .err()
             .context("existing archive should not be overwritten")?;
         assert!(error.to_string().contains("refusing to overwrite"));
-        assert_eq!(fs::read(&path).context("read preserved archive")?, b"keep me");
+        assert_eq!(
+            fs::read(&path).context("read preserved archive")?,
+            b"keep me"
+        );
         let _ = fs::remove_file(path);
         Ok(())
     }
@@ -680,10 +677,34 @@ mod tests {
 
     #[test]
     fn tar_unpack_rejects_parent_traversal_and_removes_partial_destination() -> Result<()> {
-        let archive = tar_gz(&[
+        let mut archive = tar_gz(&[
             ("ok.txt", b"ok", tar::EntryType::Regular),
-            ("../escape.txt", b"no", tar::EntryType::Regular),
+            ("aa/escape.txt", b"no", tar::EntryType::Regular),
         ])?;
+
+        // Recent tar crate versions correctly refuse to *create* traversal
+        // entries through Builder::append_data. Mutate the second raw header
+        // instead so this test still exercises our untrusted-reader boundary.
+        let mut decoder = flate2::read::GzDecoder::new(Cursor::new(&archive));
+        let mut raw_tar = Vec::new();
+        decoder.read_to_end(&mut raw_tar).context("decode tar fixture")?;
+        let second_header = 1024usize;
+        let replacement = b"../escape.txt";
+        raw_tar[second_header..second_header + 100].fill(0);
+        raw_tar[second_header..second_header + replacement.len()].copy_from_slice(replacement);
+        raw_tar[second_header + 148..second_header + 156].fill(b' ');
+        let checksum: u32 = raw_tar[second_header..second_header + 512]
+            .iter()
+            .map(|byte| u32::from(*byte))
+            .sum();
+        let encoded = format!("{checksum:06o}\0 ");
+        raw_tar[second_header + 148..second_header + 156].copy_from_slice(encoded.as_bytes());
+
+        use flate2::{Compression, write::GzEncoder};
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&raw_tar).context("re-encode tar fixture")?;
+        archive = encoder.finish().context("finish malicious gzip fixture")?;
+
         let destination = unique_temp_path("tar-traversal")?;
         let error = unpack_artifact(&archive, "tar.gz", &destination)
             .err()
@@ -692,7 +713,10 @@ mod tests {
             error.to_string().contains("escape extraction directory")
                 || error.to_string().contains("unpack tar entry")
         );
-        assert!(!destination.exists(), "failed extraction must be cleaned up");
+        assert!(
+            !destination.exists(),
+            "failed extraction must be cleaned up"
+        );
         assert!(!destination.with_file_name("escape.txt").exists());
         Ok(())
     }
@@ -728,7 +752,11 @@ mod tests {
         let error = unpack_artifact(&archive, "tar.gz", &destination)
             .err()
             .context("symlink tar entry should be rejected")?;
-        assert!(error.to_string().contains("link or unsupported special entry"));
+        assert!(
+            error
+                .to_string()
+                .contains("link or unsupported special entry")
+        );
         assert!(!destination.exists(), "failed extraction must be cleaned up");
         Ok(())
     }
