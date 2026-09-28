@@ -74,13 +74,8 @@ pub(crate) fn add_audited_native_artifact(
         }
         NativeArtifactSource::PyPi => {
             let strip_single_root = metadata.download_url.ends_with(".tar.gz");
-            add_native_archive_artifact(
-                store,
-                archive,
-                &metadata.sha256,
-                strip_single_root,
-            )?
-            .package_dir
+            add_native_archive_artifact(store, archive, &metadata.sha256, strip_single_root)?
+                .package_dir
         }
         NativeArtifactSource::Npm
         | NativeArtifactSource::CratesIo
@@ -195,7 +190,10 @@ fn add_native_file_artifact(
         .join(format!("native-{}.lock", metadata.sha256));
     let _lock = LockManager::global().acquire_blocking(
         LockRequest::exclusive(&lock_path)
-            .operation(format!("native file materialization of {}", metadata.sha256))
+            .operation(format!(
+                "native file materialization of {}",
+                metadata.sha256
+            ))
             .class(LockClass::Artifact)
             .queue_same_process(),
     )?;
@@ -296,7 +294,9 @@ fn extract_tar_gz(file: fs::File, destination: &Path) -> Result<ExtractionStats>
 
     for item in archive.entries()? {
         let mut item = item?;
-        entries = entries.checked_add(1).context("native tar entry count overflow")?;
+        entries = entries
+            .checked_add(1)
+            .context("native tar entry count overflow")?;
         if entries > MAX_ARCHIVE_ENTRIES {
             bail!("native artifact has more than {MAX_ARCHIVE_ENTRIES} entries");
         }
@@ -459,7 +459,10 @@ fn safe_relative_path(path: &Path) -> Result<PathBuf> {
             Component::Normal(value) => output.push(value),
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                bail!("native artifact contains an unsafe path: {}", path.display());
+                bail!(
+                    "native artifact contains an unsafe path: {}",
+                    path.display()
+                );
             }
         }
     }
@@ -496,7 +499,10 @@ fn touch_last_used(store: &Store, sha256: &str) {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    let _ = fs::write(store.entry_dir(sha256).join(".last-used"), stamp.to_string());
+    let _ = fs::write(
+        store.entry_dir(sha256).join(".last-used"),
+        stamp.to_string(),
+    );
 }
 
 #[cfg(test)]
@@ -542,13 +548,19 @@ mod tests {
         let archive = temp.path().join("npm.tgz");
         write_tar_gz(
             &archive,
-            &[("package/package.json", br#"{"name":"demo"}"#), ("package/index.js", b"ok")],
+            &[
+                ("package/package.json", br#"{"name":"demo"}"#),
+                ("package/index.js", b"ok"),
+            ],
         );
         let sha = digest(&archive);
         let store = Store::new(&temp.path().join("home"));
         let result = add_native_artifact(&store, &archive, &sha).unwrap();
         assert_eq!(result.layout, NativeArtifactLayout::SingleRoot);
-        assert_eq!(fs::read_to_string(result.package_dir.join("index.js")).unwrap(), "ok");
+        assert_eq!(
+            fs::read_to_string(result.package_dir.join("index.js")).unwrap(),
+            "ok"
+        );
         assert!(result.package_dir.join("package.json").is_file());
         assert_eq!(store.entry_dir(&sha).file_name().unwrap(), sha.as_str());
     }
@@ -557,7 +569,13 @@ mod tests {
     fn wraps_flat_jar_or_nupkg_layout_under_pkg() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("artifact.zip");
-        write_zip(&archive, &[("META-INF/MANIFEST.MF", b"manifest"), ("demo.class", b"class")]);
+        write_zip(
+            &archive,
+            &[
+                ("META-INF/MANIFEST.MF", b"manifest"),
+                ("demo.class", b"class"),
+            ],
+        );
         let sha = digest(&archive);
         let store = Store::new(&temp.path().join("home"));
         let result = add_native_artifact(&store, &archive, &sha).unwrap();
@@ -575,7 +593,10 @@ mod tests {
         let store = Store::new(&temp.path().join("home"));
         let result = add_native_artifact(&store, &archive, &sha).unwrap();
         assert_eq!(result.layout, NativeArtifactLayout::CanonicalPkg);
-        assert_eq!(fs::read_to_string(result.package_dir.join("file.txt")).unwrap(), "hello");
+        assert_eq!(
+            fs::read_to_string(result.package_dir.join("file.txt")).unwrap(),
+            "hello"
+        );
     }
 
     #[test]
@@ -649,7 +670,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
             .collect::<BTreeSet<_>>();
-        assert_eq!(names, BTreeSet::from(["a.txt".to_string(), "b.txt".to_string()]));
+        assert_eq!(
+            names,
+            BTreeSet::from(["a.txt".to_string(), "b.txt".to_string()])
+        );
     }
     fn metadata(url: &str, name: &str, version: &str, sha256: String) -> VersionMetadata {
         return VersionMetadata {
@@ -682,13 +706,9 @@ mod tests {
             sha,
         );
         let store = Store::new(&temp.path().join("home"));
-        let package = add_audited_native_artifact(
-            &store,
-            &archive,
-            &meta,
-            NativeArtifactSource::Npm,
-        )
-        .unwrap();
+        let package =
+            add_audited_native_artifact(&store, &archive, &meta, NativeArtifactSource::Npm)
+                .unwrap();
         assert!(package.join("index.js").is_file());
         assert!(!package.join("package").exists());
     }
@@ -706,13 +726,9 @@ mod tests {
             sha,
         );
         let store = Store::new(&temp.path().join("home"));
-        let package = add_audited_native_artifact(
-            &store,
-            &archive,
-            &meta,
-            NativeArtifactSource::NuGet,
-        )
-        .unwrap();
+        let package =
+            add_audited_native_artifact(&store, &archive, &meta, NativeArtifactSource::NuGet)
+                .unwrap();
         assert!(package.join("lib/net8.0/demo.dll").is_file());
         assert!(!package.join("net8.0/demo.dll").exists());
     }
@@ -721,7 +737,13 @@ mod tests {
     fn audited_maven_keeps_jar_as_file() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("demo.jar");
-        write_zip(&archive, &[("META-INF/MANIFEST.MF", b"manifest"), ("Demo.class", b"class")]);
+        write_zip(
+            &archive,
+            &[
+                ("META-INF/MANIFEST.MF", b"manifest"),
+                ("Demo.class", b"class"),
+            ],
+        );
         let sha = digest(&archive);
         let meta = metadata(
             "https://repo1.maven.org/maven2/com/acme/demo/1.0.0/demo-1.0.0.jar",
@@ -740,5 +762,4 @@ mod tests {
         assert!(package.join("demo-1.0.0.jar").is_file());
         assert!(!package.join("META-INF").exists());
     }
-
 }
