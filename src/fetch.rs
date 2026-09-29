@@ -224,12 +224,17 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
         .with_context(|| format!("{} is not UTF-8", lock_path.display()))?;
     let lock = Lockfile::parse(lock_text).context("parsing frozen lockfile")?;
     let packages = validate_locked_packages(&lock, &cfg.registry)?;
+    // Anchored in what this lockfile already established: the mirrors recorded
+    // at resolution time and the publisher key pinned on first use.
     let context = cfg.mirror_context(TrustAnchors::from_lockfile(&lock));
     let lock_sha256 = sha256_bytes(&lock_bytes);
 
     let output = prepare_output_path(&requested_root, &project, &options.output)?;
     let parent = output.parent().context("fetch output has no parent")?;
 
+    // Both temporary directories live beside the final output, so the final
+    // directory rename is atomic on one filesystem. The temporary Store is
+    // isolated from `ZED_PKG_HOME` and is removed on success or failure.
     let staging = tempfile::Builder::new()
         .prefix(".zed-fetch-bundle-")
         .tempdir_in(parent)
@@ -249,9 +254,15 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
     for locked in &packages {
         let locked_source = effective_source(locked, &cfg.registry);
         let configured = cfg.registry.trim_end_matches('/');
+        // A committed lock can name a machine-local `file://` registry that
+        // does not exist here (a throwaway publish directory, another
+        // developer's path). The pin, not that path, is the authority, so read
+        // the pinned version from the configured registry — and through its
+        // fallback, GitHub — and verify it exactly as before.
         let source = if locked_source != configured && missing_local_source(locked_source) {
             degraded.push(format!(
-                "{}@{}: the locked local registry is not present on this machine; reading the pinned version from the configured registry",
+                "{}@{}: the locked local registry is not present on this machine; \
+                 reading the pinned version from the configured registry",
                 locked.full_name(),
                 locked.version
             ));
@@ -270,6 +281,10 @@ pub fn run(requested_root: &Path, cfg: &Config, options: FetchArgs) -> Result<Fe
                 verify_registry_metadata(locked, &metadata)?;
                 metadata
             }
+            // The record the registry would have returned is already pinned in
+            // the lock. When the registry cannot answer and the lock names
+            // somewhere else to look, a frozen restore proceeds from the pin —
+            // which is the authority the store verifies against regardless.
             Err(registry_error)
                 if !locked.mirrors.is_empty() && context.policy.allows_artifacts() =>
             {
@@ -398,6 +413,9 @@ fn validate_locked_packages(
     Ok(packages)
 }
 
+/// A `file://` lock source whose registry directory is absent on this machine.
+/// Immutable Nix store inputs never qualify: a missing store path is a broken
+/// derivation, not an outage to route around, and must stay hermetic.
 fn missing_local_source(source: &str) -> bool {
     source_kind(source) == "file"
         && reqwest::Url::parse(source)
@@ -415,6 +433,11 @@ fn effective_source<'a>(package: &'a LockedPackage, fallback_registry: &'a str) 
     }
 }
 
+/// Frozen `file:` sources are local only when they have no host, an empty
+/// host, or the URL-parser domain `localhost`. The parser lowercases domain
+/// hosts, matching `Url::to_file_path()`. IPv4/IPv6 (including loopback)
+/// and any other name are non-local: Windows `to_file_path()` would otherwise
+/// turn them into UNC paths.
 fn file_url_authority_is_local(url: &reqwest::Url) -> bool {
     match url.host_str() {
         None | Some("") | Some("localhost") => true,
@@ -581,6 +604,8 @@ fn prepare_output_path(
     };
     let project = fs::canonicalize(project)?;
 
+    // Reject project-tree and project-ancestor destinations before inspecting
+    // the parent, so the source tree remains an immutable input on every path.
     if raw.starts_with(&project) || project.starts_with(&raw) {
         bail!(
             "--output must be outside the project tree and may not contain it ({})",
@@ -612,6 +637,8 @@ fn prepare_output_path(
         .context("fetch output has no directory name")?;
     let output = canonical_parent.join(name);
 
+    // A symlinked parent can redirect an apparently external path back into
+    // the project. Canonicalize it before creating staging or final state.
     if output.starts_with(&project) || project.starts_with(&output) {
         bail!("canonical fetch output must remain outside the project tree");
     }
@@ -652,6 +679,8 @@ fn copy_package_tree(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The first line of an error chain. Degradation notes list one line per
+/// package; a full multi-line cause chain each would bury the summary.
 fn first_line(error: &anyhow::Error) -> String {
     error
         .to_string()
@@ -951,6 +980,9 @@ mod tests {
         bytes
     }
 
+    /// Serialize intentionally malformed lock fixtures without invoking the
+    /// shared writer's validity checks. Production code never calls this; the
+    /// negative tests need malformed bytes to reach the resolver boundary.
     fn write_unchecked_lock(project: &Path, packages: Vec<LockedPackage>) -> Vec<u8> {
         let lock = Lockfile {
             version: Lockfile::CURRENT_VERSION,
@@ -1171,6 +1203,7 @@ mod tests {
             "0.1.1",
             &[("rust/src/lib.rs", b"pub fn owls() {}\n")],
         );
+        // The lock was written on a machine whose publish directory is gone.
         let vanished = outputs.path().join("vanished-publish-registry");
         locked.source = format!("file://{}", vanished.display());
         write_lock(project.path(), vec![locked.clone()]);
@@ -1224,6 +1257,8 @@ mod tests {
             "1.0.0",
             &[("payload.txt", b"trusted\n")],
         );
+        // Keep the digest structurally valid so the failure is the intended
+        // registry-versus-lock mismatch rather than lock-shape validation.
         locked.sha256 = "f".repeat(64);
         write_lock(project.path(), vec![locked]);
         let output = outputs.path().join("must-not-exist");
