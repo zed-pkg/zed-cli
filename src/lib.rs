@@ -144,6 +144,14 @@ pub mod github_packages;
 pub mod mise_lock;
 pub mod native;
 pub mod native_artifact_source;
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        dead_code,
+        reason = "the BTreeSet import and add_native_artifact helper are intentionally test-only in non-test library builds; test targets exercise both"
+    )
+)]
 pub mod native_artifact_store;
 pub mod native_host_client;
 #[expect(
