@@ -188,9 +188,7 @@ fn normalize_boolean_environment() -> Result<()> {
             ),
         };
         if raw != normalized {
-            // SAFETY: modular dispatch runs once at process startup before
-            // worker threads are created.
-            unsafe { env::set_var(key, normalized) };
+            crate::terminal_context::set_process_env_at_startup(key, normalized);
         }
     }
     Ok(())
@@ -331,6 +329,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unsafe_code)]
     fn boolean_environment_is_normalized_for_modular_parser() {
         let key = "ZED_PKG_OCI_ANONYMOUS";
         // SAFETY: unit test runs without worker threads and restores the value.
