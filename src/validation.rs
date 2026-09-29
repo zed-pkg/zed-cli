@@ -124,9 +124,6 @@ fn validate(
         if require_lock {
             bail!("required lockfile {} does not exist", lock_path.display());
         }
-        let mut warnings =
-            vec!["lockfile is absent; direct dependency coverage was not checked".to_string()];
-        warnings.push(transitive_warning());
         return Ok(ValidationReport {
             report_version: REPORT_VERSION,
             valid: true,
@@ -145,7 +142,7 @@ fn validate(
             },
             direct_requirements_checked: 0,
             transitive_completeness: TRANSITIVE_LIMIT,
-            warnings,
+            warnings: validation_warnings(direct_requirements, false),
         });
     };
 
@@ -231,8 +228,21 @@ fn validate(
         },
         direct_requirements_checked: checked,
         transitive_completeness: TRANSITIVE_LIMIT,
-        warnings: vec![transitive_warning()],
+        warnings: validation_warnings(direct_requirements, true),
     })
+}
+
+fn validation_warnings(direct_requirements: usize, lock_present: bool) -> Vec<String> {
+    if direct_requirements == 0 {
+        return Vec::new();
+    }
+
+    let mut warnings = Vec::new();
+    if !lock_present {
+        warnings.push("lockfile is absent; direct dependency coverage was not checked".to_string());
+    }
+    warnings.push(transitive_warning());
+    return warnings;
 }
 
 fn print_human(report: &ValidationReport) {
@@ -475,5 +485,22 @@ url = "https://github.com/acme/tool"
 "acme/anything" = "^1"
 "#;
         validate_schema_shape(map, MANIFEST_SCHEMA, "manifest", None).unwrap();
+    }
+
+    #[test]
+    fn warnings_only_exist_when_dependency_roots_exist() {
+        assert!(validation_warnings(0, true).is_empty());
+        assert!(validation_warnings(0, false).is_empty());
+
+        let locked = validation_warnings(1, true);
+        assert_eq!(locked, vec![transitive_warning()]);
+
+        let unlocked = validation_warnings(1, false);
+        assert_eq!(unlocked.len(), 2);
+        assert_eq!(
+            unlocked[0],
+            "lockfile is absent; direct dependency coverage was not checked"
+        );
+        assert_eq!(unlocked[1], transitive_warning());
     }
 }
