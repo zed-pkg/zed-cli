@@ -53,9 +53,19 @@ enum Route {
     Existing,
 }
 
-/// Route only the modular `oci` family here. Existing commands continue
-/// through the repository's established typed command enum.
+/// Route modular startup commands before the repository's established parser.
 pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
+    if args.get(1).and_then(|value| value.to_str()) == Some("self-update") {
+        ores_clis_core::self_update::run_self_update_cli(
+            ores_clis_core::self_update::SelfUpdateConfig::new(
+                "zed-pkg",
+                "zed-cli",
+                "zed",
+                env!("CARGO_PKG_VERSION"),
+            ),
+        );
+    }
+
     match route(&args) {
         Route::Oci => Some(run_cli(args)),
         Route::OciHelp {
@@ -73,8 +83,20 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     }
 }
 
-/// Add `oci` to top-level help and generated shell completion.
+/// Add `oci` and `self-update` to top-level help and generated shell completion.
 pub fn augment_root_command(command: clap::Command) -> clap::Command {
+    let mut command = command;
+    if command
+        .get_subcommands()
+        .all(|subcommand| subcommand.get_name() != "self-update")
+    {
+        command = command.subcommand(
+            clap::Command::new("self-update")
+                .about("Update zed to a selected release")
+                .arg(clap::Arg::new("version").value_name("VERSION").required(false)),
+        );
+    }
+
     if command
         .get_subcommands()
         .any(|subcommand| subcommand.get_name() == "oci")
@@ -318,6 +340,11 @@ mod tests {
         assert!(
             oci.get_subcommands()
                 .any(|command| command.get_name() == "push")
+        );
+        assert!(
+            command
+                .get_subcommands()
+                .any(|command| command.get_name() == "self-update")
         );
         let interop = command
             .get_subcommands()
