@@ -106,6 +106,12 @@ help = "Install executable packages globally and manage their PATH entries."
 [commands.global.commands.install]
 help = "Install one or more executable packages into isolated global profiles."
 
+[commands.global.commands.install.flags.bin]
+env = "ZED_PKG_GLOBAL_BIN"
+aliases = ["bin"]
+type = "string"
+help = "Expose only the named executable from a single installed package; repeat --bin to select multiple executables."
+
 [commands.global.commands.install.flags.frozen]
 env = "ZED_PKG_FROZEN"
 aliases = ["frozen"]
