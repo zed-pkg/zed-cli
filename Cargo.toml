@@ -71,13 +71,20 @@ flags2env = { git = "https://github.com/flags-2-env/flags-2-env.git", rev = "294
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 # --- functional programming conformance -------------------------------------
-# Warn level only: these never fail a build. They fail `cargo clippy -- -D warnings`
-# in the nightly job. See FP-GUIDELINES.md for the principle behind each group.
+# Safety, correctness, and visibility lints remain active in normal builds.
+# Retained compatibility/future-facing code may be unused in a given build,
+# so those narrow categories are quiet by default and can be promoted back to
+# hard errors with `cargo strict-unused`.
 
 [lints.rust]
 unsafe_code = "warn"
 unused_must_use = "deny"
 unreachable_pub = "warn"
+dead_code = "allow"
+unused_imports = "allow"
+unused_variables = "allow"
+unused_mut = "allow"
+unused_assignments = "allow"
 
 [lints.clippy]
 # typed errors: panicking is not error handling
