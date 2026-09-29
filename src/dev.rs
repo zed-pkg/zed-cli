@@ -441,9 +441,7 @@ fn normalize_boolean_environment() -> Result<()> {
             ),
         };
         if raw != normalized {
-            // SAFETY: this runs once at process startup, before typed parsing
-            // or any worker threads read this command's environment.
-            unsafe { env::set_var(key, normalized) };
+            crate::terminal_context::set_process_env_at_startup(key, normalized);
         }
     }
     Ok(())
