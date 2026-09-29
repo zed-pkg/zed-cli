@@ -53,9 +53,19 @@ enum Route {
     Existing,
 }
 
-/// Route only the modular `oci` family here. Existing commands continue
-/// through the repository's established typed command enum.
+/// Route modular startup commands before the repository's established parser.
 pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
+    if args.get(1).and_then(|value| value.to_str()) == Some("self-update") {
+        ores_clis_core::self_update::run_self_update_cli(
+            ores_clis_core::self_update::SelfUpdateConfig::new(
+                "zed-pkg",
+                "zed-cli",
+                "zed",
+                env!("CARGO_PKG_VERSION"),
+            ),
+        );
+    }
+
     match route(&args) {
         Route::Oci => Some(run_cli(args)),
         Route::OciHelp {
@@ -73,8 +83,76 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     }
 }
 
-/// Add `oci` to top-level help and generated shell completion.
+/// Add `oci` and `self-update` to top-level help and generated shell completion.
 pub fn augment_root_command(command: clap::Command) -> clap::Command {
+    let mut command = command;
+    if command
+        .get_subcommands()
+        .all(|subcommand| subcommand.get_name() != "self-update")
+    {
+        let self_update = clap::Command::new("self-update")
+            .about("Update zed to a selected release")
+            .arg(
+                clap::Arg::new("version")
+                    .value_name("VERSION")
+                    .required(false),
+            )
+            .arg(
+                clap::Arg::new("interactive")
+                    .long("interactive")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Always prompt before replacing the executable"),
+            )
+            .arg(
+                clap::Arg::new("non-interactive")
+                    .long("non-interactive")
+                    .action(clap::ArgAction::SetTrue)
+                    .conflicts_with("interactive")
+                    .help("Never prompt before replacing the executable"),
+            )
+            .arg(
+                clap::Arg::new("yes")
+                    .short('y')
+                    .long("yes")
+                    .action(clap::ArgAction::SetTrue)
+                    .conflicts_with("interactive")
+                    .help("Assume yes without prompting"),
+            )
+            .arg(
+                clap::Arg::new("check")
+                    .long("check")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Report whether an update is available"),
+            )
+            .arg(
+                clap::Arg::new("dry-run")
+                    .long("dry-run")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Resolve the release without replacing the binary"),
+            )
+            .arg(
+                clap::Arg::new("verify")
+                    .long("verify")
+                    .action(clap::ArgAction::SetTrue)
+                    .conflicts_with("no-verify")
+                    .help("Require SHA-256 verification (the Zed default)"),
+            )
+            .arg(
+                clap::Arg::new("no-verify")
+                    .long("no-verify")
+                    .action(clap::ArgAction::SetTrue)
+                    .conflicts_with("verify")
+                    .help("Request unverified updates; Zed policy rejects mutating use"),
+            )
+            .arg(
+                clap::Arg::new("json")
+                    .long("json")
+                    .action(clap::ArgAction::SetTrue)
+                    .help("Emit machine-readable status"),
+            );
+        command = command.subcommand(self_update);
+    }
+
     if command
         .get_subcommands()
         .any(|subcommand| subcommand.get_name() == "oci")
@@ -319,6 +397,27 @@ mod tests {
             oci.get_subcommands()
                 .any(|command| command.get_name() == "push")
         );
+        let self_update = command
+            .get_subcommands()
+            .find(|command| command.get_name() == "self-update")
+            .expect("self-update command must be present");
+        for option in [
+            "interactive",
+            "non-interactive",
+            "yes",
+            "check",
+            "dry-run",
+            "verify",
+            "no-verify",
+            "json",
+        ] {
+            assert!(
+                self_update
+                    .get_arguments()
+                    .any(|argument| argument.get_id().as_str() == option),
+                "self-update help is missing {option}"
+            );
+        }
         let interop = command
             .get_subcommands()
             .find(|command| command.get_name() == "interop")
