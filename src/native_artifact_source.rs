@@ -63,11 +63,23 @@ fn source_accepts_org(source: NativeArtifactSource, org: &str) -> bool {
     return aliases.contains(&normalized.as_str());
 }
 
+fn raw_authority_has_explicit_port(raw_url: &str) -> bool {
+    let Some((_, remainder)) = raw_url.split_once("://") else {
+        return false;
+    };
+    let authority = remainder
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    return authority.contains(':');
+}
+
 pub fn audited_native_download_url(raw_url: &str) -> Option<NativeArtifactSource> {
     let url = reqwest::Url::parse(raw_url).ok()?;
     if url.scheme() != "https"
         || !url.username().is_empty()
         || url.password().is_some()
+        || raw_authority_has_explicit_port(raw_url)
         || url.port().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
@@ -126,25 +138,25 @@ fn is_packagist_codeload_path(path: &str) -> bool {
     if segments.len() != 4 || segments[2] != "legacy.zip" {
         return false;
     }
-    is_safe_github_component(segments[0])
+    return is_safe_github_component(segments[0])
         && is_safe_github_component(segments[1])
-        && is_git_commit(segments[3])
+        && is_git_commit(segments[3]);
 }
 
 fn is_safe_github_component(value: &str) -> bool {
-    !value.is_empty()
+    return !value.is_empty()
         && value.len() <= 100
         && !value.contains("..")
         && value.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
-        })
+        });
 }
 
 fn is_git_commit(value: &str) -> bool {
-    matches!(value.len(), 40 | 64)
+    return matches!(value.len(), 40 | 64)
         && value
             .chars()
-            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character));
 }
 
 #[cfg(test)]
@@ -212,13 +224,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_host_confusion_credentials_ports_queries_and_wrong_paths() {
+    fn rejects_host_confusion_credentials_ports_queries_fragments_and_wrong_paths() {
         for url in [
             "http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
             "https://registry.npmjs.org.evil.test/lodash/-/lodash-4.17.21.tgz",
             "https://user:pass@registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+            "https://user@registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
             "https://registry.npmjs.org:443/lodash/-/lodash-4.17.21.tgz",
+            "HTTPS://registry.npmjs.org:443/lodash/-/lodash-4.17.21.tgz",
+            "https://registry.npmjs.org:444/lodash/-/lodash-4.17.21.tgz",
+            "https://static.crates.io:443/crates/serde/serde-1.0.0.crate",
             "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz?x=1",
+            "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz#fragment",
             "https://repo1.maven.org/maven2/com/acme/demo/1.0.0/demo-1.0.0.pom",
             "https://proxy.golang.org/github.com/owner/repo/@v/v1.2.3.info",
             "https://cran.r-project.org/web/packages/jsonlite/DESCRIPTION",
@@ -228,6 +245,7 @@ mod tests {
             assert_eq!(audited_native_download_url(url), None, "{url}");
         }
     }
+
     #[test]
     fn metadata_ecosystem_must_match_the_audited_download_source() {
         let mut metadata = VersionMetadata {
