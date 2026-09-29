@@ -1340,14 +1340,16 @@ mod tests {
             normalize_bin_selection(&["zeta".to_string(), "alpha".to_string()]).unwrap(),
             vec!["alpha".to_string(), "zeta".to_string()]
         );
-        let error = normalize_bin_selection(&["alpha".to_string(), "alpha".to_string()])
-            .unwrap_err();
+        let error =
+            normalize_bin_selection(&["alpha".to_string(), "alpha".to_string()]).unwrap_err();
         assert!(error.to_string().contains("selected more than once"));
     }
 
     #[test]
     fn portable_bin_names_reject_windows_devices() {
-        for invalid in ["CON", "con.exe", "PRN", "aux.txt", "NUL", "COM1", "lpt9.exe"] {
+        for invalid in [
+            "CON", "con.exe", "PRN", "aux.txt", "NUL", "COM1", "lpt9.exe",
+        ] {
             assert!(validate_bin_name(invalid).is_err(), "accepted {invalid}");
         }
         for valid in ["conduit", "com10", "lpt10", "zed", "zed-helper"] {
@@ -1398,7 +1400,11 @@ mod tests {
         let mut profile = add_profile(home.path(), "acme/tool", "alpha", b"alpha");
         profile.metadata.selected_bins = vec!["missing".to_string()];
         let error = exposed_profile_bins(&profile).unwrap_err();
-        assert!(error.to_string().contains("does not expose selected bin `missing`"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not expose selected bin `missing`")
+        );
     }
 
     #[test]
@@ -1464,10 +1470,8 @@ mod tests {
 
     #[test]
     fn old_profile_metadata_defaults_to_all_bins() {
-        let metadata: ProfileMetadata = serde_json::from_str(
-            r#"{"package":"acme/tool","requested":"acme/tool"}"#,
-        )
-        .unwrap();
+        let metadata: ProfileMetadata =
+            serde_json::from_str(r#"{"package":"acme/tool","requested":"acme/tool"}"#).unwrap();
         assert!(metadata.selected_bins.is_empty());
     }
 
