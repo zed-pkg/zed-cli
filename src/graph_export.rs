@@ -377,9 +377,7 @@ fn normalize_boolean_environment() -> Result<()> {
             ),
         };
         if raw != normalized {
-            // SAFETY: modular graph dispatch runs at process startup before
-            // worker threads, matching the existing fetch/develop boundary.
-            unsafe { env::set_var(key, normalized) };
+            crate::terminal_context::set_process_env_at_startup(key, normalized);
         }
     }
     Ok(())
