@@ -16,11 +16,11 @@ pub const DO_NOT_WRITE_NEW_MANIFEST_ENV: &str = "ZED_PKG_DO_NOT_WRITE_NEW_MANIFE
 pub const LEGACY_ALLOW_NO_MANIFEST_ENV: &str = "ZED_PKG_ALLOW_NO_MANIFEST";
 
 /// Build the exact typed command model used by every public parser and help or
-/// completion surface. `inspect` is an early-dispatched read-only command so it
-/// is attached here explicitly instead of passing through the credential-aware
-/// [`Cli`] startup path.
+/// completion surface. `inspect` and local-link commands are early-dispatched
+/// surfaces, so they are attached here explicitly instead of passing through
+/// the credential-aware [`Cli`] command enum.
 pub fn command() -> Command {
-    Cli::command().subcommand(crate::inspect::command())
+    crate::linking::augment_root_command(Cli::command()).subcommand(crate::inspect::command())
 }
 
 /// Parse the process arguments through the exact command model used by help
@@ -43,6 +43,11 @@ pub fn parse() -> Cli {
 /// consumer policy. A malformed, stale, ambiguous, or provenance-mismatched
 /// policy stops startup before terminal environment publication, network
 /// dispatch, project mutation, credential lookup, flags2env, or Clap config.
+///
+/// Explicit `zed link`, `zed unlink`, and `zed links` dispatch only after that
+/// startup policy and terminal environment are established. They never enter
+/// ordinary registry resolution, and their mutable developer state remains
+/// outside manifest/lock authority.
 ///
 /// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` is canonical. The old environment key
 /// remains the embedded compatibility key for this migration window so older
@@ -101,6 +106,16 @@ pub fn prepare_environment(args: &[OsString]) {
 
     if let Some(flag) = legacy_manifest_flag(args) {
         eprintln!("warning: {flag} is deprecated; use --do-not-write-new-manifest");
+    }
+
+    if let Some(result) = crate::linking::dispatch(args.to_vec()) {
+        match result {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -193,6 +208,15 @@ mod tests {
         let root = command();
         let inspect = root.find_subcommand("inspect").expect("inspect command");
         assert!(inspect.get_about().is_some());
+    }
+
+    #[test]
+    fn root_command_exposes_explicit_local_link_help() {
+        let root = command();
+        for name in ["link", "unlink", "links"] {
+            let command = root.find_subcommand(name).expect("local-link command");
+            assert!(command.get_about().is_some(), "{name}");
+        }
     }
 
     #[test]
