@@ -1,0 +1,2 @@
+[alias]
+strict-unused = "clippy --all-targets --locked -- -D dead-code -D unused-imports -D unused-variables -D unused-mut -D unused-assignments"
