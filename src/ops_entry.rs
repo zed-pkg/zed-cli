@@ -38,13 +38,18 @@ impl std::fmt::Display for GitLockFinalizeError {
 
 impl std::error::Error for GitLockFinalizeError {}
 
+// The legacy implementation is intentionally hidden behind this facade. Its
+// `pub` items are only implementation-to-facade linkage, not crate API.
+#[allow(unreachable_pub)]
 #[path = "ops.rs"]
 mod implementation;
 
 pub use implementation::{
-    InstallOutcome, InstallPermissions, WorkspaceInfo, build_cmd, build_publish_meta, cache_clean,
-    find, gc, login, org_audit, org_claim, run, split_key, store_prune, store_status, yank,
+    InstallOutcome, InstallPermissions, WorkspaceInfo, build_publish_meta, cache_clean, find, gc,
+    login, org_audit, org_claim, run, split_key, store_prune, store_status, yank,
 };
+
+pub(super) use implementation::build_cmd;
 
 pub(crate) use implementation::{
     detect_adapter, detect_native_manifest_target, detect_structure_target, detect_target,
@@ -258,11 +263,14 @@ pub fn init(
     })
 }
 
-pub fn pack_cmd(project: &Path, out: Option<&Path>) -> Result<Vec<crate::pack::PackagedTarget>> {
+pub(super) fn pack_cmd(
+    project: &Path,
+    out: Option<&Path>,
+) -> Result<Vec<crate::pack::PackagedTarget>> {
     with_pack_guard(project, || implementation::pack_cmd(project, out))
 }
 
-pub fn publish(
+pub(super) fn publish(
     project: &Path,
     cfg: &Config,
     dry_run: bool,
@@ -274,7 +282,7 @@ pub fn publish(
     })
 }
 
-pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+pub(super) fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     crate::project_lock::with_lock(project, "add Zed dependency", || {
         crate::git_submodules::preflight_gitmodules_metadata(project)?;
         crate::git_submodules::preflight_mutation(project)?;
@@ -283,7 +291,7 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     })
 }
 
-pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+pub(super) fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
     crate::project_lock::with_lock(project, "remove Zed dependency", || {
         crate::git_submodules::preflight_gitmodules_metadata(project)?;
         crate::git_submodules::preflight_mutation(project)?;
@@ -293,7 +301,7 @@ pub fn remove(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn install(
+pub(super) fn install(
     project: &Path,
     cfg: &Config,
     frozen: bool,
@@ -320,7 +328,7 @@ pub fn install(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn install_with_permissions(
+pub(super) fn install_with_permissions(
     project: &Path,
     cfg: &Config,
     frozen: bool,
@@ -402,7 +410,7 @@ pub(crate) fn install_frozen_lock_only_with_permissions(
     })
 }
 
-pub fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
+pub(super) fn uninstall(project: &Path, cfg: &Config, specs: &[String]) -> Result<()> {
     crate::project_lock::with_lock(project, "uninstall Zed dependency graph", || {
         implementation::uninstall(project, cfg, specs)
     })
