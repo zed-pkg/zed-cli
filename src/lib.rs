@@ -36,6 +36,9 @@ pub(crate) mod materialize;
 pub mod mirror;
 pub mod mirror_cmd;
 pub mod mirrored_registry;
+// This implementation is deliberately hidden behind the public locking facade
+// below. Its `pub` items are sibling linkage, not externally reachable API.
+#[allow(unreachable_pub)]
 #[path = "mise_export.rs"]
 mod mise_export_impl;
 pub mod mise_export {
