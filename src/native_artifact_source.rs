@@ -67,10 +67,7 @@ fn raw_authority_has_explicit_port(raw_url: &str) -> bool {
     let Some((_, remainder)) = raw_url.split_once("://") else {
         return false;
     };
-    let authority = remainder
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
+    let authority = remainder.split(['/', '?', '#']).next().unwrap_or_default();
     return authority.contains(':');
 }
 
