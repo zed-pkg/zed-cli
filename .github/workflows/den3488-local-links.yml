@@ -41,8 +41,11 @@ jobs:
       - name: Test local-link lifecycle
         run: cargo test --locked --lib linking
 
-      - name: Test command-model and completions
-        run: cargo test --locked --lib cli_model completion
+      - name: Test command model
+        run: cargo test --locked --lib cli_model
+
+      - name: Test completions
+        run: cargo test --locked --lib completion
 
       - name: Clippy local-link implementation
         run: cargo clippy --locked --all-targets -- -A unsafe-code -D warnings
