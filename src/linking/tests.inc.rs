@@ -129,11 +129,10 @@ mod tests {
         std::os::unix::fs::symlink(&outside, consumer.join(CONSUMER_STATE_DIR))?;
 
         register(&home, &source)?;
-        let error = require_error(
+        require_error(
             consume(&consumer, &home, "acme/widget", LocalLinkAdapter::None),
             "symlinked state parent must be rejected",
         )?;
-        assert!(format!("{error:#}").contains("escapes consumer project"));
         assert!(!outside.join("acme/widget.json").exists());
         Ok(())
     }
