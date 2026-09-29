@@ -82,13 +82,16 @@ pub fn prepare_environment(args: &[OsString]) {
                  {LEGACY_ALLOW_NO_MANIFEST_ENV} are set; using \
                  {DO_NOT_WRITE_NEW_MANIFEST_ENV}"
             );
-            // SAFETY: main calls this once at process startup, before worker
-            // threads exist and before flags2env or Clap reads the variables.
-            unsafe { std::env::set_var(LEGACY_ALLOW_NO_MANIFEST_ENV, value) };
+            crate::terminal_context::set_process_env_at_startup(
+                LEGACY_ALLOW_NO_MANIFEST_ENV,
+                value,
+            );
         }
         (Some(value), None) => {
-            // SAFETY: see the startup-only argument above.
-            unsafe { std::env::set_var(LEGACY_ALLOW_NO_MANIFEST_ENV, value) };
+            crate::terminal_context::set_process_env_at_startup(
+                LEGACY_ALLOW_NO_MANIFEST_ENV,
+                value,
+            );
         }
         (None, Some(_)) => {
             eprintln!(
