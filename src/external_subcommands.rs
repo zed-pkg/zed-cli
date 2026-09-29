@@ -561,12 +561,7 @@ mod tests {
                 "gitops",
                 "validate",
             ]),
-            os_args(&[
-                "zed",
-                "gitops",
-                "validate",
-                "--supabase-key=fixture-value",
-            ]),
+            os_args(&["zed", "gitops", "validate", "--supabase-key=fixture-value"]),
         ] {
             assert!(
                 external_route(&args).is_none(),
@@ -593,13 +588,13 @@ mod tests {
         let envs = command.get_envs().collect::<Vec<_>>();
 
         for key in EXTERNAL_SECRET_ENVS {
-            assert!(envs.iter().any(|(name, value)| {
-                *name == OsStr::new(key) && value.is_none()
-            }));
+            assert!(
+                envs.iter()
+                    .any(|(name, value)| { *name == OsStr::new(key) && value.is_none() })
+            );
         }
         assert!(envs.iter().any(|(name, value)| {
-            *name == OsStr::new(EXTERNAL_COMMAND_ENV)
-                && value == &Some(OsStr::new("demo"))
+            *name == OsStr::new(EXTERNAL_COMMAND_ENV) && value == &Some(OsStr::new("demo"))
         }));
     }
 
