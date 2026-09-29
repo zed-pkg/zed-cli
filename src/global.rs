@@ -61,6 +61,18 @@ struct GlobalInstallArgs {
     #[arg(value_name = "PACKAGE")]
     specs: Vec<String>,
 
+    /// Expose only this executable from the selected package. Repeat --bin to
+    /// expose multiple executables. Selective installs require exactly one
+    /// package spec so bin ownership is never ambiguous.
+    #[arg(
+        long = "bin",
+        value_name = "NAME",
+        env = "ZED_PKG_GLOBAL_BIN",
+        value_delimiter = ',',
+        action = clap::ArgAction::Append
+    )]
+    bins: Vec<String>,
+
     /// Reinstall exactly what each selected global profile lockfile pins.
     #[arg(long, env = "ZED_PKG_FROZEN")]
     frozen: bool,
@@ -141,6 +153,8 @@ enum Route {
 struct ProfileMetadata {
     package: String,
     requested: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    selected_bins: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +455,17 @@ fn parse_install_specs(specs: &[String]) -> Result<Vec<(String, String)>> {
     Ok(parsed)
 }
 
+fn normalize_bin_selection(bins: &[String]) -> Result<Vec<String>> {
+    let mut selected = BTreeSet::new();
+    for name in bins {
+        validate_bin_name(name)?;
+        if !selected.insert(name.clone()) {
+            bail!("global bin `{name}` was selected more than once");
+        }
+    }
+    Ok(selected.into_iter().collect())
+}
+
 fn profile_root(cfg: &Config, key: &str) -> Result<PathBuf> {
     let (org, name) = key
         .split_once('/')
@@ -453,7 +478,13 @@ fn profile_root(cfg: &Config, key: &str) -> Result<PathBuf> {
 
 fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i32> {
     let _lock = acquire_lock(cfg)?;
+    let selected_bins = normalize_bin_selection(&options.bins)?;
     if options.frozen {
+        if !selected_bins.is_empty() {
+            bail!(
+                "--bin cannot be combined with --frozen; frozen restore reuses each profile's persisted executable selection"
+            );
+        }
         let profiles = selected_profiles(cfg, &options.specs)?;
         if profiles.is_empty() {
             bail!("no global package profiles are installed");
@@ -494,6 +525,11 @@ fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i
     }
 
     let requested = parse_install_specs(&options.specs)?;
+    if !selected_bins.is_empty() && requested.len() != 1 {
+        bail!(
+            "selective --bin installation requires exactly one package spec; install packages separately so executable ownership is unambiguous"
+        );
+    }
     let mut staged_profiles = Vec::with_capacity(requested.len());
     let result = (|| -> Result<(usize, usize)> {
         for (spec, key) in &requested {
@@ -514,14 +550,17 @@ fn install(cfg: &Config, bin_dir: &Path, options: GlobalInstallArgs) -> Result<i
                 true,
                 true,
             )?;
+            let available_bins = profile_bins(&root)?;
+            validate_profile_bin_selection(key, &available_bins, &selected_bins)?;
             write_metadata(
                 &root,
                 &ProfileMetadata {
                     package: key.clone(),
                     requested: spec.clone(),
+                    selected_bins: selected_bins.clone(),
                 },
             )?;
-            if profile_bins(&root)?.is_empty() {
+            if available_bins.is_empty() {
                 eprintln!(
                     "warning: {key} currently exposes no built [bin] entries in this profile; if it declares a [build] step, reinstall with --allow-build"
                 );
@@ -607,7 +646,7 @@ fn list(cfg: &Config, bin_dir: &Path) -> Result<i32> {
     }
     for profile in profiles {
         let version = locked_root_version(&profile).unwrap_or_else(|| "unknown".to_string());
-        let mut bins: Vec<String> = profile_bins(&profile.root)?.into_keys().collect();
+        let mut bins: Vec<String> = exposed_profile_bins(&profile)?.into_keys().collect();
         bins.sort();
         println!(
             "{}@{} (requested `{}`; bins: {})",
@@ -825,6 +864,7 @@ fn profile_bins(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
 
 fn validate_bin_name(name: &str) -> Result<()> {
     if name.is_empty()
+        || name.len() > 128
         || name == "."
         || name == ".."
         || name.contains('/')
@@ -832,16 +872,70 @@ fn validate_bin_name(name: &str) -> Result<()> {
         || !name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '+'))
+        || windows_reserved_bin_name(name)
     {
         bail!("unsafe global bin name `{name}`");
     }
     Ok(())
 }
 
+fn windows_reserved_bin_name(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || matches!(
+            stem.strip_prefix("COM"),
+            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        )
+        || matches!(
+            stem.strip_prefix("LPT"),
+            Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        )
+}
+
+fn validate_profile_bin_selection(
+    package: &str,
+    available: &BTreeMap<String, PathBuf>,
+    selected: &[String],
+) -> Result<()> {
+    if selected.is_empty() {
+        return Ok(());
+    }
+    for name in selected {
+        if !available.contains_key(name) {
+            let choices = if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.keys().cloned().collect::<Vec<_>>().join(", ")
+            };
+            bail!(
+                "package `{package}` does not expose selected bin `{name}` (available bins: {choices})"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn exposed_profile_bins(profile: &Profile) -> Result<BTreeMap<String, PathBuf>> {
+    let available = profile_bins(&profile.root)?;
+    let selected = normalize_bin_selection(&profile.metadata.selected_bins)?;
+    validate_profile_bin_selection(&profile.metadata.package, &available, &selected)?;
+    if selected.is_empty() {
+        return Ok(available);
+    }
+    let mut exposed = BTreeMap::new();
+    for name in selected {
+        let source = available
+            .get(&name)
+            .with_context(|| format!("validated global bin `{name}` disappeared"))?;
+        exposed.insert(name, source.clone());
+    }
+    Ok(exposed)
+}
+
 fn collect_desired_bins(profiles: &[Profile]) -> Result<BTreeMap<String, DesiredBin>> {
     let mut desired: BTreeMap<String, DesiredBin> = BTreeMap::new();
     for profile in profiles {
-        for (logical_name, source) in profile_bins(&profile.root)? {
+        for (logical_name, source) in exposed_profile_bins(profile)? {
             let destination = destination_name(&logical_name);
             if let Some(existing) = desired.get(&destination) {
                 bail!(
@@ -1206,6 +1300,7 @@ mod tests {
         let metadata = ProfileMetadata {
             package: key.to_string(),
             requested: key.to_string(),
+            selected_bins: Vec::new(),
         };
         write_metadata(&root, &metadata).unwrap();
         Profile { root, metadata }
@@ -1240,12 +1335,35 @@ mod tests {
     }
 
     #[test]
+    fn bin_selection_is_deterministic_and_rejects_duplicates() {
+        assert_eq!(
+            normalize_bin_selection(&["zeta".to_string(), "alpha".to_string()]).unwrap(),
+            vec!["alpha".to_string(), "zeta".to_string()]
+        );
+        let error = normalize_bin_selection(&["alpha".to_string(), "alpha".to_string()])
+            .unwrap_err();
+        assert!(error.to_string().contains("selected more than once"));
+    }
+
+    #[test]
+    fn portable_bin_names_reject_windows_devices() {
+        for invalid in ["CON", "con.exe", "PRN", "aux.txt", "NUL", "COM1", "lpt9.exe"] {
+            assert!(validate_bin_name(invalid).is_err(), "accepted {invalid}");
+        }
+        for valid in ["conduit", "com10", "lpt10", "zed", "zed-helper"] {
+            validate_bin_name(valid).unwrap();
+        }
+    }
+
+    #[test]
     fn alias_route_rewrites_install_global() {
         let args = vec![
             OsString::from("zed"),
             OsString::from("install"),
             OsString::from("--global"),
             OsString::from("acme/tool"),
+            OsString::from("--bin"),
+            OsString::from("tool"),
         ];
         assert!(matches!(
             route(&args),
@@ -1254,6 +1372,33 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn selective_profile_exposes_only_requested_bins() {
+        let home = tempfile::tempdir().unwrap();
+        let mut profile = add_profile(home.path(), "acme/tool", "alpha", b"alpha");
+        let beta = profile.root.join(MODULES_DIR).join(BIN_DIR).join("beta");
+        fs::write(beta, b"beta").unwrap();
+        profile.metadata.selected_bins = vec!["beta".to_string()];
+        write_metadata(&profile.root, &profile.metadata).unwrap();
+
+        let exposed = exposed_profile_bins(&profile).unwrap();
+        assert_eq!(exposed.keys().cloned().collect::<Vec<_>>(), vec!["beta"]);
+        let desired = collect_desired_bins(&[profile]).unwrap();
+        assert_eq!(
+            desired.keys().cloned().collect::<Vec<_>>(),
+            vec![destination_name("beta")]
+        );
+    }
+
+    #[test]
+    fn missing_selected_bin_fails_closed() {
+        let home = tempfile::tempdir().unwrap();
+        let mut profile = add_profile(home.path(), "acme/tool", "alpha", b"alpha");
+        profile.metadata.selected_bins = vec!["missing".to_string()];
+        let error = exposed_profile_bins(&profile).unwrap_err();
+        assert!(error.to_string().contains("does not expose selected bin `missing`"));
     }
 
     #[test]
@@ -1285,6 +1430,20 @@ mod tests {
     }
 
     #[test]
+    fn unselected_bin_does_not_participate_in_collision_checks() {
+        let home = tempfile::tempdir().unwrap();
+        let first = add_profile(home.path(), "acme/one", "tool", b"one");
+        let mut second = add_profile(home.path(), "acme/two", "tool", b"two");
+        let helper = second.root.join(MODULES_DIR).join(BIN_DIR).join("helper");
+        fs::write(helper, b"helper").unwrap();
+        second.metadata.selected_bins = vec!["helper".to_string()];
+        let desired = collect_desired_bins(&[first, second]).unwrap();
+        assert_eq!(desired.len(), 2);
+        assert!(desired.contains_key(&destination_name("tool")));
+        assert!(desired.contains_key(&destination_name("helper")));
+    }
+
+    #[test]
     fn unmanaged_collision_preflight_does_not_install_other_commands() {
         let home = tempfile::tempdir().unwrap();
         let cfg = config(home.path());
@@ -1301,6 +1460,15 @@ mod tests {
             fs::read(bin_dir.join(destination_name("tool"))).unwrap(),
             b"unmanaged"
         );
+    }
+
+    #[test]
+    fn old_profile_metadata_defaults_to_all_bins() {
+        let metadata: ProfileMetadata = serde_json::from_str(
+            r#"{"package":"acme/tool","requested":"acme/tool"}"#,
+        )
+        .unwrap();
+        assert!(metadata.selected_bins.is_empty());
     }
 
     #[test]
