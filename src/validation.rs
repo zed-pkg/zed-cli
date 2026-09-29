@@ -236,13 +236,13 @@ fn validation_warnings(direct_requirements: usize, lock_present: bool) -> Vec<St
     if direct_requirements == 0 {
         return Vec::new();
     }
-
-    let mut warnings = Vec::new();
-    if !lock_present {
-        warnings.push("lockfile is absent; direct dependency coverage was not checked".to_string());
+    if lock_present {
+        return vec![transitive_warning()];
     }
-    warnings.push(transitive_warning());
-    return warnings;
+    return vec![
+        "lockfile is absent; direct dependency coverage was not checked".to_string(),
+        transitive_warning(),
+    ];
 }
 
 fn print_human(report: &ValidationReport) {
