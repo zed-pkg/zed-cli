@@ -5,23 +5,43 @@ pub mod asdf_environment;
 pub mod auth;
 pub mod binary_archive;
 pub mod cli;
+#[expect(
+    unsafe_code,
+    reason = "Rust 2024 makes process-environment mutation unsafe; this module performs its compatibility rewrite only during single-threaded CLI startup"
+)]
 pub mod cli_model;
 pub mod cli_oci;
 pub mod cli_tools;
 pub mod completion;
 pub mod config;
 mod dart_wiring;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env or Clap consume the process environment"
+)]
 pub mod dev;
 pub mod env_map;
 pub mod environment;
 pub mod environment_export_cli;
 pub mod external_subcommands;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env consumes the process environment"
+)]
 pub mod fetch;
 pub mod flags;
 pub mod forge_publish;
 pub mod git_submodules;
 pub mod global;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env consumes the process environment"
+)]
 pub(crate) mod global_flags;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env consumes the process environment"
+)]
 pub mod graph_export;
 pub mod host_downloads;
 pub mod inspect;
@@ -36,6 +56,10 @@ pub(crate) mod materialize;
 pub mod mirror;
 pub mod mirror_cmd;
 pub mod mirrored_registry;
+#[expect(
+    unreachable_pub,
+    reason = "this private implementation module intentionally exposes types to the public mise_export facade while keeping its implementation path private"
+)]
 #[path = "mise_export.rs"]
 mod mise_export_impl;
 pub mod mise_export {
@@ -122,14 +146,30 @@ pub mod native;
 pub mod native_artifact_source;
 pub mod native_artifact_store;
 pub mod native_host_client;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env consumes the process environment"
+)]
 pub mod nix_bundle_write;
 pub mod nix_environment_export;
 pub mod nix_export_bundle;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env consumes the process environment"
+)]
 pub mod nix_export_plan;
 pub mod oci;
+#[expect(
+    unsafe_code,
+    reason = "boolean environment normalization runs before worker threads and before flags2env consumes the process environment"
+)]
 pub mod oci_command;
 pub mod oci_layout;
 pub mod oci_push;
+#[expect(
+    unreachable_pub,
+    reason = "ops is a public lifecycle facade over deliberately private implementation modules whose public-looking items are consumed only through the facade"
+)]
 #[path = "ops_lifecycle_entry.rs"]
 pub mod ops;
 pub mod pack;
@@ -148,6 +188,10 @@ pub mod source_fallback;
 pub mod store;
 pub mod task_cli;
 pub mod task_runtime;
+#[expect(
+    unsafe_code,
+    reason = "terminal environment publication is restricted to the single-threaded CLI startup path before worker threads are created"
+)]
 pub mod terminal_context;
 pub mod tool_profile;
 pub mod transaction;
