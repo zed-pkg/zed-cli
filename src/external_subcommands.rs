@@ -18,15 +18,14 @@ const EXTERNAL_PREFIX: &str = "zed-";
 const GITOPS_EXTERNAL_COMMAND: &str = "gitops";
 const HEX_PM_EXTERNAL_COMMAND: &str = "hex.pm";
 const EXTERNAL_COMMAND_ENV: &str = "ZED_EXTERNAL_SUBCOMMAND";
-const REGISTRY_BEARER_ENV: &str = "ZED_PKG_TOKEN";
-const FORBIDDEN_EXTERNAL_ROOT_OPTIONS: &[&str] = &["--token"];
+const EXTERNAL_SECRET_ENVS: &[&str] = &["ZED_PKG_TOKEN", "ZED_PKG_SUPABASE_KEY"];
+const FORBIDDEN_EXTERNAL_ROOT_OPTIONS: &[&str] = &["--token", "--supabase-key"];
 
 const ROOT_VALUE_OPTIONS: &[(&str, &str)] = &[
     ("--registry", "ZED_PKG_REGISTRY"),
     ("--home", "ZED_PKG_HOME"),
     ("--auth-url", "ZED_PKG_AUTH_URL"),
     ("--supabase-url", "ZED_PKG_SUPABASE_URL"),
-    ("--supabase-key", "ZED_PKG_SUPABASE_KEY"),
     ("--global-bin-dir", "ZED_PKG_GLOBAL_BIN_DIR"),
 ];
 
@@ -441,19 +440,24 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-fn run_external(executable: &Path, route: &ExternalRoute) -> Result<i32> {
+fn external_command(executable: &Path, route: &ExternalRoute) -> ProcessCommand {
     let mut command = ProcessCommand::new(executable);
     command.args(&route.arguments);
     // External commands are a separate execution boundary. Do not give them
-    // the registry bearer merely because the parent Zed process received one.
-    // Future signed modules must request narrowly delegated capabilities
-    // explicitly rather than inheriting this credential wholesale.
-    command.env_remove(REGISTRY_BEARER_ENV);
+    // parent-process credentials implicitly. Future signed modules must request
+    // narrowly delegated capabilities explicitly.
+    for key in EXTERNAL_SECRET_ENVS {
+        command.env_remove(key);
+    }
     for (key, value) in &route.environment {
         command.env(key, value);
     }
     command.env(EXTERNAL_COMMAND_ENV, &route.name);
+    command
+}
 
+fn run_external(executable: &Path, route: &ExternalRoute) -> Result<i32> {
+    let mut command = external_command(executable, route);
     let status = command.status().with_context(|| {
         format!(
             "running external subcommand `{}` through {}",
@@ -545,20 +549,58 @@ mod tests {
     }
 
     #[test]
-    fn registry_bearer_options_fail_closed_at_the_external_boundary() {
+    fn credential_options_fail_closed_at_the_external_boundary() {
         for args in [
             os_args(&["zed", "--token", "fixture-value", "gitops", "validate"]),
             os_args(&["zed", "gitops", "validate", "--token", "fixture-value"]),
             os_args(&["zed", "gitops", "validate", "--token=fixture-value"]),
+            os_args(&[
+                "zed",
+                "--supabase-key",
+                "fixture-value",
+                "gitops",
+                "validate",
+            ]),
+            os_args(&[
+                "zed",
+                "gitops",
+                "validate",
+                "--supabase-key=fixture-value",
+            ]),
         ] {
             assert!(
                 external_route(&args).is_none(),
-                "secret-bearing root option must not be lifted into an external command"
+                "credential-bearing root option must not cross the external boundary"
             );
         }
         assert!(is_forbidden_external_root_option("--token"));
         assert!(is_forbidden_external_root_option("--token=fixture-value"));
+        assert!(is_forbidden_external_root_option("--supabase-key"));
+        assert!(is_forbidden_external_root_option(
+            "--supabase-key=fixture-value"
+        ));
         assert!(!is_forbidden_external_root_option("--home"));
+    }
+
+    #[test]
+    fn external_command_explicitly_removes_inherited_credentials() {
+        let route = ExternalRoute {
+            name: "demo".to_owned(),
+            arguments: Vec::new(),
+            environment: Vec::new(),
+        };
+        let command = external_command(Path::new("/bin/true"), &route);
+        let envs = command.get_envs().collect::<Vec<_>>();
+
+        for key in EXTERNAL_SECRET_ENVS {
+            assert!(envs.iter().any(|(name, value)| {
+                *name == OsStr::new(key) && value.is_none()
+            }));
+        }
+        assert!(envs.iter().any(|(name, value)| {
+            *name == OsStr::new(EXTERNAL_COMMAND_ENV)
+                && value == &Some(OsStr::new("demo"))
+        }));
     }
 
     #[test]
