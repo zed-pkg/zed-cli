@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsStr;
 use std::io::{self, IsTerminal};
 use std::sync::OnceLock;
 
@@ -140,6 +141,23 @@ pub fn current() -> &'static TerminalContext {
     CONTEXT.get_or_init(|| Probe::from_process().detect())
 }
 
+/// The single process-environment mutation boundary used by startup adapters.
+///
+/// Every caller runs before Zed creates worker threads. Keeping Rust 2024's
+/// process-global mutation in this one audited function makes that invariant
+/// explicit instead of scattering `unsafe` blocks across command modules.
+#[allow(unsafe_code)]
+pub(crate) fn set_process_env_at_startup(
+    key: impl AsRef<OsStr>,
+    value: impl AsRef<OsStr>,
+) {
+    // SAFETY: all call sites are process-startup normalization paths that run
+    // before worker threads are created or any concurrent environment access.
+    unsafe {
+        env::set_var(key, value);
+    }
+}
+
 /// Publish the current snapshot for subprocesses without changing the public
 /// stdout/stderr contract of the current command.
 ///
@@ -149,8 +167,7 @@ pub fn current() -> &'static TerminalContext {
 pub fn publish_process_environment() {
     let context = current();
     for (key, value) in context.environment() {
-        // SAFETY: `main` calls this during startup, before workers are created.
-        unsafe { env::set_var(key, value) };
+        set_process_env_at_startup(key, value);
     }
 }
 
