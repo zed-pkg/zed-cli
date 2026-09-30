@@ -75,7 +75,11 @@ esac
     }
 
     fn run(&self, install: &Path, version: Option<&str>) -> Result<Output> {
-        let mut command = Command::new("/bin/bash");
+        // Test-only override permits replay against the macOS Bash 3.2
+        // grammar on Linux without changing the production script.
+        let mut command = Command::new(
+            std::env::var_os("ZED_BOOTSTRAP_TEST_SHELL").unwrap_or_else(|| "/bin/bash".into()),
+        );
         command
             .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/install.sh"))
             .env_clear()
@@ -119,6 +123,20 @@ fn verified_install_handles_shell_metacharacters_and_is_idempotent() -> Result<(
     for version in [Some("v1.2.3"), None] {
         let output = fixture.run(&install, version)?;
         assert!(output.status.success(), "{output:?}");
+        let profile = fs::read_to_string(fixture.root.path().join("profile"))?;
+        let path_line = profile
+            .lines()
+            .find(|line| line.starts_with("export PATH="));
+        let stdout = String::from_utf8(output.stdout)?;
+        assert!(path_line.is_some());
+        assert_eq!(
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("    export PATH="))
+                .map(|value| format!("export PATH={value}")),
+            path_line.map(str::to_owned),
+            "the copy-paste command must use the same safe quoting as the profile"
+        );
     }
     assert_eq!(fs::read(install.join("zed"))?, PAYLOAD);
     assert!(!install.join("zed-gitops").exists());
@@ -126,14 +144,17 @@ fn verified_install_handles_shell_metacharacters_and_is_idempotent() -> Result<(
     let text = fs::read_to_string(&profile)?;
     assert_eq!(text.matches("export PATH=").count(), 1);
     let output = Command::new("/bin/sh")
-        .args(["-c", ". \"$1\"; printf '%s' \"$PATH\"", "sh"])
+        .args(["-ec", ". \"$1\"; printf '%s' \"$PATH\"", "sh"])
         .arg(profile)
         .current_dir(fixture.root.path())
         .env_clear()
         .env("HOME", fixture.root.path())
         .env("PATH", "/usr/bin:/bin")
         .output()?;
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "profile: {text:?}; shell: {output:?}"
+    );
     assert_eq!(
         String::from_utf8(output.stdout)?,
         format!("{}:/usr/bin:/bin", fs::canonicalize(&install)?.display())

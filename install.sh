@@ -125,7 +125,8 @@ printf '%szed-cli installer%s\n' "$c_bold" "$c_reset"
 info "platform: ${os} ${arch}  ->  target ${target}"
 
 tag="$(resolve_tag)"
-if [[ ! "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+version_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'
+if [[ ! "$tag" =~ $version_pattern ]]; then
   error "release tag must be a version such as v0.3.0"
   exit 1
 fi
@@ -148,7 +149,8 @@ fi
 # Do not hand downloaded filenames to a checksum utility: accept exactly the
 # one requested asset and compute its digest through standard input.
 checksum_line="$(cat "${workdir}/checksum")"
-if [[ ! "$checksum_line" =~ ^([0-9a-fA-F]{64})\ [\ *](.+)$ ]] || [ "${BASH_REMATCH[2]:-}" != "$asset" ]; then
+checksum_pattern='^([0-9a-fA-F]{64}) [ *](.+)$'
+if [[ ! "$checksum_line" =~ $checksum_pattern ]] || [ "${BASH_REMATCH[2]:-}" != "$asset" ]; then
   error "invalid or ambiguous release checksum"
   exit 1
 fi
@@ -210,7 +212,13 @@ detect_profile() {
 
 # Portable marker: reference $HOME literally when the dir lives under it, so the
 # written profile line survives a home-directory path change.
-shell_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+shell_quote() {
+  local quote="'"
+  local escaped="'\\''"
+  # Bash 3.2 treats quotes inside the replacement expression literally.
+  # Fixed variables keep this compatible with the macOS system Bash.
+  printf "'%s'" "${1//$quote/$escaped}"
+}
 case "$INSTALL_DIR" in
   "$HOME"/*) path_marker="\"\$HOME\"/$(shell_quote "${INSTALL_DIR#"$HOME"/}")" ;;
   *) path_marker="$(shell_quote "$INSTALL_DIR")" ;;
@@ -242,7 +250,7 @@ case ":${PATH}:" in
   *)
     info "restart your shell, or run this to use it now:"
     # shellcheck disable=SC2016  # print $PATH literally as a copy-paste command
-    printf '    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    printf '    %s\n' "$path_line"
     ;;
 esac
 info "try:  ${EXE_NAME} --help"
