@@ -56,9 +56,6 @@ license = "MIT"
 vcs = "git"
 url = "https://github.com/ORESoftware/ores-formal-methods-templates"
 
-[targets.repository]
-dir = "."
-
 [install]
 adapter = "none"
 dir = ".vendor/.zed"
@@ -78,8 +75,8 @@ sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 size = 42
 format = "tar.gz"
 vcs_tag = "v0.1.1"
-vcs_commit = "fedcba9876543210fedcba9876543210fedcba98"
-source = "file:///tmp/registry"
+vcs_commit = "66aff520ab946f7d9b116e8c4f39423fa70e9558"
+source = "https://registry.zpkg.net"
 "#;
 
 const FORMAL_METHODS_RS: &str = r#"
@@ -93,9 +90,6 @@ license = "Apache-2.0"
 [package.repository]
 vcs = "git"
 url = "https://github.com/ORESoftware/formal-methods.rs"
-
-[targets.repository]
-dir = "."
 
 [install]
 adapter = "none"
