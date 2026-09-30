@@ -339,7 +339,12 @@ pub fn install_with_permissions(
         crate::git_submodules::preflight_gitmodules_metadata(project)?;
         let git_lock = crate::git_submodules::prepare_install(project, frozen)?;
         let outcome = if frozen {
-            crate::install_graph::prefetch(project, cfg, true)?;
+            crate::install_graph::prefetch_with_mode(
+                project,
+                cfg,
+                true,
+                permissions.local_registry,
+            )?;
             implementation::install_with_permissions(
                 project,
                 cfg,
@@ -351,7 +356,7 @@ pub fn install_with_permissions(
                 allow_ecosystem_mismatch,
             )?
         } else {
-            let prepared = crate::install_graph::prepare(project, cfg)?;
+            let prepared = crate::install_graph::prepare(project, cfg, permissions.local_registry)?;
             config::with_resolved_requirements(project, prepared.exact_requirements(), || {
                 implementation::install_with_permissions(
                     project,
@@ -385,7 +390,7 @@ pub(crate) fn install_frozen_lock_only_with_permissions(
     crate::project_lock::with_lock(project, "restore manifestless frozen Zed graph", || {
         crate::git_submodules::preflight_gitmodules_metadata(project)?;
         let git_lock = crate::git_submodules::prepare_install(project, true)?;
-        crate::install_graph::prefetch(project, cfg, true)?;
+        crate::install_graph::prefetch_with_mode(project, cfg, true, permissions.local_registry)?;
         let outcome = implementation::install_frozen_lock_only_with_permissions(
             project,
             cfg,

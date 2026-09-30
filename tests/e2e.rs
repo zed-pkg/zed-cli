@@ -111,6 +111,7 @@ fn test_config(tmp: &Path, registry_dir: &Path) -> Config {
         interactive: false,
         mirrors: Vec::new(),
         fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
+        local: Default::default(),
     }
 }
 
@@ -906,6 +907,7 @@ fn concurrent_installs_share_the_store_safely() {
                 interactive: false,
                 mirrors: Vec::new(),
                 fallback: zed_cli::mirrored_registry::FallbackPolicy::Disabled,
+                local: Default::default(),
             };
             ops::install(
                 &consumer,

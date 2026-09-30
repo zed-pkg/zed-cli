@@ -881,6 +881,7 @@ mod tests {
             interactive: false,
             mirrors: Vec::new(),
             fallback: crate::mirrored_registry::FallbackPolicy::Disabled,
+            local: Default::default(),
         }
     }
 
