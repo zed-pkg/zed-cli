@@ -70,7 +70,7 @@ struct MiseExportRecord {
 }
 
 /// Render, verify, or write one project-local mise projection.
-pub fn export_mise(
+pub(crate) fn export_mise(
     cwd: &Path,
     plan_arg: &Path,
     output_arg: &Path,
