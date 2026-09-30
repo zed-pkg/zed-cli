@@ -44,8 +44,10 @@ error()   { printf '%serror:%s %s\n' "$c_red" "$c_reset" "$*" >&2; }
 
 # --- cleanup ---------------------------------------------------------------
 workdir=""
+staged=""
 cleanup() {
   if [ -n "$workdir" ]; then rm -rf "$workdir"; fi
+  if [ -n "$staged" ]; then rm -f "$staged"; fi
 }
 trap cleanup EXIT
 
@@ -58,6 +60,17 @@ require() {
 }
 require curl
 require tar
+if command -v sha256sum >/dev/null 2>&1; then
+  checksum_command=(sha256sum)
+else
+  require shasum
+  checksum_command=(shasum -a 256)
+fi
+
+download() {
+  curl -fSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    --connect-timeout 10 --max-time 300 "$@"
+}
 
 # --- detect platform -------------------------------------------------------
 os="$(uname -s)"
@@ -92,10 +105,14 @@ resolve_tag() {
   # GitHub redirects /releases/latest to /releases/tag/<tag>. Reading the final
   # URL needs no API token, so it never hits the unauthenticated rate limit.
   local eff
-  if ! eff="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"; then
+  if ! eff="$(download -sI -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"; then
     error "could not reach GitHub to determine the latest release."
     exit 1
   fi
+  case "$eff" in
+    "https://github.com/${REPO}/releases/tag/"*) ;;
+    *) error "unexpected latest-release redirect"; exit 1 ;;
+  esac
   local tag="${eff##*/}"
   if [ -z "$tag" ] || [ "$tag" = "latest" ] || [ "$tag" = "releases" ]; then
     error "no published release found for ${REPO}."
@@ -108,6 +125,11 @@ printf '%szed-cli installer%s\n' "$c_bold" "$c_reset"
 info "platform: ${os} ${arch}  ->  target ${target}"
 
 tag="$(resolve_tag)"
+version_pattern='^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'
+if [[ ! "$tag" =~ $version_pattern ]]; then
+  error "release tag must be a version such as v0.3.0"
+  exit 1
+fi
 asset="${EXE_NAME}-${target}.tar.gz"
 url="https://github.com/${REPO}/releases/download/${tag}/${asset}"
 info "release:  ${tag}"
@@ -115,21 +137,56 @@ info "release:  ${tag}"
 # --- download & extract ----------------------------------------------------
 workdir="$(mktemp -d)"
 info "downloading ${asset} ..."
-if ! curl -fSL --proto '=https' --tlsv1.2 -o "${workdir}/${asset}" "$url"; then
+if ! download --max-filesize 268435456 -o "${workdir}/${asset}" "$url"; then
   error "download failed: ${url}"
   exit 1
 fi
 
-tar -xzf "${workdir}/${asset}" -C "$workdir"
-if [ ! -f "${workdir}/${EXE_NAME}" ]; then
-  error "archive ${asset} did not contain a '${EXE_NAME}' binary."
+if ! download --max-filesize 16384 -o "${workdir}/checksum" "${url}.sha256"; then
+  error "release checksum is unavailable; refusing to install"
+  exit 1
+fi
+# Do not hand downloaded filenames to a checksum utility: accept exactly the
+# one requested asset and compute its digest through standard input.
+checksum_line="$(cat "${workdir}/checksum")"
+checksum_pattern='^([0-9a-fA-F]{64}) [ *](.+)$'
+if [[ ! "$checksum_line" =~ $checksum_pattern ]] || [ "${BASH_REMATCH[2]:-}" != "$asset" ]; then
+  error "invalid or ambiguous release checksum"
+  exit 1
+fi
+expected="${BASH_REMATCH[1]}"
+actual="$("${checksum_command[@]}" < "${workdir}/${asset}")"
+actual="${actual%% *}"
+expected="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
+if [ "$actual" != "$expected" ]; then
+  error "release checksum mismatch; refusing to install"
+  exit 1
+fi
+
+# Extract only the root executable to stdout; never unpack arbitrary archive
+# paths, permissions, or links into the filesystem.
+members="$(tar -tzf "${workdir}/${asset}")"
+if [ "$(printf '%s\n' "$members" | grep -cx "$EXE_NAME" || true)" != 1 ]; then
+  error "release archive must contain exactly one root '$EXE_NAME' binary"
   exit 1
 fi
 
 # --- install ---------------------------------------------------------------
 mkdir -p "$INSTALL_DIR"
-mv -f "${workdir}/${EXE_NAME}" "${INSTALL_DIR}/${EXE_NAME}"
-chmod +x "${INSTALL_DIR}/${EXE_NAME}"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+if [ -d "${INSTALL_DIR}/${EXE_NAME}" ]; then
+  error "install destination is a directory"
+  exit 1
+fi
+staged="$(mktemp "${INSTALL_DIR}/.zed-install.XXXXXX")"
+tar -xOzf "${workdir}/${asset}" -- "$EXE_NAME" > "$staged"
+if [ ! -s "$staged" ]; then
+  error "release executable is empty or is not a regular archive member"
+  exit 1
+fi
+chmod 755 "$staged"
+mv -f "$staged" "${INSTALL_DIR}/${EXE_NAME}"
+staged=""
 success "installed ${EXE_NAME} -> ${INSTALL_DIR}/${EXE_NAME}"
 
 # --- PATH injection (idempotent) -------------------------------------------
@@ -155,19 +212,27 @@ detect_profile() {
 
 # Portable marker: reference $HOME literally when the dir lives under it, so the
 # written profile line survives a home-directory path change.
+shell_quote() {
+  local quote="'"
+  local escaped="'\\''"
+  # Bash 3.2 treats quotes inside the replacement expression literally.
+  # Fixed variables keep this compatible with the macOS system Bash.
+  printf "'%s'" "${1//$quote/$escaped}"
+}
 case "$INSTALL_DIR" in
-  "$HOME"/*) path_marker="\$HOME/${INSTALL_DIR#"$HOME"/}" ;;
-  *) path_marker="$INSTALL_DIR" ;;
+  "$HOME"/*) path_marker="\"\$HOME\"/$(shell_quote "${INSTALL_DIR#"$HOME"/}")" ;;
+  *) path_marker="$(shell_quote "$INSTALL_DIR")" ;;
 esac
+path_line="export PATH=${path_marker}:\"\$PATH\""
 
 profile="$(detect_profile)"
-if [ -f "$profile" ] && grep -Fq "$path_marker" "$profile"; then
+if [ -f "$profile" ] && grep -Fxq "$path_line" "$profile"; then
   info "PATH already configured in ${profile}"
 else
   {
     printf '\n# Added by the zed-cli installer\n'
     # shellcheck disable=SC2016  # write $PATH literally; it expands at shell init
-    printf 'export PATH="%s:$PATH"\n' "$path_marker"
+    printf '%s\n' "$path_line"
   } >>"$profile"
   success "added ${INSTALL_DIR} to PATH in ${profile}"
 fi
@@ -185,7 +250,7 @@ case ":${PATH}:" in
   *)
     info "restart your shell, or run this to use it now:"
     # shellcheck disable=SC2016  # print $PATH literally as a copy-paste command
-    printf '    export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    printf '    %s\n' "$path_line"
     ;;
 esac
 info "try:  ${EXE_NAME} --help"

@@ -546,7 +546,10 @@ fn cargo_adapter_configuration_is_root_anchored_in_the_development_home() {
     let parsed: toml::Value = toml::from_str(&generated).expect("parse generated cargo adapter");
     assert_eq!(
         parsed["patch"]["crates-io"]["example"]["path"].as_str(),
-        fixture.root.join("../example").to_str()
+        fs::canonicalize(&fixture.root)
+            .expect("canonicalize project root")
+            .join("../example")
+            .to_str()
     );
 }
 

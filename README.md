@@ -47,6 +47,16 @@ cargo install --path .
 Keep zed current with `zed self-update` (checks the latest GitHub release for
 your platform and replaces the binary in place; `--check` reports only).
 
+Both the bootstrap installer and self-update require the selected archive's
+`.sha256` release sidecar before installation. These checks detect corrupt or
+inconsistent release assets; they trust the GitHub release publisher and are
+not independent publisher signatures. Self-update bounds downloaded archives
+to 256 MiB, checksum documents to 16 KiB, expanded tar archives to 512 MiB,
+and archive entries to 4,096. It rejects duplicate or nonregular executable
+members and stages replacements beside the installed executable. On Windows,
+a failed replacement restores the previous executable; if rollback itself
+fails, the error identifies the retained backup for recovery.
+
 Note: the Zed editor also installs a `zed` binary. The Homebrew formula
 declares the conflict; if you use both, install with
 `cargo install --path . --root ~/.zed-pkg-cli` and alias as you like.
