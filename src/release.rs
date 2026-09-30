@@ -10,6 +10,8 @@ use crate::native_host_client::{self, NativeHostClientError, RegistryLimits, Reg
 
 use crate::config::read_manifest;
 
+mod html;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReleasePlan {
     pub release_set: String,
@@ -931,11 +933,33 @@ pub fn plan(
     channel: Option<ReleaseChannel>,
     iteration: u32,
 ) -> Result<()> {
+    return plan_with_report(project, json, channel, iteration, None);
+}
+
+pub fn plan_with_report(
+    project: &Path,
+    json: bool,
+    channel: Option<ReleaseChannel>,
+    iteration: u32,
+    html: Option<&Path>,
+) -> Result<()> {
+    if json && html.is_some() {
+        bail!("HTML output cannot be used with JSON output");
+    }
     let manifest = read_manifest(project)?;
     let unchecked = validate_native_manifests(project, &manifest)?;
     let plan = build_plan(&manifest, channel, iteration)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&plan)?);
+    let summary = if let Some(path) = html {
+        let output = project.join(path);
+        html::write_report(&plan, &unchecked, &output)?;
+        Some(format!("wrote release plan report {}", output.display()))
+    } else if json {
+        Some(serde_json::to_string_pretty(&plan)?)
+    } else {
+        None
+    };
+    if let Some(summary) = summary {
+        println!("{summary}");
     } else {
         print!("{}", render_human(&plan));
         // "Nothing was verified" and "everything matched" must not look the
