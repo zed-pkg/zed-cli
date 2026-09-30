@@ -411,8 +411,30 @@ impl FallbackRegistry {
             let Ok(manifest) = self.github_manifest(&candidate, &repo.default_branch) else {
                 continue;
             };
-            if manifest_self_claims_github_identity(&manifest, org, name, &candidate) {
+            let Some(declared) = manifest_github_identity_for_package(&manifest, org, name) else {
+                continue;
+            };
+            if same_github_identity(&candidate, &declared) {
                 matches.push(candidate);
+                continue;
+            }
+
+            // A repository inside the package-owning GitHub org may act as a
+            // compatibility/source-discovery shim, but it cannot redirect by
+            // assertion alone. The declared canonical repository must exist
+            // and independently self-claim the same package identity.
+            let Ok(canonical_repo) = self.github_repo(&declared) else {
+                continue;
+            };
+            let Ok(canonical_manifest) =
+                self.github_manifest(&declared, &canonical_repo.default_branch)
+            else {
+                continue;
+            };
+            if let Some(canonical) =
+                manifest_redirect_target(&manifest, &canonical_manifest, org, name)
+            {
+                matches.push(canonical);
             }
         }
         matches.sort_by(|left, right| {
@@ -1343,6 +1365,17 @@ fn manifest_self_claims_github_identity(
         .is_some_and(|declared| same_github_identity(candidate, &declared))
 }
 
+fn manifest_redirect_target(
+    source_manifest: &Manifest,
+    target_manifest: &Manifest,
+    org: &str,
+    name: &str,
+) -> Option<GithubIdentity> {
+    let declared = manifest_github_identity_for_package(source_manifest, org, name)?;
+    manifest_self_claims_github_identity(target_manifest, org, name, &declared)
+        .then_some(declared)
+}
+
 pub fn is_loopback_registry(url: &str) -> bool {
     let Ok(parsed) = reqwest::Url::parse(url) else {
         return false;
@@ -1496,6 +1529,59 @@ url = "https://github.com/ores-otel/ores-otel-sidecar.rs"
         );
         assert!(
             manifest_github_identity_for_package(&manifest, "ores-otel", "different-package")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn compatibility_manifest_redirect_requires_canonical_self_claim() {
+        let source = Manifest::parse(
+            r#"
+[package]
+org = "oresoftware"
+name = "next-loggers"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/ores-otel/ores.otel.log"
+"#,
+        )
+        .unwrap();
+        let canonical = Manifest::parse(
+            r#"
+[package]
+org = "oresoftware"
+name = "next-loggers"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/ores-otel/ores.otel.log"
+"#,
+        )
+        .unwrap();
+        let target =
+            manifest_redirect_target(&source, &canonical, "oresoftware", "next-loggers")
+                .unwrap();
+        assert_eq!(target.owner, "ores-otel");
+        assert_eq!(target.repo, "ores.otel.log");
+
+        let unrelated = Manifest::parse(
+            r#"
+[package]
+org = "oresoftware"
+name = "different-package"
+version = "0.1.0"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/ores-otel/ores.otel.log"
+"#,
+        )
+        .unwrap();
+        assert!(
+            manifest_redirect_target(&source, &unrelated, "oresoftware", "next-loggers")
                 .is_none()
         );
     }
