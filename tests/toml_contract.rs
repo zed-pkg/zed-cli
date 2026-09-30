@@ -57,18 +57,16 @@ fn zed_package_version_matches_the_native_release_version() {
 }
 
 #[test]
-fn zed_package_declares_the_canonical_flags_runtime_and_contract() {
+fn zed_cli_flags_remain_a_separate_canonical_contract() {
     let root = root();
     let zpkg = parse_toml(&root.join(".zpkg.toml"));
     let cargo = parse_toml(&root.join("Cargo.toml"));
     let flags = parse_toml(&root.join(".cli-flags.toml"));
 
-    assert_eq!(
-        string_at(&zpkg, &["cli", "flags_contract"]),
-        ".cli-flags.toml"
+    assert!(
+        zpkg.get("cli").is_none(),
+        ".zpkg.toml must stay within the zed-interfaces Manifest authority; CLI flags belong in .cli-flags.toml"
     );
-    assert_eq!(string_at(&zpkg, &["cli", "flags_runtime"]), "flags-2-env");
-    assert_eq!(string_at(&zpkg, &["cli", "primary_bin"]), "zed");
 
     let flags2env = cargo
         .get("dependencies")
