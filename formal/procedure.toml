@@ -89,8 +89,10 @@ safety = [
   "failed refresh preserves a coherent prior credential or explicit signed-out state",
   "self-update verifies the intended release artifact before atomic binary replacement",
   "a failed replacement leaves a runnable prior binary or explicit recoverable state",
+  "release checksum selection rejects duplicate matching entries before replacement",
+  "staging an update never follows a predictable temporary-file symlink",
 ]
 liveness = ["with valid refresh credentials or an available verified release, the requested auth/update operation eventually reaches a coherent terminal state"]
-faults = ["refresh response lost", "credential write crash", "logout revocation failure", "update hash mismatch", "binary replacement crash", "release response redirect"]
+faults = ["refresh response lost", "credential write crash", "logout revocation failure", "update hash mismatch", "binary replacement crash", "release response redirect", "duplicate checksum entry", "staging-name symlink", "Windows rollback failure", "oversized release response"]
 bounds = ["two credential generations", "two update versions", "finite file-replacement stages"]
 review_triggers = ["token generation", "credential persistence", "logout", "redaction", "release selection", "artifact verification", "binary replacement"]

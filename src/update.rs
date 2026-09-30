@@ -3,7 +3,7 @@
 //! running binary in place. Pairs with the cross-platform release matrix
 //! (`release.yml`) that publishes `zed-<target>.{tar.gz,zip}` assets.
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -12,6 +12,19 @@ use zed_interfaces::manifest::is_sha256_hex;
 
 /// The CLI's own source repository, where releases are published.
 const REPO: &str = "zed-pkg/zed-cli";
+const MAX_CHECKSUM_BYTES: u64 = 16 * 1024;
+const MAX_ASSET_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_TAR_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES: usize = 4096;
+
+fn read_bounded(reader: impl Read, limit: u64, label: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        bail!("{label} exceeds the {limit}-byte limit");
+    }
+    Ok(bytes)
+}
 
 /// The release-asset target triple for the current platform, matching the
 /// names produced by `release.yml` (e.g. `aarch64-apple-darwin`).
@@ -37,19 +50,26 @@ pub fn asset_target() -> Result<String> {
 /// `/releases` when none do), so this needs no API token and dodges the API
 /// rate limit (same trick as `install.sh`). Returns `None` when there is no
 /// release to point at.
+#[must_use]
 pub fn tag_from_latest_url(url: &str) -> Option<String> {
-    let url = url.trim_end_matches('/');
-    let marker = "/releases/tag/";
-    let idx = url.find(marker)?;
-    let tag = url[idx + marker.len()..].split('/').next().unwrap_or("");
-    if tag.is_empty() {
-        None
-    } else {
-        Some(tag.to_string())
+    let url = reqwest::Url::parse(url).ok()?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("github.com")
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
     }
+    let tag = url.path().strip_prefix(&format!("/{REPO}/releases/tag/"))?;
+    semver::Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()?;
+    Some(tag.to_owned())
 }
 
 /// Is `latest_tag` (e.g. `v0.1.1`) a newer semver than `current` (`0.1.0`)?
+#[must_use]
 pub fn is_newer(current: &str, latest_tag: &str) -> bool {
     let strip = |s: &str| s.trim().trim_start_matches('v').to_string();
     match (
@@ -66,27 +86,17 @@ pub fn is_newer(current: &str, latest_tag: &str) -> bool {
 /// return the expected lowercase digest for `filename`, if present and well
 /// formed. Comment/blank lines and entries for other assets are ignored.
 fn expected_sha256_for(sums: &str, filename: &str) -> Option<String> {
-    for line in sums.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((hex, name)) = line.split_once(char::is_whitespace) else {
-            continue;
-        };
-        // Binary-mode entries prefix the name with `*`; strip it plus any
-        // surrounding whitespace before comparing.
-        let name = name.trim().trim_start_matches('*').trim();
-        if name == filename {
-            let hex = hex.trim().to_ascii_lowercase();
-            return is_sha256_hex(&hex).then_some(hex);
-        }
-    }
-    None
+    let mut matches = sums.lines().filter_map(|line| {
+        let (hex, name) = line.split_once(' ')?;
+        let name = name.strip_prefix(' ').or_else(|| name.strip_prefix('*'))?;
+        (name == filename).then_some(hex)
+    });
+    let digest = matches.next()?.to_ascii_lowercase();
+    (matches.next().is_none() && is_sha256_hex(&digest)).then_some(digest)
 }
 
-/// Verify a downloaded release asset against the release's published
-/// SHA256SUMS before anything is extracted or installed. A corrupted download
+/// Verify a downloaded release asset against its published `.sha256` sidecar
+/// before anything is extracted or installed. A corrupted download
 /// or swapped asset is caught here — before it can replace the running
 /// binary. Failing to FETCH the sums refuses the update (there is nothing to
 /// verify against); `skip_checksum` bypasses the whole check for local
@@ -97,7 +107,7 @@ fn verify_asset_checksum(
     asset: &str,
     bytes: &[u8],
 ) -> Result<()> {
-    let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/SHA256SUMS");
+    let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}.sha256");
     let resp = client
         .get(&sums_url)
         .send()
@@ -109,9 +119,10 @@ fn verify_asset_checksum(
             resp.status()
         );
     }
-    let sums = resp.text().context("reading SHA256SUMS")?;
+    let sums = String::from_utf8(read_bounded(resp, MAX_CHECKSUM_BYTES, "checksum file")?)
+        .context("checksum file is not UTF-8")?;
     let expected = expected_sha256_for(&sums, asset).with_context(|| {
-        format!("SHA256SUMS from the release has no entry for {asset}; refusing to self-update")
+        format!("release checksum must contain exactly one valid entry for {asset}; refusing to self-update")
     })?;
     let actual = format!("{:x}", Sha256::digest(bytes));
     if actual != expected {
@@ -126,64 +137,113 @@ fn verify_asset_checksum(
 
 /// Extract the `zed` (or `zed.exe`) binary bytes from a release archive.
 fn extract_binary(bytes: &[u8], bin_name: &str, is_zip: bool) -> Result<Vec<u8>> {
-    if is_zip {
+    let selected = if is_zip {
         let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
-            let name = file.name().rsplit('/').next().unwrap_or("").to_string();
-            if name == bin_name {
-                let mut out = Vec::new();
-                file.read_to_end(&mut out)?;
-                return Ok(out);
-            }
+        if archive.len() > MAX_ARCHIVE_ENTRIES {
+            bail!("release archive has too many entries");
         }
+        (0..archive.len()).try_fold(None, |selected, i| -> Result<Option<Vec<u8>>> {
+            let file = archive.by_index(i)?;
+            if file.name().rsplit('/').next() != Some(bin_name) {
+                return Ok(selected);
+            }
+            let mode = file.unix_mode().unwrap_or(0) & 0o170000;
+            if !file.is_file() || !matches!(mode, 0 | 0o100000) {
+                bail!("release executable must be a regular file");
+            }
+            select_binary(selected, file.size(), file)
+        })?
     } else {
-        let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(Cursor::new(bytes)));
-        for entry in tar.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.to_path_buf();
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if name == bin_name {
-                let mut out = Vec::new();
-                entry.read_to_end(&mut out)?;
-                return Ok(out);
-            }
-        }
+        let unpacked = read_bounded(
+            flate2::read::GzDecoder::new(Cursor::new(bytes)),
+            MAX_TAR_BYTES,
+            "expanded release archive",
+        )?;
+        let mut archive = tar::Archive::new(Cursor::new(unpacked));
+        archive.entries()?.enumerate().try_fold(
+            None,
+            |selected, (index, entry)| -> Result<Option<Vec<u8>>> {
+                if index >= MAX_ARCHIVE_ENTRIES {
+                    bail!("release archive has too many entries");
+                }
+                let entry = entry?;
+                if entry.path()?.file_name() != Some(std::ffi::OsStr::new(bin_name)) {
+                    return Ok(selected);
+                }
+                if !entry.header().entry_type().is_file() {
+                    bail!("release executable must be a regular file");
+                }
+                select_binary(selected, entry.size(), entry)
+            },
+        )?
+    };
+    selected.with_context(|| format!("release archive did not contain a `{bin_name}` binary"))
+}
+
+fn select_binary(
+    selected: Option<Vec<u8>>,
+    size: u64,
+    reader: impl Read,
+) -> Result<Option<Vec<u8>>> {
+    if selected.is_some() {
+        bail!("release archive contains duplicate executable entries");
     }
-    bail!("release archive did not contain a `{bin_name}` binary");
+    if size == 0 || size > MAX_ASSET_BYTES {
+        bail!("release executable size is outside the supported bounds");
+    }
+    let bytes = read_bounded(reader, size, "release executable")?;
+    if bytes.len() as u64 != size {
+        bail!("release executable size does not match its archive header");
+    }
+    Ok(Some(bytes))
 }
 
 /// Atomically replace the executable at `exe` with `new_bytes`.
 fn replace_exe(exe: &Path, new_bytes: &[u8]) -> Result<()> {
+    if !std::fs::symlink_metadata(exe)?.is_file() {
+        bail!("update destination must be a regular executable file");
+    }
     let dir = exe.parent().context("executable has no parent directory")?;
-    let tmp = dir.join(".zed-update.tmp");
-    std::fs::write(&tmp, new_bytes)
-        .with_context(|| format!("writing new binary to {}", tmp.display()))?;
+    let tmp = tempfile::NamedTempFile::new_in(dir).context("staging update beside executable")?;
+    tmp.as_file()
+        .write_all(new_bytes)
+        .context("writing staged update")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o755))?;
     }
+    tmp.as_file().sync_all().context("syncing staged update")?;
     // On Unix, renaming over the running binary is safe: the running process
     // keeps its open inode. On Windows the running image is locked, so move it
     // aside first.
+    #[cfg(not(windows))]
+    tmp.persist(exe)
+        .with_context(|| format!("replacing {}", exe.display()))?;
     #[cfg(windows)]
     {
-        let old = dir.join(".zed-update.old");
+        // Keep the backup directory on rollback failure; never let a cleanup
+        // destructor delete the last working executable.
+        let backup = tempfile::Builder::new()
+            .prefix(".zed-update-")
+            .tempdir_in(dir)?
+            .keep();
+        let old = backup.join("zed.exe");
+        std::fs::rename(exe, &old).context("backing up running executable")?;
+        if let Err(error) = tmp.persist(exe) {
+            std::fs::rename(&old, exe).with_context(|| {
+                format!(
+                    "update failed ({error}); rollback failed; original remains at {}",
+                    old.display()
+                )
+            })?;
+            let _ = std::fs::remove_dir(&backup);
+            return Err(error).context("replacing executable; original restored");
+        }
+        // Windows may hold the renamed running image open until process exit.
         let _ = std::fs::remove_file(&old);
-        std::fs::rename(exe, &old)?;
-    }
-    std::fs::rename(&tmp, exe).with_context(|| format!("replacing {}", exe.display()))?;
-    #[cfg(windows)]
-    {
-        // A live Windows executable can keep the renamed image locked until
-        // process exit. Remove the backup whenever Windows permits it, while
-        // preserving the successful replacement if the live-image deletion is
-        // deferred by the operating system.
-        let _ = std::fs::remove_file(dir.join(".zed-update.old"));
+        let _ = std::fs::remove_dir(&backup);
     }
     Ok(())
 }
@@ -199,12 +259,16 @@ pub fn self_update(
 ) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("zed-cli/", env!("CARGO_PKG_VERSION")))
+        .https_only(true)
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
     let latest_url = format!("https://github.com/{REPO}/releases/latest");
     let resp = client
         .get(&latest_url)
         .send()
+        .and_then(|r| r.error_for_status())
         .context("querying GitHub for the latest release")?;
     let tag = tag_from_latest_url(resp.url().as_str())
         .context("could not determine the latest release tag (no releases yet?)")?;
@@ -228,13 +292,12 @@ pub fn self_update(
     };
     let download_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
     println!("downloading {download_url}");
-    let bytes = client
+    let response = client
         .get(&download_url)
         .send()
         .and_then(|r| r.error_for_status())
-        .with_context(|| format!("downloading release asset {asset}"))?
-        .bytes()
-        .context("reading release asset")?;
+        .with_context(|| format!("downloading release asset {asset}"))?;
+    let bytes = read_bounded(response, MAX_ASSET_BYTES, "release asset")?;
 
     if skip_checksum {
         eprintln!(
@@ -255,190 +318,4 @@ pub fn self_update(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tag_parsing_from_redirect_url() {
-        assert_eq!(
-            tag_from_latest_url("https://github.com/zed-pkg/zed-cli/releases/tag/v0.2.0")
-                .as_deref(),
-            Some("v0.2.0")
-        );
-        // The unresolved /latest URL yields no tag.
-        assert_eq!(
-            tag_from_latest_url("https://github.com/zed-pkg/zed-cli/releases/latest"),
-            None
-        );
-        // No releases at all: GitHub lands on /releases.
-        assert_eq!(
-            tag_from_latest_url("https://github.com/zed-pkg/zed-cli/releases"),
-            None
-        );
-    }
-
-    #[test]
-    fn semver_comparison_strips_v() {
-        assert!(is_newer("0.1.0", "v0.1.1"));
-        assert!(is_newer("0.1.0", "0.2.0"));
-        assert!(!is_newer("1.0.0", "v1.0.0"));
-        assert!(!is_newer("1.2.0", "v1.1.9"));
-        assert!(!is_newer("0.1.0", "not-a-version"));
-    }
-
-    const DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
-    #[test]
-    fn sha256sums_matches_asset_line() {
-        let sums = format!(
-            "# release checksums\n\
-             {DIGEST}  zed-aarch64-apple-darwin.tar.gz\n\
-             1111111111111111111111111111111111111111111111111111111111111111  zed-x86_64-unknown-linux-musl.tar.gz\n"
-        );
-        assert_eq!(
-            expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").as_deref(),
-            Some(DIGEST)
-        );
-        assert_eq!(
-            expected_sha256_for(&sums, "zed-x86_64-unknown-linux-musl.tar.gz").as_deref(),
-            Some("1111111111111111111111111111111111111111111111111111111111111111")
-        );
-    }
-
-    #[test]
-    fn sha256sums_handles_binary_mode_and_uppercase() {
-        // `sha256sum -b` writes `<hex> *<name>`; digests may be uppercase.
-        let sums = format!(
-            "{}  *zed-x86_64-pc-windows-msvc.zip\n",
-            DIGEST.to_uppercase()
-        );
-        assert_eq!(
-            expected_sha256_for(&sums, "zed-x86_64-pc-windows-msvc.zip").as_deref(),
-            Some(DIGEST),
-            "expected lowercased digest with the `*` binary-mode marker stripped"
-        );
-    }
-
-    #[test]
-    fn sha256sums_rejects_missing_or_malformed() {
-        let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
-        // No entry for the requested asset -> None, so the caller aborts.
-        assert_eq!(
-            expected_sha256_for(&sums, "zed-x86_64-apple-darwin.tar.gz"),
-            None
-        );
-        // A non-hex "digest" for the asset is not accepted.
-        let bad = "nothexnothexnothex  zed-aarch64-apple-darwin.tar.gz\n";
-        assert_eq!(
-            expected_sha256_for(bad, "zed-aarch64-apple-darwin.tar.gz"),
-            None
-        );
-        // Empty file yields nothing.
-        assert_eq!(
-            expected_sha256_for("", "zed-aarch64-apple-darwin.tar.gz"),
-            None
-        );
-    }
-
-    #[test]
-    fn sha256sums_mismatch_is_detectable() {
-        // Mirrors the self_update comparison: a differing digest must not
-        // equal the archive's actual hash, so the update is refused.
-        let sums = format!("{DIGEST}  zed-aarch64-apple-darwin.tar.gz\n");
-        let expected = expected_sha256_for(&sums, "zed-aarch64-apple-darwin.tar.gz").unwrap();
-        let actual = "1111111111111111111111111111111111111111111111111111111111111111";
-        assert_ne!(expected, actual);
-    }
-
-    /// Build an in-memory `.tar.gz` mirroring a release layout: a versioned
-    /// top-level directory holding the binary plus decoy files.
-    fn release_tar_gz(bin_name: &str, payload: &[u8]) -> Vec<u8> {
-        let mut out = Vec::new();
-        {
-            let enc = flate2::write::GzEncoder::new(&mut out, flate2::Compression::default());
-            let mut builder = tar::Builder::new(enc);
-            let mut add = |path: String, bytes: &[u8]| {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(bytes.len() as u64);
-                header.set_mode(0o755);
-                header.set_cksum();
-                builder.append_data(&mut header, path, bytes).unwrap();
-            };
-            add("zed-test-target/README.md".to_string(), b"decoy docs");
-            add(format!("zed-test-target/{bin_name}"), payload);
-            builder.into_inner().unwrap().finish().unwrap();
-        }
-        out
-    }
-
-    #[test]
-    fn extract_binary_finds_zed_inside_a_tar_gz() {
-        let payload = b"#!fake-zed-binary".as_slice();
-        let archive = release_tar_gz("zed", payload);
-        let extracted = extract_binary(&archive, "zed", false).unwrap();
-        assert_eq!(extracted, payload);
-    }
-
-    #[test]
-    fn extract_binary_finds_zed_exe_inside_a_zip() {
-        use std::io::Write as _;
-        let payload = b"MZ-fake-windows-binary".as_slice();
-        let mut cursor = Cursor::new(Vec::new());
-        {
-            let mut writer = zip::ZipWriter::new(&mut cursor);
-            let opts = zip::write::SimpleFileOptions::default();
-            writer
-                .start_file("zed-test-target/README.md", opts)
-                .unwrap();
-            writer.write_all(b"decoy docs").unwrap();
-            writer.start_file("zed-test-target/zed.exe", opts).unwrap();
-            writer.write_all(payload).unwrap();
-            writer.finish().unwrap();
-        }
-        let extracted = extract_binary(&cursor.into_inner(), "zed.exe", true).unwrap();
-        assert_eq!(extracted, payload);
-    }
-
-    #[test]
-    fn extract_binary_rejects_an_archive_without_the_binary() {
-        let archive = release_tar_gz("not-zed", b"wrong tool");
-        let err = extract_binary(&archive, "zed", false).unwrap_err();
-        assert!(
-            err.to_string().contains("did not contain"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn replace_exe_swaps_contents_atomically_and_keeps_exec_bit() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("zed");
-        std::fs::write(&exe, b"old-binary").unwrap();
-
-        replace_exe(&exe, b"new-binary").unwrap();
-
-        assert_eq!(std::fs::read(&exe).unwrap(), b"new-binary");
-        // No staging temp file left behind next to the exe.
-        assert_eq!(
-            std::fs::read_dir(dir.path()).unwrap().count(),
-            1,
-            "only the replaced exe remains"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&exe).unwrap().permissions().mode();
-            assert_ne!(mode & 0o111, 0, "replaced binary must stay executable");
-        }
-    }
-
-    #[test]
-    fn asset_target_is_platform_shaped() {
-        let t = asset_target().unwrap();
-        assert!(t.contains(std::env::consts::ARCH));
-        #[cfg(target_os = "macos")]
-        assert!(t.ends_with("apple-darwin"));
-        #[cfg(target_os = "linux")]
-        assert!(t.contains("unknown-linux-"));
-    }
-}
+mod tests;
