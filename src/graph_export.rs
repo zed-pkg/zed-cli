@@ -1,8 +1,9 @@
-//! Immutable package dependency-graph downloads.
+//! Dependency-graph CLI surface.
 //!
-//! `zed graph package <org>/<name>@<version>` is a byte-preserving client for
-//! the registry graph endpoints. It never resolves a mutable version, rewrites
-//! a graph, or treats a convenience projection as lockfile authority.
+//! `zed graph package <org>/<name>@<version>` remains a byte-preserving client
+//! for immutable registry graph artifacts. `zed graph local` is the read-only
+//! prospective resolver for a local `.zpkg.toml`; it emits deterministic JSON
+//! intended for automation and AI tooling without mutating the project.
 
 use std::env;
 use std::ffi::OsString;
@@ -16,6 +17,9 @@ use serde::Serialize;
 
 use crate::cli::Globals;
 use crate::config::Config;
+mod graph_local;
+
+use graph_local::LocalGraphOptions;
 
 mod coordinate;
 mod download;
@@ -65,6 +69,44 @@ pub struct PackageGraphArgs {
 }
 
 #[derive(Debug, Clone, Args)]
+pub struct LocalGraphArgs {
+    /// `.zpkg.toml` to resolve, or a directory containing it.
+    #[arg(
+        long,
+        env = "ZED_PKG_GRAPH_MANIFEST",
+        default_value = ".zpkg.toml",
+        value_name = "PATH"
+    )]
+    pub manifest: PathBuf,
+
+    /// Output file. Omit or pass `-` for stdout.
+    #[arg(long, short = 'o', env = "ZED_PKG_GRAPH_OUTPUT", value_name = "PATH")]
+    pub output: Option<PathBuf>,
+
+    /// Pretty-print JSON instead of compact deterministic JSON.
+    #[arg(long, env = "ZED_PKG_GRAPH_PRETTY")]
+    pub pretty: bool,
+
+    /// Resolve only runtime dependencies; the default includes build edges too.
+    #[arg(long, env = "ZED_PKG_GRAPH_RUNTIME_ONLY")]
+    pub runtime_only: bool,
+
+    /// Permit verified artifact downloads when a registry lacks declared graph metadata.
+    /// Fast analysis fails closed by default instead of downloading package archives.
+    #[arg(long, env = "ZED_PKG_GRAPH_ALLOW_ARTIFACT_FALLBACK")]
+    pub allow_artifact_fallback: bool,
+
+    /// Maximum bytes accepted from one immutable declared-graph response.
+    #[arg(
+        long,
+        env = "ZED_PKG_GRAPH_MAX_METADATA_BYTES",
+        default_value_t = DEFAULT_MAX_BYTES,
+        value_name = "BYTES"
+    )]
+    pub max_metadata_bytes: u64,
+}
+
+#[derive(Debug, Clone, Args)]
 struct GraphArgs {
     #[command(subcommand)]
     command: GraphSubcommand,
@@ -74,6 +116,8 @@ struct GraphArgs {
 enum GraphSubcommand {
     /// Download one immutable package-version dependency graph.
     Package(PackageGraphArgs),
+    /// Resolve the complete prospective graph for a local `.zpkg.toml`.
+    Local(LocalGraphArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -119,8 +163,8 @@ struct DownloadMetadata {
 }
 
 /// Route only `zed graph ...`; established commands remain on the ordinary
-/// CLI parser. This modular boundary leaves `zed graph github` available as a
-/// sibling command without coupling package downloads to GitHub inventory.
+/// parser. Keeping graph modular prevents this command family from stealing
+/// existing top-level command names.
 pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     match route(&args) {
         Route::Graph => Some(run_cli(args)),
@@ -134,8 +178,7 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     }
 }
 
-/// Add the graph namespace and immutable package downloader to root help and
-/// shell completion generation.
+/// Add graph commands to root help and shell completion generation.
 pub fn augment_root_command(command: clap::Command) -> clap::Command {
     if command
         .get_subcommands()
@@ -147,12 +190,17 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
         clap::Command::new("package")
             .about("Download one immutable package-version dependency graph"),
     );
+    let local = <LocalGraphArgs as Args>::augment_args(
+        clap::Command::new("local")
+            .about("Resolve the complete prospective graph for a local .zpkg.toml"),
+    );
     command.subcommand(
         clap::Command::new("graph")
             .about("Inspect and export dependency graphs")
             .subcommand_required(true)
             .arg_required_else_help(true)
-            .subcommand(package),
+            .subcommand(package)
+            .subcommand(local),
     )
 }
 
@@ -174,6 +222,19 @@ fn run_cli(args: Vec<OsString>) -> Result<i32> {
         GraphCommand::Graph(GraphArgs {
             command: GraphSubcommand::Package(options),
         }) => run_package(&config, options),
+        GraphCommand::Graph(GraphArgs {
+            command: GraphSubcommand::Local(options),
+        }) => graph_local::run(
+            &config,
+            LocalGraphOptions {
+                manifest: options.manifest,
+                output: options.output,
+                pretty: options.pretty,
+                runtime_only: options.runtime_only,
+                allow_artifact_fallback: options.allow_artifact_fallback,
+                max_metadata_bytes: options.max_metadata_bytes,
+            },
+        ),
     }
 }
 
@@ -362,6 +423,9 @@ fn normalize_boolean_environment() -> Result<()> {
         "ZED_PKG_TRUST_MIRROR_METADATA",
         "ZED_PKG_SOURCE_FALLBACK",
         "ZED_PKG_GRAPH_METADATA_JSON",
+        "ZED_PKG_GRAPH_PRETTY",
+        "ZED_PKG_GRAPH_RUNTIME_ONLY",
+        "ZED_PKG_GRAPH_ALLOW_ARTIFACT_FALLBACK",
     ] {
         let Some(raw) = env::var_os(key) else {
             continue;
@@ -400,47 +464,77 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    fn os_argv(values: &[&str]) -> Vec<OsString> {
+        values.iter().map(OsString::from).collect()
+    }
+
     #[test]
     fn route_detects_graph_and_help_without_stealing_existing_commands() {
-        let argv = |values: &[&str]| values.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(
-            route(&argv(&["zed", "graph", "package", "acme/pkg@1.0.0"])),
+            route(&os_argv(&[
+                "zed",
+                "graph",
+                "package",
+                "acme/pkg@1.0.0"
+            ])),
             Route::Graph
         );
         assert_eq!(
-            route(&argv(&[
+            route(&os_argv(&["zed", "graph", "local", "--pretty"])),
+            Route::Graph
+        );
+        assert_eq!(
+            route(&os_argv(&[
                 "zed",
                 "--registry",
                 "https://r",
                 "help",
                 "graph",
-                "package"
+                "local"
             ])),
             Route::GraphHelp { help_index: 3 }
         );
-        assert_eq!(route(&argv(&["zed", "task", "graph"])), Route::Existing);
+        assert_eq!(route(&os_argv(&["zed", "task", "graph"])), Route::Existing);
     }
 
     #[test]
-    fn embedded_graph_contract_is_fail_closed_and_accepts_public_options() {
-        let parsed = parse_embedded(&string_argv(&[
-            "zed",
-            "graph",
-            "package",
-            "acme/pkg@1.0.0",
-            "--format",
-            "json",
-            "--output",
-            "graph.json",
-            "--etag",
-            "\"abc\"",
-            "--max-bytes",
-            "4096",
-            "--metadata-json",
-        ]))
-        .expect("graph flags contract should parse its public command surface");
-        assert!(parsed.unknown_options.is_empty());
-        assert!(parsed.errors.is_empty());
+    fn embedded_graph_contract_accepts_package_and_local_options() {
+        for argv in [
+            string_argv(&[
+                "zed",
+                "graph",
+                "package",
+                "acme/pkg@1.0.0",
+                "--format",
+                "json",
+                "--output",
+                "graph.json",
+                "--etag",
+                "\"abc\"",
+                "--max-bytes",
+                "4096",
+                "--metadata-json",
+            ]),
+            string_argv(&[
+                "zed",
+                "graph",
+                "local",
+                "--manifest",
+                ".zpkg.toml",
+                "--output",
+                "graph.json",
+                "--pretty",
+                "--runtime-only",
+                "--allow-artifact-fallback",
+                "--max-metadata-bytes",
+                "4096",
+            ]),
+        ] {
+            let parsed = parse_embedded(&argv)
+                .expect("graph flags contract should parse its public command surface");
+            assert!(parsed.unknown_options.is_empty(), "{parsed:?}");
+            assert!(parsed.errors.is_empty(), "{parsed:?}");
+        }
     }
 
     #[test]
@@ -448,8 +542,7 @@ mod tests {
         let parsed = parse_embedded(&string_argv(&[
             "zed",
             "graph",
-            "package",
-            "acme/pkg@1.0.0",
+            "local",
             "--not-a-graph-option",
         ]))
         .expect("flags2env should return structured rejection evidence");
