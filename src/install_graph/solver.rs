@@ -735,6 +735,7 @@ mod tests {
                 download_url: "https://example.invalid/artifact".to_string(),
                 published_at: "1970-01-01T00:00:00Z".to_string(),
                 yanked: false,
+                mirrors: Vec::new(),
             };
             self.candidates.insert(
                 (key.to_string(), version_text.to_string()),

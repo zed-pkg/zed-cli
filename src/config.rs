@@ -476,6 +476,9 @@ url = "https://localhost/manifestless/consumer"
             supabase_key: None,
             interactive: false,
             git_submodules: false,
+            r2_public_base: None,
+            r2_public_key: None,
+            source_fallback: true,
         };
         let cfg = Config::from_globals(&globals).unwrap();
 

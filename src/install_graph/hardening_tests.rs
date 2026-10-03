@@ -51,6 +51,7 @@ fn prepared_artifact(
             download_url: "file:///unused-artifact.tar.gz".to_string(),
             published_at: "1970-01-01T00:00:00Z".to_string(),
             yanked: false,
+            mirrors: Vec::new(),
         },
     };
 
