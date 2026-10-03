@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Bounded install/frozen/publish model plus deterministic artifact checks."""
+"""Bounded install/frozen/publish model plus deterministic artifact checks.
+
+Checks raise :class:`ModelViolation` (never bare ``assert``), so the model
+still fails loudly under ``python3 -O`` — the same hardening the Sonus lineage
+of this framework applies in its ``check.py``.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +12,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from itertools import permutations
+from typing import NoReturn
 
 NONE = -1
 VERSIONS = (0, 1, 2)
@@ -22,6 +28,19 @@ ALIASES = {
     "logout": "auth-logout",
     "signout": "auth-logout",
 }
+
+
+class ModelViolation(AssertionError):
+    """Raised when the model reaches a state that breaks an invariant."""
+
+
+def fail(message: str) -> NoReturn:
+    raise ModelViolation(message)
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        fail(message)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,11 +103,11 @@ def successors(state: State):
 
 
 def assert_invariants(state: State) -> None:
-    assert state.manifest in VERSIONS
-    assert state.lock in (NONE, *VERSIONS)
-    assert state.tree in (NONE, *VERSIONS)
-    assert state.tag in (NONE, *VERSIONS)
-    assert state.published in (NONE, *VERSIONS)
+    require(state.manifest in VERSIONS, f"manifest out of domain: {state}")
+    require(state.lock in (NONE, *VERSIONS), f"lock out of domain: {state}")
+    require(state.tree in (NONE, *VERSIONS), f"tree out of domain: {state}")
+    require(state.tag in (NONE, *VERSIONS), f"tag out of domain: {state}")
+    require(state.published in (NONE, *VERSIONS), f"published out of domain: {state}")
 
 
 def main() -> None:
@@ -102,10 +121,13 @@ def main() -> None:
         assert_invariants(state)
 
         frozen_target, frozen_ok = frozen_install(state)
-        assert frozen_target.lock == state.lock, "frozen install mutated the lock"
-        assert frozen_ok == (state.lock == state.manifest and state.lock != NONE)
+        require(frozen_target.lock == state.lock, "frozen install mutated the lock")
+        require(
+            frozen_ok == (state.lock == state.manifest and state.lock != NONE),
+            f"frozen-install admission diverged from the specification at {state}",
+        )
         if not frozen_ok:
-            assert frozen_target == state
+            require(frozen_target == state, "rejected frozen install mutated state")
 
         publish_target, publish_ok = publish(state)
         expected_publish = (
@@ -114,9 +136,12 @@ def main() -> None:
             and state.lock == state.manifest
             and state.tree == state.lock
         )
-        assert publish_ok == expected_publish
+        require(
+            publish_ok == expected_publish,
+            f"publish admission diverged from the specification at {state}",
+        )
         if not publish_ok:
-            assert publish_target == state
+            require(publish_target == state, "rejected publish mutated state")
 
         if depth == MAX_DEPTH:
             continue
@@ -124,7 +149,7 @@ def main() -> None:
             transitions += 1
             assert_invariants(target)
             if action == "publish":
-                assert expected_publish
+                require(expected_publish, f"publish fired while inadmissible at {state}")
             if target not in seen:
                 seen.add(target)
                 queue.append((target, depth + 1))
@@ -136,11 +161,17 @@ def main() -> None:
     )
     expected_digest = artifact_digest(entries)
     for order in permutations(entries):
-        assert artifact_digest(order) == expected_digest
+        require(
+            artifact_digest(order) == expected_digest,
+            "artifact digest is entry-order dependent",
+        )
 
     for alias, canonical in ALIASES.items():
-        assert canonical_command(alias) == canonical
-        assert canonical_command(canonical) == canonical
+        require(canonical_command(alias) == canonical, f"alias {alias!r} miscanonicalized")
+        require(
+            canonical_command(canonical) == canonical,
+            f"canonical command {canonical!r} is not idempotent",
+        )
 
     print(
         f"zed install/publish model: {len(seen)} states, "
@@ -149,4 +180,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ModelViolation as error:
+        raise SystemExit(f"zed install/publish model violation: {error}") from error
