@@ -14,7 +14,7 @@ errors_env = "ZED_PKG_PARSE_ERRORS"
 allow_unknown = false
 
 [help]
-url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/package-dependency-graph.md"
+url = "https://github.com/zed-pkg/zed-cli/blob/main/docs/dependency-graph-cli.md"
 
 [flags.registry]
 env = "ZED_PKG_REGISTRY"
@@ -52,14 +52,14 @@ env = "ZED_PKG_INTERACTIVE"
 aliases = ["interactive"]
 type = "bool"
 default = "false"
-help = "Global lifecycle confirmation mode; graph downloads remain non-interactive."
+help = "Global lifecycle confirmation mode; graph commands remain non-interactive."
 
 [flags.git_submodules]
 env = "ZED_PKG_GIT_SUBMODULES"
 aliases = ["git-submodules"]
 type = "bool"
 default = "false"
-help = "Global Git submodule compatibility mode; graph downloads never mutate submodules."
+help = "Global Git submodule compatibility mode; graph commands never mutate submodules."
 
 [flags.no_mirrors]
 env = "ZED_PKG_NO_MIRRORS"
@@ -132,3 +132,47 @@ aliases = ["metadata-json"]
 type = "bool"
 default = "false"
 help = "Emit deterministic response metadata as JSON on stderr."
+
+[commands.graph.commands.local]
+help = "Resolve the complete prospective dependency graph for a local .zpkg.toml."
+
+[commands.graph.commands.local.flags.manifest]
+env = "ZED_PKG_GRAPH_MANIFEST"
+aliases = ["manifest"]
+type = "string"
+default = ".zpkg.toml"
+help = "Path to .zpkg.toml, or a directory containing it."
+
+[commands.graph.commands.local.flags.output]
+env = "ZED_PKG_GRAPH_OUTPUT"
+aliases = ["output"]
+type = "string"
+help = "Output JSON path; omit or use - for stdout."
+
+[commands.graph.commands.local.flags.pretty]
+env = "ZED_PKG_GRAPH_PRETTY"
+aliases = ["pretty"]
+type = "bool"
+default = "false"
+help = "Pretty-print JSON instead of compact machine output."
+
+[commands.graph.commands.local.flags.runtime_only]
+env = "ZED_PKG_GRAPH_RUNTIME_ONLY"
+aliases = ["runtime-only"]
+type = "bool"
+default = "false"
+help = "Resolve runtime dependencies only; omit build dependencies."
+
+[commands.graph.commands.local.flags.allow_artifact_fallback]
+env = "ZED_PKG_GRAPH_ALLOW_ARTIFACT_FALLBACK"
+aliases = ["allow-artifact-fallback"]
+type = "bool"
+default = "false"
+help = "Permit verified package artifact downloads when declared graph metadata is unavailable."
+
+[commands.graph.commands.local.flags.max_metadata_bytes]
+env = "ZED_PKG_GRAPH_MAX_METADATA_BYTES"
+aliases = ["max-metadata-bytes"]
+type = "integer"
+default = "33554432"
+help = "Maximum bytes accepted from one immutable declared graph response."
