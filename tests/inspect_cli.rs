@@ -32,6 +32,8 @@ fn inspect_emits_one_json_document_without_auth_or_recovery_side_effects() {
     fs::write(staging.join("sentinel"), "must-survive").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_zed"))
+        .arg("--token")
+        .arg("fake-token-that-inspect-must-ignore")
         .arg("inspect")
         .arg("--format")
         .arg("json")
@@ -77,6 +79,7 @@ fn inspect_emits_one_json_document_without_auth_or_recovery_side_effects() {
     );
 
     let rendered = String::from_utf8(output.stdout).unwrap();
+    assert!(!rendered.contains("fake-token-that-inspect-must-ignore"));
     assert!(!rendered.contains("fake-env-token-that-must-not-escape"));
     assert!(!project.path().join(MODULES_DIR).exists());
     assert_eq!(
@@ -118,9 +121,9 @@ fn inspect_help_does_not_load_malformed_credentials() {
 }
 
 #[test]
-fn a_global_registry_value_named_inspect_does_not_trigger_the_report() {
+fn a_global_token_value_named_inspect_does_not_trigger_the_report() {
     let output = Command::new(env!("CARGO_BIN_EXE_zed"))
-        .arg("--registry")
+        .arg("--token")
         .arg("inspect")
         .arg("--help")
         .output()
@@ -135,25 +138,6 @@ fn a_global_registry_value_named_inspect_does_not_trigger_the_report() {
     assert!(help.contains("Commands:"));
     assert!(help.contains("inspect"));
     assert!(!help.contains("\"schema_version\""));
-}
-
-#[test]
-fn secret_argv_cannot_bypass_rejection_via_inspect_early_dispatch() {
-    let secret = "SYNTHETIC_INSPECT_SECRET_MUST_NOT_ECHO";
-    let output = Command::new(env!("CARGO_BIN_EXE_zed"))
-        .arg("--token")
-        .arg(secret)
-        .arg("inspect")
-        .arg("--help")
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--token is not accepted"));
-    assert!(!stderr.contains(secret));
-    assert!(!stderr.contains("\"schema_version\""));
 }
 
 #[test]

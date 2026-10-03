@@ -40,12 +40,6 @@ fn main() {
         eprintln!("error: {error:#}");
         std::process::exit(2);
     }
-    if let Some((option, env)) = rejected_secret_argv_option(&args) {
-        eprintln!(
-            "error: {option} is not accepted because secret-bearing values must not be passed through argv; set {env} in the environment or use an authenticated session instead"
-        );
-        std::process::exit(2);
-    }
     if root_help_requested(&args) {
         if let Err(error) = completion::print_root_help() {
             eprintln!("error: {error:#}");
@@ -68,6 +62,16 @@ fn main() {
         argument == OsStr::new("global") || argument == OsStr::new("--global")
     });
     if global_requested && let Some(result) = global::dispatch(args.clone()) {
+        match result {
+            Ok(0) => return,
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("error: {error:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(result) = oci_command::dispatch(args.clone()) {
         match result {
             Ok(0) => return,
             Ok(code) => std::process::exit(code),
@@ -159,24 +163,6 @@ fn main() {
     }
 }
 
-fn rejected_secret_argv_option(args: &[OsString]) -> Option<(&'static str, &'static str)> {
-    const SECRET_OPTIONS: &[(&str, &str)] = &[
-        ("--token", "ZED_PKG_TOKEN"),
-        ("--zed-pkg-auth-password", "ZED_PKG_AUTH_PASSWORD"),
-    ];
-
-    args.iter().skip(1).find_map(|argument| {
-        let token = argument.to_string_lossy();
-        SECRET_OPTIONS.iter().find_map(|(option, env)| {
-            (token == *option
-                || token
-                    .strip_prefix(option)
-                    .is_some_and(|remainder| remainder.starts_with('=')))
-            .then_some((*option, *env))
-        })
-    })
-}
-
 fn root_help_requested(args: &[OsString]) -> bool {
     let mut index = 1;
     while index < args.len() {
@@ -207,6 +193,7 @@ fn root_global_option_takes_value(token: &str) -> bool {
     const OPTIONS: &[&str] = &[
         "--registry",
         "--home",
+        "--token",
         "--auth-url",
         "--supabase-url",
         "--supabase-key",

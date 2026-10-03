@@ -4,8 +4,6 @@
 //! This module adds only process-startup environment compatibility so runtime
 //! parsing, help, and shell completion all consume the same command tree.
 
-mod shared_auth_policy;
-
 use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, FromArgMatches};
@@ -30,31 +28,18 @@ pub fn parse() -> Cli {
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
 }
 
-/// Apply process-startup policy and environment compatibility before flags2env
-/// and Clap read process configuration, and report deprecated command-line
-/// spellings.
+/// Apply environment compatibility before flags2env and Clap read process
+/// configuration, and report deprecated command-line spellings.
 ///
-/// Secret-bearing values are rejected from argv before any early dispatch.
-/// `zed inspect` remains earlier than terminal environment publication,
-/// registry/auth configuration, saved credentials, or transaction recovery,
-/// but it cannot be used to bypass the env/session/stdin-only secret boundary.
-///
-/// Every other command first admits zed-cli's embedded, secret-free Shared Auth
-/// consumer policy. A malformed, stale, ambiguous, or provenance-mismatched
-/// policy stops startup before terminal environment publication, network
-/// dispatch, project mutation, credential lookup, flags2env, or Clap config.
+/// `zed inspect` is intercepted before even this compatibility layer. That
+/// guarantees inspection does not publish terminal environment state, load
+/// registry/auth configuration, read saved credentials, or run transaction
+/// recovery before producing its JSON report.
 ///
 /// `ZED_PKG_DO_NOT_WRITE_NEW_MANIFEST` is canonical. The old environment key
 /// remains the embedded compatibility key for this migration window so older
 /// scripts continue to work without changing the typed `Cmd::Install` shape.
 pub fn prepare_environment(args: &[OsString]) {
-    if let Some((option, env)) = rejected_secret_argv_option(args) {
-        eprintln!(
-            "error: {option} is not accepted because secret-bearing values must not be passed through argv; set {env} in the environment or use an authenticated session instead"
-        );
-        std::process::exit(2);
-    }
-
     if let Some(result) = crate::inspect::dispatch(args) {
         match result {
             Ok(code) => std::process::exit(code),
@@ -63,11 +48,6 @@ pub fn prepare_environment(args: &[OsString]) {
                 std::process::exit(1);
             }
         }
-    }
-
-    if let Err(error) = shared_auth_policy::admit_embedded() {
-        eprintln!("error: {error:#}");
-        std::process::exit(2);
     }
 
     crate::terminal_context::publish_process_environment();
@@ -102,24 +82,6 @@ pub fn prepare_environment(args: &[OsString]) {
     if let Some(flag) = legacy_manifest_flag(args) {
         eprintln!("warning: {flag} is deprecated; use --do-not-write-new-manifest");
     }
-}
-
-fn rejected_secret_argv_option(args: &[OsString]) -> Option<(&'static str, &'static str)> {
-    const SECRET_OPTIONS: &[(&str, &str)] = &[
-        ("--token", "ZED_PKG_TOKEN"),
-        ("--zed-pkg-auth-password", "ZED_PKG_AUTH_PASSWORD"),
-    ];
-
-    args.iter().skip(1).find_map(|argument| {
-        let token = argument.to_string_lossy();
-        SECRET_OPTIONS.iter().find_map(|(option, env)| {
-            (token == *option
-                || token
-                    .strip_prefix(option)
-                    .is_some_and(|remainder| remainder.starts_with('=')))
-            .then_some((*option, *env))
-        })
-    })
 }
 
 fn legacy_manifest_flag(args: &[OsString]) -> Option<&'static str> {
@@ -199,24 +161,11 @@ mod tests {
     fn a_global_option_value_named_inspect_is_not_early_dispatched() {
         let args = vec![
             OsString::from("zed"),
-            OsString::from("--registry"),
+            OsString::from("--token"),
             OsString::from("inspect"),
             OsString::from("--help"),
         ];
         assert!(crate::inspect::dispatch(&args).is_none());
-    }
-
-    #[test]
-    fn secret_argv_is_rejected_before_early_dispatch() {
-        for option in ["--token", "--zed-pkg-auth-password"] {
-            let args = vec![
-                OsString::from("zed"),
-                OsString::from(option),
-                OsString::from("synthetic-secret"),
-                OsString::from("inspect"),
-            ];
-            assert!(rejected_secret_argv_option(&args).is_some(), "{option}");
-        }
     }
 
     #[test]
