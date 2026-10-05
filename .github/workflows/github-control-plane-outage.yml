@@ -1,0 +1,234 @@
+name: GitHub control-plane outage fallback
+
+on:
+  pull_request:
+    paths:
+      - 'src/source_fallback.rs'
+      - 'src/registry.rs'
+      - 'src/fetch.rs'
+      - 'src/store.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/github-control-plane-outage.yml'
+      - 'docs/github-control-plane-outage.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-control-plane-outage-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The registry cannot resolve; the R2 endpoint is a local sentinel that logs
+  # any request. A successful GitHub-first restore must leave that log with no
+  # GETs, proving Zed/Cloudflare infrastructure is not consulted first.
+  DEAD_REGISTRY: https://zed-control-plane-intentionally-unavailable.invalid
+  DEAD_R2: http://127.0.0.1:18081
+
+jobs:
+  github-direct:
+    name: GitHub is sufficient when Zed infrastructure is gone
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          show-progress: false
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.98.1'
+
+      - name: Build exact candidate with locked dependencies
+        run: |
+          set -Eeuo pipefail
+          cargo build --locked --release --bin zed
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Run focused fallback security and archive tests
+        run: |
+          set -Eeuo pipefail
+          cargo test --locked source_fallback::tests:: -- --nocapture
+
+      - name: Start fail-if-used R2 sentinel
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/dead-r2-root"
+          : > "$RUNNER_TEMP/r2-sentinel.log"
+          python3 -m http.server 18081 \
+            --bind 127.0.0.1 \
+            --directory "$RUNNER_TEMP/dead-r2-root" \
+            >"$RUNNER_TEMP/r2-sentinel.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/r2-sentinel.pid"
+          sleep 1
+          kill -0 "$(cat "$RUNNER_TEMP/r2-sentinel.pid")"
+
+      - name: Create five-language consumer
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/github-only-consumer"
+          cat > "$RUNNER_TEMP/github-only-consumer/.zpkg.toml" <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "github-only-outage-consumer"
+          version = "0.0.0"
+          description = "Proves zed-cli can install with every Zed-owned network service unavailable"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/go-lib" = "=1.0.0"
+          "zed-pkg-test/python-lib" = "=1.0.0"
+          "zed-pkg-test/dart-lib" = "=1.0.0"
+          "zed-pkg-test/node-lib" = "=1.0.0"
+          "zed-pkg-test/gleam-lib" = "=1.0.0"
+          EOF
+
+      - name: Install with registry down, R2 forbidden, and no GitHub token
+        working-directory: ${{ runner.temp }}/github-only-consumer
+        env:
+          ZED_PKG_SOURCE_FALLBACK: 'true'
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-a" install \
+            --install-mode copy --adapter none --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/github-only-a.log"
+
+          test "$(grep -E -c 'using GitHub(-first)? fallback' "$RUNNER_TEMP/github-only-a.log")" -ge 5
+          test -s .zpkg.lock
+          for name in go-lib python-lib dart-lib node-lib gleam-lib; do
+            grep -R -q "name = \"$name\"" zed_modules
+          done
+          cp .zpkg.lock "$RUNNER_TEMP/github-only.lock"
+
+      - name: Prove clean-store resolution is deterministic
+        working-directory: ${{ runner.temp }}/github-only-consumer
+        env:
+          ZED_PKG_SOURCE_FALLBACK: 'true'
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          rm -rf zed_modules .zpkg.lock "$RUNNER_TEMP/zed-home-b"
+          "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-b" install \
+            --install-mode copy --adapter none --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/github-only-b.log"
+          cmp "$RUNNER_TEMP/github-only.lock" .zpkg.lock
+
+      - name: Prove frozen replay works from another empty store
+        working-directory: ${{ runner.temp }}/github-only-consumer
+        env:
+          ZED_PKG_SOURCE_FALLBACK: 'true'
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          rm -rf zed_modules "$RUNNER_TEMP/zed-home-frozen"
+          "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-frozen" install --frozen \
+            --install-mode copy --adapter none --allow-ecosystem-mismatch \
+            2>&1 | tee "$RUNNER_TEMP/github-only-frozen.log"
+          cmp "$RUNNER_TEMP/github-only.lock" .zpkg.lock
+          test "$(find zed_modules -name .zpkg.toml -type f | wc -l)" -ge 5
+
+      - name: Prove successful GitHub recovery did not touch R2 or Cloudflare
+        run: |
+          set -Eeuo pipefail
+          log="$RUNNER_TEMP/github-only-a.log"
+          test -s "$log"
+          grep -E -q 'using GitHub(-first)? fallback' "$log"
+          if grep -q 'GET /' "$RUNNER_TEMP/r2-sentinel.log"; then
+            echo 'Successful GitHub recovery unexpectedly contacted the configured R2/CDN endpoint:' >&2
+            cat "$RUNNER_TEMP/r2-sentinel.log" >&2
+            exit 1
+          fi
+          ! grep -E 'success.*(zpkg\.net|cdn\.zpkg\.net|cloudflare)' "$log"
+          # Negative tests below intentionally exercise failure paths that may
+          # probe configured mirrors. Reset the sentinel so they cannot taint
+          # the positive recovery assertion above.
+          : > "$RUNNER_TEMP/r2-sentinel.log"
+
+      - name: Prove fallback is required rather than accidental cache reuse
+        working-directory: ${{ runner.temp }}/github-only-consumer
+        env:
+          ZED_PKG_SOURCE_FALLBACK: 'false'
+          ZED_PKG_R2_PUBLIC_BASE: ${{ env.DEAD_R2 }}
+        run: |
+          set -Eeuo pipefail
+          ZED="$GITHUB_WORKSPACE/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          rm -rf zed_modules "$RUNNER_TEMP/zed-home-no-fallback"
+          set +e
+          "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-no-fallback" install --frozen \
+            --install-mode copy --adapter none --allow-ecosystem-mismatch \
+            >"$RUNNER_TEMP/no-fallback.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/no-fallback.log"
+          test "$status" -ne 0
+
+      - name: Reject a GitHub tag whose manifest claims another package identity
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/github-negative"
+          cat > "$RUNNER_TEMP/github-negative/.zpkg.toml" <<'EOF'
+          [package]
+          org = "zed-pkg-test"
+          name = "github-negative-consumer"
+          version = "0.0.0"
+          description = "Fail-closed GitHub identity canary"
+
+          [package.repository]
+          vcs = "git"
+          url = "https://github.com/zed-pkg-test/github-api-fallback-canary"
+
+          [install]
+          dir = "zed_modules"
+          adapter = "none"
+
+          [dependencies]
+          "zed-pkg-test/awkward-lib" = "=0.1.0"
+          EOF
+
+          ZED="$GITHUB_WORKSPACE/target/release/zed"
+          unset GITHUB_TOKEN GH_TOKEN ZED_PKG_GITHUB_TOKEN || true
+          set +e
+          (
+            cd "$RUNNER_TEMP/github-negative"
+            ZED_PKG_SOURCE_FALLBACK=true ZED_PKG_R2_PUBLIC_BASE="$DEAD_R2" \
+              "$ZED" --registry "$DEAD_REGISTRY" --home "$RUNNER_TEMP/zed-home-negative" install \
+                --install-mode copy --adapter none --allow-ecosystem-mismatch
+          ) >"$RUNNER_TEMP/github-negative.log" 2>&1
+          status=$?
+          set -e
+          cat "$RUNNER_TEMP/github-negative.log"
+          test "$status" -ne 0
+          grep -F 'does not self-claim package zed-pkg-test/awkward-lib' "$RUNNER_TEMP/github-negative.log"
+
+      - name: Stop R2 sentinel
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          if test -s "$RUNNER_TEMP/r2-sentinel.pid"; then
+            kill "$(cat "$RUNNER_TEMP/r2-sentinel.pid")" || true
+          fi
