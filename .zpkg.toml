@@ -29,6 +29,7 @@ adapter = "none"
 dir = ".vendor/.zed"
 
 [dependencies]
+"oresoftware/next-loggers" = "^0.1.0"
 "zed-pkg/zed-clients" = "^0.1.0"
 "zed-pkg/zed-interfaces" = "^0.1.0"
 "zed-pkg/zed-lib-core" = "^0.1.0"
