@@ -2224,6 +2224,7 @@ source = "git+https://github.com/zed-pkg/zed-lock.git?rev=1db0da00d30fcf2e0762f5
 dependencies = [
  "anyhow",
  "fs2",
+ "tempfile",
 ]
 
 [[package]]
