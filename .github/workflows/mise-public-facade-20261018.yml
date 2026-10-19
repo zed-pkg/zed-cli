@@ -1,0 +1,21 @@
+name: mise-public-facade exact-head conformance
+on:
+  pull_request:
+    paths:
+      - 'tests/test_mise_visibility.py'
+      - '.github/workflows/mise-public-facade-20261018.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  reference-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Execute checked-out negative regressions
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -p test_mise_visibility.py -v
