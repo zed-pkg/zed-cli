@@ -378,14 +378,25 @@ fn snapshot_configured_file_registry(configured_registry: &str, destination: &Pa
         return Ok(());
     };
     let source = PathBuf::from(source);
-    if !source.exists() {
-        return Ok(());
-    }
-    if !source.is_dir() {
-        bail!(
-            "configured file registry {} is not a directory",
-            source.display()
-        );
+    match fs::metadata(&source) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            bail!(
+                "configured file registry {} is not a directory",
+                source.display()
+            );
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            bail!(
+                "configured file registry {} does not exist",
+                source.display()
+            );
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("checking configured file registry {}", source.display())
+            });
+        }
     }
 
     let source = fs::canonicalize(&source)
@@ -716,6 +727,24 @@ mod tests {
             b"changed only in snapshot",
         )?;
         assert_eq!(fs::read(package)?, br#"{"latest":"1.0.0"}"#);
+        Ok(())
+    }
+
+    #[test]
+    fn configured_file_registry_rejects_missing_path() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("missing-registry");
+        let destination = temp.path().join("workspace/registry");
+
+        let error = snapshot_configured_file_registry(
+            &format!("file://{}", source.display()),
+            &destination,
+        )
+        .expect_err("missing configured file registry must fail closed");
+
+        assert!(error.to_string().contains("configured file registry"));
+        assert!(error.to_string().contains("does not exist"));
+        assert!(!destination.exists());
         Ok(())
     }
 
