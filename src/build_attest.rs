@@ -40,8 +40,14 @@ pub fn attest(home: &Path, input: &BuildAttestOptions<'_>) -> Result<()> {
         input.artifact.is_file() && !input.artifact.is_symlink(),
         "artifact must be a regular non-symlink file"
     );
-    ensure!(!input.output.exists() && !input.output.is_symlink(), "output already exists");
-    ensure!(input.output != input.artifact, "output must differ from artifact");
+    ensure!(
+        !input.output.exists() && !input.output.is_symlink(),
+        "output already exists"
+    );
+    ensure!(
+        input.output != input.artifact,
+        "output must differ from artifact"
+    );
     let (digest, size) = sha256_file(input.artifact)?;
     ensure!(size > 0, "empty build artifacts cannot be signed");
     let claims = BuildClaimsV1 {
@@ -66,15 +72,23 @@ pub fn attest(home: &Path, input: &BuildAttestOptions<'_>) -> Result<()> {
     let key = KeyStore::new(home).load(input.org, input.device_key_id)?;
     let signature = sign_preimage(&key, &preimage)?;
     let receipt = SignedBuildV1 {
-        schema: SIGNED_BUILD_SCHEMA_V1.into(), claims, signatures: vec![signature],
+        schema: SIGNED_BUILD_SCHEMA_V1.into(),
+        claims,
+        signatures: vec![signature],
     };
     receipt.validate().map_err(anyhow::Error::msg)?;
     let serialized = serde_json::to_vec_pretty(&receipt)?;
     // Create a new public receipt, never overwrite a prior one. A failed write
     // removes only the newly created file, not the build artifact.
-    let mut writer = OpenOptions::new().write(true).create_new(true)
-        .open(input.output).with_context(|| format!("create {}", input.output.display()))?;
-    if let Err(error) = writer.write_all(&serialized).and_then(|_| writer.sync_all()) {
+    let mut writer = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(input.output)
+        .with_context(|| format!("create {}", input.output.display()))?;
+    if let Err(error) = writer
+        .write_all(&serialized)
+        .and_then(|_| writer.sync_all())
+    {
         drop(writer);
         let _ = fs::remove_file(input.output);
         return Err(error.into());
@@ -89,8 +103,12 @@ fn sha256_file(path: &Path) -> Result<(String, u64)> {
     let mut buffer = [0_u8; 65_536];
     loop {
         let count = input.read(&mut buffer)?;
-        if count == 0 { break; }
-        total = total.checked_add(count as u64).context("artifact size overflow")?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(count as u64)
+            .context("artifact size overflow")?;
         hash.update(&buffer[..count]);
     }
     Ok((hex::encode(hash.finalize()), total))
@@ -109,22 +127,42 @@ mod tests {
         fs::write(&artifact, b"compiled binary fixture bytes").unwrap();
         let output = temp.path().join("app.signed-build.json");
         let opts = BuildAttestOptions {
-            org: "acme", package: "widget", version: "1.2.3",
-            device_key_id: "device", challenge_id: "12345678-1234-1234-1234-123456789abc",
-            nonce_sha256: &"a".repeat(64), source_commit: &"b".repeat(40),
-            source_sha256: &"c".repeat(64), toolchain_sha256: &"d".repeat(64),
-            target: "llvm", issued_at_unix_ms: 1_799_999_880_000,
-            expires_at_unix_ms: 1_800_000_000_000, artifact_format: "tar.gz",
-            artifact: &artifact, output: &output,
+            org: "acme",
+            package: "widget",
+            version: "1.2.3",
+            device_key_id: "device",
+            challenge_id: "12345678-1234-1234-1234-123456789abc",
+            nonce_sha256: &"a".repeat(64),
+            source_commit: &"b".repeat(40),
+            source_sha256: &"c".repeat(64),
+            toolchain_sha256: &"d".repeat(64),
+            target: "llvm",
+            issued_at_unix_ms: 1_799_999_880_000,
+            expires_at_unix_ms: 1_800_000_000_000,
+            artifact_format: "tar.gz",
+            artifact: &artifact,
+            output: &output,
         };
         attest(temp.path(), &opts).unwrap();
         let receipt: SignedBuildV1 = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
-        assert_eq!(receipt.claims.artifact_sha256, hex::encode(Sha256::digest(b"compiled binary fixture bytes")));
-        assert!(crate::publisher_keys::verify(
-            &receipt.claims.preimage().unwrap(), &receipt.signatures, &[stored.public()], None,
-        ).is_ok());
+        assert_eq!(
+            receipt.claims.artifact_sha256,
+            hex::encode(Sha256::digest(b"compiled binary fixture bytes"))
+        );
+        assert!(
+            crate::publisher_keys::verify(
+                &receipt.claims.preimage().unwrap(),
+                &receipt.signatures,
+                &[stored.public()],
+                None,
+            )
+            .is_ok()
+        );
         assert!(attest(temp.path(), &opts).is_err());
-        assert_eq!(fs::read(&output).unwrap(), serde_json::to_vec_pretty(&receipt).unwrap());
+        assert_eq!(
+            fs::read(&output).unwrap(),
+            serde_json::to_vec_pretty(&receipt).unwrap()
+        );
     }
 
     #[test]
@@ -132,13 +170,21 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("attestation.json");
         let opts = BuildAttestOptions {
-            org:"acme",package:"widget",version:"1.0.0",device_key_id:"device",
-            challenge_id:"12345678-1234-1234-1234-123456789abc",
-            nonce_sha256:&"a".repeat(64),source_commit:&"b".repeat(40),
-            source_sha256:&"c".repeat(64),toolchain_sha256:&"d".repeat(64),
-            target:"llvm",artifact_format:"tar.gz",issued_at_unix_ms:1_799_999_880_000,
-            expires_at_unix_ms:1_800_000_000_000,
-            artifact:&temp.path().join("missing"),output:&output,
+            org: "acme",
+            package: "widget",
+            version: "1.0.0",
+            device_key_id: "device",
+            challenge_id: "12345678-1234-1234-1234-123456789abc",
+            nonce_sha256: &"a".repeat(64),
+            source_commit: &"b".repeat(40),
+            source_sha256: &"c".repeat(64),
+            toolchain_sha256: &"d".repeat(64),
+            target: "llvm",
+            artifact_format: "tar.gz",
+            issued_at_unix_ms: 1_799_999_880_000,
+            expires_at_unix_ms: 1_800_000_000_000,
+            artifact: &temp.path().join("missing"),
+            output: &output,
         };
         assert!(attest(temp.path(), &opts).is_err());
         assert!(!output.exists());
