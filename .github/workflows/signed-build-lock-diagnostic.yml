@@ -1,0 +1,37 @@
+name: Signed-build Cargo lock diagnostic (non-promoting)
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/signed-build-lock-diagnostic.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+      - name: Reconcile dependency graph in disposable runner (never commit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "INPUT_HEAD=$(git rev-parse HEAD)"
+          cargo metadata --format-version 1 >/dev/null
+          git diff --check
+          echo '--- CANONICAL LOCKFILE DIFF BEGIN ---'
+          git diff -- Cargo.lock
+          echo '--- CANONICAL LOCKFILE DIFF END ---'
+          if ! git diff --quiet -- Cargo.lock; then
+            echo 'Non-promoting: generated lockfile differs; exact-head locked build remains blocked'
+            exit 1
+          fi
+          cargo test --locked --lib build_attest --no-default-features
