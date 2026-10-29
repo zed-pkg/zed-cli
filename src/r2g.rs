@@ -201,7 +201,9 @@ pub fn run(project: &Path, cfg: &Config, opts: &R2gOptions) -> Result<()> {
     dependencies.insert(full.clone(), format!("={}", manifest.package.version));
     let consumer_manifest = Manifest {
         workspace: None,
+        tool_dependencies: Default::default(),
         package: PackageSection {
+            kind: None,
             org: "zed-local".to_string(),
             name: "consumer".to_string(),
             version: "0.0.0".to_string(),
