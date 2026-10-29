@@ -311,7 +311,9 @@ fn synthetic_manifest(project: &Path, dependencies: BTreeMap<String, String>) ->
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "project".to_string());
     Manifest {
+        tool_dependencies: Default::default(),
         package: PackageSection {
+            kind: None,
             org: "zed-manifestless".to_string(),
             name: name.clone(),
             version: "0.0.0".to_string(),
