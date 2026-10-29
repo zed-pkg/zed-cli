@@ -4,6 +4,7 @@
 pub mod asdf_environment;
 pub mod auth;
 pub mod binary_archive;
+pub mod build_attest;
 pub mod cli;
 pub mod cli_model;
 pub mod cli_oci;

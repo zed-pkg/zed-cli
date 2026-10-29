@@ -334,7 +334,9 @@ pub(super) fn generated_consumer_manifest(project: &Path) -> Manifest {
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| "project".to_string());
     Manifest {
+        tool_dependencies: Default::default(),
         package: PackageSection {
+            kind: None,
             org: GENERATED_ORG.to_string(),
             name: name.clone(),
             version: GENERATED_VERSION.to_string(),

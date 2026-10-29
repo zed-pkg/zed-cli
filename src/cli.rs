@@ -527,6 +527,40 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_NATIVE_MANAGER")]
         native_manager: Option<String>,
     },
+    /// Sign an existing built artifact using a locally enrolled Zed signing key.
+    /// This is signed integrity ONLY, not independently verified compilation.
+    BuildAttest {
+        #[arg(long, env = "ZED_PKG_BUILD_ORG")]
+        org: String,
+        #[arg(long, env = "ZED_PKG_BUILD_PACKAGE")]
+        package: String,
+        #[arg(long, env = "ZED_PKG_BUILD_VERSION")]
+        version: String,
+        #[arg(long, env = "ZED_PKG_BUILD_DEVICE_KEY_ID")]
+        device_key_id: String,
+        #[arg(long, env = "ZED_PKG_BUILD_CHALLENGE_ID")]
+        challenge_id: String,
+        #[arg(long, env = "ZED_PKG_BUILD_NONCE_SHA256")]
+        nonce_sha256: String,
+        #[arg(long, env = "ZED_PKG_BUILD_SOURCE_COMMIT")]
+        source_commit: String,
+        #[arg(long, env = "ZED_PKG_BUILD_SOURCE_SHA256")]
+        source_sha256: String,
+        #[arg(long, env = "ZED_PKG_BUILD_TOOLCHAIN_SHA256")]
+        toolchain_sha256: String,
+        #[arg(long, env = "ZED_PKG_BUILD_TARGET")]
+        target: String,
+        #[arg(long, env = "ZED_PKG_BUILD_EXPIRES_AT_UNIX_MS")]
+        expires_at_unix_ms: u64,
+        #[arg(long, env = "ZED_PKG_BUILD_ISSUED_AT_UNIX_MS")]
+        issued_at_unix_ms: u64,
+        #[arg(long, env = "ZED_PKG_BUILD_ARTIFACT_FORMAT")]
+        artifact_format: String,
+        #[arg(long, env = "ZED_PKG_BUILD_ARTIFACT")]
+        artifact: PathBuf,
+        #[arg(long, env = "ZED_PKG_BUILD_ATTESTATION_OUTPUT")]
+        output: PathBuf,
+    },
     /// Run an executable a dependency exposes via [bin] (hoisted into
     /// zed_modules/.bin) or any command, with zed_modules/.bin prepended to
     /// PATH — npx-style, no global pollution (zed-docs issue #7)
