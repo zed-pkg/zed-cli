@@ -476,6 +476,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             allow_install_hooks,
             native_manager.as_deref(),
         ),
+        Cmd::BuildAttest {
+            org, package, version, device_key_id, challenge_id, nonce_sha256,
+            source_commit, source_sha256, toolchain_sha256, target,
+            expires_at_unix_ms, artifact, output,
+        } => zed_cli::build_attest::attest(
+            &cfg.home,
+            &zed_cli::build_attest::BuildAttestOptions {
+                org: &org, package: &package, version: &version,
+                device_key_id: &device_key_id, challenge_id: &challenge_id,
+                nonce_sha256: &nonce_sha256, source_commit: &source_commit,
+                source_sha256: &source_sha256, toolchain_sha256: &toolchain_sha256,
+                target: &target, expires_at_unix_ms, artifact: &artifact,
+                output: &output,
+            },
+        ),
         Cmd::Run { command, args } => match ops::run(&cwd, &command, &args) {
             Ok(code) => std::process::exit(code),
             Err(error) => Err(error),
