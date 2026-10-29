@@ -622,7 +622,8 @@ jobs:
 
           test -f "$root/.zpkg.toml"
           test -f "$root/.zpkg.lock"
-          test -d "$root/zed_modules/zed-pkg/docker-node-lib"
+          # Auto-generated consumers intentionally use GENERATED_INSTALL_DIR=.zed/pkg.
+          test -d "$root/.zed/pkg/zed-pkg/docker-node-lib"
           test -d "$root/node_modules/@zed-pkg/docker-node-lib"
           grep -F 'org = "zed-local"' "$root/.zpkg.toml"
           grep -F 'keywords = ["zed-generated-consumer"]' "$root/.zpkg.toml"
