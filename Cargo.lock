@@ -2213,6 +2213,8 @@ name = "zed-lib"
 version = "0.1.0"
 source = "git+https://github.com/zed-pkg/zed-lib-core.git?rev=32988107ffecb942e0d0ce39de23b4a560139206#32988107ffecb942e0d0ce39de23b4a560139206"
 dependencies = [
+ "serde_json",
+ "sha2",
  "thiserror 2.0.20",
  "zed-interfaces",
 ]
