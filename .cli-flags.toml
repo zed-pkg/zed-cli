@@ -668,6 +668,99 @@ help = "Generate Bash or Zsh completion from the typed CLI model."
 [commands.build]
 help = "Run dependency build hooks."
 
+[commands.build-attest]
+help = "Sign an existing build artifact under a server-scoped challenge; not compilation proof."
+
+[commands.build-attest.flags.org]
+env = "ZED_PKG_BUILD_ORG"
+aliases = ["org"]
+type = "string"
+help = "Build assertion: org."
+
+[commands.build-attest.flags.package]
+env = "ZED_PKG_BUILD_PACKAGE"
+aliases = ["package"]
+type = "string"
+help = "Build assertion: package."
+
+[commands.build-attest.flags.version]
+env = "ZED_PKG_BUILD_VERSION"
+aliases = ["version"]
+type = "string"
+help = "Build assertion: version."
+
+[commands.build-attest.flags.device_key_id]
+env = "ZED_PKG_BUILD_DEVICE_KEY_ID"
+aliases = ["device-key-id"]
+type = "string"
+help = "Build assertion: device key id."
+
+[commands.build-attest.flags.challenge_id]
+env = "ZED_PKG_BUILD_CHALLENGE_ID"
+aliases = ["challenge-id"]
+type = "string"
+help = "Build assertion: challenge id."
+
+[commands.build-attest.flags.nonce_sha256]
+env = "ZED_PKG_BUILD_NONCE_SHA256"
+aliases = ["nonce-sha256"]
+type = "string"
+help = "Build assertion: nonce sha256."
+
+[commands.build-attest.flags.source_commit]
+env = "ZED_PKG_BUILD_SOURCE_COMMIT"
+aliases = ["source-commit"]
+type = "string"
+help = "Build assertion: source commit."
+
+[commands.build-attest.flags.source_sha256]
+env = "ZED_PKG_BUILD_SOURCE_SHA256"
+aliases = ["source-sha256"]
+type = "string"
+help = "Build assertion: source sha256."
+
+[commands.build-attest.flags.toolchain_sha256]
+env = "ZED_PKG_BUILD_TOOLCHAIN_SHA256"
+aliases = ["toolchain-sha256"]
+type = "string"
+help = "Build assertion: toolchain sha256."
+
+[commands.build-attest.flags.target]
+env = "ZED_PKG_BUILD_TARGET"
+aliases = ["target"]
+type = "string"
+help = "Build assertion: target."
+
+[commands.build-attest.flags.issued_at_unix_ms]
+env = "ZED_PKG_BUILD_ISSUED_AT_UNIX_MS"
+aliases = ["issued-at-unix-ms"]
+type = "integer"
+help = "Build assertion: issued at unix ms."
+
+[commands.build-attest.flags.expires_at_unix_ms]
+env = "ZED_PKG_BUILD_EXPIRES_AT_UNIX_MS"
+aliases = ["expires-at-unix-ms"]
+type = "integer"
+help = "Build assertion: expires at unix ms."
+
+[commands.build-attest.flags.artifact_format]
+env = "ZED_PKG_BUILD_ARTIFACT_FORMAT"
+aliases = ["artifact-format"]
+type = "string"
+help = "Build assertion: artifact format."
+
+[commands.build-attest.flags.artifact]
+env = "ZED_PKG_BUILD_ARTIFACT"
+aliases = ["artifact"]
+type = "string"
+help = "Build assertion: artifact."
+
+[commands.build-attest.flags.output]
+env = "ZED_PKG_BUILD_ATTESTATION_OUTPUT"
+aliases = ["output"]
+type = "string"
+help = "Build assertion: output."
+
 [commands.run]
 help = "Run a dependency executable."
 allow_unknown = true
