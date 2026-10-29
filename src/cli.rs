@@ -552,6 +552,10 @@ pub enum Cmd {
         target: String,
         #[arg(long, env = "ZED_PKG_BUILD_EXPIRES_AT_UNIX_MS")]
         expires_at_unix_ms: u64,
+        #[arg(long, env = "ZED_PKG_BUILD_ISSUED_AT_UNIX_MS")]
+        issued_at_unix_ms: u64,
+        #[arg(long, env = "ZED_PKG_BUILD_ARTIFACT_FORMAT")]
+        artifact_format: String,
         #[arg(long, env = "ZED_PKG_BUILD_ARTIFACT")]
         artifact: PathBuf,
         #[arg(long, env = "ZED_PKG_BUILD_ATTESTATION_OUTPUT")]
