@@ -100,6 +100,34 @@ fn sha256_file(path: &Path) -> Result<(String, u64)> {
 mod tests {
     use super::*;
     #[test]
+    fn signs_actual_artifact_bytes_and_rejects_sidecar_overwrite() {
+        use zed_interfaces::signed_build::SignedBuildV1;
+        let temp = tempfile::tempdir().unwrap();
+        let keys = KeyStore::new(temp.path());
+        let (stored, _) = keys.generate("acme", "device").unwrap();
+        let artifact = temp.path().join("app.tar.gz");
+        fs::write(&artifact, b"compiled binary fixture bytes").unwrap();
+        let output = temp.path().join("app.signed-build.json");
+        let opts = BuildAttestOptions {
+            org: "acme", package: "widget", version: "1.2.3",
+            device_key_id: "device", challenge_id: "12345678-1234-1234-1234-123456789abc",
+            nonce_sha256: &"a".repeat(64), source_commit: &"b".repeat(40),
+            source_sha256: &"c".repeat(64), toolchain_sha256: &"d".repeat(64),
+            target: "llvm", issued_at_unix_ms: 1_799_999_880_000,
+            expires_at_unix_ms: 1_800_000_000_000, artifact_format: "tar.gz",
+            artifact: &artifact, output: &output,
+        };
+        attest(temp.path(), &opts).unwrap();
+        let receipt: SignedBuildV1 = serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(receipt.claims.artifact_sha256, hex::encode(Sha256::digest(b"compiled binary fixture bytes")));
+        assert!(crate::publisher_keys::verify(
+            &receipt.claims.preimage().unwrap(), &receipt.signatures, &[stored.public()], None,
+        ).is_ok());
+        assert!(attest(temp.path(), &opts).is_err());
+        assert_eq!(fs::read(&output).unwrap(), serde_json::to_vec_pretty(&receipt).unwrap());
+    }
+
+    #[test]
     fn rejects_missing_artifact_without_creating_a_receipt() {
         let temp = tempfile::tempdir().unwrap();
         let output = temp.path().join("attestation.json");
