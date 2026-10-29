@@ -479,7 +479,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::BuildAttest {
             org, package, version, device_key_id, challenge_id, nonce_sha256,
             source_commit, source_sha256, toolchain_sha256, target,
-            expires_at_unix_ms, artifact, output,
+            expires_at_unix_ms, issued_at_unix_ms, artifact_format, artifact, output,
         } => zed_cli::build_attest::attest(
             &cfg.home,
             &zed_cli::build_attest::BuildAttestOptions {
@@ -487,7 +487,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 device_key_id: &device_key_id, challenge_id: &challenge_id,
                 nonce_sha256: &nonce_sha256, source_commit: &source_commit,
                 source_sha256: &source_sha256, toolchain_sha256: &toolchain_sha256,
-                target: &target, expires_at_unix_ms, artifact: &artifact,
+                target: &target, expires_at_unix_ms, issued_at_unix_ms,
+                artifact_format: &artifact_format, artifact: &artifact,
                 output: &output,
             },
         ),
