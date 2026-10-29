@@ -2984,7 +2984,9 @@ fn validate_lifecycle_permissions(
 
 fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
     Manifest {
+        tool_dependencies: Default::default(),
         package: PackageSection {
+            kind: None,
             org: "zed-build".to_string(),
             name: "staging".to_string(),
             version: "0.0.0".to_string(),
