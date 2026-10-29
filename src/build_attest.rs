@@ -26,7 +26,9 @@ pub struct BuildAttestOptions<'a> {
     pub source_sha256: &'a str,
     pub toolchain_sha256: &'a str,
     pub target: &'a str,
+    pub issued_at_unix_ms: u64,
     pub expires_at_unix_ms: u64,
+    pub artifact_format: &'a str,
     pub artifact: &'a Path,
     pub output: &'a Path,
 }
@@ -56,6 +58,8 @@ pub fn attest(home: &Path, input: &BuildAttestOptions<'_>) -> Result<()> {
         target: input.target.into(),
         artifact_sha256: digest,
         artifact_size: size,
+        artifact_format: input.artifact_format.into(),
+        issued_at_unix_ms: input.issued_at_unix_ms,
         expires_at_unix_ms: input.expires_at_unix_ms,
     };
     let preimage = claims.preimage().map_err(anyhow::Error::msg)?;
@@ -104,7 +108,8 @@ mod tests {
             challenge_id:"12345678-1234-1234-1234-123456789abc",
             nonce_sha256:&"a".repeat(64),source_commit:&"b".repeat(40),
             source_sha256:&"c".repeat(64),toolchain_sha256:&"d".repeat(64),
-            target:"llvm",expires_at_unix_ms:1_800_000_000_000,
+            target:"llvm",artifact_format:"tar.gz",issued_at_unix_ms:1_799_999_880_000,
+            expires_at_unix_ms:1_800_000_000_000,
             artifact:&temp.path().join("missing"),output:&output,
         };
         assert!(attest(temp.path(), &opts).is_err());
