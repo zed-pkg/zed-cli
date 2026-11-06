@@ -1,0 +1,19 @@
+name: Atto package safety model
+on:
+  pull_request:
+    paths:
+      - 'formal/atto-package/**'
+      - '.github/workflows/atto-package-safety.yml'
+  workflow_dispatch:
+jobs:
+  bounded-model:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check finite two-writer package model
+        run: node formal/atto-package/two_writer_model.cjs
