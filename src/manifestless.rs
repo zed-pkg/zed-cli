@@ -140,7 +140,9 @@ pub fn install(
     let lock_only = matches!(&requested, RequestedDependencies::Locked(_));
     let dependencies = match requested {
         RequestedDependencies::Locked(dependencies) => dependencies,
-        RequestedDependencies::Specs(specs) => resolve_requested_specs(cfg, &specs, permissions.local_registry)?,
+        RequestedDependencies::Specs(specs) => {
+            resolve_requested_specs(cfg, &specs, permissions.local_registry)?
+        }
     };
 
     let manifest = synthetic_manifest(&selection.root, dependencies);
