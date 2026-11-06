@@ -19,7 +19,7 @@ From your AttoLang project root:
     zed init --org acme
     zed add acme/actor-math@^1
     zed install --frozen
-    export ORES_PATHS="$(zed attolang paths)"
+    export ATTO_PATHS="$(zed attolang paths)"
 
 Use your normal AttoLang compiler invocation after setting ORES_PATHS.
 The AttoLang plus-prefixed import syntax continues to resolve against the
@@ -34,8 +34,12 @@ For tools that cannot safely consume colon-separated paths, use:
 
     zed attolang paths --json
 
-The JSON object contains env (ORES_PATHS), paths (an ordered string array),
-and value (the colon-joined string).
+The JSON object contains env (ATTO_PATHS), legacy_env (ORES_PATHS), paths
+(an ordered string array), and value (joined with the host OS path-list
+separator; ':' on POSIX and ';' on Windows). An explicit empty ATTO_PATHS
+prevents ambient ORES_PATHS fallback in compilers honoring the current
+AttoLang import-resolution contract. The legacy zed oreslang command spelling
+is still accepted, but returns canonical ATTO_PATHS metadata.
 
 ## Package authors
 
@@ -89,8 +93,9 @@ support requires a separate **zed-interfaces-first** change:
    routing to recognize attolang without treating Oreslang and AttoLang as
    different published package identities. Retain existing source imports
    and exact lockfile pins.
-3. Confirm the AttoLang compiler's precise ORES_PATHS precedence, plus-import
-   behavior, ORES_PATHS separator on each OS, and module-name collision rules.
+3. Confirm each AttoLang compiler's ATTO_PATHS > ORES_PATHS >
+   ORESLANG_PATH presence-based precedence, +/ project-root independence,
+   native path-list parsing, and module-name collision rules.
    Add a compiler-level round-trip in zed-e2e instead of assuming the CLI's
    path projection itself proves successful imports.
 4. Add backend-specific build receipts and cache keys for Java/GraalVM, LLVM,
