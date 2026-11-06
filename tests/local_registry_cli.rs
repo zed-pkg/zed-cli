@@ -114,7 +114,7 @@ fn bare_local_only_installs_registered_source_without_remote_latest_lookup() {
     assert_ok(&result, "bare local-only generated install");
     let manifest = fs::read_to_string(root.join(".zpkg.toml")).unwrap();
     assert!(manifest.contains("=1.2.0"), "{manifest}");
-    assert!(root.join("zed_modules/acme/widget").exists());
+    assert!(root.join(".zed/pkg/acme/widget").exists());
 }
 
 #[test]
