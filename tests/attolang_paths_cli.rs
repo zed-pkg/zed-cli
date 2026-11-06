@@ -17,7 +17,11 @@ fn invoke(cwd: &Path, args: &[&str]) -> Output {
 
 fn add_project(root: &Path) {
     fs::create_dir_all(root.join(".zed")).unwrap();
-    fs::write(root.join(".ores.pkg.toml"), "[package]\nname = 'consumer'\n").unwrap();
+    fs::write(
+        root.join(".ores.pkg.toml"),
+        "[package]\nname = 'consumer'\n",
+    )
+    .unwrap();
 }
 
 fn index(root: &Path, entries: serde_json::Value) {
@@ -105,7 +109,11 @@ fn nested_invocation_projects_paths_relative_to_current_directory() {
     );
     fs::create_dir_all(root.join("src/nested")).unwrap();
     let result = invoke(&root.join("src/nested"), &["attolang", "paths"]);
-    assert!(result.status.success(), "{:?}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(
         String::from_utf8(result.stdout).unwrap(),
         "../../zed_modules/acme/math\n"
@@ -128,9 +136,12 @@ fn missing_or_poisoned_install_index_fails_closed() {
         "/tmp/outside",
         "zed_modules/acme/math:other",
     ] {
-        index(root, serde_json::json!([
-            {"package":"acme/math","version":"1.0.0","language":"oreslang","path":dangerous}
-        ]));
+        index(
+            root,
+            serde_json::json!([
+                {"package":"acme/math","version":"1.0.0","language":"oreslang","path":dangerous}
+            ]),
+        );
         let result = invoke(root, &["attolang", "paths"]);
         assert!(!result.status.success(), "accepted {dangerous:?}");
         assert!(
@@ -138,9 +149,12 @@ fn missing_or_poisoned_install_index_fails_closed() {
             "poisoned paths must not reach stdout"
         );
     }
-    index(root, serde_json::json!([
-        {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/other"}
-    ]));
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/other"}
+        ]),
+    );
     let result = invoke(root, &["attolang", "paths"]);
     assert!(!result.status.success(), "accepted foreign package slot");
 }
@@ -151,15 +165,16 @@ fn missing_attolang_marker_does_not_export_unrelated_dependencies() {
     let root = temp.path();
     add_project(root);
     package(root, "acme", "node", false);
-    index(root, serde_json::json!([
-        {"package":"acme/node","version":"1.0.0","language":"nodejs","path":"zed_modules/acme/node"}
-    ]));
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/node","version":"1.0.0","language":"nodejs","path":"zed_modules/acme/node"}
+        ]),
+    );
     let result = invoke(root, &["attolang", "paths"]);
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
-    assert!(
-        String::from_utf8_lossy(&result.stderr).contains("no installed AttoLang packages")
-    );
+    assert!(String::from_utf8_lossy(&result.stderr).contains("no installed AttoLang packages"));
 }
 
 #[cfg(unix)]
@@ -174,9 +189,12 @@ fn paths_support_store_symlinks_without_following_outside_index_paths() {
     let slot = root.join("zed_modules/acme/math");
     fs::create_dir_all(slot.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&store, &slot).unwrap();
-    index(&root, serde_json::json!([
-        {"package":"acme/math","version":"1.0.0","path":"zed_modules/acme/math"}
-    ]));
+    index(
+        &root,
+        serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","path":"zed_modules/acme/math"}
+        ]),
+    );
     let result = invoke(&root, &["attolang", "paths"]);
     assert!(result.status.success(), "{:?}", String::from_utf8_lossy(&result.stderr));
     assert_eq!(
