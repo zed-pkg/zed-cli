@@ -446,11 +446,7 @@ pub(crate) fn with_manifest_override_for_local_mode<T>(
     let prefetch_cfg = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().clone());
     let result = match prefetch_cfg {
         Some(cfg) => {
-            let prepared = crate::install_graph::prepare(
-                &project,
-                &cfg,
-                local_mode,
-            )?;
+            let prepared = crate::install_graph::prepare(&project, &cfg, local_mode)?;
             with_resolved_requirements(&project, prepared.exact_requirements(), operation)
         }
         None => operation(),
