@@ -1,15 +1,16 @@
+# Temporary diagnostic branch only; this replacement is not in PR #543.
 name: one-shot runtime env schema-test patch
 
 on:
   push:
     branches:
-      - fix/install-graph-registry-test-import
+      - diagnostic/attolang-cargo-lock-20261105
 
 permissions:
   contents: read
 
 concurrency:
-  group: one-shot-runtime-env-test-patch-${{ github.ref }}
+  group: attolang-lock-diagnostic-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -17,109 +18,28 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Checkout exact diagnostic commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: fix/install-graph-registry-test-import
           persist-credentials: false
-      - uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38
+      - name: Verify exact SHA
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          python-version: '3.12'
-      - name: Separate reviewed runtime-only env keys from Clap flags
+          toolchain: 1.98.1
+      - name: Report minimal local lockfile resolution
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('src/cli.rs')
-          text = path.read_text(encoding='utf-8')
-          start_marker = '        fn collect_file_envs(value: &toml::Value, envs: &mut BTreeSet<String>) {'
-          end_marker = '        let mut clap_envs = BTreeSet::new();'
-          start = text.index(start_marker)
-          end = text.index(end_marker, start)
-          replacement = r'''        const RUNTIME_ONLY_ENVS: [&str; 13] = [
-              "CLASSPATH",
-              "COMSPEC",
-              "IN_NIX_SHELL",
-              "NIX_BUILD_TOP",
-              "PYTHONPATH",
-              "XDG_CONFIG_HOME",
-              "ZED_PKG_AUTH_PASSWORD",
-              "ZED_PKG_INSTALL_CONCURRENCY",
-              "ZED_PKG_LAYOUT_CONFIG",
-              "ZED_PKG_MAX_ARTIFACT_BYTES",
-              "ZED_PKG_MAX_BINARY_ENTRIES",
-              "ZED_PKG_MAX_REGISTRY_BYTES",
-              "ZED_PKG_MAX_UNPACKED_BYTES",
-          ];
-
-          fn collect_file_envs(
-              value: &toml::Value,
-              cli_envs: &mut BTreeSet<String>,
-              runtime_envs: &mut BTreeSet<String>,
-          ) {
-              let Some(table) = value.as_table() else {
-                  return;
-              };
-              if let Some(flags) = table.get("flags").and_then(toml::Value::as_table) {
-                  for (name, flag) in flags {
-                      let env = flag
-                          .get("env")
-                          .and_then(toml::Value::as_str)
-                          .unwrap_or_else(|| panic!("flag `{name}` is missing `env`"));
-                      let runtime_help = format!("Runtime environment key {env}.");
-                      let is_runtime_only = flag
-                          .get("help")
-                          .and_then(toml::Value::as_str)
-                          == Some(runtime_help.as_str());
-                      if is_runtime_only {
-                          assert!(
-                              RUNTIME_ONLY_ENVS.contains(&env),
-                              "unreviewed runtime-only environment key `{env}` in .cli-flags.toml"
-                          );
-                          assert!(
-                              runtime_envs.insert(env.to_string()),
-                              "duplicate runtime-only env `{env}` in .cli-flags.toml"
-                          );
-                          continue;
-                      }
-                      assert!(
-                          env.starts_with("ZED_PKG_") || env.starts_with("ZED_TASK_"),
-                          "flag --{} env `{env}` must use a registered ZED_PKG_ or ZED_TASK_ namespace",
-                          name.replace('_', "-")
-                      );
-                      assert!(
-                          cli_envs.insert(env.to_string()),
-                          "duplicate CLI env `{env}` in .cli-flags.toml"
-                      );
-                  }
-              }
-              for child in table.values() {
-                  collect_file_envs(child, cli_envs, runtime_envs);
-              }
-          }
-
-          let mut file_envs = BTreeSet::new();
-          let mut runtime_envs = BTreeSet::new();
-          collect_file_envs(&doc, &mut file_envs, &mut runtime_envs);
-          let expected_runtime_envs = RUNTIME_ONLY_ENVS
-              .into_iter()
-              .map(str::to_string)
-              .collect::<BTreeSet<_>>();
-          assert_eq!(
-              runtime_envs, expected_runtime_envs,
-              "the reviewed runtime-only environment key set drifted"
-          );
-
-'''
-          path.write_text(text[:start] + replacement + text[end:], encoding='utf-8')
-          PY
-          cargo fmt --all
-          git diff --check -- src/cli.rs
-      - name: Execute the repaired schema test
-        run: cargo test cli::tests::cli_flags_toml_is_in_sync_with_clap --locked
-      - name: Upload the validated full source file
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+          set -euo pipefail
+          cargo metadata --format-version 1 > /dev/null
+          echo 'LOCK_DIFF_START'
+          git diff -- Cargo.lock
+          echo 'LOCK_DIFF_END'
+          cargo metadata --locked --format-version 1 > /dev/null
+      - name: Attach exact regenerated lockfile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
-          name: patched-cli-rs
-          path: src/cli.rs
-          retention-days: 1
+          name: attolang-cargo-lock-repaired
+          path: Cargo.lock
           if-no-files-found: error
+          retention-days: 1
