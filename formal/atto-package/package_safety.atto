@@ -1,0 +1,31 @@
+// AttoLang pure policy oracle for Zed's content-addressed package admission.
+// Source-only until a real compiler executes this exact .atto file with receipts.
+define module zed_package_safety as
+  pub fnc store_admitted(bool artifact_hash_matches_lock,
+                         bool fully_downloaded,
+                         bool provenance_verified): bool {
+    return artifact_hash_matches_lock && fully_downloaded && provenance_verified;
+  }
+
+  pub fnc frozen_install_admitted(bool exact_lock_match,
+                                  bool store_admitted,
+                                  bool complete_graph): bool {
+    return exact_lock_match && store_admitted && complete_graph;
+  }
+
+  pub fnc publish_admitted(bool clean_tree, bool exact_tag_at_head,
+                           bool artifact_hash_matches,
+                           bool permission_granted): bool {
+    return clean_tree && exact_tag_at_head &&
+      artifact_hash_matches && permission_granted;
+  }
+
+  pub fnc self_check(): bool {
+    return store_admitted(true,true,true) &&
+      !store_admitted(false,true,true) &&
+      !frozen_install_admitted(true,false,true) &&
+      frozen_install_admitted(true,true,true) &&
+      !publish_admitted(true,false,true,true) &&
+      publish_admitted(true,true,true,true);
+  }
+end
