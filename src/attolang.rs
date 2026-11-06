@@ -6,10 +6,15 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+
+// This file is a local install index, not a bulk data transport. Bound the
+// read before parsing so malformed or tampered indexes cannot exhaust memory.
+const MAX_PATHS_INDEX_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct PathsIndex {
@@ -35,12 +40,23 @@ struct IndexedPackage {
 pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
     let root = find_project_root(cwd)?;
     let index_path = root.join(".zed").join("paths.json");
-    let contents = fs::read_to_string(&index_path).with_context(|| {
+    let file = fs::File::open(&index_path).with_context(|| {
         format!(
             "no installed Zed package index at {}; run zed install --frozen after creating .zpkg.lock",
             index_path.display()
         )
     })?;
+    let mut contents = String::new();
+    file.take(MAX_PATHS_INDEX_BYTES + 1)
+        .read_to_string(&mut contents)
+        .with_context(|| format!("failed to read Zed package index {}", index_path.display()))?;
+    if contents.len() as u64 > MAX_PATHS_INDEX_BYTES {
+        bail!(
+            "Zed package index {} exceeds the {} byte limit; refusing import paths",
+            index_path.display(),
+            MAX_PATHS_INDEX_BYTES
+        );
+    }
     let index: PathsIndex = serde_json::from_str(&contents)
         .with_context(|| format!("invalid Zed package index {}", index_path.display()))?;
     let modules = checked_relative(&index.modules_dir)?;
@@ -55,6 +71,7 @@ pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
     }
 
     let mut selected = BTreeSet::new();
+    let mut seen_packages = BTreeSet::new();
     for package in index.packages {
         let (org, name) = package
             .package
@@ -63,6 +80,16 @@ pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
             .with_context(|| format!("invalid indexed package name {:?}", package.package))?;
         if package.version.is_empty() {
             bail!("indexed package {}/{} has an empty version", org, name);
+        }
+        // There can be exactly one immutable resolved package per org/name
+        // slot. Do not silently deduplicate a poisoned index: duplicate
+        // identities can hide conflicting versions or mismatched metadata.
+        if !seen_packages.insert(package.package.clone()) {
+            bail!(
+                "duplicate indexed package {}/{}; refusing ambiguous import paths (run zed install --frozen)",
+                org,
+                name
+            );
         }
         let relative = checked_relative(&package.path)?;
         let expected = modules.join(org).join(name);
