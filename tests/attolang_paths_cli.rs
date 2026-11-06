@@ -196,7 +196,11 @@ fn paths_support_store_symlinks_without_following_outside_index_paths() {
         ]),
     );
     let result = invoke(&root, &["attolang", "paths"]);
-    assert!(result.status.success(), "{:?}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     assert_eq!(
         String::from_utf8(result.stdout).unwrap(),
         "zed_modules/acme/math\n"
