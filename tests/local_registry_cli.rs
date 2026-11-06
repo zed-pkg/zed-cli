@@ -335,7 +335,6 @@ fn local_registry_only_names_the_dependency_it_cannot_satisfy() {
     assert!(rendered.contains("acme/widget"), "{rendered}");
 }
 
-
 #[test]
 fn ephemeral_install_with_local_registry_off_cannot_consume_registered_source() {
     let fx = fixture();
