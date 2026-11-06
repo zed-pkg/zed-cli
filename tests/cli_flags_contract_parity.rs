@@ -92,7 +92,8 @@ fn collect_contract(
             let Some(flag) = value.as_table() else {
                 continue;
             };
-            let mut spellings = vec![name.replace('_', "-")];
+            let primary = name.replace('_', "-");
+            let mut spellings = vec![primary.clone()];
             spellings.extend(
                 flag.get("aliases")
                     .and_then(Value::as_array)
@@ -101,6 +102,12 @@ fn collect_contract(
                     .filter_map(Value::as_str)
                     .map(str::to_owned),
             );
+            // flags2env automatically registers --no-<name> for boolean flags.
+            // Model that derived spelling at the same scope rather than
+            // allowing a duplicate explicit no_verify declaration.
+            if flag.get("type").and_then(Value::as_str) == Some("bool") {
+                spellings.push(format!("no-{primary}"));
+            }
             spellings.sort();
             spellings.dedup();
             flags.push(ContractFlag {
@@ -188,6 +195,57 @@ fn scope_matching_accepts_ancestors_but_not_siblings() {
     assert!(scope_is_ancestor_or_same(&release, &release_plan));
     assert!(!scope_is_ancestor_or_same(&release_plan, &release));
     assert!(!scope_is_ancestor_or_same(&release_plan, &release_publish));
+}
+
+#[test]
+fn implicit_boolean_negation_has_the_same_owner_and_scope_as_its_flag() {
+    let document: Value = toml::from_str(
+        r#"
+[commands.self-update.flags.verify]
+type = "bool"
+env = "ZED_PKG_UPDATE_VERIFY"
+aliases = ["verify"]
+
+[commands.other.flags.limit]
+type = "integer"
+env = "ZED_PKG_OTHER_LIMIT"
+aliases = ["limit"]
+"#,
+    )
+    .expect("parse scoped flags2env fixture");
+    let mut commands = BTreeSet::new();
+    let mut flags = Vec::new();
+    collect_contract(
+        "fixture",
+        document.as_table().expect("fixture root"),
+        &mut Vec::new(),
+        &mut commands,
+        &mut flags,
+    );
+
+    let verify = flags.iter().find(|flag| flag.name == "verify").unwrap();
+    assert!(verify.spellings.iter().any(|spelling| spelling == "verify"));
+    assert!(
+        verify
+            .spellings
+            .iter()
+            .any(|spelling| spelling == "no-verify")
+    );
+    assert!(flag_scope_applies(
+        &verify.path,
+        &["self-update".to_owned()]
+    ));
+    assert!(!flag_scope_applies(&verify.path, &["other".to_owned()]));
+
+    let limit = flags.iter().find(|flag| flag.name == "limit").unwrap();
+    assert!(limit.spellings.iter().any(|spelling| spelling == "limit"));
+    assert!(
+        !limit
+            .spellings
+            .iter()
+            .any(|spelling| spelling == "no-limit"),
+        "only boolean flags receive an implicit negative spelling"
+    );
 }
 
 #[test]
