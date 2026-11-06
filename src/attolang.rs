@@ -161,9 +161,7 @@ fn valid_segment(value: &str) -> bool {
 /// paths inside the project's installed module slots, **not** a verification
 /// of the linked artifact's digest or provenance.
 fn checked_relative(raw: &str) -> Result<PathBuf> {
-    if raw.is_empty()
-        || raw.chars().any(|c| c == ':' || c == '\\' || c.is_control())
-    {
+    if raw.is_empty() || raw.chars().any(|c| c == ':' || c == '\\' || c.is_control()) {
         bail!("invalid package index path (empty or unsafe ORES_PATHS character)");
     }
     let path = Path::new(raw);
