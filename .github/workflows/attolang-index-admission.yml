@@ -7,7 +7,9 @@ on:
       - 'tests/attolang_paths_cli.rs'
       - '.github/workflows/attolang-index-admission.yml'
   push:
-    branches: [main]
+    # Temporary branch-scoped admission run. Drop this branch entry after
+    # evidence is captured, retaining main and PR validation.
+    branches: [main, hardening/attolang-portable-path-lexing-20261106]
     paths:
       - 'src/attolang.rs'
       - 'tests/attolang_paths_cli.rs'
