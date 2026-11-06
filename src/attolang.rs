@@ -155,7 +155,26 @@ fn valid_segment(value: &str) -> bool {
 /// compiler search paths. Zed's symlink or copy store mode is still supported:
 /// these are lexical paths inside the project's installed module slots.
 fn checked_relative(raw: &str) -> Result<PathBuf> {
-    if raw.is_empty() || raw.chars().any(|c| matches!(c, ':' | '\n' | '\r' | '\0')) {
+    // A Zed index is a portable wire format, not a host-specific PathBuf.
+    // Backslashes change meaning between Unix and Windows. C0/C1 controls,
+    // Unicode separators, and bidirectional formatting marks can forge
+    // terminal output or hide the actual compiler import root.
+    if raw.is_empty()
+        || raw.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    c,
+                    ':' | '\\'
+                        | '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+        })
+    {
         bail!("invalid package index path (empty or unsafe ORES_PATHS character)");
     }
     let path = Path::new(raw);
@@ -195,5 +214,35 @@ mod tests {
             assert!(!valid_segment(value), "{value:?}");
         }
         assert!(valid_segment("acme-utils-2"));
+    }
+
+    #[test]
+    fn rejects_portability_and_terminal_spoofing_in_index_paths() {
+        for value in [
+            "zed\\modules/acme/math",
+            "zed_modules\\acme\\math",
+            "zed_modules\t/acme/math",
+            "zed_modules\u{001b}[31m/acme/math",
+            "zed_modules\u{007f}/acme/math",
+            "zed_modules\u{0085}/acme/math",
+            "zed_modules\u{2028}/acme/math",
+            "zed_modules\u{2029}/acme/math",
+            "zed_modules\u{202e}/acme/math",
+            "zed_modules\u{2066}/acme/math",
+            "zed_modules\u{061c}/acme/math",
+        ] {
+            assert!(checked_relative(value).is_err(), "accepted {value:?}");
+        }
+    }
+
+    #[test]
+    fn permits_safe_relative_import_roots_without_overcanonicalizing() {
+        for value in [
+            "zed_modules/acme/math",
+            "zed modules/acme/math",
+            "zed_modules/acme/actor-v2",
+        ] {
+            assert!(checked_relative(value).is_ok(), "rejected {value:?}");
+        }
     }
 }
