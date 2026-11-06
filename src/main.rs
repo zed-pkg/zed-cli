@@ -217,11 +217,20 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         match cmd {
             AttolangCmd::Paths { json } => {
                 let paths = zed_cli::attolang::installed_paths(&cwd)?;
-                let value = paths.join(":");
+                // Use the OS-native path-list separator. The AttoLang
+                // compiler consumes ATTO_PATHS as a native path list.
+                let value = std::env::join_paths(paths.iter())?
+                    .to_string_lossy()
+                    .into_owned();
                 if *json {
                     println!(
                         "{}",
-                        serde_json::json!({ "env": "ORES_PATHS", "paths": paths, "value": value })
+                        serde_json::json!({
+                            "env": "ATTO_PATHS",
+                            "legacy_env": "ORES_PATHS",
+                            "paths": paths,
+                            "value": value
+                        })
                     );
                 } else {
                     println!("{value}");
