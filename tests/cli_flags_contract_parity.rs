@@ -231,13 +231,19 @@ aliases = ["limit"]
             .iter()
             .any(|spelling| spelling == "no-verify")
     );
-    assert!(flag_scope_applies(&verify.path, &["self-update".to_owned()]));
+    assert!(flag_scope_applies(
+        &verify.path,
+        &["self-update".to_owned()]
+    ));
     assert!(!flag_scope_applies(&verify.path, &["other".to_owned()]));
 
     let limit = flags.iter().find(|flag| flag.name == "limit").unwrap();
     assert!(limit.spellings.iter().any(|spelling| spelling == "limit"));
     assert!(
-        !limit.spellings.iter().any(|spelling| spelling == "no-limit"),
+        !limit
+            .spellings
+            .iter()
+            .any(|spelling| spelling == "no-limit"),
         "only boolean flags receive an implicit negative spelling"
     );
 }
