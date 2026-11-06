@@ -354,9 +354,10 @@ impl<'a> AnalyzerSource<'a> {
             "declared dependency graph for {org}/{name}@{version} exceeds the {} byte analysis limit",
             self.max_metadata_bytes
         );
-        let document = DependencyGraphDocument::parse_verified_canonical(&body).with_context(|| {
-            format!("verifying declared dependency graph for {org}/{name}@{version}")
-        })?;
+        let document =
+            DependencyGraphDocument::parse_verified_canonical(&body).with_context(|| {
+                format!("verifying declared dependency graph for {org}/{name}@{version}")
+            })?;
         if let Some(header_digest) = header_digest {
             ensure!(
                 document.graph_digest.as_deref() == Some(header_digest.as_str()),
@@ -587,11 +588,8 @@ fn discover_local_candidates(
 
     let raw_overrides = crate::local_overrides::read(project)?;
     if !raw_overrides.is_empty() {
-        let resolved = crate::local_overrides::resolve(
-            project,
-            root_manifest.modules_dir(),
-            &raw_overrides,
-        )?;
+        let resolved =
+            crate::local_overrides::resolve(project, root_manifest.modules_dir(), &raw_overrides)?;
         for (key, directory) in resolved {
             let manifest = read_manifest(&directory).with_context(|| {
                 format!(
@@ -745,7 +743,11 @@ impl<S: SolveSource> Solver<'_, S> {
             for (key, selected) in &state.selected {
                 let constraints = state.constraints.get(key).cloned().unwrap_or_default();
                 if constraints.iter().any(|constraint| {
-                    !requirement_matches(selected.scheme, &constraint.requirement, &selected.version)
+                    !requirement_matches(
+                        selected.scheme,
+                        &constraint.requirement,
+                        &selected.version,
+                    )
                 }) {
                     return Ok(Some(render_conflict(
                         key,
@@ -824,9 +826,9 @@ fn render_conflict(
         Some(version) => format!(
             "version conflict for {key}: selected {version}, but it does not satisfy every active requirement"
         ),
-        None => format!(
-            "version conflict for {key}: no version satisfies every active requirement"
-        ),
+        None => {
+            format!("version conflict for {key}: no version satisfies every active requirement")
+        }
     }];
     for constraint in constraints.iter().take(MAX_ERROR_PATHS) {
         lines.push(format!(
@@ -962,10 +964,7 @@ fn build_graph(
         edges: &graph.edges,
     })
     .context("serializing local graph semantic digest payload")?;
-    graph.analysis_digest = Some(format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(payload))
-    ));
+    graph.analysis_digest = Some(format!("sha256:{}", hex::encode(Sha256::digest(payload))));
     Ok(graph)
 }
 
@@ -1067,10 +1066,7 @@ fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(error).with_context(|| {
-                format!(
-                    "checking local dependency graph output {}",
-                    path.display()
-                )
+                format!("checking local dependency graph output {}", path.display())
             });
         }
     }
@@ -1187,7 +1183,10 @@ mod tests {
         }
     }
 
-    fn solve_memory(source: &mut MemorySource, dependencies: &[(&str, &str)]) -> Result<SolveState> {
+    fn solve_memory(
+        source: &mut MemorySource,
+        dependencies: &[(&str, &str)],
+    ) -> Result<SolveState> {
         let root = "consumer/app@1.0.0".to_string();
         let mut state = SolveState::default();
         for (key, requirement) in dependencies {
@@ -1218,11 +1217,8 @@ mod tests {
         source.publish("test/shared", "1.0.0", &[]);
         source.publish("test/left", "1.0.0", &[("test/shared", "^1")]);
         source.publish("test/right", "1.0.0", &[("test/shared", "^1")]);
-        let solved = solve_memory(
-            &mut source,
-            &[("test/left", "^1"), ("test/right", "^1")],
-        )
-        .unwrap();
+        let solved =
+            solve_memory(&mut source, &[("test/left", "^1"), ("test/right", "^1")]).unwrap();
         assert_eq!(solved.selected.len(), 3);
         assert_eq!(solved.selected["test/shared"].version, "1.0.0");
     }
