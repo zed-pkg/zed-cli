@@ -1,0 +1,57 @@
+name: Local-only bare dependency admission
+
+on:
+  pull_request:
+    paths:
+      - 'src/local_registry.rs'
+      - 'src/managed_install.rs'
+      - 'src/manifestless.rs'
+      - 'tests/local_registry_cli.rs'
+      - '.github/workflows/local-only-unversioned-admission.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/local_registry.rs'
+      - 'src/managed_install.rs'
+      - 'src/manifestless.rs'
+      - 'tests/local_registry_cli.rs'
+      - '.github/workflows/local-only-unversioned-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-only-bare-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admission:
+    name: Offline bare local-only install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - name: Checkout exact candidate without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Verify Rust formatting
+        run: cargo fmt --all -- --check
+      - name: Execute actual local registry CLI matrix with committed lock
+        run: cargo test --locked --test local_registry_cli -- --nocapture
+      - name: Distinguish test authority from compiler proof
+        run: echo 'LOCAL_ONLY_CLI_E2E; no compiler-backed AttoLang guest proof'
