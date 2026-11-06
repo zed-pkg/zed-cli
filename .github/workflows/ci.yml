@@ -622,7 +622,11 @@ jobs:
 
           test -f "$root/.zpkg.toml"
           test -f "$root/.zpkg.lock"
-          test -d "$root/zed_modules/zed-pkg/docker-node-lib"
+          # The generated consumer manifest selects .zed/pkg rather than the
+          # legacy zed_modules path. Assert its declared layout and keep the
+          # Node adapter's separately materialized tree as an independent gate.
+          grep -F 'dir = ".zed/pkg"' "$root/.zpkg.toml"
+          test -d "$root/.zed/pkg/zed-pkg/docker-node-lib"
           test -d "$root/node_modules/@zed-pkg/docker-node-lib"
           grep -F 'org = "zed-local"' "$root/.zpkg.toml"
           grep -F 'keywords = ["zed-generated-consumer"]' "$root/.zpkg.toml"
@@ -682,6 +686,7 @@ jobs:
           test ! -e "$root/.zpkg.toml"
           test ! -e "$root/.zpkg.lock"
           test ! -e "$root/zed_modules"
+          test ! -e "$root/.zed/pkg"
           test ! -e "$root/node_modules/@zed-pkg/docker-node-lib"
 
       - name: Canonical flag, canonical environment, and legacy alias preserve ephemeral installs
@@ -803,7 +808,8 @@ jobs:
           test ! -e "$root/.zpkg.lock"
           test -f "$root/apps/web/.zpkg.toml"
           test -f "$root/apps/web/.zpkg.lock"
-          test -d "$root/apps/web/zed_modules/zed-pkg/docker-node-lib"
+          grep -F 'dir = ".zed/pkg"' "$root/apps/web/.zpkg.toml"
+          test -d "$root/apps/web/.zed/pkg/zed-pkg/docker-node-lib"
 
   shell-contract:
     needs: provenance
