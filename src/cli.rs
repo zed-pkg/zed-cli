@@ -721,7 +721,7 @@ pub enum Cmd {
 
 #[derive(Debug, Subcommand)]
 pub enum AttolangCmd {
-    /// Export the installed AttoLang package paths as ORES_PATHS (or JSON)
+    /// Export installed AttoLang package paths as ATTO_PATHS (or JSON)
     Paths {
         /// Emit a machine-readable object containing env, paths, and value
         #[arg(long, env = "ZED_PKG_ATTOLANG_JSON")]

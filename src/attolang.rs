@@ -1,6 +1,6 @@
 //! Read-only bridge from Zed's installed package index to AttoLang imports.
 //!
-//! AttoLang (formerly Oreslang) currently reads colon-separated ORES_PATHS.
+//! AttoLang (formerly Oreslang) reads ATTO_PATHS with legacy ORES_PATHS fallback.
 //! Zed is the artifact/lock authority; this module only exports paths that
 //! Zed already materialized, without running a compiler or modifying state.
 
@@ -32,7 +32,7 @@ struct IndexedPackage {
 }
 
 /// Return deterministic, invocation-directory-relative import roots suitable
-/// for joining with ":" in ORES_PATHS. Nothing is written or executed.
+/// for joining with the host OS path separator in ATTO_PATHS. Nothing is written or executed.
 ///
 /// Until the shared language manifest adds canonical attolang tokens,
 /// packages are identified by their native .ores.pkg.toml marker.

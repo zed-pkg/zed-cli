@@ -71,9 +71,13 @@ fn paths_are_stable_and_only_include_attolang_packages() {
         "{:?}",
         String::from_utf8_lossy(&result.stderr)
     );
+    let native_value = std::env::join_paths(["zed_modules/acme/alpha", "zed_modules/acme/zeta"])
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     assert_eq!(
         String::from_utf8(result.stdout).unwrap(),
-        "zed_modules/acme/alpha:zed_modules/acme/zeta\n"
+        format!("{native_value}\n")
     );
     let json = invoke(&root, &["oreslang", "paths", "--json"]);
     assert!(
@@ -82,12 +86,20 @@ fn paths_are_stable_and_only_include_attolang_packages() {
         String::from_utf8_lossy(&json.stderr)
     );
     let doc: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(doc["env"], "ORES_PATHS");
+    assert_eq!(doc["env"], "ATTO_PATHS");
+    assert_eq!(doc["legacy_env"], "ORES_PATHS");
     assert_eq!(
         doc["paths"],
         serde_json::json!(["zed_modules/acme/alpha", "zed_modules/acme/zeta"])
     );
-    assert_eq!(doc["value"], "zed_modules/acme/alpha:zed_modules/acme/zeta");
+    assert_eq!(doc["value"], native_value);
+    let canonical = invoke(&root, &["attolang", "paths", "--json"]);
+    assert!(canonical.status.success());
+    let canonical_doc: serde_json::Value = serde_json::from_slice(&canonical.stdout).unwrap();
+    assert_eq!(
+        canonical_doc, doc,
+        "legacy alias must export canonical env authority"
+    );
     assert_eq!(fs::read(root.join(".zed/paths.json")).unwrap(), before);
     assert!(
         !root.join(".zpkg.lock").exists(),
