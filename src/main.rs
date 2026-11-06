@@ -4,7 +4,7 @@ use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
 use zed_cli::cli::{
-    AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
+    AttolangCmd, AuthCmd, CacheCmd, Cli, Cmd, EnvironmentExportManagerArg, EnvironmentManagerArg, OrgCmd,
     ReleaseCmd, StoreCmd, TaskCmd,
 };
 use zed_cli::cli_tools;
@@ -213,6 +213,21 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return validation::run(&cwd, manifest, lock, *require_lock, *json);
     }
 
+    if let Cmd::Attolang { cmd } = &cli.cmd {
+        match cmd {
+            AttolangCmd::Paths { json } => {
+                let paths = zed_cli::attolang::installed_paths(&cwd)?;
+                let value = paths.join(":");
+                if *json {
+                    println!("{}", serde_json::json!({ "env": "ORES_PATHS", "paths": paths, "value": value }));
+                } else {
+                    println!("{value}");
+                }
+                return Ok(());
+            }
+        }
+    }
+
     let cfg = Config::from_globals(&cli.globals)?;
     let git_submodules = cli.globals.git_submodules;
     if cwd.join(zed_cli::transaction::STAGING_DIR).is_dir() {
@@ -228,6 +243,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
     match cli.cmd {
         Cmd::Validate { .. } => unreachable!("validation returned before mutable CLI setup"),
+        Cmd::Attolang { .. } => unreachable!("AttoLang read-only export returned before mutable CLI setup"),
         Cmd::Init { project, org, name } => {
             let project = project.unwrap_or_else(|| std::path::PathBuf::from("."));
             let project = if project.is_absolute() {
