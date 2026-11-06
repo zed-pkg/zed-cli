@@ -1,0 +1,53 @@
+name: Diagnostic regenerate exact pinned Cargo lock
+
+on:
+  push:
+    branches:
+      - repair/pinned-cargo-lock-20261106
+    paths:
+      - '.github/workflows/lock-graph-regenerate.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact probe commit without write credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify exact probe commit
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust version
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+      - name: Regenerate lock metadata and show bounded no-secret diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 > /dev/null
+          git diff --stat -- Cargo.lock
+          git diff --numstat -- Cargo.lock
+          printf 'LOCK_CAPTURE_BEGIN\\n'
+          awk '{print "LOCK_CAPTURE_ROW:" $0}' Cargo.lock
+          printf 'LOCK_CAPTURE_END\\n'
+      - name: Prove build against generated immutable lock
+        shell: bash
+        run: cargo build --locked --bin zed
+      - name: Provide lock for independent review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cargo-lock-pinned-toolchain
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 3
