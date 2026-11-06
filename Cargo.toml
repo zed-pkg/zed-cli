@@ -55,6 +55,10 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 flate2 = "1"
 globset = "0.4"
 hex = "0.4"
+# Self-update must use the current hardened shared updater: SHA-256 is required
+# by default, --no-verify is disabled unless a product opts in explicitly, and
+# archive extraction is bounded and rejects unsafe entries.
+ores-clis-core = { git = "https://github.com/ORESoftware/ores-clis-core.git", rev = "611312407dfe2e0c40d5e21fa660f22b52d60c8c" }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "rustls-tls"] }
 rpassword = "7"
 semver = { version = "1", features = ["serde"] }
