@@ -1,0 +1,50 @@
+name: Diagnostic exact Rustfmt graph export
+
+on:
+  push:
+    branches: [fix/graph-export-rustfmt-20261106]
+    paths:
+      - '.github/workflows/graph-export-rustfmt-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Exact source checkout without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify head
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Pinned Rustfmt toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Run formatter and capture exact reviewable output
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all
+          cargo fmt --all -- --check
+          git diff --stat
+          changed="$(git diff --name-only)"
+          expected="$(printf '%s\n' src/graph_export.rs src/graph_export/graph_local.rs)"
+          test "$changed" = "$expected" || {
+            echo "unexpected format changes:" >&2
+            printf '%s\n' "$changed" >&2
+            exit 1
+          }
+          for file in src/graph_export.rs src/graph_export/graph_local.rs; do
+            echo "FORMAT_CAPTURE_BEGIN:$file"
+            awk '{print "FORMAT_CAPTURE_ROW:" $0}' "$file"
+            echo "FORMAT_CAPTURE_END:$file"
+          done
