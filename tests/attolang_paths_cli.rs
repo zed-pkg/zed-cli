@@ -258,3 +258,170 @@ fn oversized_installed_package_index_is_rejected_before_json_parse() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[test]
+fn index_modules_directory_rejects_portability_and_terminal_poisoning() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    add_project(root);
+    package(root, "acme", "math", true);
+
+    for modules in [
+        "zed\\modules",
+        "zed_modules\t",
+        "zed_modules\u{001b}[31m",
+        "zed_modules\u{007f}",
+        "zed_modules\u{0085}",
+        "zed_modules\u{2028}",
+        "zed_modules\u{2029}",
+        "zed_modules\u{202e}",
+        "zed_modules\u{2066}",
+        "zed_modules\u{061c}",
+    ] {
+        let document = serde_json::json!({
+            "modules_dir": modules,
+            "packages": [{
+                "package": "acme/math",
+                "version": "1.0.0",
+                "language": "attolang",
+                "path": format!("{modules}/acme/math")
+            }]
+        });
+        let before = serde_json::to_vec(&document).unwrap();
+        fs::write(root.join(".zed/paths.json"), &before).unwrap();
+
+        let result = invoke(root, &["attolang", "paths", "--json"]);
+        assert!(!result.status.success(), "accepted modules_dir {modules:?}");
+        assert!(result.stdout.is_empty(), "printed untrusted import roots");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("unsafe ORES_PATHS character"),
+            "unexpected error for {modules:?}: {:?}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(fs::read(root.join(".zed/paths.json")).unwrap(), before);
+    }
+}
+
+#[test]
+fn indexed_package_path_rejects_terminal_and_host_separator_poisoning() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    add_project(root);
+    package(root, "acme", "math", true);
+
+    for path in [
+        "zed_modules\\acme\\math",
+        "zed_modules/acme/math\t",
+        "zed_modules/acme/math\u{001b}[2J",
+        "zed_modules/acme/math\u{007f}",
+        "zed_modules/acme/math\u{0085}",
+        "zed_modules/acme/math\u{2028}",
+        "zed_modules/acme/math\u{2029}",
+        "zed_modules/acme/math\u{202e}",
+        "zed_modules/acme/math\u{2069}",
+        "zed_modules/acme/math\u{200f}",
+    ] {
+        index(
+            root,
+            serde_json::json!([{
+                "package": "acme/math",
+                "version": "1.0.0",
+                "language": "attolang",
+                "path": path
+            }]),
+        );
+        let result = invoke(root, &["oreslang", "paths"]);
+        assert!(!result.status.success(), "accepted path {path:?}");
+        assert!(result.stdout.is_empty(), "printed untrusted import roots");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("unsafe ORES_PATHS character"),
+            "unexpected error for {path:?}: {:?}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
+fn duplicate_json_fields_and_schema_type_confusion_fail_closed() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    add_project(root);
+    for payload in [
+        r#"{"modules_dir":"zed_modules","modules_dir":"elsewhere","packages":[]}"#,
+        r#"{"modules_dir":"zed_modules","packages":[{"package":"acme/math","package":"acme/other","version":"1.0.0","path":"zed_modules/acme/math"}]}"#,
+        r#"{"modules_dir":null,"packages":[]}"#,
+        r#"{"modules_dir":"zed_modules","packages":null}"#,
+        r#"{"modules_dir":"zed_modules","packages":[{"package":"acme/math","version":1,"path":"zed_modules/acme/math"}]}"#,
+    ] {
+        fs::write(root.join(".zed/paths.json"), payload).unwrap();
+        let result = invoke(root, &["attolang", "paths"]);
+        assert!(
+            !result.status.success(),
+            "accepted malformed index {payload}"
+        );
+        assert!(
+            result.stdout.is_empty(),
+            "published paths from invalid schema"
+        );
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains("invalid Zed package index"),
+            "unexpected error for {payload}: {:?}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[test]
+fn later_poisoned_package_cannot_leak_earlier_valid_import_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    add_project(root);
+    package(root, "acme", "math", true);
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/math"},
+            {"package":"acme/rogue","version":"1.0.0","language":"attolang","path":"zed_modules/acme/rogue\u{202e}"}
+        ]),
+    );
+
+    for args in [
+        &["attolang", "paths"][..],
+        &["attolang", "paths", "--json"][..],
+        &["oreslang", "paths", "--json"][..],
+    ] {
+        let result = invoke(root, args);
+        assert!(!result.status.success(), "accepted poisoned later entry");
+        assert!(result.stdout.is_empty(), "printed a partial valid prefix");
+    }
+}
+
+#[test]
+fn native_zpkg_project_marker_without_legacy_root_marker_is_supported() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::create_dir_all(root.join(".zed")).unwrap();
+    fs::write(root.join(".zpkg.toml"), "[package]\nname='consumer'\n").unwrap();
+    package(root, "acme", "math", true);
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","path":"zed_modules/acme/math"}
+        ]),
+    );
+
+    let result = invoke(root, &["attolang", "paths"]);
+    assert!(
+        result.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(result.stdout).unwrap(),
+        "zed_modules/acme/math\n"
+    );
+    assert!(
+        !root.join(".zpkg.lock").exists(),
+        "read-only projection wrote a lock"
+    );
+}
