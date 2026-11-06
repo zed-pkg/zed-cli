@@ -1,0 +1,43 @@
+# One-shot read-only exact-head Cargo.lock diagnostic. Never merged into main.
+name: AttoLang one-shot Cargo.lock repair evidence
+
+on:
+  push:
+    branches:
+      - diagnostic/attolang-cargo-lock-20261105
+    paths:
+      - .github/workflows/attolang-one-shot-lock-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Confirm exact diagnostic checkout
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+      - name: Repair Cargo.lock in disposable checkout only
+        run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 > /dev/null
+          echo 'LOCK_DIFF_START'
+          git diff -- Cargo.lock
+          echo 'LOCK_DIFF_END'
+          cargo metadata --locked --format-version 1 > /dev/null
+      - name: Upload exact generated lockfile for review
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: attolang-resolved-cargo-lock
+          path: Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
