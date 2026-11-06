@@ -652,37 +652,13 @@ pub enum Cmd {
     /// platform (zed-docs issue #9)
     #[command(name = "self-update", alias = "update")]
     SelfUpdate {
-        /// Optional exact release version for the shared updater.
-        #[arg(value_name = "VERSION")]
-        version: Option<String>,
-        /// Ask for confirmation before replacing the executable.
-        #[arg(long)]
-        interactive: bool,
-        /// Do not prompt for confirmation.
-        #[arg(long, conflicts_with = "interactive")]
-        non_interactive: bool,
-        /// Explicitly consent to an update.
-        #[arg(long, short = 'y', conflicts_with = "interactive")]
-        yes: bool,
-        /// Only report whether an update is available; don't install.
+        /// Only report whether an update is available; don't install
         #[arg(long, env = "ZED_PKG_UPDATE_CHECK")]
         check: bool,
-        /// Show the exact release candidate without installing it.
-        #[arg(long)]
-        dry_run: bool,
-        /// Require SHA-256 integrity checking (the default).
-        #[arg(long, conflicts_with = "no_verify")]
-        verify: bool,
-        /// Request unverified updates; the shared updater refuses unsafe execution.
-        #[arg(long, conflicts_with = "verify")]
-        no_verify: bool,
-        /// Emit JSON status rather than human-readable output.
-        #[arg(long)]
-        json: bool,
-        /// Legacy `zed update` mode: reinstall even if already current.
+        /// Reinstall even if already on the latest version
         #[arg(long, env = "ZED_PKG_UPDATE_FORCE")]
         force: bool,
-        /// Legacy `zed update` mode only; never bypass shared self-update verification.
+        /// Skip the SHA256SUMS integrity check (unsafe; local testing only)
         #[arg(long, env = "ZED_PKG_UPDATE_SKIP_CHECKSUM")]
         skip_checksum: bool,
     },
