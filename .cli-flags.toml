@@ -894,11 +894,8 @@ aliases = ["verify"]
 type = "bool"
 help = "Require SHA-256 verification."
 
-[commands.self-update.flags.no_verify]
-env = "ZED_PKG_UPDATE_NO_VERIFY"
-aliases = ["no-verify"]
-type = "bool"
-help = "Request unverified updates; policy forbids unsafe mutating use."
+# --no-verify is the flags2env-generated false form of --verify.
+# Never define it separately: it collides with the implicit negation.
 
 [commands.login]
 aliases = ["signin"]
