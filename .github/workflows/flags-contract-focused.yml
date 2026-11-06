@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - '.cli-flags.toml'
+      - 'src/cli.rs'
       - 'tests/cli_flags_canonical_types.rs'
       - 'tests/cli_flags_contract_parity.rs'
       - '.github/workflows/flags-contract-focused.yml'
@@ -11,6 +12,7 @@ on:
     branches: [main]
     paths:
       - '.cli-flags.toml'
+      - 'src/cli.rs'
       - 'tests/cli_flags_canonical_types.rs'
       - 'tests/cli_flags_contract_parity.rs'
       - '.github/workflows/flags-contract-focused.yml'
@@ -46,3 +48,7 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Validate actual flags2env contract tests, locked
         run: cargo test --locked --test cli_flags_canonical_types --test cli_flags_contract_parity
+      - name: Verify typed CLI contract and updater security boundary
+        run: |
+          cargo test --locked --lib cli_flags_toml_is_in_sync_with_clap
+          cargo test --locked --lib updater_external_flag_scope_is_explicit_and_conflicting_options_fail
