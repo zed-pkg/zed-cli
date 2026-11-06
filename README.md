@@ -164,6 +164,7 @@ the legacy version route by default or the additive target-qualified route with
 | Command | What it does |
 | --- | --- |
 | `zed validate [--manifest PATH] [--lock PATH] [--require-lock] [--json]` | Validate canonical package metadata offline and without mutation; direct lock coverage is checked, while v1 transitive completeness is explicitly not claimed |
+| `zed attolang paths [--json]` (`zed oreslang paths`) | Export installed AttoLang dependency import roots for `ORES_PATHS` without fetching, writing manifests, or running code; JSON provides a structured path list |
 | `zed init [PROJECT]` | Create the optional project directory and write its `.zpkg.toml` template; `zed init project` infers the package name `project` |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |
