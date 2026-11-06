@@ -1,0 +1,54 @@
+name: AttoLang installed-index admission (focused)
+
+on:
+  pull_request:
+    paths:
+      - 'src/attolang.rs'
+      - 'tests/attolang_paths_cli.rs'
+      - '.github/workflows/attolang-index-admission.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/attolang.rs'
+      - 'tests/attolang_paths_cli.rs'
+      - '.github/workflows/attolang-index-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: attolang-index-admission-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-guest-path-projection:
+    name: Exact-head CLI path admission (no compiler)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify head SHA
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust 1.98.1
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Cache immutable Rust build inputs
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Run AttoLang read-only path and negative admission tests
+        run: cargo test --locked --test attolang_paths_cli -- --nocapture
+      - name: State evidence boundary
+        run: echo 'CLI_PATH_ADMISSION_ONLY: no registry publish or compiler-backed guest execution'
