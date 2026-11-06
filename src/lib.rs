@@ -2,6 +2,7 @@
 //! dispatcher over these modules; integration tests drive them directly.
 
 pub mod asdf_environment;
+pub mod attolang;
 pub mod auth;
 pub mod binary_archive;
 pub mod cli;
