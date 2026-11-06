@@ -97,6 +97,71 @@ impl Fixture {
 }
 
 #[test]
+fn bare_local_only_installs_registered_source_without_remote_latest_lookup() {
+    let fx = fixture();
+    let library = fx.root.join("bare-source");
+    project(&library, "acme", "widget", "1.2.0", &[]);
+    assert_ok(
+        &fx.run(&fx.root, &["local", "register", "bare-source"]),
+        "register",
+    );
+    let root = fx.root.join("bare-consumer");
+    fs::create_dir_all(&root).unwrap();
+    let result = fx.run(
+        &root,
+        &["install", "acme/widget", "--local-registry", "only"],
+    );
+    assert_ok(&result, "bare local-only generated install");
+    let manifest = fs::read_to_string(root.join(".zpkg.toml")).unwrap();
+    assert!(manifest.contains("=1.2.0"), "{manifest}");
+    assert!(root.join(".zed/pkg/acme/widget").exists());
+}
+
+#[test]
+fn bare_local_only_ephemeral_install_stays_offline() {
+    let fx = fixture();
+    let library = fx.root.join("bare-ephemeral-source");
+    project(&library, "acme", "widget", "1.2.0", &[]);
+    assert_ok(
+        &fx.run(&fx.root, &["local", "register", "bare-ephemeral-source"]),
+        "register",
+    );
+    let root = fx.root.join("bare-ephemeral-consumer");
+    fs::create_dir_all(&root).unwrap();
+    let result = fx.run(
+        &root,
+        &[
+            "install",
+            "acme/widget",
+            "--local-registry",
+            "only",
+            "--do-not-write-new-manifest",
+        ],
+    );
+    assert_ok(&result, "bare ephemeral local-only install");
+    assert!(!root.join(".zpkg.toml").exists());
+    assert!(root.join("zed_modules/acme/widget").exists());
+}
+
+#[test]
+fn bare_local_only_missing_registration_fails_without_mutating_project() {
+    let fx = fixture();
+    let root = fx.root.join("bare-missing-consumer");
+    fs::create_dir_all(&root).unwrap();
+    let result = fx.run(
+        &root,
+        &["install", "acme/widget", "--local-registry", "only"],
+    );
+    assert!(!result.status.success(), "{}", stdout(&result));
+    let error = stderr(&result);
+    assert!(error.contains("--local-registry=only"), "{error}");
+    assert!(error.contains("acme/widget"), "{error}");
+    assert!(!root.join(".zpkg.toml").exists());
+    assert!(!root.join(".zpkg.lock").exists());
+    assert!(!root.join("zed_modules").exists());
+}
+
+#[test]
 fn register_list_and_unregister_round_trip() {
     let fx = fixture();
     let library = fx.root.join("library");

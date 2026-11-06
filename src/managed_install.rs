@@ -27,6 +27,7 @@ use zed_lock::{LockClass, LockGuard, LockManager, LockRequest};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
+use crate::local_registry::{self, LocalRegistryMode};
 use crate::manifestless;
 use crate::ops;
 
@@ -248,7 +249,7 @@ fn create_manifest_and_install(
     target: Option<&str>,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
-    let dependencies = resolve_direct_dependencies(cfg, specs)?;
+    let dependencies = resolve_direct_dependencies(cfg, specs, permissions.local_registry)?;
     let inferred_target = target
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -342,7 +343,7 @@ fn install_with_generated_manifest(
         );
     }
 
-    let additions = resolve_direct_dependencies(cfg, specs)?;
+    let additions = resolve_direct_dependencies(cfg, specs, permissions.local_registry)?;
     for (key, requirement) in additions {
         if let Some(existing) = manifest.dependencies.get(&key)
             && existing != &requirement
@@ -395,9 +396,13 @@ fn install_with_generated_manifest(
     }
 }
 
-fn resolve_direct_dependencies(cfg: &Config, specs: &[String]) -> Result<BTreeMap<String, String>> {
+fn resolve_direct_dependencies(
+    cfg: &Config,
+    specs: &[String],
+    local_mode: LocalRegistryMode,
+) -> Result<BTreeMap<String, String>> {
     let parsed = parse_requested_specs(specs)?;
-    let registry = if parsed.values().any(Option::is_none) {
+    let registry = if parsed.values().any(Option::is_none) && !local_mode.requires_local() {
         Some(cfg.open_registry()?)
     } else {
         None
@@ -407,6 +412,9 @@ fn resolve_direct_dependencies(cfg: &Config, specs: &[String]) -> Result<BTreeMa
     for (key, explicit) in parsed {
         let requirement = match explicit {
             Some(requirement) => requirement,
+            None if local_mode.requires_local() => {
+                local_registry::requirement_for_unversioned_only(cfg, &key)?
+            }
             None => {
                 let (org, name) = key
                     .split_once('/')
