@@ -1,4 +1,4 @@
-# Temporary diagnostic branch only; this replacement is not in PR #543.
+# Temporary branch only. Run read-only exact-PR-head focused validation.
 name: one-shot runtime env schema-test patch
 
 on:
@@ -10,36 +10,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: attolang-lock-diagnostic-${{ github.ref }}
+  group: attolang-focused-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   patch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      - name: Checkout exact diagnostic commit
+      - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: 7298ee3696602482c58c90559f4a1b61ba1d9ca7
           persist-credentials: false
-      - name: Verify exact SHA
-        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Verify exact tested revision
+        env:
+          EXPECTED_SHA: 7298ee3696602482c58c90559f4a1b61ba1d9ca7
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
           toolchain: 1.98.1
-      - name: Report minimal local lockfile resolution
-        run: |
-          set -euo pipefail
-          cargo metadata --format-version 1 > /dev/null
-          echo 'LOCK_DIFF_START'
-          git diff -- Cargo.lock
-          echo 'LOCK_DIFF_END'
-          cargo metadata --locked --format-version 1 > /dev/null
-      - name: Attach exact regenerated lockfile
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
-        with:
-          name: attolang-cargo-lock-repaired
-          path: Cargo.lock
-          if-no-files-found: error
-          retention-days: 1
+          components: rustfmt,clippy
+      - name: Check exact-head formatting
+        run: cargo fmt --all -- --check
+      - name: Test AttoLang CLI read-only import bridge
+        run: cargo test --locked --test attolang_paths_cli
+      - name: Verify flags2env command parity
+        run: cargo test --locked --test cli_flags_contract_parity
+      - name: Check CLI library compilation
+        run: cargo check --locked --all-targets
