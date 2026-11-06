@@ -8,9 +8,9 @@ define module zed_package_safety as
   }
 
   pub fnc frozen_install_admitted(bool exact_lock_match,
-                                  bool store_admitted,
+                                  bool verified_store_ready,
                                   bool complete_graph): bool {
-    return exact_lock_match && store_admitted && complete_graph;
+    return exact_lock_match && verified_store_ready && complete_graph;
   }
 
   pub fnc publish_admitted(bool clean_tree, bool exact_tag_at_head,
