@@ -1578,10 +1578,13 @@ mod tests {
         "XDG_CONFIG_HOME",
     ];
 
-    // `.cli-flags.toml` is shared with environment export and the dedicated
-    // OCI publisher, so these audited entries intentionally are not clap
-    // arguments on the primary `zed` command tree.
-    const NON_CLAP_FLAG_ENVS: [&str; 24] = [
+    // `.cli-flags.toml` is shared with environment export and dedicated
+    // early-dispatched commands (OCI and the hardened self-update provider).
+    // These audited entries intentionally are not options on `Cli::command()`.
+    // In particular, do NOT add `--yes` or `--no-verify` to that typed
+    // parser simply to satisfy this assertion: doing so could silently
+    // change update confirmation or checksum-verification policy.
+    const NON_CLAP_FLAG_ENVS: [&str; 28] = [
         "CLASSPATH",
         "COMSPEC",
         "IN_NIX_SHELL",
@@ -1606,6 +1609,12 @@ mod tests {
         "ZED_PKG_OCI_PUSH_JSON",
         "ZED_PKG_OCI_REGISTRY_CONFIG",
         "ZED_PKG_OCI_USERNAME",
+        // These are flags on the early-dispatched self-update provider:
+        // `oci_command::dispatch` routes directly to `ores-clis-core`.
+        "ZED_PKG_UPDATE_NON_INTERACTIVE",
+        "ZED_PKG_UPDATE_NO_VERIFY",
+        "ZED_PKG_UPDATE_VERIFY",
+        "ZED_PKG_UPDATE_YES",
     ];
 
     fn is_registered_env(env: &str) -> bool {
@@ -1641,6 +1650,50 @@ mod tests {
         for sub in cmd.get_subcommands() {
             collect_flag_envs(sub, envs);
         }
+    }
+
+    #[test]
+    fn updater_external_flag_scope_is_explicit_and_conflicting_options_fail() {
+        // The public help/completion tree exposes the early-dispatched
+        // updater, while the typed Cli parser does not own these options.
+        // This is a deliberate security boundary, not a stale flag map.
+        let public = crate::completion::root_command();
+        let updater = public
+            .find_subcommand("self-update")
+            .expect("self-update public command");
+        let typed = Cli::command();
+        let typed_updater = typed
+            .find_subcommand("self-update")
+            .expect("legacy typed self-update command");
+
+        for (flag, env) in [
+            ("non-interactive", "ZED_PKG_UPDATE_NON_INTERACTIVE"),
+            ("yes", "ZED_PKG_UPDATE_YES"),
+            ("verify", "ZED_PKG_UPDATE_VERIFY"),
+            ("no-verify", "ZED_PKG_UPDATE_NO_VERIFY"),
+        ] {
+            assert!(
+                updater.get_arguments().any(|arg| arg.get_long() == Some(flag)),
+                "missing early-dispatched updater flag: {flag}"
+            );
+            assert!(
+                !typed_updater
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(flag)),
+                "{flag} must remain owned by the hardened external updater"
+            );
+            assert!(
+                NON_CLAP_FLAG_ENVS.contains(&env),
+                "untracked early-dispatched updater flag: {env}"
+            );
+        }
+
+        assert!(
+            crate::completion::root_command()
+                .try_get_matches_from(["zed", "self-update", "--verify", "--no-verify"])
+                .is_err(),
+            "mutually exclusive update verification options must be rejected"
+        );
     }
 
     /// `.cli-flags.toml` is the declarative flags-2-env registry
