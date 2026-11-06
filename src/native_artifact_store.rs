@@ -639,9 +639,11 @@ mod tests {
         let archive = temp.path().join("symlink.zip");
         let file = fs::File::create(&archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o120777);
-        zip.start_file("package/link", options).unwrap();
-        zip.write_all(b"target").unwrap();
+        // ZipWriter::unix_permissions only sets permission bits: it does not
+        // change the entry's file type. Construct an actual symlink to ensure
+        // extraction rejects dangerous archive metadata.
+        let options = zip::write::SimpleFileOptions::default();
+        zip.add_symlink("package/link", "target", options).unwrap();
         zip.finish().unwrap();
         let sha = digest(&archive);
         let store = Store::new(&temp.path().join("home"));
