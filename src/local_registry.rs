@@ -1401,6 +1401,18 @@ pub fn select(
     })
 }
 
+/// Derive an exact requirement from a live local registration without any
+/// remote version lookup. Missing, unhealthy and ambiguous registrations fail
+/// closed before a generated manifest or lock can be committed.
+pub fn requirement_for_unversioned_only(cfg: &Config, key: &str) -> Result<String> {
+    let index = load(cfg).context("loading the sole permitted package authority")?;
+    let (selection, _skipped) = select_with(&index, key, |_| true)?;
+    let selection = selection.with_context(|| {
+        format!("--local-registry=only: no registered local project satisfies {key}; register one with `zed local register <path>`")
+    })?;
+    Ok(format!("={}", selection.manifest.package.version))
+}
+
 /// [`select`] against an arbitrary acceptance rule.
 ///
 /// The dependency solver accumulates several constraints on one package before
