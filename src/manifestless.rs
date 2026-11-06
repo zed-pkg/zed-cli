@@ -88,7 +88,6 @@ pub fn install(
     allow_no_manifest: bool,
     allow_ecosystem_mismatch: bool,
 ) -> Result<ops::InstallOutcome> {
-    let selection = select_project(requested_root);
     let permissions = ops::InstallPermissions {
         allow_build,
         allow_native_deps,
@@ -96,6 +95,37 @@ pub fn install(
         native_manager: native_manager.map(str::to_owned),
         local_registry: crate::local_registry::LocalRegistryMode::from_env()?,
     };
+    install_with_permissions(
+        requested_root,
+        cfg,
+        specs,
+        frozen,
+        mode,
+        adapter,
+        &permissions,
+        target,
+        allow_no_manifest,
+        allow_ecosystem_mismatch,
+    )
+}
+
+/// Preserve the complete explicit CLI installation policy across the legacy
+/// manifestless facade. Reconstructing it from the environment silently
+/// changes --local-registry=off/only back to auto.
+#[allow(clippy::too_many_arguments)]
+pub fn install_with_permissions(
+    requested_root: &Path,
+    cfg: &Config,
+    specs: &[String],
+    frozen: bool,
+    mode: InstallMode,
+    adapter: Adapter,
+    permissions: &ops::InstallPermissions,
+    target: Option<&str>,
+    allow_no_manifest: bool,
+    allow_ecosystem_mismatch: bool,
+) -> Result<ops::InstallOutcome> {
+    let selection = select_project(requested_root);
 
     if selection.has_manifest {
         if !specs.is_empty() {
@@ -147,30 +177,35 @@ pub fn install(
     eprintln!(
         "manifestless install: {MANIFEST_FILE} will not be created; the normal installer will write {LOCKFILE_FILE} and the inferred dependency outputs"
     );
-    config::with_manifest_override(&selection.root, manifest_text, || {
-        if lock_only {
-            ops::install_frozen_lock_only_with_permissions(
-                &selection.root,
-                cfg,
-                mode,
-                adapter,
-                &permissions,
-                inferred_target.as_deref(),
-                allow_ecosystem_mismatch,
-            )
-        } else {
-            ops::install_with_permissions(
-                &selection.root,
-                cfg,
-                frozen,
-                mode,
-                adapter,
-                &permissions,
-                inferred_target.as_deref(),
-                allow_ecosystem_mismatch,
-            )
-        }
-    })
+    config::with_manifest_override_for_local_mode(
+        &selection.root,
+        manifest_text,
+        permissions.local_registry,
+        || {
+            if lock_only {
+                ops::install_frozen_lock_only_with_permissions(
+                    &selection.root,
+                    cfg,
+                    mode,
+                    adapter,
+                    permissions,
+                    inferred_target.as_deref(),
+                    allow_ecosystem_mismatch,
+                )
+            } else {
+                ops::install_with_permissions(
+                    &selection.root,
+                    cfg,
+                    frozen,
+                    mode,
+                    adapter,
+                    permissions,
+                    inferred_target.as_deref(),
+                    allow_ecosystem_mismatch,
+                )
+            }
+        },
+    )
 }
 
 fn requested_dependencies(

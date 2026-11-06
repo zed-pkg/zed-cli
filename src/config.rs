@@ -412,6 +412,22 @@ pub(crate) fn with_manifest_override<T>(
     text: String,
     operation: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
+    with_manifest_override_for_local_mode(
+        project,
+        text,
+        crate::local_registry::LocalRegistryMode::from_env()?,
+        operation,
+    )
+}
+
+/// The selected mode must govern prefetch as well as materialization. Reading
+/// the environment here again can silently undo --local-registry=off/only.
+pub(crate) fn with_manifest_override_for_local_mode<T>(
+    project: &Path,
+    text: String,
+    local_mode: crate::local_registry::LocalRegistryMode,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
     let project = normalized_project(project);
     MANIFEST_OVERRIDE.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -430,11 +446,7 @@ pub(crate) fn with_manifest_override<T>(
     let prefetch_cfg = INSTALL_PREFETCH_CONFIG.with(|slot| slot.borrow().clone());
     let result = match prefetch_cfg {
         Some(cfg) => {
-            let prepared = crate::install_graph::prepare(
-                &project,
-                &cfg,
-                crate::local_registry::LocalRegistryMode::from_env()?,
-            )?;
+            let prepared = crate::install_graph::prepare(&project, &cfg, local_mode)?;
             with_resolved_requirements(&project, prepared.exact_requirements(), operation)
         }
         None => operation(),

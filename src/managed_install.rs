@@ -111,17 +111,14 @@ pub fn install_with_permissions(
                 initial.root.display()
             );
         }
-        return manifestless::install(
+        return manifestless::install_with_permissions(
             requested_root,
             cfg,
             specs,
             frozen,
             mode,
             adapter,
-            permissions.allow_build,
-            permissions.allow_native_deps,
-            permissions.allow_install_hooks,
-            permissions.native_manager.as_deref(),
+            permissions,
             target,
             true,
             allow_ecosystem_mismatch,
@@ -130,17 +127,14 @@ pub fn install_with_permissions(
 
     if initial.has_manifest {
         if specs.is_empty() || !is_generated_manifest_path(&initial.root)? {
-            return manifestless::install(
+            return manifestless::install_with_permissions(
                 requested_root,
                 cfg,
                 specs,
                 frozen,
                 mode,
                 adapter,
-                permissions.allow_build,
-                permissions.allow_native_deps,
-                permissions.allow_install_hooks,
-                permissions.native_manager.as_deref(),
+                permissions,
                 target,
                 false,
                 allow_ecosystem_mismatch,
