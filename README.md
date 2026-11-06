@@ -51,6 +51,22 @@ Note: the Zed editor also installs a `zed` binary. The Homebrew formula
 declares the conflict; if you use both, install with
 `cargo install --path . --root ~/.zed-pkg-cli` and alias as you like.
 
+## AttoLang (formerly Oreslang)
+
+Zed can project already-installed AttoLang dependency roots into the compiler's
+existing `ORES_PATHS` search variable, without another resolver or install hook:
+
+```sh
+zed install --frozen
+export ORES_PATHS="$(zed attolang paths)"
+```
+
+The legacy `zed oreslang paths` spelling and `--json` output are also supported.
+Packages use `.ores.pkg.toml` for AttoLang's own root/import semantics and
+`.zpkg.toml` / `.zpkg.lock` for Zed's artifact and dependency management.
+See [AttoLang integration](docs/attolang.md) for the staged language-contract
+rollout and its current limitations.
+
 ## Quickstart
 
 ```sh
