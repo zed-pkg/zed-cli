@@ -436,7 +436,7 @@ help = "Register or refresh a project directory containing .zpkg.toml."
 [commands.local.commands.register.flags.local_register_priority]
 env = "ZED_PKG_LOCAL_REGISTER_PRIORITY"
 aliases = ["priority"]
-type = "int"
+type = "integer"
 help = "Tie-breaking priority between checkouts of one package; higher wins."
 
 [commands.local.commands.register.flags.local_register_disabled]
@@ -508,14 +508,14 @@ help = "Discover and register every project beneath a directory."
 [commands.local.commands.scan.flags.local_scan_max_depth]
 env = "ZED_PKG_LOCAL_SCAN_MAX_DEPTH"
 aliases = ["max-depth"]
-type = "int"
+type = "integer"
 default = "6"
 help = "How deep to descend below the scanned root."
 
 [commands.local.commands.scan.flags.local_scan_priority]
 env = "ZED_PKG_LOCAL_SCAN_PRIORITY"
 aliases = ["priority"]
-type = "int"
+type = "integer"
 help = "Priority applied to every registration this scan creates."
 
 [commands.local.commands.scan.flags.local_scan_dry_run]
@@ -852,6 +852,44 @@ help = "Roundtrip-test a package."
 [commands.self-update]
 aliases = ["update"]
 help = "Update the zed binary."
+
+# Keep updater flags scoped to self-update: a top-level option would
+# accidentally alter security-sensitive command parsing for other commands.
+[commands.self-update.flags.check]
+env = "ZED_PKG_UPDATE_CHECK"
+type = "bool"
+default = "false"
+help = "Check for an available update without installing."
+
+[commands.self-update.flags.skip_checksum]
+env = "ZED_PKG_UPDATE_SKIP_CHECKSUM"
+type = "bool"
+default = "false"
+help = "Skip the release checksum verification only where the updater explicitly permits it."
+
+[commands.self-update.flags.non_interactive]
+env = "ZED_PKG_UPDATE_NON_INTERACTIVE"
+type = "bool"
+default = "false"
+help = "Do not prompt for interactive input."
+
+[commands.self-update.flags.yes]
+env = "ZED_PKG_UPDATE_YES"
+type = "bool"
+default = "false"
+help = "Explicitly confirm the update operation."
+
+[commands.self-update.flags.verify]
+env = "ZED_PKG_UPDATE_VERIFY"
+type = "bool"
+default = "false"
+help = "Request signature and checksum verification."
+
+[commands.self-update.flags.no_verify]
+env = "ZED_PKG_UPDATE_NO_VERIFY"
+type = "bool"
+default = "false"
+help = "Legacy updater option; must remain gated by the hardened updater, not enabled by the flags contract."
 
 [commands.self-update.flags.force]
 env = "ZED_PKG_UPDATE_FORCE"
