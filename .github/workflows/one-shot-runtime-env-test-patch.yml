@@ -21,11 +21,11 @@ jobs:
       - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 7298ee3696602482c58c90559f4a1b61ba1d9ca7
+          ref: 2562ff5ac82a02d6d30f0c987fb20d7924e877fa
           persist-credentials: false
       - name: Verify exact tested revision
         env:
-          EXPECTED_SHA: 7298ee3696602482c58c90559f4a1b61ba1d9ca7
+          EXPECTED_SHA: 2562ff5ac82a02d6d30f0c987fb20d7924e877fa
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -36,6 +36,10 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test AttoLang CLI read-only import bridge
         run: cargo test --locked --test attolang_paths_cli
+      - name: Prove ZIP symlink security rejection on actual archive metadata
+        run: cargo test --locked --lib native_artifact_store::tests::rejects_zip_symlinks
+      - name: Prove README command registry includes AttoLang
+        run: cargo test --locked --lib cli::tests::readme_documents_every_command
       - name: Verify flags2env command parity
         run: cargo test --locked --test cli_flags_contract_parity
       - name: Check CLI library compilation
