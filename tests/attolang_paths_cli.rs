@@ -227,7 +227,10 @@ fn duplicate_indexed_package_identity_fails_closed() {
         );
         let result = invoke(root, &["attolang", "paths", "--json"]);
         assert!(!result.status.success());
-        assert!(result.stdout.is_empty(), "never print partial package paths");
+        assert!(
+            result.stdout.is_empty(),
+            "never print partial package paths"
+        );
         assert!(
             String::from_utf8_lossy(&result.stderr).contains("duplicate indexed package acme/math"),
             "{:?}",
@@ -241,7 +244,11 @@ fn oversized_installed_package_index_is_rejected_before_json_parse() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     add_project(root);
-    fs::write(root.join(".zed/paths.json"), vec![b' '; 8 * 1024 * 1024 + 1]).unwrap();
+    fs::write(
+        root.join(".zed/paths.json"),
+        vec![b' '; 8 * 1024 * 1024 + 1],
+    )
+    .unwrap();
     let result = invoke(root, &["attolang", "paths"]);
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
