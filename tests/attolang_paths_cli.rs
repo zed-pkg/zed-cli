@@ -258,3 +258,66 @@ fn oversized_installed_package_index_is_rejected_before_json_parse() {
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn backslash_component_cannot_be_reinterpreted_as_traversal_on_export() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    add_project(root);
+
+    // Unix accepts backslashes as literal filename bytes, but an exporter
+    // that converts them to slashes would turn the validated slot below into
+    // an ORES_PATHS string containing an unvalidated parent traversal.
+    let modules = "zed_modules\\..\\outside";
+    let slot = root.join(modules).join("acme/math");
+    fs::create_dir_all(&slot).unwrap();
+    fs::write(slot.join(".ores.pkg.toml"), b"[package]\nname = 'math'\n").unwrap();
+    fs::write(
+        root.join(".zed/paths.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "modules_dir": modules,
+            "packages": [
+                {"package":"acme/math","version":"1.0.0","language":"attolang","path":format!("{modules}/acme/math")}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    for args in [
+        &["attolang", "paths"][..],
+        &["oreslang", "paths", "--json"][..],
+    ] {
+        let output = invoke(root, args);
+        assert!(!output.status.success(), "accepted rewritten traversal: {args:?}");
+        assert!(output.stdout.is_empty(), "never emit unsafe import paths");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("unsafe ORES_PATHS character"),
+            "{:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn alternate_separators_and_controls_fail_before_projection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    add_project(root);
+    package(root, "acme", "math", true);
+
+    for poisoned in [
+        "zed_modules\\acme\\math",
+        "zed_modules/acme/math\\..\\..\\outside",
+        "zed_modules/acme/math\tspoof",
+        "zed_modules/acme/math\u{7f}",
+    ] {
+        index(root, serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","language":"attolang","path":poisoned}
+        ]));
+        let output = invoke(root, &["attolang", "paths"]);
+        assert!(!output.status.success(), "accepted poisoned index path: {poisoned:?}");
+        assert!(output.stdout.is_empty(), "never print partial ORES_PATHS");
+    }
+}
