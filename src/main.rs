@@ -573,7 +573,6 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             check,
             force,
             skip_checksum,
-            ..
         } => update::self_update(env!("CARGO_PKG_VERSION"), check, force, skip_checksum),
         Cmd::Login {
             email,
