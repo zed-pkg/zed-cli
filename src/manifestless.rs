@@ -24,6 +24,7 @@ use zed_interfaces::version::{self, VersionScheme};
 
 use crate::cli::{Adapter, InstallMode};
 use crate::config::{self, Config};
+use crate::local_registry::{self, LocalRegistryMode};
 use crate::ops;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,7 +140,7 @@ pub fn install(
     let lock_only = matches!(&requested, RequestedDependencies::Locked(_));
     let dependencies = match requested {
         RequestedDependencies::Locked(dependencies) => dependencies,
-        RequestedDependencies::Specs(specs) => resolve_requested_specs(cfg, &specs)?,
+        RequestedDependencies::Specs(specs) => resolve_requested_specs(cfg, &specs, permissions.local_registry)?,
     };
 
     let manifest = synthetic_manifest(&selection.root, dependencies);
@@ -216,8 +217,9 @@ fn parse_requested_specs(specs: &[String]) -> Result<BTreeMap<String, Option<Str
 fn resolve_requested_specs(
     cfg: &Config,
     specs: &BTreeMap<String, Option<String>>,
+    local_mode: LocalRegistryMode,
 ) -> Result<BTreeMap<String, String>> {
-    let registry = if specs.values().any(Option::is_none) {
+    let registry = if specs.values().any(Option::is_none) && !local_mode.requires_local() {
         Some(cfg.open_registry()?)
     } else {
         None
@@ -226,6 +228,9 @@ fn resolve_requested_specs(
     for (key, explicit) in specs {
         let requirement = match explicit {
             Some(requirement) => requirement.clone(),
+            None if local_mode.requires_local() => {
+                local_registry::requirement_for_unversioned_only(cfg, key)?
+            }
             None => {
                 let (org, name) = key
                     .split_once('/')
