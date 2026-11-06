@@ -119,7 +119,9 @@ fn valid_segment(value: &str) -> bool {
     !value.is_empty()
         && !value.starts_with('-')
         && !value.ends_with('-')
-        && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 /// Prevent path-list delimiters, traversal, and absolute targets from entering
@@ -130,7 +132,10 @@ fn checked_relative(raw: &str) -> Result<PathBuf> {
         bail!("invalid package index path (empty or unsafe ORES_PATHS character)");
     }
     let path = Path::new(raw);
-    if !path.components().all(|part| matches!(part, Component::Normal(_))) {
+    if !path
+        .components()
+        .all(|part| matches!(part, Component::Normal(_)))
+    {
         bail!("package index path must be relative and traversal-free: {raw}");
     }
     Ok(path.to_path_buf())
@@ -142,7 +147,16 @@ mod tests {
 
     #[test]
     fn rejects_import_path_injection() {
-        for value in ["", "../outside", "/tmp/rogue", "zed_modules/../rogue", "a:b", "a\nb", ".", "x\0y"] {
+        for value in [
+            "",
+            "../outside",
+            "/tmp/rogue",
+            "zed_modules/../rogue",
+            "a:b",
+            "a\nb",
+            ".",
+            "x\0y",
+        ] {
             assert!(checked_relative(value).is_err(), "{value:?}");
         }
         assert!(checked_relative("zed_modules/acme/actor").is_ok());
