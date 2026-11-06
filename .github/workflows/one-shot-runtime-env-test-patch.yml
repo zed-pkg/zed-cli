@@ -21,11 +21,11 @@ jobs:
       - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 43ebed9949b43579509e3ccd51286c842b078df9
+          ref: 22e3c8e7d80a312d8433a4aaa593c9e6201a563f
           persist-credentials: false
       - name: Verify exact tested revision
         env:
-          EXPECTED_SHA: 43ebed9949b43579509e3ccd51286c842b078df9
+          EXPECTED_SHA: 22e3c8e7d80a312d8433a4aaa593c9e6201a563f
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
