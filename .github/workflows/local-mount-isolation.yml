@@ -1,0 +1,53 @@
+name: Local mount lifetime isolation (focused)
+
+on:
+  pull_request:
+    paths:
+      - 'src/local_registry.rs'
+      - 'tests/local_registry_portability.rs'
+      - '.github/workflows/local-mount-isolation.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/local_registry.rs'
+      - 'tests/local_registry_portability.rs'
+      - '.github/workflows/local-mount-isolation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: local-mount-isolation-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mount-boundary:
+    name: Removable-volume link safety (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact candidate without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify commit identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install immutable Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Rustfmt
+        run: cargo fmt --all -- --check
+      - name: Execute all local registry portability tests using frozen Cargo graph
+        run: cargo test --locked --test local_registry_portability -- --nocapture
+      - name: Evidence scope
+        run: echo 'LOCAL_VOLUME_ADMISSION_ONLY; not guest compilation or broad CLI certification'
