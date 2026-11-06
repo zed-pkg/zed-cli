@@ -290,7 +290,10 @@ fn backslash_component_cannot_be_reinterpreted_as_traversal_on_export() {
         &["oreslang", "paths", "--json"][..],
     ] {
         let output = invoke(root, args);
-        assert!(!output.status.success(), "accepted rewritten traversal: {args:?}");
+        assert!(
+            !output.status.success(),
+            "accepted rewritten traversal: {args:?}"
+        );
         assert!(output.stdout.is_empty(), "never emit unsafe import paths");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("unsafe ORES_PATHS character"),
@@ -313,11 +316,17 @@ fn alternate_separators_and_controls_fail_before_projection() {
         "zed_modules/acme/math\tspoof",
         "zed_modules/acme/math\u{7f}",
     ] {
-        index(root, serde_json::json!([
-            {"package":"acme/math","version":"1.0.0","language":"attolang","path":poisoned}
-        ]));
+        index(
+            root,
+            serde_json::json!([
+                {"package":"acme/math","version":"1.0.0","language":"attolang","path":poisoned}
+            ]),
+        );
         let output = invoke(root, &["attolang", "paths"]);
-        assert!(!output.status.success(), "accepted poisoned index path: {poisoned:?}");
+        assert!(
+            !output.status.success(),
+            "accepted poisoned index path: {poisoned:?}"
+        );
         assert!(output.stdout.is_empty(), "never print partial ORES_PATHS");
     }
 }
