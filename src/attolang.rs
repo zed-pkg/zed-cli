@@ -152,10 +152,16 @@ fn valid_segment(value: &str) -> bool {
 }
 
 /// Prevent path-list delimiters, traversal, and absolute targets from entering
-/// compiler search paths. Zed's symlink or copy store mode is still supported:
-/// these are lexical paths inside the project's installed module slots.
+/// compiler search paths. Index paths use portable forward slashes, even on
+/// Windows. Backslashes are never accepted: Unix considers them literal
+/// filename bytes, while Windows treats them as separators. Accepting one
+/// interpretation then replacing `\\` with `/` when exporting ORES_PATHS
+/// could turn a checked literal component into an unchecked `..` traversal.
+/// Zed's symlink or copy store mode is still supported: these are lexical
+/// paths inside the project's installed module slots, **not** a verification
+/// of the linked artifact's digest or provenance.
 fn checked_relative(raw: &str) -> Result<PathBuf> {
-    if raw.is_empty() || raw.chars().any(|c| matches!(c, ':' | '\n' | '\r' | '\0')) {
+    if raw.is_empty() || raw.chars().any(|c| c == ':' || c == '\\' || c.is_control()) {
         bail!("invalid package index path (empty or unsafe ORES_PATHS character)");
     }
     let path = Path::new(raw);
@@ -181,6 +187,11 @@ mod tests {
             "zed_modules/../rogue",
             "a:b",
             "a\nb",
+            "a\tb",
+            "a\u{7f}b",
+            "zed_modules\\..\\escape",
+            "zed_modules\\acme\\math",
+            "zed_modules/acme/math\\..\\..\\escape",
             ".",
             "x\0y",
         ] {
