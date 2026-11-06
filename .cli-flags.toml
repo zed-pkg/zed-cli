@@ -403,6 +403,20 @@ type = "bool"
 default = "false"
 help = "Emit deterministic machine-readable JSON."
 
+[commands.attolang]
+aliases = ["oreslang"]
+help = "AttoLang package import path interoperability."
+
+[commands.attolang.commands.paths]
+help = "Export installed AttoLang import roots from .zed/paths.json."
+
+[commands.attolang.commands.paths.flags.json]
+env = "ZED_PKG_ATTOLANG_JSON"
+aliases = ["json"]
+type = "bool"
+default = "false"
+help = "Emit machine-readable ORES_PATHS projection."
+
 [commands.add]
 help = "Add a dependency."
 

@@ -51,6 +51,22 @@ Note: the Zed editor also installs a `zed` binary. The Homebrew formula
 declares the conflict; if you use both, install with
 `cargo install --path . --root ~/.zed-pkg-cli` and alias as you like.
 
+## AttoLang (formerly Oreslang)
+
+Zed can project already-installed AttoLang dependency roots into the compiler's
+existing `ORES_PATHS` search variable, without another resolver or install hook:
+
+```sh
+zed install --frozen
+export ORES_PATHS="$(zed attolang paths)"
+```
+
+The legacy `zed oreslang paths` spelling and `--json` output are also supported.
+Packages use `.ores.pkg.toml` for AttoLang's own root/import semantics and
+`.zpkg.toml` / `.zpkg.lock` for Zed's artifact and dependency management.
+See [AttoLang integration](docs/attolang.md) for the staged language-contract
+rollout and its current limitations.
+
 ## Quickstart
 
 ```sh
@@ -148,6 +164,7 @@ the legacy version route by default or the additive target-qualified route with
 | Command | What it does |
 | --- | --- |
 | `zed validate [--manifest PATH] [--lock PATH] [--require-lock] [--json]` | Validate canonical package metadata offline and without mutation; direct lock coverage is checked, while v1 transitive completeness is explicitly not claimed |
+| `zed attolang paths [--json]` (`zed oreslang paths`) | Export installed AttoLang dependency import roots for `ORES_PATHS` without fetching, writing manifests, or running code; JSON provides a structured path list |
 | `zed init [PROJECT]` | Create the optional project directory and write its `.zpkg.toml` template; `zed init project` infers the package name `project` |
 | `zed add <org>/<name>[@req]` | Add a dependency and install |
 | `zed remove <org>/<name>` | Remove a dependency |

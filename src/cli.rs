@@ -342,6 +342,12 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_VALIDATE_JSON")]
         json: bool,
     },
+    /// AttoLang (formerly Oreslang) package import path tools
+    #[command(name = "attolang", visible_alias = "oreslang")]
+    Attolang {
+        #[command(subcommand)]
+        cmd: AttolangCmd,
+    },
     /// Create a project directory and .zpkg.toml manifest (current directory by default)
     Init {
         /// Project directory to create or initialize. Relative paths are
@@ -710,6 +716,16 @@ pub enum Cmd {
     Cache {
         #[command(subcommand)]
         cmd: CacheCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AttolangCmd {
+    /// Export the installed AttoLang package paths as ORES_PATHS (or JSON)
+    Paths {
+        /// Emit a machine-readable object containing env, paths, and value
+        #[arg(long, env = "ZED_PKG_ATTOLANG_JSON")]
+        json: bool,
     },
 }
 

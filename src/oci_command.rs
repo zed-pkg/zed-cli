@@ -86,11 +86,12 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
 /// Add `oci` and `self-update` to top-level help and generated shell completion.
 pub fn augment_root_command(command: clap::Command) -> clap::Command {
     let mut command = command;
-    if command
-        .get_subcommands()
-        .all(|subcommand| subcommand.get_name() != "self-update")
     {
+        // The shared updater owns this early-dispatched command's argv grammar.
+        // Replace a legacy Clap entry for help/completions instead of keeping
+        // an incompatible subset that omits verification and prompt switches.
         let self_update = clap::Command::new("self-update")
+            .alias("update")
             .about("Update zed to a selected release")
             .arg(
                 clap::Arg::new("version")
@@ -150,7 +151,14 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
                     .action(clap::ArgAction::SetTrue)
                     .help("Emit machine-readable status"),
             );
-        command = command.subcommand(self_update);
+        command = if command
+            .get_subcommands()
+            .any(|subcommand| subcommand.get_name() == "self-update")
+        {
+            command.mut_subcommand("self-update", |_| self_update)
+        } else {
+            command.subcommand(self_update)
+        };
     }
 
     if command
