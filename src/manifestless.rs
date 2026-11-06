@@ -182,27 +182,28 @@ pub fn install_with_permissions(
         manifest_text,
         permissions.local_registry,
         || {
-        if lock_only {
-            ops::install_frozen_lock_only_with_permissions(
-                &selection.root,
-                cfg,
-                mode,
-                adapter,
-                &permissions,
-                inferred_target.as_deref(),
-                allow_ecosystem_mismatch,
-            )
-        } else {
-            ops::install_with_permissions(
-                &selection.root,
-                cfg,
-                frozen,
-                mode,
-                adapter,
-                &permissions,
-                inferred_target.as_deref(),
-                allow_ecosystem_mismatch,
-            )
+            if lock_only {
+                ops::install_frozen_lock_only_with_permissions(
+                    &selection.root,
+                    cfg,
+                    mode,
+                    adapter,
+                    permissions,
+                    inferred_target.as_deref(),
+                    allow_ecosystem_mismatch,
+                )
+            } else {
+                ops::install_with_permissions(
+                    &selection.root,
+                    cfg,
+                    frozen,
+                    mode,
+                    adapter,
+                    permissions,
+                    inferred_target.as_deref(),
+                    allow_ecosystem_mismatch,
+                )
+            }
         },
     )
 }
