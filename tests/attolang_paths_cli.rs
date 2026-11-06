@@ -259,7 +259,6 @@ fn oversized_installed_package_index_is_rejected_before_json_parse() {
     );
 }
 
-
 #[test]
 fn index_modules_directory_rejects_portability_and_terminal_poisoning() {
     let temp = tempfile::tempdir().unwrap();
@@ -356,8 +355,14 @@ fn duplicate_json_fields_and_schema_type_confusion_fail_closed() {
     ] {
         fs::write(root.join(".zed/paths.json"), payload).unwrap();
         let result = invoke(root, &["attolang", "paths"]);
-        assert!(!result.status.success(), "accepted malformed index {payload}");
-        assert!(result.stdout.is_empty(), "published paths from invalid schema");
+        assert!(
+            !result.status.success(),
+            "accepted malformed index {payload}"
+        );
+        assert!(
+            result.stdout.is_empty(),
+            "published paths from invalid schema"
+        );
         assert!(
             String::from_utf8_lossy(&result.stderr).contains("invalid Zed package index"),
             "unexpected error for {payload}: {:?}",
@@ -415,5 +420,8 @@ fn native_zpkg_project_marker_without_legacy_root_marker_is_supported() {
         String::from_utf8(result.stdout).unwrap(),
         "zed_modules/acme/math\n"
     );
-    assert!(!root.join(".zpkg.lock").exists(), "read-only projection wrote a lock");
+    assert!(
+        !root.join(".zpkg.lock").exists(),
+        "read-only projection wrote a lock"
+    );
 }
