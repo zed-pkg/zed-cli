@@ -21,11 +21,11 @@ jobs:
       - name: Checkout exact PR head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: 2562ff5ac82a02d6d30f0c987fb20d7924e877fa
+          ref: 43ebed9949b43579509e3ccd51286c842b078df9
           persist-credentials: false
       - name: Verify exact tested revision
         env:
-          EXPECTED_SHA: 2562ff5ac82a02d6d30f0c987fb20d7924e877fa
+          EXPECTED_SHA: 43ebed9949b43579509e3ccd51286c842b078df9
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
@@ -34,6 +34,8 @@ jobs:
           components: rustfmt,clippy
       - name: Check exact-head formatting
         run: cargo fmt --all -- --check
+      - name: Run complete Rust library unit suite
+        run: cargo test --locked --lib
       - name: Test AttoLang CLI read-only import bridge
         run: cargo test --locked --test attolang_paths_cli
       - name: Prove ZIP symlink security rejection on actual archive metadata
