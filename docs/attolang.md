@@ -71,11 +71,12 @@ through ORES_PATHS and does not need to know the global artifact-store path.
   newlines, carriage returns, or NUL.
 - Other language packages are excluded unless they carry the native AttoLang
   marker. No automatic execution of package install hooks is enabled.
-- This projection **does not independently prove artifact integrity**.
+- This projection **does not independently prove artifact integrity or lockfile freshness**.
   Package verification and frozen lockfile enforcement happen during
   zed install --frozen, which must complete successfully before export.
-- On Windows, path-list compatibility depends on the compiler's existing
-  ORES_PATHS interpretation; JSON is the transport-neutral option.
+- On Windows, ATTO_PATHS now emits the host-native ';' path-list separator.
+  JSON remains the transport-neutral option. Each compiler must independently
+  verify its ATTO_PATHS parsing and installed-source provenance.
 
 A missing or stale installed index fails with an actionable diagnostic;
 rerun zed install --frozen. Do not hand-edit .zed/paths.json.
