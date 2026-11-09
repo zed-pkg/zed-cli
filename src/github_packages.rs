@@ -248,26 +248,46 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+// Build a scoped GHCR token exchange request without sending a PAT as Bearer.
+fn ghcr_token_request(
+    client: &reqwest::blocking::Client,
+    github_token: &str,
+    identity: &GithubIdentity,
+) -> reqwest::blocking::RequestBuilder {
+    let scope = format!("repository:{}:push,pull", ghcr_repository(identity));
+    client
+        .get("https://ghcr.io/token")
+        .query(&[("service", "ghcr.io"), ("scope", scope.as_str())])
+        .basic_auth("x-access-token", Some(github_token))
+}
+
+fn require_ghcr_exchange_status(status: reqwest::StatusCode) -> Result<()> {
+    if !status.is_success() {
+        bail!("GHCR token exchange returned {status}");
+    }
+    Ok(())
+}
+
+fn require_ghcr_token(body: GhcrTokenResponse) -> Result<String> {
+    body.token
+        .or(body.access_token)
+        .filter(|token| !token.is_empty())
+        .context("GHCR token exchange returned no registry bearer token")
+}
+
 fn ghcr_bearer(
     client: &reqwest::blocking::Client,
     github_token: &str,
     identity: &GithubIdentity,
 ) -> Result<String> {
-    let scope = format!("repository:{}:push,pull", ghcr_repository(identity));
-    let response = client
-        .get("https://ghcr.io/token")
-        .query(&[("service", "ghcr.io"), ("scope", scope.as_str())])
-        .bearer_auth(github_token)
+    let response = ghcr_token_request(client, github_token, identity)
         .send()
         .context("request GHCR registry token")?;
-    if response.status().is_success()
-        && let Ok(body) = response.json::<GhcrTokenResponse>()
-        && let Some(token) = body.token.or(body.access_token)
-        && !token.is_empty()
-    {
-        return Ok(token);
-    }
-    Ok(github_token.to_string())
+    require_ghcr_exchange_status(response.status())?;
+    let body = response
+        .json::<GhcrTokenResponse>()
+        .context("decode GHCR registry token")?;
+    require_ghcr_token(body)
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -525,4 +545,53 @@ github_packages = true
             GhcrOutcome::Skipped("repository is not github.com")
         );
     }
+    #[test]
+    fn ghcr_token_exchange_uses_scoped_docker_basic() {
+        let identity = GithubIdentity {
+            owner: "acme".into(),
+            repo: "http-kit".into(),
+        };
+        let request = ghcr_token_request(
+            &reqwest::blocking::Client::new(),
+            "dummy-not-a-real-token",
+            &identity,
+        )
+        .build()
+        .unwrap();
+        let authorization = request
+            .headers()
+            .get(reqwest::header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(authorization.starts_with("Basic "));
+        assert!(!authorization.contains("dummy-not-a-real-token"));
+        assert_eq!(request.url().scheme(), "https");
+        assert_eq!(request.url().host_str(), Some("ghcr.io"));
+        let pairs: Vec<_> = request.url().query_pairs().collect();
+        assert!(pairs.iter().any(|(key, value)| key == "service" && value == "ghcr.io"));
+        assert!(pairs.iter().any(|(key, value)| key == "scope" && value == "repository:acme/http-kit:push,pull"));
+    }
+
+    #[test]
+    fn ghcr_token_exchange_fails_closed() {
+        assert!(require_ghcr_exchange_status(reqwest::StatusCode::FORBIDDEN).is_err());
+        assert!(require_ghcr_exchange_status(reqwest::StatusCode::OK).is_ok());
+        assert!(require_ghcr_token(GhcrTokenResponse {
+            token: None,
+            access_token: None,
+        }).is_err());
+        assert!(require_ghcr_token(GhcrTokenResponse {
+            token: Some(String::new()),
+            access_token: None,
+        }).is_err());
+        assert_eq!(
+            require_ghcr_token(GhcrTokenResponse {
+                token: Some("registry-bearer".into()),
+                access_token: None,
+            }).unwrap(),
+            "registry-bearer"
+        );
+    }
+
 }
