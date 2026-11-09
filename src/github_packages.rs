@@ -569,7 +569,11 @@ github_packages = true
         assert_eq!(request.url().scheme(), "https");
         assert_eq!(request.url().host_str(), Some("ghcr.io"));
         let pairs: Vec<_> = request.url().query_pairs().collect();
-        assert!(pairs.iter().any(|(key, value)| key == "service" && value == "ghcr.io"));
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "service" && value == "ghcr.io")
+        );
         assert!(pairs.iter().any(|(key, value)| key == "scope" && value == "repository:acme/http-kit:push,pull"));
     }
 
@@ -577,21 +581,27 @@ github_packages = true
     fn ghcr_token_exchange_fails_closed() {
         assert!(require_ghcr_exchange_status(reqwest::StatusCode::FORBIDDEN).is_err());
         assert!(require_ghcr_exchange_status(reqwest::StatusCode::OK).is_ok());
-        assert!(require_ghcr_token(GhcrTokenResponse {
-            token: None,
-            access_token: None,
-        }).is_err());
-        assert!(require_ghcr_token(GhcrTokenResponse {
-            token: Some(String::new()),
-            access_token: None,
-        }).is_err());
+        assert!(
+            require_ghcr_token(GhcrTokenResponse {
+                token: None,
+                access_token: None,
+            })
+            .is_err()
+        );
+        assert!(
+            require_ghcr_token(GhcrTokenResponse {
+                token: Some(String::new()),
+                access_token: None,
+            })
+            .is_err()
+        );
         assert_eq!(
             require_ghcr_token(GhcrTokenResponse {
                 token: Some("registry-bearer".into()),
                 access_token: None,
-            }).unwrap(),
+            })
+            .unwrap(),
             "registry-bearer"
         );
     }
-
 }
