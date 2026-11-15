@@ -1,0 +1,47 @@
+name: Native ZIP symlink admission (focused)
+
+on:
+  pull_request:
+    paths:
+      - 'src/native_artifact_store.rs'
+      - '.github/workflows/native-zip-symlink-admission.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/native_artifact_store.rs'
+      - '.github/workflows/native-zip-symlink-admission.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-zip-admission-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  admission:
+    name: Real ZIP symlink negative and archive controls
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact head
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Rustfmt check
+        run: cargo fmt --all -- --check
+      - name: Run hardened native archive tests with locked graph
+        run: cargo test --locked --lib native_artifact_store::tests -- --nocapture
+      - name: Explicit evidence ceiling
+        run: echo 'NATIVE_ARCHIVE_ADMISSION_ONLY; not AttoLang guest compilation or full package-install parity'

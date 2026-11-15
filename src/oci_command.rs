@@ -86,10 +86,10 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
 /// Add `oci` and `self-update` to top-level help and generated shell completion.
 pub fn augment_root_command(command: clap::Command) -> clap::Command {
     let mut command = command;
-    if command
+    let has_typed_self_update = command
         .get_subcommands()
-        .all(|subcommand| subcommand.get_name() != "self-update")
-    {
+        .any(|subcommand| subcommand.get_name() == "self-update");
+    if !has_typed_self_update {
         let self_update = clap::Command::new("self-update")
             .about("Update zed to a selected release")
             .arg(
@@ -151,6 +151,67 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
                     .help("Emit machine-readable status"),
             );
         command = command.subcommand(self_update);
+    } else {
+        // The legacy typed Cli model already declares self-update with
+        // check/force/skip-checksum. Add the independently dispatched
+        // ores-clis-core options for accurate help/completions and conflict
+        // checks, without making the typed parser execute updater actions or
+        // implicitly enabling unsafe options from environment variables.
+        command = command.mut_subcommand("self-update", |subcommand| {
+            subcommand
+                .arg(
+                    clap::Arg::new("version")
+                        .value_name("VERSION")
+                        .required(false),
+                )
+                .arg(
+                    clap::Arg::new("interactive")
+                        .long("interactive")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Always prompt before replacing the executable"),
+                )
+                .arg(
+                    clap::Arg::new("non-interactive")
+                        .long("non-interactive")
+                        .action(clap::ArgAction::SetTrue)
+                        .conflicts_with("interactive")
+                        .help("Never prompt before replacing the executable"),
+                )
+                .arg(
+                    clap::Arg::new("yes")
+                        .short('y')
+                        .long("yes")
+                        .action(clap::ArgAction::SetTrue)
+                        .conflicts_with("interactive")
+                        .help("Assume yes without prompting"),
+                )
+                .arg(
+                    clap::Arg::new("dry-run")
+                        .long("dry-run")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Resolve the release without replacing the binary"),
+                )
+                .arg(
+                    clap::Arg::new("verify")
+                        .long("verify")
+                        .action(clap::ArgAction::SetTrue)
+                        .conflicts_with("no-verify")
+                        .help("Require SHA-256 verification (the Zed default)"),
+                )
+                .arg(
+                    clap::Arg::new("no-verify")
+                        .long("no-verify")
+                        .action(clap::ArgAction::SetTrue)
+                        .conflicts_with("verify")
+                        .help("Request unverified updates; Zed policy rejects mutating use"),
+                )
+                .arg(
+                    clap::Arg::new("json")
+                        .long("json")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Emit machine-readable status"),
+                )
+        });
     }
 
     if command

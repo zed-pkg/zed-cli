@@ -639,13 +639,29 @@ mod tests {
         let archive = temp.path().join("symlink.zip");
         let file = fs::File::create(&archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o120777);
-        zip.start_file("package/link", options).unwrap();
-        zip.write_all(b"target").unwrap();
+        // FileOptions::unix_permissions deliberately removes the file-type
+        // bits. A start_file() entry with 0o120777 is still a regular file,
+        // so it cannot exercise the extractor's link rejection. Use the
+        // writer's real symlink API and verify the encoded ZIP metadata.
+        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o777);
+        zip.add_symlink("package/link", "../outside", options)
+            .unwrap();
         zip.finish().unwrap();
+
+        let mut encoded = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+        let link = encoded.by_name("package/link").unwrap();
+        assert_eq!(link.unix_mode().unwrap_or(0) & 0o170000, 0o120000);
+        drop(link);
+        drop(encoded);
+
         let sha = digest(&archive);
         let store = Store::new(&temp.path().join("home"));
-        assert!(add_native_artifact(&store, &archive, &sha).is_err());
+        let error = add_native_artifact(&store, &archive, &sha).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("link or special filesystem entry"),
+            "expected real ZIP link rejection: {error:#}"
+        );
+        assert!(!store.has(&sha));
     }
 
     #[test]
