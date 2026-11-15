@@ -23,6 +23,7 @@ pub enum NativeArtifactSource {
     Cran,
     Jsr,
     PackagistGithub,
+    TerraformModule,
 }
 
 pub fn audited_native_source(metadata: &VersionMetadata) -> Option<NativeArtifactSource> {
@@ -59,6 +60,7 @@ fn source_accepts_org(source: NativeArtifactSource, org: &str) -> bool {
         NativeArtifactSource::Cran => &["cran", "r", "r-project"],
         NativeArtifactSource::Jsr => &["jsr", "deno", "bun"],
         NativeArtifactSource::PackagistGithub => &["packagist", "composer", "php"],
+        NativeArtifactSource::TerraformModule => &["terraform", "terraform-registry"],
     };
     return aliases.contains(&normalized.as_str());
 }
@@ -123,8 +125,24 @@ pub fn audited_native_download_url(raw_url: &str) -> Option<NativeArtifactSource
         "codeload.github.com" if is_packagist_codeload_path(path) => {
             Some(NativeArtifactSource::PackagistGithub)
         }
+        "codeload.github.com" if is_terraform_codeload_path(path) => {
+            Some(NativeArtifactSource::TerraformModule)
+        }
         _ => None,
     }
+}
+
+fn is_terraform_codeload_path(path: &str) -> bool {
+    let segments = path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if segments.len() != 4 || segments[2] != "tar.gz" {
+        return false;
+    }
+    return is_safe_github_component(segments[0])
+        && is_safe_github_component(segments[1])
+        && is_git_commit(segments[3]);
 }
 
 fn is_packagist_codeload_path(path: &str) -> bool {
@@ -218,6 +236,15 @@ mod tests {
         for (url, expected) in cases {
             assert_eq!(audited_native_download_url(url), Some(expected), "{url}");
         }
+
+        let terraform_url = format!(
+            "https://codeload.github.com/acme/terraform-module/tar.gz/{}",
+            "b".repeat(40)
+        );
+        assert_eq!(
+            audited_native_download_url(&terraform_url),
+            Some(NativeArtifactSource::TerraformModule),
+        );
     }
 
     #[test]
@@ -238,6 +265,7 @@ mod tests {
             "https://cran.r-project.org/web/packages/jsonlite/DESCRIPTION",
             "https://codeload.github.com/acme/widget/legacy.zip/not-a-commit",
             "https://github.com/acme/widget/archive/refs/tags/v1.0.0.zip",
+            "https://codeload.github.com/acme/widget/tar.gz/not-a-commit",
         ] {
             assert_eq!(audited_native_download_url(url), None, "{url}");
         }
