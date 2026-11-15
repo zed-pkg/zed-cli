@@ -84,7 +84,8 @@ pub(crate) fn add_audited_native_artifact(
         | NativeArtifactSource::Cpan
         | NativeArtifactSource::Cran
         | NativeArtifactSource::Jsr
-        | NativeArtifactSource::PackagistGithub => {
+        | NativeArtifactSource::PackagistGithub
+        | NativeArtifactSource::TerraformModule => {
             add_native_archive_artifact(store, archive, &metadata.sha256, true)?.package_dir
         }
     };
