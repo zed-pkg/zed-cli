@@ -336,6 +336,60 @@ fn local_registry_only_names_the_dependency_it_cannot_satisfy() {
 }
 
 #[test]
+fn ephemeral_install_with_local_registry_off_cannot_consume_registered_source() {
+    let fx = fixture();
+    let library = fx.root.join("library");
+    project(&library, "acme", "widget", "1.2.0", &[]);
+    assert_ok(
+        &fx.run(&fx.root, &["local", "register", "library"]),
+        "register the dependency",
+    );
+
+    let app = fx.root.join("ephemeral-off");
+    fs::create_dir_all(&app).unwrap();
+    let result = fx.run(
+        &app,
+        &[
+            "install",
+            "acme/widget@^1",
+            "--do-not-write-new-manifest",
+            "--local-registry",
+            "off",
+        ],
+    );
+    assert!(
+        !result.status.success(),
+        "off must refuse the registered source and fail against an empty registry; stdout: {}",
+        stdout(&result)
+    );
+    assert!(!app.join(".zpkg.toml").exists());
+    assert!(!app.join("zed_modules/acme/widget").exists());
+}
+
+#[test]
+fn ephemeral_install_with_local_registry_only_never_falls_back_to_remote() {
+    let fx = fixture();
+    let app = fx.root.join("ephemeral-only");
+    fs::create_dir_all(&app).unwrap();
+    let result = fx.run(
+        &app,
+        &[
+            "install",
+            "acme/widget@^1",
+            "--do-not-write-new-manifest",
+            "--local-registry",
+            "only",
+        ],
+    );
+    assert!(!result.status.success(), "{}", stdout(&result));
+    let rendered = stderr(&result);
+    assert!(rendered.contains("--local-registry=only"), "{rendered}");
+    assert!(rendered.contains("acme/widget"), "{rendered}");
+    assert!(!app.join(".zpkg.toml").exists());
+    assert!(!app.join("zed_modules/acme/widget").exists());
+}
+
+#[test]
 fn two_equal_checkouts_of_one_package_fail_closed_until_a_priority_breaks_the_tie() {
     let fx = fixture();
     let left = fx.root.join("left");

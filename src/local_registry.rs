@@ -971,10 +971,16 @@ fn project_shares_volume(project: &Path, entry: &LocalEntry) -> bool {
         entry.volume.mount_point.as_deref(),
     ) {
         (Some(here), Some(there)) => here == there && project_volume.kind == entry.volume.kind,
-        _ => device_id_of(project)
+        // Only compare device IDs when *neither* side has mount provenance.
+        // macOS can classify a registered removable mount that the consumer
+        // has no corresponding mount metadata for. Falling back to equal
+        // st_dev in that asymmetric case can produce a dangling symlink to
+        // externally mounted data. Unknown lifetime => copy, never link.
+        (None, None) => device_id_of(project)
             .zip(device_id_of(&entry.path_buf()))
             .map(|(here, there)| here == there)
             .unwrap_or(false),
+        _ => false,
     }
 }
 

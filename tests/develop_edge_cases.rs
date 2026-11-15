@@ -544,9 +544,13 @@ fn cargo_adapter_configuration_is_root_anchored_in_the_development_home() {
     let destination = fixture.root.join(".zed/dev/cargo/home/config.toml");
     let generated = fs::read_to_string(destination).expect("read generated cargo adapter");
     let parsed: toml::Value = toml::from_str(&generated).expect("parse generated cargo adapter");
+    // macOS /var is a symlink to /private/var. The adapter resolves the
+    // workspace root before anchoring relative patches; canonicalize only
+    // the existing root (the sibling package need not exist).
+    let canonical_root = fs::canonicalize(&fixture.root).expect("canonicalize fixture root");
     assert_eq!(
         parsed["patch"]["crates-io"]["example"]["path"].as_str(),
-        fixture.root.join("../example").to_str()
+        canonical_root.join("../example").to_str()
     );
 }
 
