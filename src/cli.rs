@@ -1673,7 +1673,9 @@ mod tests {
             ("no-verify", "ZED_PKG_UPDATE_NO_VERIFY"),
         ] {
             assert!(
-                updater.get_arguments().any(|arg| arg.get_long() == Some(flag)),
+                updater
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(flag)),
                 "missing early-dispatched updater flag: {flag}"
             );
             assert!(
