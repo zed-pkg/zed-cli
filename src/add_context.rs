@@ -57,6 +57,20 @@ pub fn select(
         );
     }
 
+    // An explicit --target must never launder dual native package markers.
+    let mut directory = Some(if cwd.starts_with(&root) {
+        cwd.as_path()
+    } else {
+        root.as_path()
+    });
+    while let Some(path) = directory {
+        native_targets(path)?;
+        if path == root {
+            break;
+        }
+        directory = path.parent();
+    }
+
     let manifest = config::read_manifest(&root)?;
     let configured = manifest.requested_target();
     let explicit = explicit_target.map(str::trim);
@@ -354,6 +368,12 @@ mod tests {
         );
         assert!(
             select(dir.path(), None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("migrate")
+        );
+        assert!(
+            select(dir.path(), None, Some("attolang"))
                 .unwrap_err()
                 .to_string()
                 .contains("migrate")
