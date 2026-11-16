@@ -96,17 +96,38 @@ grep -F 'dir = ".zed/pkg"' "$durable/.zpkg.toml"
 test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
 test -d "$durable/node_modules/@zed-pkg/docker-node-lib"
 
+# From outside the consumer, --project must name the exact durable
+# .zpkg.toml authority and --target must match its Node default. This tests
+# the real flags2env -> Clap -> project selection -> registry/install path,
+# not just the parser and not a synthetic in-memory dependency graph.
 (
-  cd "$durable"
-  "$zed" install zed-pkg/docker-node-lib-two@^1 \
+  cd "$root"
+  "$zed" --registry "file://$registry" --home "$home/durable" \
+    add zed-pkg/docker-node-lib-two@^1 \
+    --project "$durable" \
+    --target node
+)
+grep -F '"zed-pkg/docker-node-lib" = "^1"' "$durable/.zpkg.toml"
+grep -F '"zed-pkg/docker-node-lib-two" = "^1"' "$durable/.zpkg.toml"
+test -f "$durable/.zpkg.lock"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib-two"
+test -d "$durable/node_modules/@zed-pkg/docker-node-lib-two"
+
+# Frozen replay must honor the persistent, target-selected dependency set,
+# without changing the lockfile's bytes on a second invocation.
+cp "$durable/.zpkg.lock" "$root/add-lock.before"
+(
+  cd "$durable/src/deep"
+  "$zed" install --frozen \
     --registry "file://$registry" \
     --home "$home/durable" \
     --install-mode copy
 )
-grep -F '"zed-pkg/docker-node-lib" = "^1"' "$durable/.zpkg.toml"
-grep -F '"zed-pkg/docker-node-lib-two" = "^1"' "$durable/.zpkg.toml"
+cmp "$root/add-lock.before" "$durable/.zpkg.lock"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
 test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib-two"
-test -d "$durable/node_modules/@zed-pkg/docker-node-lib-two"
+
 
 # A generated consumer cannot be published accidentally, even when normal VCS
 # provenance checks are explicitly skipped.
