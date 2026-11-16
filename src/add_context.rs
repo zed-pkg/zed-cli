@@ -96,12 +96,13 @@ pub fn select(
     // existing direct requirements remain would reinterpret them on the
     // next frozen install. Allow an explicit switch only for an empty
     // consumer; otherwise use separate target-specific Zed manifests.
-    if let (Some(explicit), Some(configured)) = (explicit, configured)
-        && !same_target(explicit, configured)
+    if let Some(explicit) = explicit
+        && !configured.is_some_and(|configured| same_target(explicit, configured))
         && (!manifest.dependencies.is_empty() || !manifest.build_dependencies.is_empty())
     {
         bail!(
-            "cannot override configured target `{configured}` with `{explicit}` in {}: this Zed consumer already has dependencies. Use a separate member .zpkg.toml for independently targeted packages",
+            "cannot override configured target `{}` with `{explicit}` in {}: this Zed consumer already has dependencies. Use a separate member .zpkg.toml for independently targeted packages",
+            configured.unwrap_or("<unspecified>"),
             root.display()
         );
     }
@@ -575,6 +576,22 @@ url='https://example.invalid/a/b'
             select(dir.path(), None, None).unwrap().target.as_deref(),
             Some("attolang")
         );
+    }
+
+    #[test]
+    fn unscoped_dependencies_cannot_be_reinterpreted_by_new_target() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &[".zpkg.toml", "package.json"]);
+        let manifest = dir.path().join(".zpkg.toml");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest)
+            .unwrap()
+            .write_all(b"\n[dependencies]\n'acme/core'='^1'\n")
+            .unwrap();
+        let failure = select(dir.path(), None, Some("rust")).unwrap_err().to_string();
+        assert!(failure.contains("already has dependencies"), "{failure}");
+        assert!(failure.contains("<unspecified>"), "{failure}");
     }
 
     #[test]
