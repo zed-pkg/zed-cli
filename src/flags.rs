@@ -412,7 +412,7 @@ mod tests {
                 "--project=apps/api", "--target=attolang",
             ],
             vec![
-                "zed", "--target=attolang", "add", "acme/http@^1",
+                "zed", "add", "--target=attolang", "acme/http@^1",
                 "--project=apps/api",
             ],
         ] {
