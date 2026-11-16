@@ -321,12 +321,18 @@ url='https://example.invalid/a/b'
         }
     }
 
+    // Windows canonicalization expands short names and uses the extended
+    // \\?\\ path prefix. Compare canonical paths, never lexical spellings.
+    fn canonical(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap()
+    }
+
     #[test]
     fn zpkg_and_package_json_coexist_without_competing_as_roots() {
         let dir = tempfile::tempdir().unwrap();
         make(dir.path(), &[".zpkg.toml", "package.json", "src/main.ts"]);
         let selection = select(dir.path(), None, None).unwrap();
-        assert_eq!(selection.root, dir.path());
+        assert_eq!(selection.root, canonical(dir.path()));
         assert_eq!(selection.target.as_deref(), Some("node"));
     }
 
@@ -370,7 +376,7 @@ url='https://example.invalid/a/b'
         let from_api = dir.path().join("apps/api/src");
         fs::create_dir_all(&from_api).unwrap();
         let selection = select(&from_api, None, None).unwrap();
-        assert_eq!(selection.root, dir.path());
+        assert_eq!(selection.root, canonical(dir.path()));
         assert_eq!(selection.target.as_deref(), Some("attolang"));
     }
 
@@ -403,19 +409,19 @@ url='https://example.invalid/a/b'
         );
         let cwd = dir.path().join("apps/api/src");
         let selected = select(&cwd, None, None).unwrap();
-        assert_eq!(selected.root, dir.path().join("apps"));
+        assert_eq!(selected.root, canonical(&dir.path().join("apps")));
         assert_eq!(selected.target.as_deref(), Some("node"));
 
         // An explicit selection is exact, including when a nearer Zed
         // manifest exists. It never silently walks to an alternative root.
         let parent = select(&cwd, Some(dir.path()), Some("rust")).unwrap();
-        assert_eq!(parent.root, dir.path());
+        assert_eq!(parent.root, canonical(dir.path()));
         assert_eq!(parent.target.as_deref(), Some("rust"));
 
         // From the directory containing the nearest manifest, it remains
         // the selected root even with another Zed manifest above it.
         let at_manifest = select(&dir.path().join("apps"), None, None).unwrap();
-        assert_eq!(at_manifest.root, dir.path().join("apps"));
+        assert_eq!(at_manifest.root, canonical(&dir.path().join("apps")));
     }
 
     #[test]
@@ -441,10 +447,10 @@ url='https://example.invalid/a/b'
         let from_api = dir.path().join("apps/api/src");
         fs::create_dir_all(&from_api).unwrap();
         let selected = select(&from_api, None, None).unwrap();
-        assert_eq!(selected.root, dir.path().join("apps/api"));
+        assert_eq!(selected.root, canonical(&dir.path().join("apps/api")));
         assert_eq!(selected.target.as_deref(), Some("attolang"));
         let parent = select(dir.path(), None, None).unwrap();
-        assert_eq!(parent.root, dir.path());
+        assert_eq!(parent.root, canonical(dir.path()));
         assert!(parent.target.is_none());
     }
 
@@ -527,7 +533,7 @@ url='https://example.invalid/a/b'
             .write_all(b"\n[install]\ntarget='attolang'\n")
             .unwrap();
         let selected = select(dir.path(), None, None).unwrap();
-        assert_eq!(selected.root, dir.path());
+        assert_eq!(selected.root, canonical(dir.path()));
         assert_eq!(selected.target.as_deref(), Some("attolang"));
     }
 
