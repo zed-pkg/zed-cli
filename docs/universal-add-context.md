@@ -102,9 +102,16 @@ resolver and lockfile changes before being accepted as syntax.
   and `tsconfig.json`) are not ambiguous. Multiple distinct ecosystems
   at that level (`package.json` and `Cargo.toml`) are ambiguous.
 - For invocation at the Zed root without a native hint, a bounded scan of
-  nearby child projects may infer exactly one language. Separate nested
+  nearby child projects may infer exactly one language. It scans at most
+  **4,096 directory entries** and two descendant levels. Exceeding the cap
+  fails with guidance to set `[install].target` or `--target`; it never
+  silently guesses or exhaustively traverses the repository. Separate nested
   Zed consumers, generated/vendor directories, hidden folders and symlinks
   are never searched as another consumer's target.
+- An auto-discovered or explicit project `.zpkg.toml` must be a **regular
+  file**, not a symlink (including a dangling symlink) or directory. Native
+  AttoLang markers have the same rule during inference; conflicting canonical
+  and legacy AttoLang markers fail closed even with `--target`.
 - A mixed source root can have `.zpkg.toml` **alongside**
   `package.json`, `.atto.pkg.toml`, etc. Those are not equivalent manifests;
   when the Zed manifest names `[install].target`, no ambiguous-language
