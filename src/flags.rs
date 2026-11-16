@@ -404,22 +404,37 @@ mod tests {
         // public CLI. Split/inline spellings must agree on the same env keys.
         for words in [
             vec![
-                "zed", "add", "acme/http@^1", "--project", "apps/api",
-                "--target", "attolang",
+                "zed",
+                "add",
+                "acme/http@^1",
+                "--project",
+                "apps/api",
+                "--target",
+                "attolang",
             ],
             vec![
-                "zed", "add", "acme/http@^1",
-                "--project=apps/api", "--target=attolang",
+                "zed",
+                "add",
+                "acme/http@^1",
+                "--project=apps/api",
+                "--target=attolang",
             ],
             vec![
-                "zed", "add", "--target=attolang", "acme/http@^1",
+                "zed",
+                "add",
+                "--target=attolang",
+                "acme/http@^1",
                 "--project=apps/api",
             ],
         ] {
             let argv = words.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
             let parsed = parse_embedded(&argv).expect("embedded flags2env add selectors");
             assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-            assert!(parsed.unknown_options.is_empty(), "{:?}", parsed.unknown_options);
+            assert!(
+                parsed.unknown_options.is_empty(),
+                "{:?}",
+                parsed.unknown_options
+            );
             assert_eq!(
                 parsed.flags.get("ZED_PKG_ADD_PROJECT").map(String::as_str),
                 Some("apps/api"),
@@ -456,7 +471,10 @@ mod tests {
             .collect::<Vec<_>>();
         let result = parse_embedded(&argv).unwrap();
         assert!(
-            result.unknown_options.iter().any(|name| name.starts_with("--projcet")),
+            result
+                .unknown_options
+                .iter()
+                .any(|name| name.starts_with("--projcet")),
             "flags2env accepted an unknown project selector: {:?}",
             result.unknown_options
         );
