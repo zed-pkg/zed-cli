@@ -69,17 +69,25 @@ fn global_options_work_with_explicit_add_selectors() {
 fn project_and_target_support_equals_form_and_reverse_order() {
     for args in [
         vec![
-            "zed", "add", "acme/answer@^1", "--project=apps/api",
+            "zed",
+            "add",
+            "acme/answer@^1",
+            "--project=apps/api",
             "--target=attolang",
         ],
         vec![
-            "zed", "add", "--target=attolang", "acme/answer@^1",
+            "zed",
+            "add",
+            "--target=attolang",
+            "acme/answer@^1",
             "--project=apps/api",
         ],
     ] {
         let cli = Cli::try_parse_from(args).expect("parse equivalent add selector spellings");
         match cli.cmd {
-            Cmd::Add { project, target, .. } => {
+            Cmd::Add {
+                project, target, ..
+            } => {
                 assert_eq!(project, Some(PathBuf::from("apps/api")));
                 assert_eq!(target.as_deref(), Some("attolang"));
             }
@@ -87,7 +95,6 @@ fn project_and_target_support_equals_form_and_reverse_order() {
         }
     }
 }
-
 
 // Execute the actual binary with isolated per-process environments. This is
 // the only reliable way to prove Clap's env handling and the embedded
@@ -120,7 +127,9 @@ target = '{target}'
 fn zed(argv: &[&str], cwd: &std::path::Path, env: &[(&str, &str)]) -> std::process::Output {
     let home = cwd.join(".isolated-zed-home");
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_zed"));
-    command.current_dir(cwd).args(argv)
+    command
+        .current_dir(cwd)
+        .args(argv)
         .env("ZED_PKG_HOME", home)
         .env_remove("ZED_PKG_ADD_PROJECT")
         .env_remove("ZED_PKG_TARGET")
@@ -135,10 +144,14 @@ fn assert_target_conflict(output: std::process::Output, expected: &str) {
     assert!(!output.status.success(), "should refuse target mutation");
     let message = String::from_utf8_lossy(&output.stderr);
     assert!(
-        message.contains("cannot override configured target") || message.contains("cannot change Zed default target"),
+        message.contains("cannot override configured target")
+            || message.contains("cannot change Zed default target"),
         "unexpected CLI failure: {message}"
     );
-    assert!(message.contains(expected), "expected target {expected}: {message}");
+    assert!(
+        message.contains(expected),
+        "expected target {expected}: {message}"
+    );
 }
 
 #[test]
@@ -153,9 +166,7 @@ fn actual_cli_walks_up_to_nearest_ancestor_manifest() {
 
     // A nearer Zed consumer must win over the outer project, and the flag
     // reaches the real add context before any registry request.
-    let result = zed(
-        &["add", "acme/answer@^1", "--target=nodejs"], &deep, &[]
-    );
+    let result = zed(&["add", "acme/answer@^1", "--target=nodejs"], &deep, &[]);
     assert_target_conflict(result, "rust");
 }
 
@@ -172,8 +183,10 @@ fn actual_cli_flags_override_flags2env_environment_defaults() {
     let supplied = default_project.to_string_lossy().into_owned();
     let result = zed(
         &[
-            "add", "acme/answer@^1",
-            "--project", &requested,
+            "add",
+            "acme/answer@^1",
+            "--project",
+            &requested,
             "--target=rust",
         ],
         cwd,
