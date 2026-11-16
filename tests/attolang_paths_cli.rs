@@ -444,26 +444,39 @@ fn canonical_project_and_mixed_native_package_markers_roundtrip() {
     let root = temp.path();
     add_project(root);
     fs::remove_file(root.join(".ores.pkg.toml")).unwrap();
-    fs::write(root.join(".atto.pkg.toml"), "[package]\nname = 'consumer'\n").unwrap();
+    fs::write(
+        root.join(".atto.pkg.toml"),
+        "[package]\nname = 'consumer'\n",
+    )
+    .unwrap();
 
     package(root, "acme", "modern", false);
     fs::write(
         root.join("zed_modules/acme/modern/.atto.pkg.toml"),
         "[package]\nname = 'modern'\n",
-    ).unwrap();
+    )
+    .unwrap();
     package(root, "acme", "legacy", true);
-    index(root, serde_json::json!([
-        {"package":"acme/modern","version":"1.0.0","language":"universal","path":"zed_modules/acme/modern"},
-        {"package":"acme/legacy","version":"1.0.0","language":"oreslang","path":"zed_modules/acme/legacy"}
-    ]));
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/modern","version":"1.0.0","language":"universal","path":"zed_modules/acme/modern"},
+            {"package":"acme/legacy","version":"1.0.0","language":"oreslang","path":"zed_modules/acme/legacy"}
+        ]),
+    );
 
     let result = invoke(root, &["attolang", "paths", "--json"]);
-    assert!(result.status.success(), "{:?}", String::from_utf8_lossy(&result.stderr));
+    assert!(
+        result.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     let doc: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_eq!(doc["env"], "ATTO_PATHS");
-    assert_eq!(doc["paths"], serde_json::json!([
-        "zed_modules/acme/legacy", "zed_modules/acme/modern"
-    ]));
+    assert_eq!(
+        doc["paths"],
+        serde_json::json!(["zed_modules/acme/legacy", "zed_modules/acme/modern"])
+    );
 }
 
 #[test]
@@ -472,9 +485,12 @@ fn ambiguous_markers_in_project_or_installed_package_are_rejected_without_output
     let root = temp.path();
     add_project(root);
     package(root, "acme", "math", true);
-    index(root, serde_json::json!([
-        {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/math"}
-    ]));
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/math"}
+        ]),
+    );
 
     // The project root must not silently prefer the canonical marker over
     // a conflicting legacy marker, even if .zpkg.toml also exists.
@@ -482,15 +498,25 @@ fn ambiguous_markers_in_project_or_installed_package_are_rejected_without_output
     let project_conflict = invoke(root, &["attolang", "paths", "--json"]);
     assert!(!project_conflict.status.success());
     assert!(project_conflict.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&project_conflict.stderr).contains("ambiguous AttoLang package root"));
+    assert!(
+        String::from_utf8_lossy(&project_conflict.stderr)
+            .contains("ambiguous AttoLang package root")
+    );
     fs::remove_file(root.join(".atto.pkg.toml")).unwrap();
 
     // A conflicting installed source marker must refuse all exports.
-    fs::write(root.join("zed_modules/acme/math/.atto.pkg.toml"), "[project]\nname='other'\n").unwrap();
+    fs::write(
+        root.join("zed_modules/acme/math/.atto.pkg.toml"),
+        "[project]\nname='other'\n",
+    )
+    .unwrap();
     let package_conflict = invoke(root, &["attolang", "paths", "--json"]);
     assert!(!package_conflict.status.success());
     assert!(package_conflict.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&package_conflict.stderr).contains("ambiguous AttoLang package root"));
+    assert!(
+        String::from_utf8_lossy(&package_conflict.stderr)
+            .contains("ambiguous AttoLang package root")
+    );
 }
 
 #[test]
@@ -499,13 +525,19 @@ fn tagged_attolang_package_missing_native_manifest_is_not_exportable() {
     let root = temp.path();
     add_project(root);
     package(root, "acme", "unmarked", false);
-    index(root, serde_json::json!([
-        {"package":"acme/unmarked","version":"1.0.0","language":"attolang","path":"zed_modules/acme/unmarked"}
-    ]));
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/unmarked","version":"1.0.0","language":"attolang","path":"zed_modules/acme/unmarked"}
+        ]),
+    );
     let result = invoke(root, &["attolang", "paths", "--json"]);
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("missing .atto.pkg.toml or legacy .ores.pkg.toml"));
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("missing .atto.pkg.toml or legacy .ores.pkg.toml")
+    );
 }
 
 #[cfg(unix)]
@@ -516,9 +548,12 @@ fn symlinked_or_directory_native_markers_cannot_authorize_imports() {
     add_project(root);
     package(root, "acme", "math", false);
     let marker = root.join("zed_modules/acme/math/.atto.pkg.toml");
-    index(root, serde_json::json!([
-        {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/math"}
-    ]));
+    index(
+        root,
+        serde_json::json!([
+            {"package":"acme/math","version":"1.0.0","language":"attolang","path":"zed_modules/acme/math"}
+        ]),
+    );
 
     fs::create_dir(&marker).unwrap();
     let directory = invoke(root, &["attolang", "paths", "--json"]);
