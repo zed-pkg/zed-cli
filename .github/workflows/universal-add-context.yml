@@ -61,6 +61,8 @@ jobs:
             src/cli.rs tests/universal_add_context_cli.rs
       - name: Compile and execute Rust context regressions
         run: cargo test --locked --lib add_context::tests -- --nocapture
+      - name: Embedded flags-2-env project and target contract
+        run: cargo test --locked --lib flags::tests::add_ -- --nocapture
       - name: CLI parsing contract
         run: cargo test --locked --test universal_add_context_cli -- --nocapture
       - name: Declare evidence boundary
