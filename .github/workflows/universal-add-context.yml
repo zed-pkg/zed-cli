@@ -1,0 +1,64 @@
+name: Universal Zed add project context (no registry or compiler)
+
+on:
+  pull_request:
+    paths:
+      - 'src/add_context.rs'
+      - 'src/ops.rs'
+      - 'src/ops_entry.rs'
+      - 'src/cli.rs'
+      - 'src/main.rs'
+      - 'src/lib.rs'
+      - 'tests/universal_add_context_cli.rs'
+      - 'docs/universal-add-context.md'
+      - '.cli-flags.toml'
+      - '.github/workflows/universal-add-context.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/add_context.rs'
+      - 'src/ops.rs'
+      - 'src/ops_entry.rs'
+      - 'src/cli.rs'
+      - 'src/main.rs'
+      - 'src/lib.rs'
+      - 'tests/universal_add_context_cli.rs'
+      - '.cli-flags.toml'
+      - '.github/workflows/universal-add-context.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: universal-add-context-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  context-only:
+    name: Universal context and CLI option contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Formatting contract
+        run: cargo fmt --all -- --check
+      - name: Compile and execute Rust context regressions
+        run: cargo test --locked --lib add_context::tests -- --nocapture
+      - name: CLI parsing contract
+        run: cargo test --locked --test universal_add_context_cli -- --nocapture
+      - name: Declare evidence boundary
+        run: echo 'HOST_CONTEXT_ONLY - no Zed registry, native manager, attoc or guest executed'
