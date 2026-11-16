@@ -101,9 +101,7 @@ pub fn select(
     // nodejs. The explicit override can change the durable target only
     // when no existing direct dependency would be reinterpreted.
     let selected = match (explicit, configured) {
-        (Some(explicit), Some(configured)) if same_target(explicit, configured) => {
-            Some(configured)
-        }
+        (Some(explicit), Some(configured)) if same_target(explicit, configured) => Some(configured),
         (Some(explicit), _) => Some(explicit),
         (None, configured) => configured,
     };
@@ -461,7 +459,10 @@ mod tests {
     #[test]
     fn zpkg_default_overrides_mixed_native_markers_without_flag() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", "package.json"]);
+        make(
+            dir.path(),
+            &[".zpkg.toml", ".atto.pkg.toml", "package.json"],
+        );
         let manifest = dir.path().join(".zpkg.toml");
         fs::OpenOptions::new()
             .append(true)
@@ -477,7 +478,10 @@ mod tests {
     #[test]
     fn explicit_target_can_override_empty_zpkg_consumer() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", "package.json"]);
+        make(
+            dir.path(),
+            &[".zpkg.toml", ".atto.pkg.toml", "package.json"],
+        );
         let manifest = dir.path().join(".zpkg.toml");
         fs::OpenOptions::new()
             .append(true)
@@ -487,13 +491,19 @@ mod tests {
             .unwrap();
         let selection = select(dir.path(), None, Some("nodejs")).unwrap();
         assert_eq!(selection.target.as_deref(), Some("nodejs"));
-        assert_eq!(select(dir.path(), None, None).unwrap().target.as_deref(), Some("attolang"));
+        assert_eq!(
+            select(dir.path(), None, None).unwrap().target.as_deref(),
+            Some("attolang")
+        );
     }
 
     #[test]
     fn explicit_target_cannot_reinterpret_existing_dependency_set() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", "package.json"]);
+        make(
+            dir.path(),
+            &[".zpkg.toml", ".atto.pkg.toml", "package.json"],
+        );
         let manifest = dir.path().join(".zpkg.toml");
         fs::OpenOptions::new()
             .append(true)
@@ -502,8 +512,14 @@ mod tests {
             .write_all(b"\n[dependencies]\n'acme/http'='^1.0'\n[install]\ntarget='attolang'\n")
             .unwrap();
         let err = select(dir.path(), None, Some("nodejs")).unwrap_err();
-        assert!(err.to_string().contains("already has dependencies"), "{err}");
-        assert_eq!(select(dir.path(), None, None).unwrap().target.as_deref(), Some("attolang"));
+        assert!(
+            err.to_string().contains("already has dependencies"),
+            "{err}"
+        );
+        assert_eq!(
+            select(dir.path(), None, None).unwrap().target.as_deref(),
+            Some("attolang")
+        );
     }
 
     #[test]
