@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -42,15 +43,21 @@ pub fn select(
             };
             candidate.canonicalize().with_context(|| format!("cannot resolve --project {}", candidate.display()))?
         }
-        None => cwd.ancestors()
-            .find(|ancestor| ancestor.join(MANIFEST_FILE).is_file())
-            .map(Path::to_path_buf)
-            .with_context(|| format!(
+        None => {
+            let mut nearest = None;
+            for ancestor in cwd.ancestors() {
+                if regular_marker(ancestor, MANIFEST_FILE)? {
+                    nearest = Some(ancestor.to_path_buf());
+                    break;
+                }
+            }
+            nearest.with_context(|| format!(
                 "no {MANIFEST_FILE} found at or above {}; use --project PATH or zed init / zed install PACKAGE first",
                 cwd.display()
-            ))?,
+            ))?
+        },
     };
-    if !root.is_dir() || !root.join(MANIFEST_FILE).is_file() {
+    if !root.is_dir() || !regular_marker(&root, MANIFEST_FILE)? {
         bail!(
             "selected Zed project {} has no {MANIFEST_FILE}; use zed init or zed install PACKAGE",
             root.display()
@@ -188,8 +195,32 @@ fn same_target(left: &str, right: &str) -> bool {
     }
 }
 
+/// A manifest is trusted as a project selector only when its directory
+/// contains a *regular file*. A symlink (including a dangling one) must not
+/// silently redirect Zed into a different package authority, and a directory
+/// named like a manifest is not a valid project marker.
+fn regular_marker(directory: &Path, name: &str) -> Result<bool> {
+    let path = directory.join(name);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
+    };
+    if !metadata.file_type().is_file() {
+        bail!(
+            "unsafe project marker {}: expected a regular file, not a symlink or directory",
+            path.display()
+        );
+    }
+    Ok(true)
+}
+
 fn native_targets(directory: &Path) -> Result<BTreeSet<String>> {
-    if directory.join(".atto.pkg.toml").exists() && directory.join(".ores.pkg.toml").exists() {
+    // Native AttoLang markers are compiler-owned, but project inference must
+    // not follow a symlink to an unrelated outside source tree.
+    let canonical = regular_marker(directory, ".atto.pkg.toml")?;
+    let legacy = regular_marker(directory, ".ores.pkg.toml")?;
+    if canonical && legacy {
         bail!(
             "ambiguous AttoLang compiler markers in {}: migrate .ores.pkg.toml to .atto.pkg.toml; do not keep both",
             directory.display()
@@ -211,10 +242,12 @@ fn unique_target(directory: &Path, targets: BTreeSet<String>) -> Result<String> 
 
 fn nested_targets(root: &Path) -> Result<BTreeSet<String>> {
     let mut found = BTreeSet::new();
+    const MAX_SCANNED_ENTRIES: usize = 4096;
+    let mut scanned = 0usize;
     let mut pending = vec![(root.to_path_buf(), 0usize)];
     while let Some((directory, depth)) = pending.pop() {
         if depth > 0 {
-            if directory.join(MANIFEST_FILE).is_file() {
+            if regular_marker(&directory, MANIFEST_FILE)? {
                 continue; // Separate Zed authority: never infer across it.
             }
             found.extend(native_targets(&directory)?);
@@ -225,6 +258,13 @@ fn nested_targets(root: &Path) -> Result<BTreeSet<String>> {
         for child in fs::read_dir(&directory)
             .with_context(|| format!("inspect Zed project {}", directory.display()))?
         {
+            scanned += 1;
+            if scanned > MAX_SCANNED_ENTRIES {
+                bail!(
+                    "target inference scanned more than {MAX_SCANNED_ENTRIES} directory entries under {}; set [install].target in .zpkg.toml or pass --target",
+                    root.display()
+                );
+            }
             let child = child?;
             let file_type = child.file_type()?;
             if !file_type.is_dir() || file_type.is_symlink() {
@@ -555,6 +595,73 @@ url='https://example.invalid/a/b'
         let dir = tempfile::tempdir().unwrap();
         make(dir.path(), &[".zpkg.toml"]);
         assert!(select(dir.path(), None, None).unwrap().target.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_ancestor_manifest_cannot_be_selected_as_project() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        make(root.path(), &[".zpkg.toml"]);
+        let member = root.path().join("nested");
+        fs::create_dir_all(&member).unwrap();
+        symlink(root.path().join(".zpkg.toml"), member.join(".zpkg.toml")).unwrap();
+        let fail = select(&member, None, None).unwrap_err().to_string();
+        assert!(fail.contains("unsafe project marker"), "{fail}");
+        let explicit = select(root.path(), Some(&member), None).unwrap_err().to_string();
+        assert!(explicit.contains("unsafe project marker"), "{explicit}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_zpkg_marker_cannot_redirect_to_parent_project() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        make(root.path(), &[".zpkg.toml"]);
+        let member = root.path().join("nested");
+        fs::create_dir_all(&member).unwrap();
+        symlink("missing.toml", member.join(".zpkg.toml")).unwrap();
+        let fail = select(&member, None, None).unwrap_err().to_string();
+        assert!(fail.contains("unsafe project marker"), "{fail}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_atto_source_identity_is_not_a_language_hint() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        make(root.path(), &[".zpkg.toml"]);
+        let external = root.path().join("external.toml");
+        fs::write(&external, "[project]\\nname='outside'\\n").unwrap();
+        symlink(&external, root.path().join(".atto.pkg.toml")).unwrap();
+        let fail = select(root.path(), None, Some("attolang")).unwrap_err().to_string();
+        assert!(fail.contains("unsafe project marker"), "{fail}");
+    }
+
+    #[test]
+    fn bounded_native_inference_rejects_unreasonably_wide_workspaces() {
+        let root = tempfile::tempdir().unwrap();
+        make(root.path(), &[".zpkg.toml"]);
+        for i in 0..4097 {
+            fs::create_dir(root.path().join(format!("member_{i:05}"))).unwrap();
+        }
+        let fail = select(root.path(), None, None).unwrap_err().to_string();
+        assert!(fail.contains("target inference scanned more than"), "{fail}");
+        assert!(fail.contains("--target"), "{fail}");
+    }
+
+    #[test]
+    fn configured_target_bypasses_unnecessary_workspace_scan() {
+        let root = tempfile::tempdir().unwrap();
+        make(root.path(), &[".zpkg.toml"]);
+        let mut file = fs::OpenOptions::new()
+            .append(true).open(root.path().join(".zpkg.toml")).unwrap();
+        file.write_all(b"\\n[install]\\ntarget='attolang'\\n").unwrap();
+        for i in 0..4097 {
+            fs::create_dir(root.path().join(format!("member_{i:05}"))).unwrap();
+        }
+        let selected = select(root.path(), None, None).unwrap();
+        assert_eq!(selected.target.as_deref(), Some("attolang"));
     }
 
     #[test]
