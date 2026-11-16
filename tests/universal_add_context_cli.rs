@@ -64,3 +64,27 @@ fn global_options_work_with_explicit_add_selectors() {
         _ => panic!("expected add command"),
     }
 }
+
+#[test]
+fn project_and_target_support_equals_form_and_reverse_order() {
+    for args in [
+        vec![
+            "zed", "add", "acme/answer@^1", "--project=apps/api",
+            "--target=attolang",
+        ],
+        vec![
+            "zed", "--target=attolang", "add", "acme/answer@^1",
+            "--project=apps/api",
+        ],
+    ] {
+        let cli = Cli::try_parse_from(args).expect("parse equivalent add selector spellings");
+        match cli.cmd {
+            Cmd::Add { project, target, .. } => {
+                assert_eq!(project, Some(PathBuf::from("apps/api")));
+                assert_eq!(target.as_deref(), Some("attolang"));
+            }
+            _ => panic!("expected scoped add command"),
+        }
+    }
+}
+
