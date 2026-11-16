@@ -90,7 +90,10 @@ pub fn select(
                 }
                 let found = native_targets(path)?;
                 if !found.is_empty() {
-                    if !found.iter().any(|candidate| same_target(candidate, selected)) {
+                    if !found
+                        .iter()
+                        .any(|candidate| same_target(candidate, selected))
+                    {
                         bail!(
                             "native project {} targets {}, but Zed consumer {} selects {}; create a member .zpkg.toml or choose --project explicitly",
                             path.display(),
@@ -373,7 +376,10 @@ mod tests {
         let message = select(&nested, None, None).unwrap_err().to_string();
         assert!(message.contains("create a member .zpkg.toml"), "{message}");
         assert_eq!(
-            select(&nested, None, Some("node")).unwrap().target.as_deref(),
+            select(&nested, None, Some("node"))
+                .unwrap()
+                .target
+                .as_deref(),
             Some("node")
         );
     }
