@@ -550,8 +550,6 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
 /// this separately so a nearer `main.go` or `src/main.rs` cannot outrank the
 /// actual `go.mod` or `Cargo.toml` that owns the project.
 const NATIVE_MANIFEST_MARKERS: &[(&str, &str)] = &[
-    (".atto.pkg.toml", "attolang"),
-    (".ores.pkg.toml", "attolang"),
     ("package.json", "node"),
     ("tsconfig.json", "node"),
     ("Cargo.toml", "rust"),
@@ -577,6 +575,10 @@ const NATIVE_MANIFEST_MARKERS: &[(&str, &str)] = &[
     // above so a repo carrying both is not mistaken for Julia.
     ("Project.toml", "julia"),
     ("CMakeLists.txt", "cpp"),
+    // Preserve historic native marker priority for other Zed commands;
+    // `zed add` separately refuses mixed-language ambiguity.
+    (".atto.pkg.toml", "attolang"),
+    (".ores.pkg.toml", "attolang"),
 ];
 
 /// Distinct native toolchain contexts; Zed's own manifest is deliberately not a language.
