@@ -404,7 +404,19 @@ default = "false"
 help = "Emit deterministic machine-readable JSON."
 
 [commands.add]
-help = "Add a dependency."
+help = "Add a dependency to a selected Zed project; explicit target required for mixed native contexts."
+
+[commands.add.flags.project]
+env = "ZED_PKG_ADD_PROJECT"
+aliases = ["project"]
+type = "string"
+help = "Exact Zed consumer directory containing .zpkg.toml."
+
+[commands.add.flags.target]
+env = "ZED_PKG_TARGET"
+aliases = ["target"]
+type = "string"
+help = "Language target for polyglot dependency materialization."
 
 [commands.remove]
 help = "Remove a dependency."
