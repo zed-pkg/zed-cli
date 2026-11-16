@@ -4061,7 +4061,10 @@ pub fn add_with_target(
             cfg,
             false,
             InstallMode::Symlink,
-            Adapter::None,
+            // Respect the consumer's [install].adapter and native context.
+            // Forcing None silently drops Node/Rust/etc. adapter wiring
+            // during zed add even though zed install uses Auto.
+            Adapter::Auto,
             false,
             // Re-install after the manifest edit; the target comes from
             // [install].target or project inference, same as a bare `zed install`.
