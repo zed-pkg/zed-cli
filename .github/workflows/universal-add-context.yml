@@ -6,6 +6,8 @@ on:
       - 'src/add_context.rs'
       - 'src/ops.rs'
       - 'src/ops_entry.rs'
+      - 'src/ops_lifecycle_entry.rs'
+      - 'src/flags.rs'
       - 'src/cli.rs'
       - 'src/main.rs'
       - 'src/lib.rs'
@@ -57,7 +59,8 @@ jobs:
       - name: Formatting contract (changed source only)
         run: |
           rustfmt --edition 2024 --check --config skip_children=true \
-            src/add_context.rs src/ops.rs src/ops_entry.rs src/main.rs \
+            src/add_context.rs src/ops.rs src/ops_entry.rs \
+            src/ops_lifecycle_entry.rs src/flags.rs src/main.rs \
             src/cli.rs tests/universal_add_context_cli.rs
       - name: Compile and execute Rust context regressions
         run: cargo test --locked --lib add_context::tests -- --nocapture
