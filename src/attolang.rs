@@ -104,8 +104,7 @@ pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
         }
         let absolute = root.join(&relative);
         let native_marker = has_native_marker(&absolute)?;
-        let is_atto = matches!(package.language.as_str(), "attolang" | "oreslang")
-            || native_marker;
+        let is_atto = matches!(package.language.as_str(), "attolang" | "oreslang") || native_marker;
         if !is_atto {
             continue;
         }
@@ -146,13 +145,24 @@ fn has_native_marker(root: &Path) -> Result<bool> {
         let metadata = match fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error).with_context(|| format!("inspect native AttoLang marker {}", path.display())),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect native AttoLang marker {}", path.display()));
+            }
         };
         if !metadata.file_type().is_file() {
-            bail!("native AttoLang marker {} must be a regular file, not a symlink or directory", path.display());
+            bail!(
+                "native AttoLang marker {} must be a regular file, not a symlink or directory",
+                path.display()
+            );
         }
         if let Some(other) = found {
-            bail!("ambiguous AttoLang package root {}: both {} and {} exist", root.display(), other, name);
+            bail!(
+                "ambiguous AttoLang package root {}: both {} and {} exist",
+                root.display(),
+                other,
+                name
+            );
         }
         found = Some(name);
     }
