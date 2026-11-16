@@ -82,15 +82,31 @@ pub fn select(
     }) {
         bail!("--target must be a nonempty language/target token (e.g. attolang, nodejs, rust)");
     }
+    // A CLI target is authoritative, but `zed add` writes a durable
+    // dependency declaration. Changing the consumer-wide default while
+    // existing direct requirements remain would reinterpret them on the
+    // next frozen install. Allow an explicit switch only for an empty
+    // consumer; otherwise use separate target-specific Zed manifests.
     if let (Some(explicit), Some(configured)) = (explicit, configured)
         && !same_target(explicit, configured)
+        && (!manifest.dependencies.is_empty() || !manifest.build_dependencies.is_empty())
     {
         bail!(
-            "this Zed project already selects target `{configured}`; cannot add for `{explicit}`.              Use a separate member .zpkg.toml or deliberately update [install].target"
+            "cannot override configured target `{configured}` with `{explicit}` in {}: this Zed consumer already has dependencies. Use a separate member .zpkg.toml for independently targeted packages",
+            root.display()
         );
     }
 
-    let selected = explicit.or(configured);
+    // Preserve the current spelling for equivalent aliases such as node /
+    // nodejs. The explicit override can change the durable target only
+    // when no existing direct dependency would be reinterpreted.
+    let selected = match (explicit, configured) {
+        (Some(explicit), Some(configured)) if same_target(explicit, configured) => {
+            Some(configured)
+        }
+        (Some(explicit), _) => Some(explicit),
+        (None, configured) => configured,
+    };
     if let Some(selected) = selected {
         // A durable consumer target is authoritative, but a caller who walks
         // into a different native project should not silently redirect that
@@ -402,6 +418,69 @@ mod tests {
                 .as_deref(),
             Some("node")
         );
+    }
+
+    #[test]
+    fn zpkg_default_overrides_mixed_native_markers_without_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", "package.json"]);
+        let manifest = dir.path().join(".zpkg.toml");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest)
+            .unwrap()
+            .write_all(b"\n[install]\ntarget='attolang'\n")
+            .unwrap();
+        let selected = select(dir.path(), None, None).unwrap();
+        assert_eq!(selected.root, dir.path());
+        assert_eq!(selected.target.as_deref(), Some("attolang"));
+    }
+
+    #[test]
+    fn explicit_target_can_override_empty_zpkg_consumer() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", "package.json"]);
+        let manifest = dir.path().join(".zpkg.toml");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest)
+            .unwrap()
+            .write_all(b"\n[install]\ntarget='attolang'\n")
+            .unwrap();
+        let selection = select(dir.path(), None, Some("nodejs")).unwrap();
+        assert_eq!(selection.target.as_deref(), Some("nodejs"));
+        assert_eq!(select(dir.path(), None, None).unwrap().target.as_deref(), Some("attolang"));
+    }
+
+    #[test]
+    fn explicit_target_cannot_reinterpret_existing_dependency_set() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", "package.json"]);
+        let manifest = dir.path().join(".zpkg.toml");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest)
+            .unwrap()
+            .write_all(b"\n[dependencies]\n'acme/http'='^1.0'\n[install]\ntarget='attolang'\n")
+            .unwrap();
+        let err = select(dir.path(), None, Some("nodejs")).unwrap_err();
+        assert!(err.to_string().contains("already has dependencies"), "{err}");
+        assert_eq!(select(dir.path(), None, None).unwrap().target.as_deref(), Some("attolang"));
+    }
+
+    #[test]
+    fn equivalent_target_alias_does_not_rewrite_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &[".zpkg.toml", "package.json"]);
+        let manifest = dir.path().join(".zpkg.toml");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest)
+            .unwrap()
+            .write_all(b"\n[install]\ntarget='node'\n")
+            .unwrap();
+        let selection = select(dir.path(), None, Some("nodejs")).unwrap();
+        assert_eq!(selection.target.as_deref(), Some("node"));
     }
 
     #[test]
