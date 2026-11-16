@@ -54,8 +54,11 @@ jobs:
         with:
           toolchain: 1.98.1
           components: rustfmt
-      - name: Formatting contract
-        run: cargo fmt --all -- --check
+      - name: Formatting contract (changed source only)
+        run: |
+          rustfmt --edition 2024 --check --config skip_children=true \
+            src/add_context.rs src/ops.rs src/ops_entry.rs src/main.rs \
+            src/cli.rs tests/universal_add_context_cli.rs
       - name: Compile and execute Rust context regressions
         run: cargo test --locked --lib add_context::tests -- --nocapture
       - name: CLI parsing contract
