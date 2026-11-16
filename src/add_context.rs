@@ -262,7 +262,19 @@ mod tests {
         for file in paths {
             let path = root.join(file);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, if *file == ".zpkg.toml" { "[package]\norg='a'\nname='b'\nversion='0.1.0'\n[package.repository]\nvcs='git'\nurl='https://example.invalid/a/b'\n" } else { "" }).unwrap();
+            let content = if path.file_name().and_then(|name| name.to_str()) == Some(".zpkg.toml") {
+                r#"[package]
+org='a'
+name='b'
+version='0.1.0'
+[package.repository]
+vcs='git'
+url='https://example.invalid/a/b'
+"#
+            } else {
+                ""
+            };
+            fs::write(path, content).unwrap();
         }
     }
 
