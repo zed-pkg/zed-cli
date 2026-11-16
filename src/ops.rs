@@ -3959,19 +3959,28 @@ pub fn add_with_target(
 ) -> Result<()> {
     let mut manifest = read_manifest(project)?;
     if let Some(selected) = target {
-        if let Some(configured) = manifest.requested_target()
-            && configured != selected
+        let configured = manifest.requested_target();
+        let equivalent = configured.is_some_and(|existing| {
+            existing == selected
+                || matches!(
+                    (Language::from_token(existing), Language::from_token(selected)),
+                    (Some(left), Some(right)) if left == right
+                )
+        });
+        // Retargeting from an absent default is just as dangerous as
+        // retargeting between two explicit languages: a shared dependency
+        // set would silently acquire different frozen-install semantics.
+        if !equivalent
             && (!manifest.dependencies.is_empty() || !manifest.build_dependencies.is_empty())
         {
             bail!(
-                "cannot change Zed default target from `{configured}` to `{selected}` while existing dependencies are declared; use separate member .zpkg.toml manifests"
+                "cannot change Zed default target from `{}` to `{selected}` while existing dependencies are declared; use separate member .zpkg.toml manifests",
+                configured.unwrap_or("<unspecified>")
             );
         }
-        // A successful `zed add --target` commits the new default along
-        // with the dependency. Leaving only the in-memory installation
-        // overridden would make subsequent `zed install --frozen` select
-        // the old target and misinterpret the added package.
-        if manifest.requested_target() != Some(selected) {
+        // Commit a safe first target alongside the new requirement.
+        // Preserve an existing alias when it denotes the same language.
+        if !equivalent {
             manifest.install.target = Some(selected.to_string());
         }
     }
