@@ -41,7 +41,9 @@ pub fn select(
             } else {
                 cwd.join(project)
             };
-            candidate.canonicalize().with_context(|| format!("cannot resolve --project {}", candidate.display()))?
+            candidate
+                .canonicalize()
+                .with_context(|| format!("cannot resolve --project {}", candidate.display()))?
         }
         None => {
             let mut nearest = None;
@@ -55,7 +57,7 @@ pub fn select(
                 "no {MANIFEST_FILE} found at or above {}; use --project PATH or zed init / zed install PACKAGE first",
                 cwd.display()
             ))?
-        },
+        }
     };
     if !root.is_dir() || !regular_marker(&root, MANIFEST_FILE)? {
         bail!(
@@ -608,7 +610,9 @@ url='https://example.invalid/a/b'
         symlink(root.path().join(".zpkg.toml"), member.join(".zpkg.toml")).unwrap();
         let fail = select(&member, None, None).unwrap_err().to_string();
         assert!(fail.contains("unsafe project marker"), "{fail}");
-        let explicit = select(root.path(), Some(&member), None).unwrap_err().to_string();
+        let explicit = select(root.path(), Some(&member), None)
+            .unwrap_err()
+            .to_string();
         assert!(explicit.contains("unsafe project marker"), "{explicit}");
     }
 
@@ -634,7 +638,9 @@ url='https://example.invalid/a/b'
         let external = root.path().join("external.toml");
         fs::write(&external, "[project]\\nname='outside'\\n").unwrap();
         symlink(&external, root.path().join(".atto.pkg.toml")).unwrap();
-        let fail = select(root.path(), None, Some("attolang")).unwrap_err().to_string();
+        let fail = select(root.path(), None, Some("attolang"))
+            .unwrap_err()
+            .to_string();
         assert!(fail.contains("unsafe project marker"), "{fail}");
     }
 
@@ -646,7 +652,10 @@ url='https://example.invalid/a/b'
             fs::create_dir(root.path().join(format!("member_{i:05}"))).unwrap();
         }
         let fail = select(root.path(), None, None).unwrap_err().to_string();
-        assert!(fail.contains("target inference scanned more than"), "{fail}");
+        assert!(
+            fail.contains("target inference scanned more than"),
+            "{fail}"
+        );
         assert!(fail.contains("--target"), "{fail}");
     }
 
@@ -655,8 +664,11 @@ url='https://example.invalid/a/b'
         let root = tempfile::tempdir().unwrap();
         make(root.path(), &[".zpkg.toml"]);
         let mut file = fs::OpenOptions::new()
-            .append(true).open(root.path().join(".zpkg.toml")).unwrap();
-        file.write_all(b"\\n[install]\\ntarget='attolang'\\n").unwrap();
+            .append(true)
+            .open(root.path().join(".zpkg.toml"))
+            .unwrap();
+        file.write_all(b"\\n[install]\\ntarget='attolang'\\n")
+            .unwrap();
         for i in 0..4097 {
             fs::create_dir(root.path().join(format!("member_{i:05}"))).unwrap();
         }
