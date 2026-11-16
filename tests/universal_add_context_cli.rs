@@ -73,7 +73,7 @@ fn project_and_target_support_equals_form_and_reverse_order() {
             "--target=attolang",
         ],
         vec![
-            "zed", "--target=attolang", "add", "acme/answer@^1",
+            "zed", "add", "--target=attolang", "acme/answer@^1",
             "--project=apps/api",
         ],
     ] {
