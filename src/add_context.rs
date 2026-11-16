@@ -366,7 +366,7 @@ mod tests {
             .append(true)
             .open(&manifest)
             .unwrap()
-            .write_all(b"\\n[install]\\ntarget='node'\\n")
+            .write_all(b"\n[install]\ntarget='node'\n")
             .unwrap();
         let nested = dir.path().join("apps/api/src");
         fs::create_dir_all(&nested).unwrap();
