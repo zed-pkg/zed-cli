@@ -667,7 +667,7 @@ url='https://example.invalid/a/b'
             .append(true)
             .open(root.path().join(".zpkg.toml"))
             .unwrap();
-        file.write_all(b"\\n[install]\\ntarget='attolang'\\n")
+        file.write_all(b"\n[install]\ntarget='attolang'\n")
             .unwrap();
         for i in 0..4097 {
             fs::create_dir(root.path().join(format!("member_{i:05}"))).unwrap();
