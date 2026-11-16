@@ -589,7 +589,9 @@ url='https://example.invalid/a/b'
             .unwrap()
             .write_all(b"\n[dependencies]\n'acme/core'='^1'\n")
             .unwrap();
-        let failure = select(dir.path(), None, Some("rust")).unwrap_err().to_string();
+        let failure = select(dir.path(), None, Some("rust"))
+            .unwrap_err()
+            .to_string();
         assert!(failure.contains("already has dependencies"), "{failure}");
         assert!(failure.contains("<unspecified>"), "{failure}");
     }
