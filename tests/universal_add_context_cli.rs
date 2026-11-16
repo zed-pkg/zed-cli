@@ -88,3 +88,107 @@ fn project_and_target_support_equals_form_and_reverse_order() {
     }
 }
 
+
+// Execute the actual binary with isolated per-process environments. This is
+// the only reliable way to prove Clap's env handling and the embedded
+// flags-2-env admission contract without mutating process-global env vars.
+fn consumer(path: &std::path::Path, target: &str) {
+    std::fs::create_dir_all(path).unwrap();
+    std::fs::write(
+        path.join(".zpkg.toml"),
+        format!(
+            "[package]\\norg='acme'\\nname='fixture'\\nversion='1.0.0'\\n\\
+             [package.repository]\\nvcs='git'\\nurl='https://example.invalid/fixture'\\n\\
+             [dependencies]\\n'acme/pinned'='^1.0'\\n\\
+             [install]\\ntarget='{target}'\\n"
+        ),
+    )
+    .unwrap();
+}
+
+fn zed(argv: &[&str], cwd: &std::path::Path, env: &[(&str, &str)]) -> std::process::Output {
+    let home = cwd.join(".isolated-zed-home");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_zed"));
+    command.current_dir(cwd).args(argv)
+        .env("ZED_PKG_HOME", home)
+        .env_remove("ZED_PKG_ADD_PROJECT")
+        .env_remove("ZED_PKG_TARGET")
+        .env("ZED_PKG_REGISTRY", "file:///does-not-exist/zed-registry");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().expect("start real Zed CLI")
+}
+
+fn assert_target_conflict(output: std::process::Output, expected: &str) {
+    assert!(!output.status.success(), "should refuse target mutation");
+    let message = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        message.contains("cannot override configured target") || message.contains("cannot change Zed default target"),
+        "unexpected CLI failure: {message}"
+    );
+    assert!(message.contains(expected), "expected target {expected}: {message}");
+}
+
+#[test]
+fn actual_cli_walks_up_to_nearest_ancestor_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path();
+    consumer(parent, "attolang");
+    let app = parent.join("apps/web");
+    consumer(&app, "rust");
+    let deep = app.join("src/deep");
+    std::fs::create_dir_all(&deep).unwrap();
+
+    // A nearer Zed consumer must win over the outer project, and the flag
+    // reaches the real add context before any registry request.
+    let result = zed(
+        &["add", "acme/answer@^1", "--target=nodejs"], &deep, &[]
+    );
+    assert_target_conflict(result, "rust");
+}
+
+#[test]
+fn actual_cli_flags_override_flags2env_environment_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path();
+    let default_project = cwd.join("default");
+    let selected_project = cwd.join("selected");
+    consumer(&default_project, "node");
+    consumer(&selected_project, "attolang");
+
+    let requested = selected_project.to_string_lossy().into_owned();
+    let supplied = default_project.to_string_lossy().into_owned();
+    let result = zed(
+        &[
+            "add", "acme/answer@^1",
+            "--project", &requested,
+            "--target=rust",
+        ],
+        cwd,
+        &[
+            ("ZED_PKG_ADD_PROJECT", &supplied),
+            ("ZED_PKG_TARGET", "node"),
+        ],
+    );
+    assert_target_conflict(result, "attolang");
+}
+
+#[test]
+fn actual_cli_env_only_selectors_reach_flags2env_and_clap() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path();
+    let project = cwd.join("nested/package");
+    consumer(&project, "attolang");
+    let project_string = project.to_string_lossy().into_owned();
+
+    let result = zed(
+        &["add", "acme/answer@^1"],
+        cwd,
+        &[
+            ("ZED_PKG_ADD_PROJECT", &project_string),
+            ("ZED_PKG_TARGET", "rust"),
+        ],
+    );
+    assert_target_conflict(result, "attolang");
+}
