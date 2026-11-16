@@ -10,7 +10,9 @@ AttoLang import-search environment.
 
 Keep both manifests at the same project root:
 
-- .ores.pkg.toml: AttoLang project-root and import semantics.
+- .atto.pkg.toml: canonical AttoLang project-root and import semantics;
+  legacy .ores.pkg.toml is supported only when the canonical file is absent.
+  Never publish both marker files in one package root.
 - .zpkg.toml and .zpkg.lock: package versions, artifacts, VCS provenance and
   deterministic restoration controlled by Zed.
 
@@ -21,7 +23,7 @@ From your AttoLang project root:
     zed install --frozen
     export ATTO_PATHS="$(zed attolang paths)"
 
-Use your normal AttoLang compiler invocation after setting ORES_PATHS.
+Use your normal AttoLang compiler invocation after setting ATTO_PATHS.
 The AttoLang plus-prefixed import syntax continues to resolve against the
 project root; Zed contributes *dependency* import roots, not a new definition
 of plus imports.
@@ -43,20 +45,25 @@ is still accepted, but returns canonical ATTO_PATHS metadata.
 
 ## Package authors
 
-Publish an AttoLang source package with its native .ores.pkg.toml included
-in the archive. The current bridge selects installed Zed packages with that
-file at their installed root. It also recognizes an indexed package whose
-language is already tagged attolang or oreslang for forward compatibility.
-**Do not set language = "attolang" in .zpkg.toml yet**: the shared
-zed-interfaces manifest language enumeration has not been extended, and the
-existing validator rejects that token.
+Publish an AttoLang source package with exactly one compiler-owned native
+marker: canonical .atto.pkg.toml or legacy .ores.pkg.toml. The bridge exports
+installed Zed package roots only when one regular-file marker is present.
+A package merely tagged attolang or oreslang in the installed index is
+**not** enough to authorize compiler imports: a missing source manifest,
+ambiguous twin markers, symlink marker or directory marker causes rejection.
+
+Canonical language = "attolang" and the legacy oreslang alias are merged in
+[zed-interfaces #183](https://github.com/zed-pkg/zed-interfaces/pull/183).
+Use language = "attolang" only with a CLI whose **pinned** zed-interfaces
+revision includes that contract. Older CLIs must retain their compatible
+universal label during migration, not silently accept an unknown token.
 
 Source packages continue to be installed under an org/name slot:
 
     zed_modules/acme/actor-math
 
 Zed materializes the slot in symlink or copy mode. AttoLang sees the slot
-through ORES_PATHS and does not need to know the global artifact-store path.
+through ATTO_PATHS (or legacy ORES_PATHS) and does not need to know the global artifact-store path.
 
 ## Determinism and security
 
@@ -86,10 +93,10 @@ rerun zed install --frozen. Do not hand-edit .zed/paths.json.
 The bridge is deliberately incremental. Full first-class package-management
 support requires a separate **zed-interfaces-first** change:
 
-1. Add canonical Language::Attolang and Ecosystem::Attolang, with oreslang
-   accepted as a legacy input alias, .ores.pkg.toml as an ecosystem marker,
-   and canonical lowercase attolang serialization. Add Rust/TS/Dart round
-   trips and parity cases before regenerating JSON Schema outputs.
+1. **Already merged upstream:** canonical Language::Attolang and
+   Ecosystem::Attolang, with oreslang as legacy input, in zed-interfaces #183.
+   Next, update and test downstream exact dependency pins plus generated SDK
+   schemas, and migrate native project markers to .atto.pkg.toml.
 2. Teach zed-cli target slicing, manifestless project discovery, and package
    routing to recognize attolang without treating Oreslang and AttoLang as
    different published package identities. Retain existing source imports
@@ -108,4 +115,4 @@ support requires a separate **zed-interfaces-first** change:
    concurrent installs, dependency conflict diagnostics, and key rotation.
 
 No runtime parity, compiler integration, native package publication,
-Windows path semantics, or completed CI execution is claimed by this document.
+or completed cross-platform guest CI is claimed by this document.
