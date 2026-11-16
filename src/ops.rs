@@ -3961,12 +3961,17 @@ pub fn add_with_target(
     if let Some(selected) = target {
         if let Some(configured) = manifest.requested_target()
             && configured != selected
+            && (!manifest.dependencies.is_empty() || !manifest.build_dependencies.is_empty())
         {
             bail!(
-                "Zed project is already configured for target `{configured}`; cannot add with target `{selected}`. Use a separate member .zpkg.toml or update the project target explicitly"
+                "cannot change Zed default target from `{configured}` to `{selected}` while existing dependencies are declared; use separate member .zpkg.toml manifests"
             );
         }
-        if manifest.requested_target().is_none() {
+        // A successful `zed add --target` commits the new default along
+        // with the dependency. Leaving only the in-memory installation
+        // overridden would make subsequent `zed install --frozen` select
+        // the old target and misinterpret the added package.
+        if manifest.requested_target() != Some(selected) {
             manifest.install.target = Some(selected.to_string());
         }
     }
