@@ -336,6 +336,44 @@ mod tests {
     }
 
     #[test]
+    fn project_defaults_to_nearest_zpkg_ancestor_not_the_repository_root() {
+        let dir = tempfile::tempdir().unwrap();
+        make(
+            dir.path(),
+            &[
+                ".zpkg.toml",
+                "apps/.zpkg.toml",
+                "apps/api/package.json",
+                "apps/api/src/main.ts",
+            ],
+        );
+        let cwd = dir.path().join("apps/api/src");
+        let selected = select(&cwd, None, None).unwrap();
+        assert_eq!(selected.root, dir.path().join("apps"));
+        assert_eq!(selected.target.as_deref(), Some("node"));
+
+        // An explicit selection is exact, including when a nearer Zed
+        // manifest exists. It never silently walks to an alternative root.
+        let parent = select(&cwd, Some(dir.path()), Some("rust")).unwrap();
+        assert_eq!(parent.root, dir.path());
+        assert_eq!(parent.target.as_deref(), Some("rust"));
+
+        // From the directory containing the nearest manifest, it remains
+        // the selected root even with another Zed manifest above it.
+        let at_manifest = select(&dir.path().join("apps"), None, None).unwrap();
+        assert_eq!(at_manifest.root, dir.path().join("apps"));
+    }
+
+    #[test]
+    fn no_ancestor_zpkg_has_actionable_error_not_silent_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &["apps/api/package.json"]);
+        let cwd = dir.path().join("apps/api");
+        let result = select(&cwd, None, None).unwrap_err().to_string();
+        assert!(result.contains("no .zpkg.toml found"), "{result}");
+    }
+
+    #[test]
     fn nested_zpkg_project_owns_its_dependencies() {
         let dir = tempfile::tempdir().unwrap();
         make(
