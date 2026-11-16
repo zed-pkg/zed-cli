@@ -248,7 +248,12 @@ fn explicit_project_cannot_use_symlinked_zed_manifest() {
     symlink(parent.join(".zpkg.toml"), child.join(".zpkg.toml")).unwrap();
 
     let output = zed(
-        &["add", "acme/http@^1", "--project=apps/foreign", "--target=rust"],
+        &[
+            "add",
+            "acme/http@^1",
+            "--project=apps/foreign",
+            "--target=rust",
+        ],
         parent,
         &[],
     );
