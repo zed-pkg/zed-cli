@@ -579,7 +579,6 @@ const NATIVE_MANIFEST_MARKERS: &[(&str, &str)] = &[
     ("CMakeLists.txt", "cpp"),
 ];
 
-
 /// Distinct native toolchain contexts; Zed's own manifest is deliberately not a language.
 pub(crate) fn native_manifest_targets(project: &Path) -> BTreeSet<String> {
     NATIVE_MANIFEST_MARKERS
@@ -3950,13 +3949,20 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
 
 /// An explicit, reproducible target governs both package name routing and
 /// the install transaction; it never invokes a language compiler.
-pub fn add_with_target(project: &Path, cfg: &Config, spec: &str, target: Option<&str>) -> Result<()> {
+pub fn add_with_target(
+    project: &Path,
+    cfg: &Config,
+    spec: &str,
+    target: Option<&str>,
+) -> Result<()> {
     let mut manifest = read_manifest(project)?;
     if let Some(selected) = target {
         if let Some(configured) = manifest.requested_target()
             && configured != selected
         {
-            bail!("Zed project is already configured for target `{configured}`; cannot add with target `{selected}`. Use a separate member .zpkg.toml or update the project target explicitly");
+            bail!(
+                "Zed project is already configured for target `{configured}`; cannot add with target `{selected}`. Use a separate member .zpkg.toml or update the project target explicitly"
+            );
         }
         if manifest.requested_target().is_none() {
             manifest.install.target = Some(selected.to_string());
@@ -3984,7 +3990,10 @@ pub fn add_with_target(project: &Path, cfg: &Config, spec: &str, target: Option<
                     // Nothing published under that name. Route to the language
                     // variant this project can actually consume, rather than
                     // making the user work out the suffix themselves.
-                    let detected = target.map(str::to_owned).or_else(|| manifest.requested_target().map(str::to_owned)).or_else(|| detect_target(project));
+                    let detected = target
+                        .map(str::to_owned)
+                        .or_else(|| manifest.requested_target().map(str::to_owned))
+                        .or_else(|| detect_target(project));
                     let candidates = language_route_candidates(&name, detected.as_deref());
                     let routed = candidates
                         .iter()
