@@ -149,9 +149,10 @@ pub fn select(
     while let Some(directory) = ancestor {
         let detected = native_targets(directory)?;
         if !detected.is_empty() {
+            let target = unique_target(directory, detected)?;
             return Ok(AddSelection {
                 root,
-                target: Some(unique_target(directory, detected)?),
+                target: Some(target),
             });
         }
         if directory == root {
