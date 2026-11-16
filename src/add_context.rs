@@ -78,6 +78,32 @@ pub fn select(
 
     let selected = explicit.or(configured);
     if let Some(selected) = selected {
+        // A durable consumer target is authoritative, but a caller who walks
+        // into a different native project should not silently redirect that
+        // project's dependency to the parent's language. A deliberate
+        // --target/--project remains the explicit override.
+        if explicit.is_none() && cwd.starts_with(&root) && cwd != root {
+            let mut directory = Some(cwd.as_path());
+            while let Some(path) = directory {
+                if path == root {
+                    break;
+                }
+                let found = native_targets(path)?;
+                if !found.is_empty() {
+                    if !found.iter().any(|candidate| same_target(candidate, selected)) {
+                        bail!(
+                            "native project {} targets {}, but Zed consumer {} selects {}; create a member .zpkg.toml or choose --project explicitly",
+                            path.display(),
+                            found.into_iter().collect::<Vec<_>>().join(", "),
+                            root.display(),
+                            selected
+                        );
+                    }
+                    break;
+                }
+                directory = path.parent();
+            }
+        }
         return Ok(AddSelection {
             root,
             target: Some(selected.to_owned()),
@@ -198,6 +224,7 @@ fn nested_targets(root: &Path) -> Result<BTreeSet<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn make(root: &Path, paths: &[&str]) {
         for file in paths {
@@ -327,6 +354,27 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("migrate")
+        );
+    }
+
+    #[test]
+    fn configured_target_cannot_silently_overrule_a_nested_other_language() {
+        let dir = tempfile::tempdir().unwrap();
+        make(dir.path(), &[".zpkg.toml", "apps/api/.atto.pkg.toml"]);
+        let manifest = dir.path().join(".zpkg.toml");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&manifest)
+            .unwrap()
+            .write_all(b"\\n[install]\\ntarget='node'\\n")
+            .unwrap();
+        let nested = dir.path().join("apps/api/src");
+        fs::create_dir_all(&nested).unwrap();
+        let message = select(&nested, None, None).unwrap_err().to_string();
+        assert!(message.contains("create a member .zpkg.toml"), "{message}");
+        assert_eq!(
+            select(&nested, None, Some("node")).unwrap().target.as_deref(),
+            Some("node")
         );
     }
 
