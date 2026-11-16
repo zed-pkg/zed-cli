@@ -34,9 +34,10 @@ struct IndexedPackage {
 /// Return deterministic, invocation-directory-relative import roots suitable
 /// for joining with the host OS path separator in ATTO_PATHS. Nothing is written or executed.
 ///
-/// Until the shared language manifest adds canonical attolang tokens,
-/// packages are identified by their native .ores.pkg.toml marker.
-/// The old oreslang and future attolang index tags are also accepted.
+/// Native AttoLang packages use .atto.pkg.toml; .ores.pkg.toml is accepted
+/// as an exclusive legacy marker. Ambiguous, nonregular and symlink markers
+/// fail closed before any path projection. Both AttoLang index spellings are
+/// accepted but neither can override the required native source marker.
 pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
     let root = find_project_root(cwd)?;
     let index_path = root.join(".zed").join("paths.json");
@@ -102,10 +103,18 @@ pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
             );
         }
         let absolute = root.join(&relative);
+        let native_marker = has_native_marker(&absolute)?;
         let is_atto = matches!(package.language.as_str(), "attolang" | "oreslang")
-            || absolute.join(".ores.pkg.toml").is_file();
+            || native_marker;
         if !is_atto {
             continue;
+        }
+        if !native_marker {
+            bail!(
+                "AttoLang package {}/{} is missing .atto.pkg.toml or legacy .ores.pkg.toml; refusing import root",
+                org,
+                name
+            );
         }
         if !absolute.is_dir() {
             bail!(
@@ -120,16 +129,40 @@ pub fn installed_paths(cwd: &Path) -> Result<Vec<String>> {
     }
     if selected.is_empty() {
         bail!(
-            "no installed AttoLang packages found in {}; packages need .ores.pkg.toml until the shared attolang language contract lands",
+            "no installed AttoLang packages found in {}; packages require .atto.pkg.toml or legacy .ores.pkg.toml",
             index_path.display()
         );
     }
     Ok(selected.into_iter().collect())
 }
 
+/// A native marker is compiler-owned source identity. Never allow a Zed index
+/// to choose between conflicting markers, or to launder a dangling symlink,
+/// directory or external file into a compiler source root.
+fn has_native_marker(root: &Path) -> Result<bool> {
+    let mut found: Option<&str> = None;
+    for name in [".atto.pkg.toml", ".ores.pkg.toml"] {
+        let path = root.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).with_context(|| format!("inspect native AttoLang marker {}", path.display())),
+        };
+        if !metadata.file_type().is_file() {
+            bail!("native AttoLang marker {} must be a regular file, not a symlink or directory", path.display());
+        }
+        if let Some(other) = found {
+            bail!("ambiguous AttoLang package root {}: both {} and {} exist", root.display(), other, name);
+        }
+        found = Some(name);
+    }
+    Ok(found.is_some())
+}
+
 fn find_project_root(cwd: &Path) -> Result<PathBuf> {
     for ancestor in cwd.ancestors() {
-        if ancestor.join(".ores.pkg.toml").is_file()
+        let native_marker = has_native_marker(ancestor)?;
+        if native_marker
             || ancestor.join(".zpkg.toml").is_file()
             || ancestor.join(".zed").join("paths.json").is_file()
         {
@@ -137,7 +170,7 @@ fn find_project_root(cwd: &Path) -> Result<PathBuf> {
         }
     }
     bail!(
-        "no AttoLang/Zed project root found above {}; expected .ores.pkg.toml or .zpkg.toml",
+        "no AttoLang/Zed project root found above {}; expected .atto.pkg.toml, .ores.pkg.toml or .zpkg.toml",
         cwd.display()
     )
 }
