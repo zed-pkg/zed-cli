@@ -10,8 +10,14 @@ Node.js, Rust, Python or any other language to decide which files to install.
 ## Three distinct decisions
 
 1. **Zed authority:** the consumer directory owning `.zpkg.toml` and
-   `.zpkg.lock`. The nearest ancestor Zed manifest is selected by default,
-   or an exact one with `--project PATH`. Native manifests are not competing
+   `.zpkg.lock`. **Default `--project` is CWD if CWD has `.zpkg.toml`,
+   otherwise the nearest ancestor containing that file**. The search walks
+   upward only, never into sibling projects or downward into arbitrary
+   descendants. Explicit `--project PATH` is resolved relative to CWD (or
+   as an absolute path) and must name exactly a directory containing
+   `.zpkg.toml`; it never falls back to an ancestor. Missing projects fail
+   before registry lookup; `zed init` or the durable first-install workflow
+   establishes a new Zed manifest. Native manifests are not competing
    Zed lockfiles.
 2. **Consumer target:** `[install].target` is the ordinary durable default;
    explicit `--target LANG` overrides it when safe; otherwise Zed uses one
@@ -51,6 +57,9 @@ zed add acme/actors@^1 --project apps/api --target attolang
 
 # A root with two different native ecosystems must disambiguate
 zed add acme/schema@^1 --project . --target nodejs
+
+# Explicit CLI flags are backed by the embedded flags-2-env contract:
+ZED_PKG_ADD_PROJECT=./apps/api ZED_PKG_TARGET=attolang zed add acme/json
 ```
 
 An existing Zed consumer uses `[install].target` with no flag, even if several
@@ -75,9 +84,16 @@ resolver and lockfile changes before being accepted as syntax.
 
 ## Context precedence and ambiguity
 
-- The nearest `.zpkg.toml` on the current directory's ancestor chain wins
-  for ownership. `--project` must name the exact Zed consumer; it never
-  implicitly adopts another ancestor's dependencies.
+- The search for `.zpkg.toml` starts in **CWD**, then considers
+  ancestors in distance order. A nearer nested Zed manifest outranks a
+  repository-root manifest. `--project` selects the exact named consumer
+  rather than silently walking to a different directory.
+- The public `zed add` flags are parsed by Clap **and** validated against
+  [flags-2-env](https://github.com/flags-2-env/flags-2-env)'s embedded
+  `.cli-flags.toml` contract. The corresponding per-process environment
+  settings are `ZED_PKG_ADD_PROJECT` and `ZED_PKG_TARGET`.
+  Explicit flags override inherited environment variables; when neither
+  target source is specified, `[install].target` is the default.
 - **Precedence:** explicit `--target` (subject to the durable-dependency
   safety rule) > `[install].target` > **nearest unique** native project
   marker. The `.zpkg.toml` default is authoritative even when a folder
