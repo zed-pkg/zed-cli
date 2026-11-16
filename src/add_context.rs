@@ -30,7 +30,9 @@ pub fn select(
     project: Option<&Path>,
     explicit_target: Option<&str>,
 ) -> Result<AddSelection> {
-    let cwd = cwd.canonicalize().with_context(|| format!("invalid current directory {}", cwd.display()))?;
+    let cwd = cwd
+        .canonicalize()
+        .with_context(|| format!("invalid current directory {}", cwd.display()))?;
     let root = match project {
         Some(project) => {
             let candidate = if project.is_absolute() {
@@ -49,14 +51,20 @@ pub fn select(
             ))?,
     };
     if !root.is_dir() || !root.join(MANIFEST_FILE).is_file() {
-        bail!("selected Zed project {} has no {MANIFEST_FILE}; use zed init or zed install PACKAGE", root.display());
+        bail!(
+            "selected Zed project {} has no {MANIFEST_FILE}; use zed init or zed install PACKAGE",
+            root.display()
+        );
     }
 
     let manifest = config::read_manifest(&root)?;
     let configured = manifest.requested_target();
     let explicit = explicit_target.map(str::trim);
     if explicit.is_some_and(|value| {
-        value.is_empty() || !value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        value.is_empty()
+            || !value
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
     }) {
         bail!("--target must be a nonempty language/target token (e.g. attolang, nodejs, rust)");
     }
@@ -75,7 +83,11 @@ pub fn select(
             target: Some(selected.to_owned()),
         });
     }
-    let consumer = if cwd.starts_with(&root) { cwd.as_path() } else { root.as_path() };
+    let consumer = if cwd.starts_with(&root) {
+        cwd.as_path()
+    } else {
+        root.as_path()
+    };
     let mut ancestor = Some(consumer);
     while let Some(directory) = ancestor {
         let detected = native_targets(directory)?;
@@ -96,7 +108,11 @@ pub fn select(
     // symlink, or an unbounded directory graph.
     let found = nested_targets(&root)?;
     Ok(AddSelection {
-        target: if found.is_empty() { None } else { Some(unique_target(&root, found)?) },
+        target: if found.is_empty() {
+            None
+        } else {
+            Some(unique_target(&root, found)?)
+        },
         root,
     })
 }
@@ -104,7 +120,13 @@ pub fn select(
 fn same_target(left: &str, right: &str) -> bool {
     match (Language::from_token(left), Language::from_token(right)) {
         (Some(a), Some(b)) => a == b,
-        _ => left == right || matches!((left, right), ("attolang", "oreslang") | ("oreslang", "attolang")),
+        _ => {
+            left == right
+                || matches!(
+                    (left, right),
+                    ("attolang", "oreslang") | ("oreslang", "attolang")
+                )
+        }
     }
 }
 
@@ -152,9 +174,19 @@ fn nested_targets(root: &Path) -> Result<BTreeSet<String>> {
             }
             let name = child.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with('.') || matches!(name.as_ref(),
-                "node_modules" | "zed_modules" | "target" | "vendor" | "dist" | "build" | "out" | ".git"
-            ) {
+            if name.starts_with('.')
+                || matches!(
+                    name.as_ref(),
+                    "node_modules"
+                        | "zed_modules"
+                        | "target"
+                        | "vendor"
+                        | "dist"
+                        | "build"
+                        | "out"
+                        | ".git"
+                )
+            {
                 continue;
             }
             pending.push((child.path(), depth + 1));
@@ -189,18 +221,27 @@ mod tests {
         for marker in [".atto.pkg.toml", ".ores.pkg.toml"] {
             let dir = tempfile::tempdir().unwrap();
             make(dir.path(), &[".zpkg.toml", marker]);
-            assert_eq!(select(dir.path(), None, None).unwrap().target.as_deref(), Some("attolang"));
+            assert_eq!(
+                select(dir.path(), None, None).unwrap().target.as_deref(),
+                Some("attolang")
+            );
         }
     }
 
     #[test]
     fn mixed_native_manifests_fail_without_explicit_target() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", "package.json", ".atto.pkg.toml"]);
+        make(
+            dir.path(),
+            &[".zpkg.toml", "package.json", ".atto.pkg.toml"],
+        );
         let failure = select(dir.path(), None, None).unwrap_err().to_string();
         assert!(failure.contains("ambiguous language context"), "{failure}");
         assert_eq!(
-            select(dir.path(), None, Some("attolang")).unwrap().target.as_deref(),
+            select(dir.path(), None, Some("attolang"))
+                .unwrap()
+                .target
+                .as_deref(),
             Some("attolang")
         );
     }
@@ -208,7 +249,10 @@ mod tests {
     #[test]
     fn nearest_native_project_wins_below_one_zpkg_authority() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", "package.json", "apps/api/.atto.pkg.toml"]);
+        make(
+            dir.path(),
+            &[".zpkg.toml", "package.json", "apps/api/.atto.pkg.toml"],
+        );
         let from_api = dir.path().join("apps/api/src");
         fs::create_dir_all(&from_api).unwrap();
         let selection = select(&from_api, None, None).unwrap();
@@ -219,7 +263,14 @@ mod tests {
     #[test]
     fn sibling_mixed_consumers_require_choice_at_root() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", "apps/api/.atto.pkg.toml", "apps/web/package.json"]);
+        make(
+            dir.path(),
+            &[
+                ".zpkg.toml",
+                "apps/api/.atto.pkg.toml",
+                "apps/web/package.json",
+            ],
+        );
         let message = select(dir.path(), None, None).unwrap_err().to_string();
         assert!(message.contains("ambiguous language context"), "{message}");
     }
@@ -227,7 +278,14 @@ mod tests {
     #[test]
     fn nested_zpkg_project_owns_its_dependencies() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", "apps/api/.zpkg.toml", "apps/api/.atto.pkg.toml"]);
+        make(
+            dir.path(),
+            &[
+                ".zpkg.toml",
+                "apps/api/.zpkg.toml",
+                "apps/api/.atto.pkg.toml",
+            ],
+        );
         let from_api = dir.path().join("apps/api/src");
         fs::create_dir_all(&from_api).unwrap();
         let selected = select(&from_api, None, None).unwrap();
@@ -249,7 +307,10 @@ mod tests {
     #[test]
     fn never_use_first_manifest_arbitrarily_in_mixed_project() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", "package.json", "Cargo.toml", ".atto.pkg.toml"]);
+        make(
+            dir.path(),
+            &[".zpkg.toml", "package.json", "Cargo.toml", ".atto.pkg.toml"],
+        );
         assert!(select(dir.path(), None, None).is_err());
         assert!(select(dir.path(), None, Some("rust")).is_ok());
     }
@@ -257,8 +318,16 @@ mod tests {
     #[test]
     fn dual_atto_markers_are_migration_conflict() {
         let dir = tempfile::tempdir().unwrap();
-        make(dir.path(), &[".zpkg.toml", ".atto.pkg.toml", ".ores.pkg.toml"]);
-        assert!(select(dir.path(), None, None).unwrap_err().to_string().contains("migrate"));
+        make(
+            dir.path(),
+            &[".zpkg.toml", ".atto.pkg.toml", ".ores.pkg.toml"],
+        );
+        assert!(
+            select(dir.path(), None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("migrate")
+        );
     }
 
     #[test]
