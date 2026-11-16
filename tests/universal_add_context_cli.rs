@@ -216,3 +216,45 @@ fn actual_cli_env_only_selectors_reach_flags2env_and_clap() {
     );
     assert_target_conflict(result, "attolang");
 }
+
+#[cfg(unix)]
+#[test]
+fn actual_cli_rejects_symlinked_zed_manifest_before_registry_or_write() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path();
+    consumer(parent, "attolang");
+    let child = parent.join("apps/foreign");
+    std::fs::create_dir_all(&child).unwrap();
+    symlink(parent.join(".zpkg.toml"), child.join(".zpkg.toml")).unwrap();
+
+    let output = zed(&["add", "acme/http@^1"], &child, &[]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unsafe project marker"), "{stderr}");
+    assert!(!child.join(".zpkg.lock").exists());
+    assert!(!child.join("zed_modules").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_project_cannot_use_symlinked_zed_manifest() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let parent = temp.path();
+    consumer(parent, "rust");
+    let child = parent.join("apps/foreign");
+    std::fs::create_dir_all(&child).unwrap();
+    symlink(parent.join(".zpkg.toml"), child.join(".zpkg.toml")).unwrap();
+
+    let output = zed(
+        &["add", "acme/http@^1", "--project=apps/foreign", "--target=rust"],
+        parent,
+        &[],
+    );
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unsafe project marker"), "{stderr}");
+    assert!(!child.join("zed_modules").exists());
+    assert!(!child.join(".zpkg.lock").exists());
+}
