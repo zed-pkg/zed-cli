@@ -97,10 +97,21 @@ fn consumer(path: &std::path::Path, target: &str) {
     std::fs::write(
         path.join(".zpkg.toml"),
         format!(
-            "[package]\\norg='acme'\\nname='fixture'\\nversion='1.0.0'\\n\\
-             [package.repository]\\nvcs='git'\\nurl='https://example.invalid/fixture'\\n\\
-             [dependencies]\\n'acme/pinned'='^1.0'\\n\\
-             [install]\\ntarget='{target}'\\n"
+            r#"[package]
+org = 'acme'
+name = 'fixture'
+version = '1.0.0'
+
+[package.repository]
+vcs = 'git'
+url = 'https://example.invalid/fixture'
+
+[dependencies]
+'acme/pinned' = '^1.0'
+
+[install]
+target = '{target}'
+"#
         ),
     )
     .unwrap();
