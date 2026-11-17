@@ -83,75 +83,94 @@ pub fn dispatch(args: Vec<OsString>) -> Option<Result<i32>> {
     }
 }
 
-/// Add `oci` and `self-update` to top-level help and generated shell completion.
-pub fn augment_root_command(command: clap::Command) -> clap::Command {
-    let mut command = command;
-    if command
+/// Keep the completion/help command tree aligned with the modular
+/// self-update parser, even when the canonical Cli model already declares a
+/// smaller legacy SelfUpdate variant. Runtime dispatch intercepts this command
+/// before the legacy parser; completion generation still needs the full surface.
+fn self_update_arguments() -> Vec<clap::Arg> {
+    vec![
+        clap::Arg::new("version")
+            .value_name("VERSION")
+            .required(false),
+        clap::Arg::new("interactive")
+            .long("interactive")
+            .action(clap::ArgAction::SetTrue)
+            .help("Always prompt before replacing the executable"),
+        clap::Arg::new("non-interactive")
+            .long("non-interactive")
+            .action(clap::ArgAction::SetTrue)
+            .conflicts_with("interactive")
+            .help("Never prompt before replacing the executable"),
+        clap::Arg::new("yes")
+            .short('y')
+            .long("yes")
+            .action(clap::ArgAction::SetTrue)
+            .conflicts_with("interactive")
+            .help("Assume yes without prompting"),
+        clap::Arg::new("dry-run")
+            .long("dry-run")
+            .action(clap::ArgAction::SetTrue)
+            .help("Resolve the release without replacing the binary"),
+        clap::Arg::new("verify")
+            .long("verify")
+            .action(clap::ArgAction::SetTrue)
+            .conflicts_with("no-verify")
+            .help("Require SHA-256 verification (the Zed default)"),
+        clap::Arg::new("no-verify")
+            .long("no-verify")
+            .action(clap::ArgAction::SetTrue)
+            .conflicts_with("verify")
+            .help("Request unverified updates; Zed policy rejects mutating use"),
+        clap::Arg::new("json")
+            .long("json")
+            .action(clap::ArgAction::SetTrue)
+            .help("Emit machine-readable status"),
+    ]
+}
+
+fn has_argument(command: &clap::Command, id: &str) -> bool {
+    command
+        .get_arguments()
+        .any(|argument| argument.get_id().as_str() == id)
+}
+
+fn augment_self_update(command: clap::Command) -> clap::Command {
+    let existing = command
         .get_subcommands()
-        .all(|subcommand| subcommand.get_name() != "self-update")
-    {
-        let self_update = clap::Command::new("self-update")
-            .about("Update zed to a selected release")
-            .arg(
-                clap::Arg::new("version")
-                    .value_name("VERSION")
-                    .required(false),
-            )
-            .arg(
-                clap::Arg::new("interactive")
-                    .long("interactive")
-                    .action(clap::ArgAction::SetTrue)
-                    .help("Always prompt before replacing the executable"),
-            )
-            .arg(
-                clap::Arg::new("non-interactive")
-                    .long("non-interactive")
-                    .action(clap::ArgAction::SetTrue)
-                    .conflicts_with("interactive")
-                    .help("Never prompt before replacing the executable"),
-            )
-            .arg(
-                clap::Arg::new("yes")
-                    .short('y')
-                    .long("yes")
-                    .action(clap::ArgAction::SetTrue)
-                    .conflicts_with("interactive")
-                    .help("Assume yes without prompting"),
-            )
-            .arg(
-                clap::Arg::new("check")
-                    .long("check")
-                    .action(clap::ArgAction::SetTrue)
-                    .help("Report whether an update is available"),
-            )
-            .arg(
-                clap::Arg::new("dry-run")
-                    .long("dry-run")
-                    .action(clap::ArgAction::SetTrue)
-                    .help("Resolve the release without replacing the binary"),
-            )
-            .arg(
-                clap::Arg::new("verify")
-                    .long("verify")
-                    .action(clap::ArgAction::SetTrue)
-                    .conflicts_with("no-verify")
-                    .help("Require SHA-256 verification (the Zed default)"),
-            )
-            .arg(
-                clap::Arg::new("no-verify")
-                    .long("no-verify")
-                    .action(clap::ArgAction::SetTrue)
-                    .conflicts_with("verify")
-                    .help("Request unverified updates; Zed policy rejects mutating use"),
-            )
-            .arg(
-                clap::Arg::new("json")
-                    .long("json")
-                    .action(clap::ArgAction::SetTrue)
-                    .help("Emit machine-readable status"),
+        .find(|subcommand| subcommand.get_name() == "self-update")
+        .cloned();
+
+    if let Some(mut self_update) = existing {
+        for argument in self_update_arguments() {
+            if !has_argument(&self_update, argument.get_id().as_str()) {
+                self_update = self_update.arg(argument);
+            }
+        }
+
+        let mut command = command;
+        if let Some(existing) = command
+            .get_subcommands_mut()
+            .find(|subcommand| subcommand.get_name() == "self-update")
+        {
+            *existing = self_update;
+        }
+        command
+    } else {
+        let self_update = self_update_arguments()
+            .into_iter()
+            .fold(
+                clap::Command::new("self-update")
+                    .about("Update zed to a selected release"),
+                |command, argument| command.arg(argument),
             );
-        command = command.subcommand(self_update);
+        command.subcommand(self_update)
     }
+}
+
+/// Add `oci` and complete modular self-update arguments to top-level help
+/// and generated shell completion.
+pub fn augment_root_command(command: clap::Command) -> clap::Command {
+    let mut command = augment_self_update(command);
 
     if command
         .get_subcommands()
@@ -164,7 +183,8 @@ pub fn augment_root_command(command: clap::Command) -> clap::Command {
         .find_subcommand("oci")
         .expect("OCI command is declared")
         .clone();
-    command.subcommand(oci)
+    command = command.subcommand(oci);
+    command
 }
 
 fn print_root_help() -> Result<()> {
