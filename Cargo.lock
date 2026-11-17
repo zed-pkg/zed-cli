@@ -2358,8 +2358,8 @@ dependencies = [
 
 [[package]]
 name = "zed-interfaces"
-version = "0.1.0"
-source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c#0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c"
+version = "0.1.1"
+source = "git+https://github.com/zed-pkg/zed-interfaces.git?rev=25b3a99451b9faabc3378841f06c4a830473dbc9#25b3a99451b9faabc3378841f06c4a830473dbc9"
 dependencies = [
  "bs58",
  "hex",
