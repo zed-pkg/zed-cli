@@ -633,21 +633,7 @@ mod tests {
         assert!(add_native_artifact(&store, &archive, &"0".repeat(64)).is_err());
     }
 
-    #[test]
-    fn rejects_zip_symlinks() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("symlink.zip");
-        let file = fs::File::create(&archive).unwrap();
-        let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o120777);
-        zip.start_file("package/link", options).unwrap();
-        zip.write_all(b"target").unwrap();
-        zip.finish().unwrap();
-        let sha = digest(&archive);
-        let store = Store::new(&temp.path().join("home"));
-        assert!(add_native_artifact(&store, &archive, &sha).is_err());
-    }
-
+    include!("tests/native_artifact_store_symlinks.rs");
     #[test]
     fn rejects_unsupported_container_magic() {
         let temp = tempfile::tempdir().unwrap();

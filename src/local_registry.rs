@@ -2329,6 +2329,9 @@ mod tests {
         );
     }
 
+    // This fixture deliberately uses Unix symlinks and Unix-style /host
+    // synthetic paths. Windows has separate path-map coverage.
+    #[cfg(unix)]
     #[test]
     fn path_map_rules_canonicalize_the_side_that_exists_here() {
         let temp = tempfile::tempdir().unwrap();

@@ -30,8 +30,8 @@ pub use core::{
 };
 
 pub(crate) use core::{
-    GitLockFinalizeError, detect_adapter, detect_native_manifest_target, detect_structure_target,
-    detect_target,
+    GitLockFinalizeError, NATIVE_MANIFEST_MARKERS, detect_adapter, detect_native_manifest_target,
+    detect_structure_target, detect_target, native_manifest_targets,
 };
 
 #[cfg(test)]
@@ -127,13 +127,24 @@ pub fn publish(
 }
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    add_with_target(project, cfg, spec, None)
+}
+
+/// Keep scoped Zed target admission inside the established lifecycle and
+/// conformance boundaries; context selection itself remains read-only.
+pub fn add_with_target(
+    project: &Path,
+    cfg: &Config,
+    spec: &str,
+    target: Option<&str>,
+) -> Result<()> {
     around_with_boundaries(
         project,
         LifecyclePhase::PreInstall,
         LifecyclePhase::PostInstall,
         BoundaryMode::Structural,
         BoundaryMode::Execute,
-        || core::add(project, cfg, spec),
+        || core::add_with_target(project, cfg, spec, target),
     )
 }
 

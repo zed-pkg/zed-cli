@@ -1,6 +1,7 @@
 //! Library core of the `zed` CLI. The binary in `main.rs` is a thin
 //! dispatcher over these modules; integration tests drive them directly.
 
+pub mod add_context;
 pub mod asdf_environment;
 pub mod auth;
 pub mod binary_archive;

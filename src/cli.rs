@@ -353,8 +353,16 @@ pub enum Cmd {
         #[arg(long, env = "ZED_PKG_NAME")]
         name: Option<String>,
     },
-    /// Add a dependency (org/name[@semver-req]) and install it
-    Add { spec: String },
+    /// Add a Zed dependency to a selected consumer and materialize its verified files
+    Add {
+        spec: String,
+        /// Exact Zed consumer root containing .zpkg.toml; defaults to nearest ancestor
+        #[arg(long, env = "ZED_PKG_ADD_PROJECT", value_name = "PATH")]
+        project: Option<PathBuf>,
+        /// Language slice for a mixed project (e.g. nodejs, attolang or rust)
+        #[arg(long, env = "ZED_PKG_TARGET", value_name = "LANG")]
+        target: Option<String>,
+    },
     /// Inspect and exercise the fallback sources for this project's packages
     Mirror {
         #[command(subcommand)]

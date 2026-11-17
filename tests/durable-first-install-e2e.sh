@@ -74,6 +74,13 @@ PY
 publish_fixture "$fixture_one"
 publish_fixture "$fixture_two"
 
+# Publish an AttoLang target slice into the same isolated file registry. Its
+# compiler-owned .atto.pkg.toml is an ordinary verified package file to Zed.
+fixture_atto="$fixtures/attolang-lib"
+cp -R "$repo_root/tests/fixtures/attolang-lib" "$fixture_atto"
+publish_fixture "$fixture_atto"
+test -d "$registry/packages/zed-pkg/attolang-fixture-lib-attolang"
+
 # A normal first install creates durable project intent and can be extended by
 # a second package-bearing install while the generated identity is still in
 # place.
@@ -96,17 +103,124 @@ grep -F 'dir = ".zed/pkg"' "$durable/.zpkg.toml"
 test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
 test -d "$durable/node_modules/@zed-pkg/docker-node-lib"
 
+# From outside the consumer, --project must name the exact durable
+# .zpkg.toml authority and --target must match its Node default. This tests
+# the real flags2env -> Clap -> project selection -> registry/install path,
+# not just the parser and not a synthetic in-memory dependency graph.
 (
-  cd "$durable"
-  "$zed" install zed-pkg/docker-node-lib-two@^1 \
+  cd "$root"
+  "$zed" --registry "file://$registry" --home "$home/durable" \
+    add zed-pkg/docker-node-lib-two@^1 \
+    --project "$durable" \
+    --target node
+)
+grep -F '"zed-pkg/docker-node-lib" = "^1"' "$durable/.zpkg.toml"
+grep -F '"zed-pkg/docker-node-lib-two" = "^1"' "$durable/.zpkg.toml"
+test -f "$durable/.zpkg.lock"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib-two"
+test -d "$durable/node_modules/@zed-pkg/docker-node-lib-two"
+
+# Frozen replay must honor the persistent, target-selected dependency set,
+# without changing the lockfile's bytes on a second invocation.
+cp "$durable/.zpkg.lock" "$root/add-lock.before"
+(
+  cd "$durable/src/deep"
+  "$zed" install --frozen \
     --registry "file://$registry" \
     --home "$home/durable" \
     --install-mode copy
 )
-grep -F '"zed-pkg/docker-node-lib" = "^1"' "$durable/.zpkg.toml"
-grep -F '"zed-pkg/docker-node-lib-two" = "^1"' "$durable/.zpkg.toml"
+cmp "$root/add-lock.before" "$durable/.zpkg.lock"
+test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib"
 test -d "$durable/.zed/pkg/zed-pkg/docker-node-lib-two"
-test -d "$durable/node_modules/@zed-pkg/docker-node-lib-two"
+
+# AttoLang acceptance: .zpkg.toml selects the language target while
+# .atto.pkg.toml remains the compiler-owned native project manifest. No
+# --target is necessary because [install].target is durable in .zpkg.toml.
+# Run from outside the consumer and select its exact root with --project.
+attolang_consumer="$root/attolang-consumer"
+mkdir -p "$attolang_consumer/src/deep"
+cat > "$attolang_consumer/.zpkg.toml" <<'TOML'
+[package]
+org = "zed-local"
+name = "attolang-consumer"
+version = "1.0.0"
+
+[package.repository]
+vcs = "git"
+url = "https://example.invalid/attolang-consumer"
+
+[install]
+target = "attolang"
+dir = "zed_modules"
+adapter = "none"
+TOML
+
+cat > "$attolang_consumer/.atto.pkg.toml" <<'TOML'
+schema_version = "1"
+
+[project]
+name = "attolang-consumer"
+version = "1.0.0"
+root = "."
+
+[source]
+roots = ["src"]
+import_paths = []
+TOML
+cp "$attolang_consumer/.atto.pkg.toml" "$root/attolang-native.before"
+
+# A sentinel compiler makes the ownership boundary executable: Zed add/install
+# must materialize source files only and must never invoke attoc.
+fake_attoc="$root/fake-attoc"
+mkdir -p "$fake_attoc"
+cat > "$fake_attoc/attoc" <<'SH'
+#!/usr/bin/env sh
+printf '%s\n' "$*" >> "$ATTOLANG_COMPILER_SENTINEL"
+exit 97
+SH
+chmod +x "$fake_attoc/attoc"
+
+(
+  cd "$root"
+  ATTOLANG_COMPILER_SENTINEL="$root/attoc.invoked" \
+    PATH="$fake_attoc:$PATH" \
+    "$zed" --registry "file://$registry" --home "$home/attolang" \
+      add zed-pkg/attolang-fixture-lib-attolang@^1 \
+      --project "$attolang_consumer"
+)
+grep -F 'target = "attolang"' "$attolang_consumer/.zpkg.toml"
+grep -F 'dir = "zed_modules"' "$attolang_consumer/.zpkg.toml"
+grep -F '"zed-pkg/attolang-fixture-lib-attolang" = "^1"' \
+  "$attolang_consumer/.zpkg.toml"
+test -f "$attolang_consumer/.zpkg.lock"
+cmp "$root/attolang-native.before" "$attolang_consumer/.atto.pkg.toml"
+test -d "$attolang_consumer/zed_modules/zed-pkg/attolang-fixture-lib-attolang"
+test -f "$attolang_consumer/zed_modules/zed-pkg/attolang-fixture-lib-attolang/.atto.pkg.toml"
+test -f "$attolang_consumer/zed_modules/zed-pkg/attolang-fixture-lib-attolang/src/greeting.ores"
+cmp \
+  "$fixture_atto/attolang/.atto.pkg.toml" \
+  "$attolang_consumer/zed_modules/zed-pkg/attolang-fixture-lib-attolang/.atto.pkg.toml"
+test ! -e "$attolang_consumer/node_modules"
+test ! -e "$attolang_consumer/.zed/pkg"
+test ! -e "$root/attoc.invoked"
+
+cp "$attolang_consumer/.zpkg.lock" "$root/attolang-lock.before"
+(
+  cd "$attolang_consumer/src/deep"
+  ATTOLANG_COMPILER_SENTINEL="$root/attoc.invoked" \
+    PATH="$fake_attoc:$PATH" \
+    "$zed" install --frozen \
+      --registry "file://$registry" \
+      --home "$home/attolang" \
+      --install-mode copy
+)
+cmp "$root/attolang-lock.before" "$attolang_consumer/.zpkg.lock"
+cmp "$root/attolang-native.before" "$attolang_consumer/.atto.pkg.toml"
+test -f "$attolang_consumer/zed_modules/zed-pkg/attolang-fixture-lib-attolang/.atto.pkg.toml"
+test -f "$attolang_consumer/zed_modules/zed-pkg/attolang-fixture-lib-attolang/src/greeting.ores"
+test ! -e "$root/attoc.invoked"
 
 # A generated consumer cannot be published accidentally, even when normal VCS
 # provenance checks are explicitly skipped.

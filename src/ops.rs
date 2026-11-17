@@ -549,37 +549,51 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
 /// Detect only authoritative native manifests. Manifestless root selection uses
 /// this separately so a nearer `main.go` or `src/main.rs` cannot outrank the
 /// actual `go.mod` or `Cargo.toml` that owns the project.
-pub(crate) fn detect_native_manifest_target(project: &Path) -> Option<String> {
-    const MARKERS: &[(&str, &str)] = &[
-        ("package.json", "node"),
-        ("tsconfig.json", "node"),
-        ("Cargo.toml", "rust"),
-        ("go.mod", "go"),
-        ("pyproject.toml", "python"),
-        ("setup.py", "python"),
-        ("requirements.txt", "python"),
-        ("pubspec.yaml", "dart"),
-        ("mix.exs", "elixir"),
-        ("rebar.config", "erlang"),
-        ("gleam.toml", "gleam"),
-        ("pom.xml", "java"),
-        ("build.gradle", "java"),
-        ("build.gradle.kts", "java"),
-        ("Gemfile", "ruby"),
-        ("composer.json", "php"),
-        ("Package.swift", "swift"),
-        ("shard.yml", "crystal"),
-        ("dune-project", "ocaml"),
-        ("build.zig.zon", "zig"),
-        ("DESCRIPTION", "r"),
-        // Julia's Project.toml is checked after the more specific markers
-        // above so a repo carrying both is not mistaken for Julia.
-        ("Project.toml", "julia"),
-        ("CMakeLists.txt", "cpp"),
-    ];
-    MARKERS
+pub(crate) const NATIVE_MANIFEST_MARKERS: &[(&str, &str)] = &[
+    ("package.json", "node"),
+    ("tsconfig.json", "node"),
+    ("Cargo.toml", "rust"),
+    ("go.mod", "go"),
+    ("pyproject.toml", "python"),
+    ("setup.py", "python"),
+    ("requirements.txt", "python"),
+    ("pubspec.yaml", "dart"),
+    ("mix.exs", "elixir"),
+    ("rebar.config", "erlang"),
+    ("gleam.toml", "gleam"),
+    ("pom.xml", "java"),
+    ("build.gradle", "java"),
+    ("build.gradle.kts", "java"),
+    ("Gemfile", "ruby"),
+    ("composer.json", "php"),
+    ("Package.swift", "swift"),
+    ("shard.yml", "crystal"),
+    ("dune-project", "ocaml"),
+    ("build.zig.zon", "zig"),
+    ("DESCRIPTION", "r"),
+    // Julia's Project.toml is checked after the more specific markers
+    // above so a repo carrying both is not mistaken for Julia.
+    ("Project.toml", "julia"),
+    ("CMakeLists.txt", "cpp"),
+    // Preserve historic native marker priority for other Zed commands;
+    // `zed add` separately refuses mixed-language ambiguity.
+    (".atto.pkg.toml", "attolang"),
+    (".ores.pkg.toml", "attolang"),
+];
+
+/// Distinct native toolchain contexts; Zed's own manifest is deliberately not a language.
+pub(crate) fn native_manifest_targets(project: &Path) -> BTreeSet<String> {
+    NATIVE_MANIFEST_MARKERS
         .iter()
-        .find(|(marker, _)| project.join(marker).exists())
+        .filter(|(marker, _)| project.join(marker).is_file())
+        .map(|(_, language)| (*language).to_owned())
+        .collect()
+}
+
+pub(crate) fn detect_native_manifest_target(project: &Path) -> Option<String> {
+    NATIVE_MANIFEST_MARKERS
+        .iter()
+        .find(|(marker, _)| project.join(marker).is_file())
         .map(|(_, target)| (*target).to_string())
 }
 
@@ -2999,9 +3013,11 @@ fn staging_manifest(build_dependencies: BTreeMap<String, String>) -> Manifest {
             language: Default::default(),
             ecosystem: Default::default(),
             artifacts: Default::default(),
+            kind: None,
         },
         dependencies: build_dependencies,
         build_dependencies: BTreeMap::new(),
+        tool_dependencies: BTreeMap::new(),
         native_dependencies: NativeDependencies::new(),
         hooks: InstallHooksSection::default(),
         lifecycle: Default::default(),
@@ -3932,6 +3948,44 @@ const KNOWN_LANGUAGE_TOKENS: &[(&str, Language)] = &[
 ];
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    add_with_target(project, cfg, spec, None)
+}
+
+/// An explicit, reproducible target governs both package name routing and
+/// the install transaction; it never invokes a language compiler.
+pub fn add_with_target(
+    project: &Path,
+    cfg: &Config,
+    spec: &str,
+    target: Option<&str>,
+) -> Result<()> {
+    let mut manifest = read_manifest(project)?;
+    if let Some(selected) = target {
+        let configured = manifest.requested_target();
+        let equivalent = configured.is_some_and(|existing| {
+            existing == selected
+                || matches!(
+                    (Language::from_token(existing), Language::from_token(selected)),
+                    (Some(left), Some(right)) if left == right
+                )
+        });
+        // Retargeting from an absent default is just as dangerous as
+        // retargeting between two explicit languages: a shared dependency
+        // set would silently acquire different frozen-install semantics.
+        if !equivalent
+            && (!manifest.dependencies.is_empty() || !manifest.build_dependencies.is_empty())
+        {
+            bail!(
+                "cannot change Zed default target from `{}` to `{selected}` while existing dependencies are declared; use separate member .zpkg.toml manifests",
+                configured.unwrap_or("<unspecified>")
+            );
+        }
+        // Commit a safe first target alongside the new requirement.
+        // Preserve an existing alias when it denotes the same language.
+        if !equivalent {
+            manifest.install.target = Some(selected.to_string());
+        }
+    }
     let (rest, req) = match spec.split_once('@') {
         Some((rest, req)) => (rest.to_string(), Some(req.to_string())),
         None => (spec.to_string(), None),
@@ -3954,7 +4008,10 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
                     // Nothing published under that name. Route to the language
                     // variant this project can actually consume, rather than
                     // making the user work out the suffix themselves.
-                    let detected = detect_target(project);
+                    let detected = target
+                        .map(str::to_owned)
+                        .or_else(|| manifest.requested_target().map(str::to_owned))
+                        .or_else(|| detect_target(project));
                     let candidates = language_route_candidates(&name, detected.as_deref());
                     let routed = candidates
                         .iter()
@@ -3999,7 +4056,6 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
             }
         }
     };
-    let mut manifest = read_manifest(project)?;
     manifest
         .dependencies
         .insert(format!("{org}/{name}"), req.clone());
@@ -4016,11 +4072,14 @@ pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
             cfg,
             false,
             InstallMode::Symlink,
-            Adapter::None,
+            // Respect the consumer's [install].adapter and native context.
+            // Forcing None silently drops Node/Rust/etc. adapter wiring
+            // during zed add even though zed install uses Auto.
+            Adapter::Auto,
             false,
             // Re-install after the manifest edit; the target comes from
             // [install].target or project inference, same as a bare `zed install`.
-            None,
+            target,
             false,
         )
         .map(|_| ())

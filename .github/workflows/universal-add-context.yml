@@ -1,0 +1,160 @@
+name: Universal Zed add project context (no registry or compiler)
+
+on:
+  pull_request:
+    paths:
+      - 'src/add_context.rs'
+      - 'src/tests/native_artifact_store_symlinks.rs'
+      - 'src/tests/flags_add_context.rs'
+      - 'tests/add_context_context.rs'
+      - 'src/ops.rs'
+      - 'src/ops_entry.rs'
+      - 'src/ops_lifecycle_entry.rs'
+      - 'src/flags.rs'
+      - 'src/cli.rs'
+      - 'src/main.rs'
+      - 'src/lib.rs'
+      - 'tests/universal_add_context_cli.rs'
+      - 'tests/add_context_context.rs'
+      - 'docs/universal-add-context.md'
+      - '.cli-flags.toml'
+      - '.github/workflows/universal-add-context.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/add_context.rs'
+      - 'src/tests/native_artifact_store_symlinks.rs'
+      - 'src/tests/flags_add_context.rs'
+      - 'tests/add_context_context.rs'
+      - 'src/ops.rs'
+      - 'src/ops_entry.rs'
+      - 'src/cli.rs'
+      - 'src/main.rs'
+      - 'src/lib.rs'
+      - 'tests/universal_add_context_cli.rs'
+      - 'tests/add_context_context.rs'
+      - '.cli-flags.toml'
+      - '.github/workflows/universal-add-context.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: universal-add-context-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  context-only:
+    name: Universal context and CLI option contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Formatting contract (changed source only)
+        run: |
+          rustfmt --edition 2024 --check --config skip_children=true \
+            src/add_context.rs src/ops.rs src/ops_entry.rs \
+            src/ops_lifecycle_entry.rs src/flags.rs src/main.rs \
+            src/cli.rs src/tests/flags_add_context.rs \
+            src/tests/native_artifact_store_symlinks.rs \
+            tests/add_context_context.rs tests/universal_add_context_cli.rs
+      - name: Compile and execute Rust context regressions
+        run: cargo test --locked --test add_context_context -- --nocapture
+      - name: Embedded flags-2-env project and target contract
+        run: cargo test --locked --lib flags::tests::add_ -- --nocapture
+      - name: CLI parsing contract
+        run: cargo test --locked --test universal_add_context_cli -- --nocapture
+      - name: Declare evidence boundary
+        run: echo 'HOST_CONTEXT_ONLY - no Zed registry, native manager, attoc or guest executed'
+
+  windows-context:
+    name: Windows project walk-up and flags2env CLI contract
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout exact proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$HEAD_SHA"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Verify project walk-up and target inference on Windows
+        run: cargo test --locked --test add_context_context -- --nocapture
+      - name: Verify embedded flags2env on Windows
+        run: cargo test --locked --lib flags::tests::add_ -- --nocapture
+      - name: Verify real Zed CLI on Windows
+        run: cargo test --locked --test universal_add_context_cli -- --nocapture
+
+  interface-lock-diagnostic:
+    name: Resolve one canonical AttoLang interface lock identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+      - name: Generate candidate Cargo.lock and verify transitive source unification
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --package zed-interfaces --precise 281fc4fbf57a46c81ea224c59c1bddd7784b0719
+          echo '--- CARGO LOCK DIFF ---'
+          git diff -- Cargo.lock
+          python3 - <<'PY'
+          import tomllib
+          with open("Cargo.lock", "rb") as handle:
+              lock = tomllib.load(handle)
+          packages = [p for p in lock["package"] if p["name"] == "zed-interfaces"]
+          for package in packages:
+              print(package["version"], package["source"])
+          if len(packages) != 1:
+              raise SystemExit(f"expected one unified zed-interfaces source, got {len(packages)}")
+          if "281fc4fbf57a46c81ea224c59c1bddd7784b0719" not in packages[0]["source"]:
+              raise SystemExit("lock graph did not resolve the AttoLang interface source")
+          PY
+          cargo metadata --locked --format-version 1 > /dev/null
+          git diff -- Cargo.lock > "$RUNNER_TEMP/atto-interface-cargo-lock.diff"
+      - name: Upload exact generated lock candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: atto-interface-cargo-lock-candidate
+          path: |
+            Cargo.lock
+            ${{ runner.temp }}/atto-interface-cargo-lock.diff
+          if-no-files-found: error
+          retention-days: 2

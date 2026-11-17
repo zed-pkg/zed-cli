@@ -1,5 +1,6 @@
 use std::ffi::{OsStr, OsString};
 
+use zed_cli::add_context;
 use zed_cli::asdf_environment;
 use zed_cli::auth;
 use zed_cli::cli::EnvCmd;
@@ -238,7 +239,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             std::fs::create_dir_all(&project)?;
             ops::init(&project, org, name, cfg.interactive)
         }
-        Cmd::Add { spec } => ops::add(&cwd, &cfg, &spec),
+        Cmd::Add {
+            spec,
+            project,
+            target,
+        } => {
+            let context = add_context::select(&cwd, project.as_deref(), target.as_deref())?;
+            ops::add_with_target(&context.root, &cfg, &spec, context.target.as_deref())
+        }
         Cmd::Remove { spec } => ops::remove(&cwd, &cfg, &spec),
         Cmd::Install {
             specs,

@@ -1,0 +1,15 @@
+[package]
+org = "zed-pkg"
+name = "attolang-fixture-lib"
+version = "1.0.0"
+description = "AttoLang package materialization fixture."
+license = "MIT"
+
+[package.repository]
+vcs = "git"
+url = "https://github.com/zed-pkg/zed-cli"
+
+[targets.attolang]
+dir = "attolang"
+adapter = "none"
+ecosystem = "attolang"

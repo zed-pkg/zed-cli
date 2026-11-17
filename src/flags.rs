@@ -398,6 +398,7 @@ mod tests {
         );
     }
 
+    include!("tests/flags_add_context.rs");
     #[test]
     fn embedded_contract_accepts_global_mirror_controls() {
         for (argv, expected_env) in [

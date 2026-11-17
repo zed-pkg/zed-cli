@@ -6,6 +6,7 @@ on:
       - ".github/workflows/durable-first-install.yml"
       - "tests/durable-first-install-e2e.sh"
       - "tests/fixtures/docker-install/node-lib/**"
+      - "tests/fixtures/attolang-lib/**"
       - "src/managed_install.rs"
       - "src/manifestless.rs"
       - "src/cli_model.rs"
@@ -23,6 +24,7 @@ on:
       - ".github/workflows/durable-first-install.yml"
       - "tests/durable-first-install-e2e.sh"
       - "tests/fixtures/docker-install/node-lib/**"
+      - "tests/fixtures/attolang-lib/**"
       - "src/managed_install.rs"
       - "src/manifestless.rs"
       - "src/cli_model.rs"
@@ -64,7 +66,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: zed-pkg/zed-interfaces
-          ref: dc0e0a0620b9462817950b552d3d334a184b1cb1
+          ref: 281fc4fbf57a46c81ea224c59c1bddd7784b0719
           path: zed-interfaces
           persist-credentials: false
           show-progress: false

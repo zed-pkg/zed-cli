@@ -93,6 +93,7 @@ jobs:
   test:
     needs: provenance
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -622,7 +623,9 @@ jobs:
 
           test -f "$root/.zpkg.toml"
           test -f "$root/.zpkg.lock"
-          test -d "$root/zed_modules/zed-pkg/docker-node-lib"
+          # The managed Node adapter's canonical materialization lives in
+          # .zed/pkg; zed_modules is no longer the default install root.
+          test -d "$root/.zed/pkg/zed-pkg/docker-node-lib"
           test -d "$root/node_modules/@zed-pkg/docker-node-lib"
           grep -F 'org = "zed-local"' "$root/.zpkg.toml"
           grep -F 'keywords = ["zed-generated-consumer"]' "$root/.zpkg.toml"
@@ -803,7 +806,7 @@ jobs:
           test ! -e "$root/.zpkg.lock"
           test -f "$root/apps/web/.zpkg.toml"
           test -f "$root/apps/web/.zpkg.lock"
-          test -d "$root/apps/web/zed_modules/zed-pkg/docker-node-lib"
+          test -d "$root/apps/web/.zed/pkg/zed-pkg/docker-node-lib"
 
   shell-contract:
     needs: provenance

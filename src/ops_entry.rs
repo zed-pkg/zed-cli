@@ -47,7 +47,8 @@ pub use implementation::{
 };
 
 pub(crate) use implementation::{
-    detect_adapter, detect_native_manifest_target, detect_structure_target, detect_target,
+    NATIVE_MANIFEST_MARKERS, detect_adapter, detect_native_manifest_target,
+    detect_structure_target, detect_target, native_manifest_targets,
 };
 
 #[cfg(test)]
@@ -275,10 +276,21 @@ pub fn publish(
 }
 
 pub fn add(project: &Path, cfg: &Config, spec: &str) -> Result<()> {
+    add_with_target(project, cfg, spec, None)
+}
+
+pub fn add_with_target(
+    project: &Path,
+    cfg: &Config,
+    spec: &str,
+    target: Option<&str>,
+) -> Result<()> {
     crate::project_lock::with_lock(project, "add Zed dependency", || {
         crate::git_submodules::preflight_gitmodules_metadata(project)?;
         crate::git_submodules::preflight_mutation(project)?;
-        crate::config::with_install_prefetch(cfg, || implementation::add(project, cfg, spec))?;
+        crate::config::with_install_prefetch(cfg, || {
+            implementation::add_with_target(project, cfg, spec, target)
+        })?;
         crate::git_submodules::refresh_lock_extensions(project)
     })
 }
