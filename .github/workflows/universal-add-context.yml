@@ -13,6 +13,7 @@ on:
       - 'src/main.rs'
       - 'src/lib.rs'
       - 'tests/universal_add_context_cli.rs'
+      - 'tests/add_context_context.rs'
       - 'docs/universal-add-context.md'
       - '.cli-flags.toml'
       - '.github/workflows/universal-add-context.yml'
@@ -27,6 +28,7 @@ on:
       - 'src/main.rs'
       - 'src/lib.rs'
       - 'tests/universal_add_context_cli.rs'
+      - 'tests/add_context_context.rs'
       - '.cli-flags.toml'
       - '.github/workflows/universal-add-context.yml'
   workflow_dispatch:
@@ -63,7 +65,7 @@ jobs:
           rustfmt --edition 2024 --check --config skip_children=true \
             src/add_context.rs src/ops.rs src/ops_entry.rs \
             src/ops_lifecycle_entry.rs src/flags.rs src/main.rs \
-            src/cli.rs tests/universal_add_context_cli.rs
+            src/cli.rs tests/add_context_context.rs tests/universal_add_context_cli.rs
       - name: Compile and execute Rust context regressions
         run: cargo test --locked --test add_context_context -- --nocapture
       - name: Embedded flags-2-env project and target contract
