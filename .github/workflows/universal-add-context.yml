@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'src/add_context.rs'
+      - 'tests/add_context_context.rs'
       - 'src/ops.rs'
       - 'src/ops_entry.rs'
       - 'src/ops_lifecycle_entry.rs'
@@ -19,6 +20,7 @@ on:
     branches: [main]
     paths:
       - 'src/add_context.rs'
+      - 'tests/add_context_context.rs'
       - 'src/ops.rs'
       - 'src/ops_entry.rs'
       - 'src/cli.rs'
@@ -63,7 +65,7 @@ jobs:
             src/ops_lifecycle_entry.rs src/flags.rs src/main.rs \
             src/cli.rs tests/universal_add_context_cli.rs
       - name: Compile and execute Rust context regressions
-        run: cargo test --locked --lib add_context::tests -- --nocapture
+        run: cargo test --locked --test add_context_context -- --nocapture
       - name: Embedded flags-2-env project and target contract
         run: cargo test --locked --lib flags::tests::add_ -- --nocapture
       - name: CLI parsing contract
@@ -94,7 +96,7 @@ jobs:
           toolchain: 1.98.1
           components: rustfmt
       - name: Verify project walk-up and target inference on Windows
-        run: cargo test --locked --lib add_context::tests -- --nocapture
+        run: cargo test --locked --test add_context_context -- --nocapture
       - name: Verify embedded flags2env on Windows
         run: cargo test --locked --lib flags::tests::add_ -- --nocapture
       - name: Verify real Zed CLI on Windows
