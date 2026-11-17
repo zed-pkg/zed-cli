@@ -1,0 +1,5 @@
+define module greeting as
+  pub fnc message(): String {
+    return "hello from attolang zed fixture";
+  }
+end
