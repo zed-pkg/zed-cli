@@ -1,0 +1,71 @@
+name: Self-update and OCI help contract
+
+on:
+  pull_request:
+    paths:
+      - 'src/oci_command.rs'
+      - 'src/cli_model.rs'
+      - 'src/cli.rs'
+      - 'src/main.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/self-update-help-contract.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/oci_command.rs'
+      - 'src/cli_model.rs'
+      - 'src/cli.rs'
+      - 'src/main.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/self-update-help-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-update-help-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  help-contract:
+    name: Exact-head self-update/OCI help regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the exact proposed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Check changed command-tree formatting
+        run: rustfmt --edition 2024 --check --config skip_children=true src/oci_command.rs
+      - name: Execute canonical modular help regression
+        run: cargo test --locked --lib oci_command::tests::modular_route_and_help_include_oci_without_hiding_other_interop -- --nocapture
+      - name: Check self-update argument normalization regression
+        run: cargo test --locked --lib oci_command::tests::boolean_environment_is_normalized_for_modular_parser -- --nocapture
+      - name: Check executable root and modular command help
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --bin zed
+          target/debug/zed --help > "$RUNNER_TEMP/root-help.txt"
+          grep -Fq 'self-update' "$RUNNER_TEMP/root-help.txt"
+          grep -Fq 'oci' "$RUNNER_TEMP/root-help.txt"
+          target/debug/zed self-update --help > "$RUNNER_TEMP/self-update-help.txt"
+          grep -Fq -- '--interactive' "$RUNNER_TEMP/self-update-help.txt"
+          grep -Fq -- '--non-interactive' "$RUNNER_TEMP/self-update-help.txt"
+          grep -Fq -- '--dry-run' "$RUNNER_TEMP/self-update-help.txt"
+      - name: Record evidence boundary
+        run: echo 'CLI_HELP_ONLY: no self-update execution or release mutation was authorized'
