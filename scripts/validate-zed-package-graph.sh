@@ -79,7 +79,7 @@ for public_crate in ("zed-interfaces", "zed-lib"):
 expected_sources = {
     "zed-interfaces": (
         "https://github.com/zed-pkg/zed-interfaces.git",
-        "0c2ffa7be791a44c8aa2a69ab4b1ea87aab4729c",
+        "25b3a99451b9faabc3378841f06c4a830473dbc9",
     ),
     "zed-client": (
         "https://github.com/zed-pkg/zed-clients.git",
