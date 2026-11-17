@@ -30,8 +30,8 @@ pub use core::{
 };
 
 pub(crate) use core::{
-    GitLockFinalizeError, detect_adapter, detect_native_manifest_target, detect_structure_target,
-    detect_target, native_manifest_targets,
+    GitLockFinalizeError, NATIVE_MANIFEST_MARKERS, detect_adapter, detect_native_manifest_target,
+    detect_structure_target, detect_target, native_manifest_targets,
 };
 
 #[cfg(test)]
