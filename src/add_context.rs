@@ -26,7 +26,7 @@ pub struct AddSelection {
 /// Choose the nearest Zed package authority, then the most local *unique*
 /// native consumer target. An explicit --project always names an exact Zed
 /// root; it is not expanded into another ancestor's dependency graph.
-pub pub fn select(
+pub fn select(
     cwd: &Path,
     project: Option<&Path>,
     explicit_target: Option<&str>,
