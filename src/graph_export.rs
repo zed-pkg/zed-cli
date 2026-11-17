@@ -471,12 +471,7 @@ mod tests {
     #[test]
     fn route_detects_graph_and_help_without_stealing_existing_commands() {
         assert_eq!(
-            route(&os_argv(&[
-                "zed",
-                "graph",
-                "package",
-                "acme/pkg@1.0.0"
-            ])),
+            route(&os_argv(&["zed", "graph", "package", "acme/pkg@1.0.0"])),
             Route::Graph
         );
         assert_eq!(
