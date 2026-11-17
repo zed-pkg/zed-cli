@@ -240,7 +240,10 @@ fn unique_target(directory: &Path, targets: BTreeSet<String>) -> Result<String> 
             targets.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
-    Ok(targets.into_iter().next().expect("one language"))
+    match targets.into_iter().next() {
+        Some(target) => Ok(target),
+        None => bail!("no target was available after unique-target validation"),
+    }
 }
 
 fn nested_targets(root: &Path) -> Result<BTreeSet<String>> {
