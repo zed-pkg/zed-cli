@@ -639,13 +639,25 @@ mod tests {
         let archive = temp.path().join("symlink.zip");
         let file = fs::File::create(&archive).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default().unix_permissions(0o120777);
-        zip.start_file("package/link", options).unwrap();
-        zip.write_all(b"target").unwrap();
+        let options = zip::write::SimpleFileOptions::default();
+        // unix_permissions only sets permission bits and produces a regular
+        // ZIP file. Construct an actual symlink entry to test extraction policy.
+        zip.add_symlink("package/link", "../../outside", options)
+            .unwrap();
         zip.finish().unwrap();
+
+        let mut input = zip::ZipArchive::new(fs::File::open(&archive).unwrap()).unwrap();
+        let entry = input.by_name("package/link").unwrap();
+        let mode = entry.unix_mode().expect("ZIP symlink entry has Unix mode");
+        assert_eq!(mode & 0o170000, 0o120000);
+        drop(entry);
+        drop(input);
+
         let sha = digest(&archive);
         let store = Store::new(&temp.path().join("home"));
         assert!(add_native_artifact(&store, &archive, &sha).is_err());
+        assert!(!store.has(&sha), "rejected symlink must not enter the store");
+        assert!(!store.entry_dir(&sha).exists(), "rejected symlink must not publish a cache entry");
     }
 
     #[test]
