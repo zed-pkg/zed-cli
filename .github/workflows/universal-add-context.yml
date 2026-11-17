@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - 'src/add_context.rs'
+      - 'src/tests/native_artifact_store_symlinks.rs'
+      - 'src/tests/flags_add_context.rs'
       - 'tests/add_context_context.rs'
       - 'src/ops.rs'
       - 'src/ops_entry.rs'
@@ -21,6 +23,8 @@ on:
     branches: [main]
     paths:
       - 'src/add_context.rs'
+      - 'src/tests/native_artifact_store_symlinks.rs'
+      - 'src/tests/flags_add_context.rs'
       - 'tests/add_context_context.rs'
       - 'src/ops.rs'
       - 'src/ops_entry.rs'
@@ -65,7 +69,9 @@ jobs:
           rustfmt --edition 2024 --check --config skip_children=true \
             src/add_context.rs src/ops.rs src/ops_entry.rs \
             src/ops_lifecycle_entry.rs src/flags.rs src/main.rs \
-            src/cli.rs tests/add_context_context.rs tests/universal_add_context_cli.rs
+            src/cli.rs src/tests/flags_add_context.rs \
+            src/tests/native_artifact_store_symlinks.rs \
+            tests/add_context_context.rs tests/universal_add_context_cli.rs
       - name: Compile and execute Rust context regressions
         run: cargo test --locked --test add_context_context -- --nocapture
       - name: Embedded flags-2-env project and target contract
