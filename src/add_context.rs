@@ -298,4 +298,3 @@ fn nested_targets(root: &Path) -> Result<BTreeSet<String>> {
     }
     Ok(found)
 }
-
