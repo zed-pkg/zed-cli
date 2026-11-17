@@ -132,7 +132,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo update --package zed-interfaces --precise 25b3a99451b9faabc3378841f06c4a830473dbc9
+          cargo update --package zed-interfaces --precise 281fc4fbf57a46c81ea224c59c1bddd7784b0719
           echo '--- CARGO LOCK DIFF ---'
           git diff -- Cargo.lock
           python3 - <<'PY'
@@ -144,7 +144,7 @@ jobs:
               print(package["version"], package["source"])
           if len(packages) != 1:
               raise SystemExit(f"expected one unified zed-interfaces source, got {len(packages)}")
-          if "25b3a99451b9faabc3378841f06c4a830473dbc9" not in packages[0]["source"]:
+          if "281fc4fbf57a46c81ea224c59c1bddd7784b0719" not in packages[0]["source"]:
               raise SystemExit("lock graph did not resolve the AttoLang interface source")
           PY
           cargo metadata --locked --format-version 1 > /dev/null
