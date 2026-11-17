@@ -33,6 +33,8 @@ fn write_lock(project: &Path, source: Option<String>) {
     let lock = Lockfile {
         version: Lockfile::CURRENT_VERSION,
         packages,
+        tools: Vec::new(),
+
         native_dependencies: Vec::new(),
         nix_adapters: Vec::new(),
     };
