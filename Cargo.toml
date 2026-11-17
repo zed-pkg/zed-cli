@@ -111,3 +111,10 @@ module_name_repetitions = "allow"
 # explicit inputs and outputs
 must_use_candidate = "warn"
 return_self_not_must_use = "warn"
+
+# All transitive Rust consumers (zed-client and zed-lib) must share the
+# same nominal interface types as zed-cli. Their currently pinned commits
+# still request the pre-AttoLang revision; this patch overrides every
+# dependency from this repository with the canonical AttoLang-aware contract.
+[patch."https://github.com/zed-pkg/zed-interfaces.git"]
+zed-interfaces = { git = "https://github.com/zed-pkg/zed-interfaces.git", rev = "25b3a99451b9faabc3378841f06c4a830473dbc9" }
