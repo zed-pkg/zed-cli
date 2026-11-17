@@ -1,0 +1,67 @@
+name: diagnose AttoLang interface lock graph
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/diagnose-atto-interface-lock.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-atto-interface-lock-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lock-graph:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Verify exact source SHA
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.98.1
+      - name: Generate candidate lock graph with the AttoLang interface override
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --package zed-interfaces --precise 25b3a99451b9faabc3378841f06c4a830473dbc9
+          echo '--- CARGO LOCK DIFF ---'
+          git diff -- Cargo.lock
+          echo '--- INTERFACE LOCK ENTRIES ---'
+          python3 - <<'PY'
+          import tomllib
+          with open("Cargo.lock", "rb") as handle:
+              lock = tomllib.load(handle)
+          packages = [p for p in lock["package"] if p["name"] == "zed-interfaces"]
+          for package in packages:
+              print(package["version"], package["source"])
+              print("deps:", ", ".join(package.get("dependencies", [])))
+          if len(packages) != 1:
+              raise SystemExit(f"expected one unified zed-interfaces source, got {len(packages)}")
+          if "25b3a99451b9faabc3378841f06c4a830473dbc9" not in packages[0]["source"]:
+              raise SystemExit("lock graph did not resolve the AttoLang interface source")
+          PY
+          cargo metadata --locked --format-version 1 > /dev/null
+          git diff -- Cargo.lock > "$RUNNER_TEMP/atto-interface-cargo-lock.diff"
+      - name: Upload generated lock candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: atto-interface-cargo-lock-candidate
+          path: |
+            Cargo.lock
+            ${{ runner.temp }}/atto-interface-cargo-lock.diff
+          if-no-files-found: error
+          retention-days: 2
