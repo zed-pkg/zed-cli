@@ -375,6 +375,28 @@ url='https://example.invalid/a/b'
         assert!(fail.contains("unsafe project marker"), "{fail}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_native_project_markers_are_rejected_even_with_explicit_target() {
+        use std::os::unix::fs::symlink;
+        for marker in ["package.json", "Cargo.toml"] {
+            let root = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            make(root.path(), &[".zpkg.toml"]);
+            let foreign_manifest = outside.path().join("foreign-manifest");
+            fs::write(&foreign_manifest, "{}").unwrap();
+            symlink(&foreign_manifest, root.path().join(marker)).unwrap();
+
+            for target in [None, Some("node"), Some("rust")] {
+                let error = select(root.path(), None, target).unwrap_err().to_string();
+                assert!(
+                    error.contains("unsafe project marker"),
+                    "{marker} with {target:?}: {error}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn bounded_native_inference_rejects_unreasonably_wide_workspaces() {
         let root = tempfile::tempdir().unwrap();

@@ -549,7 +549,7 @@ pub(crate) fn detect_target(project: &Path) -> Option<String> {
 /// Detect only authoritative native manifests. Manifestless root selection uses
 /// this separately so a nearer `main.go` or `src/main.rs` cannot outrank the
 /// actual `go.mod` or `Cargo.toml` that owns the project.
-const NATIVE_MANIFEST_MARKERS: &[(&str, &str)] = &[
+pub(crate) const NATIVE_MANIFEST_MARKERS: &[(&str, &str)] = &[
     ("package.json", "node"),
     ("tsconfig.json", "node"),
     ("Cargo.toml", "rust"),

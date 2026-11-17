@@ -219,17 +219,26 @@ fn regular_marker(directory: &Path, name: &str) -> Result<bool> {
 }
 
 fn native_targets(directory: &Path) -> Result<BTreeSet<String>> {
-    // Native AttoLang markers are compiler-owned, but project inference must
-    // not follow a symlink to an unrelated outside source tree.
-    let canonical = regular_marker(directory, ".atto.pkg.toml")?;
-    let legacy = regular_marker(directory, ".ores.pkg.toml")?;
-    if canonical && legacy {
+    // Every language marker is a project-identity input, not just AttoLang
+    // markers. Never follow a symlink (including a dangling symlink) to infer
+    // a target, even when the caller supplied an explicit --target.
+    let mut targets = BTreeSet::new();
+    let mut canonical_atto = false;
+    let mut legacy_atto = false;
+    for &(marker, target) in ops::NATIVE_MANIFEST_MARKERS {
+        if regular_marker(directory, marker)? {
+            targets.insert(target.to_string());
+            canonical_atto |= marker == ".atto.pkg.toml";
+            legacy_atto |= marker == ".ores.pkg.toml";
+        }
+    }
+    if canonical_atto && legacy_atto {
         bail!(
             "ambiguous AttoLang compiler markers in {}: migrate .ores.pkg.toml to .atto.pkg.toml; do not keep both",
             directory.display()
         );
     }
-    Ok(ops::native_manifest_targets(directory))
+    Ok(targets)
 }
 
 fn unique_target(directory: &Path, targets: BTreeSet<String>) -> Result<String> {
