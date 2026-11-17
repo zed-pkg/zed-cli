@@ -156,13 +156,10 @@ fn augment_self_update(command: clap::Command) -> clap::Command {
         }
         command
     } else {
-        let self_update = self_update_arguments()
-            .into_iter()
-            .fold(
-                clap::Command::new("self-update")
-                    .about("Update zed to a selected release"),
-                |command, argument| command.arg(argument),
-            );
+        let self_update = self_update_arguments().into_iter().fold(
+            clap::Command::new("self-update").about("Update zed to a selected release"),
+            |command, argument| command.arg(argument),
+        );
         command.subcommand(self_update)
     }
 }
