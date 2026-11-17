@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use zed_cli::add_context::select;
 
 mod tests {
+    use super::*;
 
     fn make(root: &Path, paths: &[&str]) {
         for file in paths {
