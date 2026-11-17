@@ -422,6 +422,7 @@ mod tests {
             .find(|command| command.get_name() == "self-update")
             .expect("self-update command must be present");
         for option in [
+            "version",
             "interactive",
             "non-interactive",
             "yes",
@@ -436,6 +437,37 @@ mod tests {
                     .get_arguments()
                     .any(|argument| argument.get_id().as_str() == option),
                 "self-update help is missing {option}"
+            );
+        }
+
+        // Command augmentation runs in multiple help/completion paths. It must
+        // be idempotent and must not duplicate arguments already in Cli.
+        let command = augment_root_command(command);
+        let self_update = command
+            .get_subcommands()
+            .find(|command| command.get_name() == "self-update");
+        assert!(self_update.is_some(), "self-update command disappeared");
+        let self_update = self_update.unwrap();
+        for option in [
+            "version",
+            "interactive",
+            "non-interactive",
+            "yes",
+            "check",
+            "dry-run",
+            "verify",
+            "no-verify",
+            "json",
+            "force",
+            "skip_checksum",
+        ] {
+            assert_eq!(
+                self_update
+                    .get_arguments()
+                    .filter(|argument| argument.get_id().as_str() == option)
+                    .count(),
+                1,
+                "self-update argument {option} must occur exactly once"
             );
         }
         let interop = command
