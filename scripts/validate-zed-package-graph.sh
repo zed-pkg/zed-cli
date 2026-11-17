@@ -83,11 +83,11 @@ expected_sources = {
     ),
     "zed-client": (
         "https://github.com/zed-pkg/zed-clients.git",
-        "6a046b0a5e262c0c6a23851b810d7fe7eda251c4",
+        "9da2b537ce838d74af891a0e5da5f0a2fc4c0446",
     ),
     "zed-lib": (
         "https://github.com/zed-pkg/zed-lib-core.git",
-        "4509f19e1d3242226f28f842f550085864582380",
+        "c4c70a160039c315b4960405311f15a8a1f020c7",
     ),
     "zed-lock": (
         "https://github.com/zed-pkg/zed-lock.git",
